@@ -14,7 +14,7 @@ interface InlineAnnotationProps {
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
   onExplain?: (id: string) => void;
-  agentFindingSources: ReadonlySet<string>;
+  agentFindingSources?: ReadonlySet<string>;
   explainDisabled?: boolean;
 }
 
@@ -72,6 +72,7 @@ export const InlineAnnotation: React.FC<InlineAnnotationProps> = ({
         explainDisabled={explainDisabled}
         copyText={metadata.copyText}
         onDelete={() => onDelete(metadata.annotationId)}
+        selected={isSelected}
       />
     </div>
   );

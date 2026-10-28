@@ -6,6 +6,8 @@ import { CommentActions } from './CommentActions';
 import { FileNameChip } from './FileNameChip';
 import { commentCopyText } from '../utils/annotationDisplay';
 import { isAgentGeneratedFinding } from '../utils/explainFinding';
+import { useConfigValue } from '@plannotator/ui/config';
+import { isCommentSubmitKey } from '@plannotator/ui/utils/commentSubmitKey';
 
 interface FileCommentBannerProps {
   /** File-scoped comments for ONE file (already filtered to scope === 'file'). */
@@ -15,7 +17,7 @@ interface FileCommentBannerProps {
   onEdit: (id: string, text: string) => void;
   onDelete: (id: string) => void;
   onExplain?: (id: string) => void;
-  agentFindingSources: ReadonlySet<string>;
+  agentFindingSources?: ReadonlySet<string>;
   explainDisabled?: boolean;
   /** Re-measure hook for the virtualized all-files host (see FileCommentCard). */
   onHeightChange?: () => void;
@@ -43,7 +45,7 @@ export const FileCommentCard: React.FC<{
   onEdit: (id: string, text: string) => void;
   onDelete: (id: string) => void;
   onExplain?: (id: string) => void;
-  agentFindingSources: ReadonlySet<string>;
+  agentFindingSources?: ReadonlySet<string>;
   explainDisabled?: boolean;
   /** Fired after our rendered height changes (expand/collapse/edit) so the
    *  virtualized all-files host can re-measure this item. */
@@ -54,6 +56,7 @@ export const FileCommentCard: React.FC<{
   const [collapsed, setCollapsed] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(comment.text ?? '');
+  const enterSavesComment = useConfigValue('enterSavesComment');
 
   // Tell the owner to re-measure when our height changes — in the all-files view
   // these cards live in Pierre's custom-header portal, whose height isn't auto-
@@ -109,6 +112,17 @@ export const FileCommentCard: React.FC<{
         createdAt={comment.createdAt}
       />
 
+      {/* Made in the rendered Markdown preview: the text it is about. */}
+      {comment.markdownPreview && !collapsed && (
+        <div
+          data-file-comment-markdown-quote=""
+          className="mt-1 mb-1 border-l-2 border-border/40 pl-1.5 text-[11px] italic text-muted-foreground/80 line-clamp-2"
+          title="Commented in the rendered Markdown preview"
+        >
+          {comment.markdownPreview.originalText}
+        </div>
+      )}
+
       {isEditing ? (
         <div className="mt-1" onClick={(e) => e.stopPropagation()}>
           <textarea
@@ -117,7 +131,7 @@ export const FileCommentCard: React.FC<{
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Escape') { e.preventDefault(); setIsEditing(false); }
-              else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveEdit(); }
+              else if (isCommentSubmitKey(e, enterSavesComment)) { e.preventDefault(); saveEdit(); }
             }}
             className="w-full min-h-[80px] resize-y rounded border border-border bg-background p-2 text-xs leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary/40"
             placeholder="File comment (markdown supported)…"
@@ -147,6 +161,7 @@ export const FileCommentCard: React.FC<{
           explainDisabled={explainDisabled}
           copyText={comment.text ? commentCopyText(comment) : undefined}
           onDelete={() => onDelete(comment.id)}
+          selected={isSelected}
         />
       )}
     </div>

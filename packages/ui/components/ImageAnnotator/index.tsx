@@ -2,8 +2,16 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Canvas } from './Canvas';
 import { Toolbar } from './Toolbar';
 import { renderStroke } from './utils';
-import type { Point, AnnotatorState } from './types';
-import { DEFAULT_STATE } from './types';
+import type { Point } from './types';
+import { useImageAnnotatorShortcuts } from '../../shortcuts';
+import {
+  DEFAULT_STROKE_HISTORY_STATE,
+  clearStrokeHistory,
+  recordStroke,
+  redoStroke,
+  undoStroke,
+  type StrokeHistoryState,
+} from './strokeHistory';
 
 interface ImageAnnotatorProps {
   imageSrc: string;
@@ -12,6 +20,14 @@ interface ImageAnnotatorProps {
   onClose: () => void;
   /** Pre-populated image name (derived from filename) */
   initialName?: string;
+  /**
+   * Optional: Escape cancels (closes without accepting) and a click outside
+   * closes only an empty drawing; Enter and the ✓ accept. Absent: Escape,
+   * Enter and a click outside all accept, exactly as before.
+   */
+  escapeCancels?: boolean;
+  /** Optional: the line under the image in place of "Press Esc or Enter or click outside to accept". */
+  hint?: React.ReactNode;
 }
 
 export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({
@@ -20,8 +36,10 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({
   onAccept,
   onClose,
   initialName = '',
+  escapeCancels = false,
+  hint,
 }) => {
-  const [state, setState] = useState<AnnotatorState>(DEFAULT_STATE);
+  const [state, setState] = useState<StrokeHistoryState>(DEFAULT_STROKE_HISTORY_STATE);
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState(initialName);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -30,50 +48,10 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({
   // Reset state when dialog opens
   useEffect(() => {
     if (isOpen) {
-      setState(DEFAULT_STATE);
+      setState(DEFAULT_STROKE_HISTORY_STATE);
       setName(initialName);
     }
   }, [isOpen, initialName]);
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't intercept when typing in the name input
-      const target = e.target as HTMLElement;
-      if (target.tagName === 'INPUT') {
-        if (e.key === 'Escape') {
-          // Blur and let the next Escape close
-          target.blur();
-          e.preventDefault();
-        }
-        return;
-      }
-
-      // Escape or Enter to accept
-      if (e.key === 'Escape' || e.key === 'Enter') {
-        e.preventDefault();
-        handleAccept();
-        return;
-      }
-
-      // Cmd+Z to undo
-      if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
-        e.preventDefault();
-        handleUndo();
-        return;
-      }
-
-      // 1/2/3 to switch tools
-      if (e.key === '1') setState(s => ({ ...s, tool: 'pen' }));
-      if (e.key === '2') setState(s => ({ ...s, tool: 'arrow' }));
-      if (e.key === '3') setState(s => ({ ...s, tool: 'circle' }));
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, state.strokes]);
 
   const handleStrokeStart = useCallback((point: Point) => {
     const id = crypto.randomUUID();
@@ -107,27 +85,20 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({
       if (!s.currentStroke || s.currentStroke.points.length < 2) {
         return { ...s, currentStroke: null };
       }
-      return {
-        ...s,
-        strokes: [...s.strokes, s.currentStroke],
-        currentStroke: null,
-      };
+      return recordStroke(s, s.currentStroke);
     });
   }, []);
 
   const handleUndo = useCallback(() => {
-    setState(s => ({
-      ...s,
-      strokes: s.strokes.slice(0, -1),
-    }));
+    setState(undoStroke);
+  }, []);
+
+  const handleRedo = useCallback(() => {
+    setState(redoStroke);
   }, []);
 
   const handleClear = useCallback(() => {
-    setState(s => ({
-      ...s,
-      strokes: [],
-      currentStroke: null,
-    }));
+    setState(clearStrokeHistory);
   }, []);
 
   const handleImageLoad = useCallback((img: HTMLImageElement) => {
@@ -159,7 +130,8 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({
 
       // Composite image + drawings
       const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d')!;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas 2D context is unavailable');
 
       canvas.width = img.naturalWidth;
       canvas.height = img.naturalHeight;
@@ -190,9 +162,37 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({
     }
   };
 
+  const keyboardTargetIsInput = (event: KeyboardEvent): boolean =>
+    event.composedPath()[0] instanceof HTMLInputElement;
+
+  useImageAnnotatorShortcuts({
+    handlers: {
+      penTool: { when: (event) => isOpen && !saving && !keyboardTargetIsInput(event), handle: () => setState((current) => ({ ...current, tool: 'pen' })) },
+      arrowTool: { when: (event) => isOpen && !saving && !keyboardTargetIsInput(event), handle: () => setState((current) => ({ ...current, tool: 'arrow' })) },
+      circleTool: { when: (event) => isOpen && !saving && !keyboardTargetIsInput(event), handle: () => setState((current) => ({ ...current, tool: 'circle' })) },
+      undo: {
+        when: (event) => isOpen && !saving && !keyboardTargetIsInput(event) && state.strokes.length > 0,
+        handle: handleUndo,
+      },
+      redo: {
+        when: (event) => isOpen && !saving && !keyboardTargetIsInput(event) && state.futureStrokes.length > 0,
+        handle: handleRedo,
+      },
+      save: {
+        when: (event) => isOpen && !saving && !keyboardTargetIsInput(event),
+        handle: (event) => {
+          if (escapeCancels && event.key === 'Escape') onClose();
+          else void handleAccept();
+        },
+      },
+    },
+  });
+
   const handleBackdropClick = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget) {
-      handleAccept();
+      // With escapeCancels, a click outside never takes a drawing away: it closes an empty one only.
+      if (!escapeCancels) handleAccept();
+      else if (state.strokes.length === 0) onClose();
     }
   };
 
@@ -200,24 +200,31 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-background/90 backdrop-blur-sm"
+      className="pn-visible-viewport-overlay z-[200] flex items-center justify-center bg-background/90 backdrop-blur-sm"
       data-popover-layer
       onClick={handleBackdropClick}
     >
       {/* Canvas with image and toolbar */}
-      <div className="relative flex flex-col items-center gap-3" onClick={(e) => e.stopPropagation()}>
+      <div
+        data-pn-image-annotator-stage
+        className="relative flex max-w-full flex-col items-center gap-3"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Toolbar - above image */}
         <Toolbar
           tool={state.tool}
           color={state.color}
           strokeSize={state.strokeSize}
           canUndo={state.strokes.length > 0}
+          canRedo={state.futureStrokes.length > 0}
           onToolChange={(tool) => setState(s => ({ ...s, tool }))}
           onColorChange={(color) => setState(s => ({ ...s, color }))}
           onStrokeSizeChange={(strokeSize) => setState(s => ({ ...s, strokeSize }))}
           onUndo={handleUndo}
+          onRedo={handleRedo}
           onClear={handleClear}
           onSave={handleAccept}
+          saveKey={escapeCancels ? 'Enter' : 'Escape'}
         />
 
         <Canvas
@@ -242,6 +249,11 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                  return;
+                }
                 if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   handleAccept();
@@ -254,8 +266,12 @@ export const ImageAnnotator: React.FC<ImageAnnotatorProps> = ({
         )}
 
         {/* Accept hint */}
-        <div className="text-xs text-muted-foreground">
-          Press <kbd className="px-1.5 py-0.5 bg-muted rounded text-foreground">Esc</kbd> or <kbd className="px-1.5 py-0.5 bg-muted rounded text-foreground">Enter</kbd> or click outside to accept
+        <div className="text-xs text-muted-foreground" data-pn-image-annotator-hint>
+          {hint ?? (
+            <>
+              Press <kbd className="px-1.5 py-0.5 bg-muted rounded text-foreground">Esc</kbd> or <kbd className="px-1.5 py-0.5 bg-muted rounded text-foreground">Enter</kbd> or click outside to accept
+            </>
+          )}
         </div>
       </div>
 

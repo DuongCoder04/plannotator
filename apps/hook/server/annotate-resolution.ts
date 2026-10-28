@@ -34,15 +34,18 @@ import {
 } from "@plannotator/shared/resolve-file";
 import { isConvertedSource, urlToMarkdown } from "@plannotator/shared/url-to-markdown";
 import { isLoopbackHostname } from "@plannotator/server/live-proxy";
+import type { AnnotateBundleFile } from "@plannotator/shared/annotate-bundle";
 import {
   LIVE_APP_REQUIRES_HTTP_MESSAGE,
   LIVE_APP_REQUIRES_LOOPBACK_MESSAGE,
   LIVE_APP_REQUIRES_URL_MESSAGE,
   buildForceAppFailureMessage,
+  buildLivePlannotatorFallbackNotice,
   buildLiveProbeFallbackNotice,
   classifyLiveAppCandidate,
   probeLiveAppTarget,
 } from "@plannotator/shared/live-probe";
+import { listPlannotatorServerPorts } from "@plannotator/shared/plannotator-ports";
 
 export interface AnnotateResolutionSuccess {
   ok: true;
@@ -50,7 +53,10 @@ export interface AnnotateResolutionSuccess {
   rawHtml?: string;
   absolutePath: string;
   folderPath?: string;
-  annotateMode: "annotate" | "annotate-folder";
+  /** `annotate-bundle` is built by the CLI's bundle rule, never by this pipeline. */
+  annotateMode: "annotate" | "annotate-folder" | "annotate-bundle";
+  /** Several files reviewed as one, in review order (annotate-bundle only). */
+  bundleFiles?: AnnotateBundleFile[];
   sourceInfo?: string;
   sourceConverted: boolean;
   isUrl: boolean;
@@ -148,9 +154,12 @@ export async function resolveAnnotateTarget(options: {
     }
 
     if (loopback && parsedUrl?.protocol === "http:" && !forceStatic) {
-      const probe = await probeLiveAppTarget(filePath, parsedUrl);
+      // Never a Plannotator server: the live proxy would give the proxied
+      // page same-origin writes on it (see live-proxy-core).
+      const probe = await probeLiveAppTarget(filePath, parsedUrl, fetch, {
+        plannotatorPorts: listPlannotatorServerPorts(),
+      });
       if (probe.liveEligible) {
-        log(`Live app: ${filePath}`);
         return {
           ok: true,
           markdown: "",
@@ -174,7 +183,9 @@ export async function resolveAnnotateTarget(options: {
       // behavior for dead URLs and JSON endpoints). A failed probe says so
       // first: a dev server still starting up probes as unreachable, and a
       // silent downgrade to static conversion reads as a broken live session.
-      if (probe.probeError !== null) {
+      if (probe.plannotator) {
+        log(buildLivePlannotatorFallbackNotice(filePath));
+      } else if (probe.probeError !== null) {
         log(buildLiveProbeFallbackNotice(filePath, probe.probeError));
       }
     }
@@ -303,7 +314,7 @@ export async function resolveAnnotateTarget(options: {
         message:
           `File type not supported: ${ext}\n` +
           `Supported types: ${buildAnnotatableExtensionsHint(extraMarkdownExtensions)}\n` +
-          `For code review, use: plannotator review [file]`,
+          `For code review, use: plannotator review [DIRECTORY]`,
       };
     }
     return {

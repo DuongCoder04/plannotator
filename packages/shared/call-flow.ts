@@ -4,6 +4,7 @@
  * CallDiff is a Node-native, synchronous Tree-sitter library. Plannotator runs
  * it in a short-lived Node 22 worker and never imports it into Bun or Pi.
  */
+import { childEnv } from "./child-env";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
@@ -23,6 +24,7 @@ import {
 } from "./call-flow-languages";
 import type { CallFlowLanguageDefinition, CallFlowLanguageId } from "./call-flow-languages";
 import { getPlannotatorDataDir } from "./data-dir";
+import { gitColorFreeEnvironment } from "./review-core";
 import { indexCallFlowImpacts, parseCallDiffWorkerResult } from "./call-flow-types";
 import type {
   CallFlowAdvert,
@@ -656,6 +658,9 @@ for (const file of request.files) mod.extractFunctions(file, "");
       maxOutputBytes: 1024 * 1024,
       env: {
         ...process.env,
+        // CallDiff runs git itself; keep a user's `color.diff = always` from
+        // wrapping its diff in ANSI escapes (#1661).
+        ...gitColorFreeEnvironment(process.env),
         PATH: `${npmBlocker.path}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
         CALLDIFF_GRAMMAR_CACHE: grammarCacheDir,
         npm_config_offline: "true",
@@ -974,6 +979,7 @@ async function runCommand(
         if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
         else if (process.platform === "win32" && child.pid) {
           const killed = spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
+            env: childEnv(),
             stdio: "ignore",
             windowsHide: true,
           });
@@ -1119,6 +1125,9 @@ async function executeWorker(
       signal,
       env: {
         ...process.env,
+        // CallDiff runs git itself; keep a user's `color.diff = always` from
+        // wrapping its diff in ANSI escapes (#1661).
+        ...gitColorFreeEnvironment(process.env),
         PATH: `${npmBlocker.path}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
         CALLDIFF_GRAMMAR_CACHE: runtime.grammarCacheDir,
         npm_config_offline: "true",

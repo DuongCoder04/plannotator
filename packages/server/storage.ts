@@ -5,6 +5,8 @@ export {
   saveAnnotations,
   saveFinalSnapshot,
   getHistoryDir,
+  resolveHistorySlug,
+  resolveHistoryChain,
   saveToHistory,
   getPlanVersion,
   getPlanVersionPath,

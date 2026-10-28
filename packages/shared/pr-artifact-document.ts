@@ -1,4 +1,5 @@
 import type { PRContext, PRMetadata, PRRuntime } from './pr-types';
+import { ghAccountTokenFor } from './pr-github-account';
 
 const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 const MAX_MEDIA_BYTES = 64 * 1024 * 1024;
@@ -179,12 +180,15 @@ function gitlabUploadApiUrl(
 
 function isProviderArtifactUrl(url: URL, metadata: PRMetadata): boolean {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+  // Bitbucket artifact documents are not supported yet: no URL is a provider artifact.
+  if (metadata.platform === 'bitbucket') return false;
   return metadata.platform === 'github'
     ? isGitHubArtifactHost(url, metadata)
     : isGitLabArtifactHost(url, metadata);
 }
 
 function providerContentUrl(url: URL, metadata: PRMetadata): URL {
+  if (metadata.platform === 'bitbucket') return url;
   if (metadata.platform === 'github') {
     const metadataOrigin = providerOrigin(metadata);
     if (isSameOrigin(url, metadataOrigin)) {
@@ -272,12 +276,18 @@ function mayFollowProviderRedirect(currentUrl: URL, nextUrl: URL): boolean {
 }
 
 async function providerAuthHeaders(runtime: PRRuntime, metadata: PRMetadata): Promise<Record<string, string>> {
+  // The review runs as another signed-in gh account (#2157): send its token, not the active one's.
+  if (metadata.platform === 'github') {
+    const chosen = ghAccountTokenFor(metadata);
+    if (chosen) return { Authorization: `Bearer ${chosen}` };
+  }
   const cacheKey = `${metadata.platform}:${metadata.host.toLowerCase()}`;
   const cached = providerAuthCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.promise;
 
   const promise = (async (): Promise<Record<string, string>> => {
     try {
+      if (metadata.platform === 'bitbucket') return {};
       const command = metadata.platform === 'github' ? 'gh' : 'glab';
       const args = metadata.platform === 'github'
         ? ['auth', 'token', '--hostname', metadata.host]
@@ -316,7 +326,9 @@ function shouldSendProviderAuth(url: URL, metadata: PRMetadata): boolean {
 function providerAuthRequiredError(metadata: PRMetadata): PRArtifactDocumentError {
   const loginHint = metadata.platform === 'github'
     ? `gh auth login --hostname ${metadata.host}`
-    : `glab auth login --hostname ${metadata.host}`;
+    : metadata.platform === 'bitbucket'
+      ? 'set PLANNOTATOR_BITBUCKET_TOKEN'
+      : `glab auth login --hostname ${metadata.host}`;
   return new PRArtifactDocumentError(
     `Artifact host requires authentication: run \`${loginHint}\``,
     401,
