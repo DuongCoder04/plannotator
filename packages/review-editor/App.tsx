@@ -62,7 +62,8 @@ import { useAIProviderActivation } from '@plannotator/ui/hooks/useAIProviderActi
 import { isSessionBridgeProvider } from '@plannotator/ui/utils/aiProvider';
 import type { SessionAskAction } from '@plannotator/ui/components/ai/SessionAskNotice';
 import { LookAndFeelAnnouncementDialog } from '@plannotator/ui/components/LookAndFeelAnnouncementDialog';
-import { markLookAndFeelChoiceResolved, planLookPrompt } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
+import { markLookAndFeelChoiceResolved, planLookAnsweredElsewhere, planLookPrompt } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
+import { usePlanLookAnsweredElsewhere } from '@plannotator/ui/hooks/usePlanLookAnsweredElsewhere';
 import { TerminalToolsAnnouncementDialog } from '@plannotator/ui/components/TerminalToolsAnnouncementDialog';
 import {
   markTerminalToolsAnnouncementSeen,
@@ -1224,11 +1225,23 @@ const ReviewApp: React.FC = () => {
   // The first-run chooser, or the one-time "moved to Clean" notice. Read once per page load.
   const [lookAndFeelPrompt] = useState(planLookPrompt);
   const [showLookAndFeel, setShowLookAndFeel] = useState(lookAndFeelPrompt !== null);
+  // Answered in another tab: adopt that look and write nothing, so this tab's
+  // preselected Clean can never overwrite a Grid picked there.
+  const adoptLookAnsweredElsewhere = useCallback((grid: boolean) => {
+    configStore.seed('gridEnabled', grid);
+    setShowLookAndFeel(false);
+  }, []);
+  usePlanLookAnsweredElsewhere(showLookAndFeel, adoptLookAnsweredElsewhere);
   const dismissLookAndFeel = useCallback(() => {
+    const answered = planLookAnsweredElsewhere();
+    if (answered !== null) {
+      adoptLookAnsweredElsewhere(answered);
+      return;
+    }
     configStore.set('gridEnabled', gridEnabled);
     markLookAndFeelChoiceResolved();
     setShowLookAndFeel(false);
-  }, [gridEnabled]);
+  }, [gridEnabled, adoptLookAnsweredElsewhere]);
   // One-time guided-review intro dialog + header Guide-button hint. The hint
   // (shimmer + dot) is independent of the dialog: it runs until the first
   // Guide click, even for users who dismissed the dialog without reading.

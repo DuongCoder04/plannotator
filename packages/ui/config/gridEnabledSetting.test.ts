@@ -127,6 +127,20 @@ describe('plan look by cookie state', () => {
     expect(load()).toEqual({ grid: true, prompt: null });
   });
 
+  test('every load rewrites a resolved v2, so it cannot expire before an older build\'s v1 marker and Grid', () => {
+    const values = installBackend({ [GRID]: 'true', [V2]: 'resolved', [V1]: 'true' });
+    const writes: string[] = [];
+    setStorageBackend({
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => { writes.push(key); values.set(key, value); },
+      removeItem: (key) => { values.delete(key); },
+    });
+    expect(load()).toEqual({ grid: true, prompt: null });
+    // Cookies last a year from their last write: the load wrote v2 again.
+    expect(writes).toContain(V2);
+    expect(values.get(V2)).toBe('resolved');
+  });
+
   test('resolving also writes the v1 marker, so older builds do not ask again', () => {
     const values = installBackend();
     markLookAndFeelChoiceResolved();

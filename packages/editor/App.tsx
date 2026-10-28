@@ -94,7 +94,8 @@ import type { SessionAskAction } from '@plannotator/ui/components/ai/SessionAskN
 import { useAIProviderConfig } from '@plannotator/ui/hooks/useAIProviderConfig';
 import { useDocumentTextSize } from '@plannotator/ui/hooks/useDocumentTextSize';
 import { useAIProviderActivation } from '@plannotator/ui/hooks/useAIProviderActivation';
-import { markLookAndFeelChoiceResolved, planLookPrompt } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
+import { markLookAndFeelChoiceResolved, planLookAnsweredElsewhere, planLookPrompt } from '@plannotator/ui/utils/lookAndFeelAnnouncement';
+import { usePlanLookAnsweredElsewhere } from '@plannotator/ui/hooks/usePlanLookAnsweredElsewhere';
 import { TerminalToolsAnnouncementDialog } from '@plannotator/ui/components/TerminalToolsAnnouncementDialog';
 import {
   markTerminalToolsAnnouncementSeen,
@@ -1284,13 +1285,25 @@ const App: React.FC = () => {
     markAgentToolAnnouncementSeen();
   }, [saveAgentTool]);
 
+  // Answered in another tab: adopt that look and write nothing, so this tab's
+  // preselected Clean can never overwrite a Grid picked there.
+  const adoptLookAnsweredElsewhere = useCallback((grid: boolean) => {
+    configStore.seed('gridEnabled', grid);
+    setShowLookAndFeelAnnouncement(false);
+  }, []);
+  usePlanLookAnsweredElsewhere(showLookAndFeelAnnouncement, adoptLookAnsweredElsewhere);
   const dismissLookAndFeelAnnouncement = useCallback(() => {
+    const answered = planLookAnsweredElsewhere();
+    if (answered !== null) {
+      adoptLookAnsweredElsewhere(answered);
+      return;
+    }
     // Persist even when the user accepts the displayed default without first
     // clicking its already-selected card, then record the explicit decision.
     configStore.set('gridEnabled', gridEnabled);
     markLookAndFeelChoiceResolved();
     setShowLookAndFeelAnnouncement(false);
-  }, [gridEnabled]);
+  }, [gridEnabled, adoptLookAnsweredElsewhere]);
 
   const handleAIChatToggle = useCallback(() => {
     if (isCompactTouchLayout) {

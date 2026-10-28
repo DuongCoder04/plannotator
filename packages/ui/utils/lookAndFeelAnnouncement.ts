@@ -53,17 +53,39 @@ export function migratePlanLookChoice(): void {
   }
 }
 
+/**
+ * The v2 marker after migration. A `resolved` read is written again: cookies
+ * last a year from their last write, and an older build can keep the v1
+ * marker and a stored Grid alive. If v2 expired first, the next load would
+ * move the person to Clean a second time.
+ */
+function readV2(): string | null {
+  migratePlanLookChoice();
+  const v2 = storage.getItem(V2_KEY);
+  if (v2 === 'resolved') storage.setItem(V2_KEY, 'resolved');
+  return v2;
+}
+
 /** True once the person picked Grid or Clean under the Clean default (chooser, notice or Settings). */
 export function isLookChoiceResolved(): boolean {
-  migratePlanLookChoice();
-  return storage.getItem(V2_KEY) === 'resolved';
+  return readV2() === 'resolved';
 }
 
 export function planLookPrompt(): PlanLookPrompt {
-  migratePlanLookChoice();
-  const v2 = storage.getItem(V2_KEY);
+  const v2 = readV2();
   if (v2 === 'resolved') return null;
   return v2 === 'notice' ? 'moved' : 'first-run';
+}
+
+/**
+ * The look another tab already chose, or null while the choice is still open.
+ * Two open tabs both show the chooser or notice; when one is answered, the
+ * other must adopt that answer, not write its own preselected Clean over a
+ * Grid picked in the first tab.
+ */
+export function planLookAnsweredElsewhere(): boolean | null {
+  if (storage.getItem(V2_KEY) !== 'resolved') return null;
+  return storage.getItem(GRID_KEY) === 'true';
 }
 
 export function needsLookAndFeelAnnouncement(): boolean {
