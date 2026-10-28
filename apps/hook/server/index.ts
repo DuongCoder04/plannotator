@@ -1142,6 +1142,7 @@ if (args[0] === "sessions") {
   // client's mount effects don't auto-switch the diff away from the flags.
   const openStatePinned = reviewArgs.base !== undefined || reviewArgs.diffType !== undefined;
   let initialBaseFromFlags: string | undefined;
+  let initialBaseExplicit = false;
 
   let rawPatch: string;
   let gitRef: string;
@@ -1452,6 +1453,7 @@ if (args[0] === "sessions") {
       // mixed-base review (wrong file-content fetches, wrong agent prompts).
       // Evolution diff opens on the change's previous state, not the line base.
       if (openState.requestedBase !== undefined || diffResult.diffType === "jj-evolog") initialBaseFromFlags = diffResult.base;
+      initialBaseExplicit = openState.requestedBase !== undefined;
       initialFileIdentities = diffResult.fileIdentities;
     } else {
       // Multi-repo workspace review has no base parameter — the open-state
@@ -1499,7 +1501,7 @@ if (args[0] === "sessions") {
     diffType: workspace ? (initialDiffType ?? workspace.diffType) : gitContext ? (initialDiffType ?? "unstaged") : initialDiffType,
     gitContext,
     initialBase: initialBaseFromFlags,
-    initialBaseExplicit: initialBaseFromFlags !== undefined,
+    initialBaseExplicit,
     openStatePinned,
     // `--no-git-remote-check` (#1553): session-only, and only ever a disable —
     // undefined leaves PLANNOTATOR_GIT_REMOTE_CHECK / config.gitRemoteCheck deciding.
@@ -2306,6 +2308,7 @@ if (args[0] === "sessions") {
   // `review` branch.
   const openStatePinned = reviewArgs.base !== undefined || reviewArgs.diffType !== undefined;
   let initialBaseFromFlags: string | undefined;
+  let initialBaseExplicit = false;
 
   let rawPatch: string;
   let gitRef: string;
@@ -2401,6 +2404,7 @@ if (args[0] === "sessions") {
       initialFingerprint = diffResult.fingerprint;
       // Evolution diff opens on the change's previous state, not the line base.
       if (openState.requestedBase !== undefined || diffResult.diffType === "jj-evolog") initialBaseFromFlags = diffResult.base;
+      initialBaseExplicit = openState.requestedBase !== undefined;
       initialFileIdentities = diffResult.fileIdentities;
     } else {
       await resolveCliReviewOpenState(reviewArgs, {
@@ -2448,7 +2452,7 @@ if (args[0] === "sessions") {
     diffType: isPRMode ? undefined : userDiffType,
     gitContext,
     initialBase: initialBaseFromFlags,
-    initialBaseExplicit: initialBaseFromFlags !== undefined,
+    initialBaseExplicit,
     openStatePinned,
     // `--no-git-remote-check` (#1553): session-only, and only ever a disable —
     // undefined leaves PLANNOTATOR_GIT_REMOTE_CHECK / config.gitRemoteCheck deciding.

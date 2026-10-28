@@ -124,6 +124,7 @@ export async function handleReviewCommand(
   // plugin's existing log path and refuse to start a session.
   const openStatePinned = reviewArgs.base !== undefined || reviewArgs.diffType !== undefined;
   let initialBaseFromFlags: string | undefined;
+  let initialBaseExplicit = false;
 
   let rawPatch: string;
   let gitRef: string;
@@ -236,6 +237,7 @@ export async function handleReviewCommand(
         // server serves this patch under the detected default: a mixed-base
         // review. Evolution diff opens on the change's previous state.
         if (openState.requestedBase !== undefined || diffResult.diffType === "jj-evolog") initialBaseFromFlags = diffResult.base;
+        initialBaseExplicit = openState.requestedBase !== undefined;
         initialFileIdentities = diffResult.fileIdentities;
       } catch (err) {
         client.app.log({ level: "error", message: err instanceof Error ? err.message : "Failed to prepare local review diff" });
@@ -284,7 +286,7 @@ export async function handleReviewCommand(
     diffType: isPRMode ? undefined : userDiffType,
     gitContext,
     initialBase: initialBaseFromFlags,
-    initialBaseExplicit: initialBaseFromFlags !== undefined,
+    initialBaseExplicit,
     openStatePinned,
     // `--no-git-remote-check` (#1553): session-only, and only ever a disable —
     // undefined leaves PLANNOTATOR_GIT_REMOTE_CHECK / config.gitRemoteCheck deciding.
