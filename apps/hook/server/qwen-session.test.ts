@@ -11,7 +11,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { QWEN_ASK_AI_SESSION_PREFIX } from "../../../packages/ai/providers/qwen-events.ts";
 import {
+  QWEN_ASK_AI_CHAT_PREFIX,
   findQwenSessionLog,
   getQwenProjectsDir,
   getRecentQwenMessages,
@@ -124,6 +126,18 @@ describe("findQwenSessionLog", () => {
       projectsDir,
     });
     expect(found).toBe(a);
+  });
+
+  test("the fallback skips Ask AI chats, even when one is newer", () => {
+    const projectsDir = makeProjectsDir();
+    const slug = sanitizeQwenCwd("/work/project");
+    const own = writeChatLog(projectsDir, slug, "1f0e2d3c-0000-4000-8000-000000000001.jsonl", assistantLine("u1", [{ text: "mine" }]));
+    utimesSync(own, 100, 100);
+    const ask = writeChatLog(projectsDir, slug, `${QWEN_ASK_AI_SESSION_PREFIX}-0000-4000-8000-000000000002.jsonl`, assistantLine("u2", [{ text: "ask" }]));
+    utimesSync(ask, 200, 200);
+    expect(findQwenSessionLog({ env: {}, cwd: "/work/project", projectsDir })).toBe(own);
+    // The hook's copy of the prefix is the one the Ask AI provider uses.
+    expect(QWEN_ASK_AI_CHAT_PREFIX).toBe(QWEN_ASK_AI_SESSION_PREFIX);
   });
 
   test("returns null when the project has no chat", () => {
