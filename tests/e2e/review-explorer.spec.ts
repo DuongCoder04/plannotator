@@ -30,6 +30,7 @@ const proofDir = join(resolve(process.env.PLANNOTATOR_E2E_PROOF_DIR ?? join(repo
 const FIRST_RUN: Record<string, string> = {
   'plannotator-announce-agent-tool-seen': '1',
   'plannotator-announce-ask-session-seen': '1',
+  'plannotator-announce-inbox-seen': '1',
   'plannotator-announce-tui-herdr-seen': '1',
   'plannotator-auto-viewed-notice-seen': '1',
   'plannotator-edit-mode-announcement-seen': '3',
