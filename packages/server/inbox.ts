@@ -123,6 +123,7 @@ import {
 import {
   createInboxToken,
   inboxRegistryPath,
+  isOwnDataDir,
   probeInboxData,
   readInboxRegistry,
   writeInboxRegistry,
@@ -160,6 +161,7 @@ import { createInboxCompose, INBOX_UPLOAD_SWEEP_MS } from "./inbox-compose";
 import { createInboxAcpRunner, type InboxAcpRunnerOptions } from "./inbox-acp-runner";
 import { createInboxReplyDrafts } from "./inbox-reply-drafts";
 import { createInboxPins } from "./inbox-pins";
+import { createInboxFeedback, INBOX_FEEDBACK_PATH } from "./inbox-feedback";
 import { forgeCardRefResolver, resolveInboxCardRefs } from "./inbox-card-refs";
 import { createCardMarks } from "./inbox-card-marks";
 import { isInboxBoardSeq, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
@@ -292,6 +294,11 @@ export interface InboxServerOptions {
    * tests): `/` answers a one-line page saying so.
    */
   htmlContent?: string;
+  /**
+   * Tests: where the Feedback dialog's send goes (inbox-feedback.ts). Default:
+   * `PLANNOTATOR_FEEDBACK_URL`, else the feedback Worker's constant URL.
+   */
+  feedbackUrl?: string;
   /** Tests: how long a window's record outlives its last event stream (default `WINDOW_GRACE_MS`). */
   windowGraceMs?: number;
   /** Tests: the clock (epoch ms) send_message's "not read since" line reads (packages/server/inbox-session-reads.ts). Default: the wall clock. */
@@ -2234,6 +2241,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   });
   // Pins: threads pinned to the window's sidebar (packages/server/inbox-pins.ts). A deletion's prune tells the windows too.
   const pins = createInboxPins({ store, serverSession, readBody: (req) => readBody(req), json });
+  // The sidebar's Feedback dialog: forwards what the person typed to the feedback Worker (inbox-feedback.ts).
+  const feedback = createInboxFeedback({ version, json, ...(options.feedbackUrl ? { url: () => options.feedbackUrl! } : {}) });
   const stopPinEvents = store.onPinsChange(() => {
     for (const listener of pinListeners) listener();
   });
@@ -2340,6 +2349,15 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       }
       if (path === "/api/inbox/control/stop") {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+        // `plannotator inbox stop` names its data dir: a copied data dir's record names this
+        // Inbox too, and its stop must not end this one. No body (an older CLI) stops, as before.
+        const request = (await req.json().catch(() => null)) as { data_dir?: unknown } | null;
+        if (typeof request?.data_dir === "string" && !isOwnDataDir(dataDir, request.data_dir)) {
+          return json({ error: "This Inbox runs on another data dir.", code: "not_ours" }, 409);
+        }
+        // Read before the stop: `plannotator inbox restart` passes a run published only by
+        // `--tailscale` on to the next start, as the window's Restart does (additive).
+        const tailscaleRunOnly = tailscale.runOnly();
         if (!stopRequested) {
           stopRequested = true;
           setTimeout(() => {
@@ -2347,7 +2365,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
             options.onStopRequested?.();
           }, 50);
         }
-        return json({ ok: true, stopping: true });
+        return json({ ok: true, stopping: true, tailscale_run_only: tailscaleRunOnly });
       }
       // `plannotator inbox --tailscale` while this Inbox runs: publish for this run.
       if (path === "/api/inbox/control/tailscale") {
@@ -2421,7 +2439,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (!isSameOriginOrNoOrigin(origin, req.headers.get("host") ?? "", req.headers.get("sec-fetch-site"))) {
           return json({ error: "Cross-origin requests are not accepted.", code: "cross_origin" }, 403);
         }
-        return json({ serverSession, cursor: store.cursor(), decisions: store.openDecisions({ projectId: projectFilterOf(url) }) });
+        // Each decision's project carries its repo (as a thread does), so refs on its card link there.
+        const decisions = store.openDecisions({ projectId: projectFilterOf(url) }).map((decision) => {
+          const root = store.project(decision.thread.project.id)?.root;
+          return { ...decision, thread: { ...decision.thread, project: { ...decision.thread.project, repo: root ? repos.get(root) : null } } };
+        });
+        return json({ serverSession, cursor: store.cursor(), decisions });
       }
       if (path === "/api/inbox/projects" && req.method === "GET") return json({ serverSession, cursor: store.cursor(), projects: projectFolders() });
       // A hover card's data for an issue, PR or MR link (ref-cards.ts). Read only, the window's own
@@ -2667,6 +2690,13 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       // Pins (approval "inbox-pinned-threads"): pin, unpin and the order of the sidebar's pinned threads.
       const pinned = await pins.route(req, url);
       if (pinned) return pinned;
+      // Feedback (the sidebar's Feedback dialog): sent on, never stored here. The owner's only: a
+      // tailnet guest's words would go out as this computer's (its version, OS, IP and rate limit).
+      if (path === INBOX_FEEDBACK_PATH && via === "tailnet" && !tailscale.isOwnerRequest(req.headers)) {
+        throw new InboxError("owner_only", "Only this computer's owner can send feedback from this Inbox.");
+      }
+      const fed = await feedback.route(req, path);
+      if (fed) return fed;
 
       // The Board's cards (approval "inbox-board", step 1): the person's read and moves.
       if (path === "/api/inbox/cards") {
@@ -2777,10 +2807,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       if (cardMatch && req.method === "GET") {
         const refused = crossSiteCardRead(req);
         if (refused) return refused;
-        // The opened card: the card and its history, newest first.
+        // The opened card: the card and its history, newest first, and (additive) its own
+        // project's repo, so `#123` and `owner/repo#123` in its text link as in a thread.
         const card = store.card(cardMatch[1]!);
         if (!card) throw new InboxError("card_not_found", `No card ${cardMatch[1]}.`);
-        return json({ serverSession, card: store.cardWire(card), history: store.cardHistory(card.id) });
+        const root = store.project(card.project_id)?.root;
+        return json({ serverSession, card: store.cardWire(card), history: store.cardHistory(card.id), repo: root ? repos.get(root) : null });
       }
       if (cardMatch) {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);

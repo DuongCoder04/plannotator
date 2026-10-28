@@ -146,6 +146,7 @@ jobs:
           packages/inbox/inlineImages.test.tsx
           packages/inbox/refusedImages.test.tsx
           packages/inbox/codeAttachment.test.tsx
+          packages/inbox/copyFile.test.tsx
           packages/inbox/fileViewClean.test.tsx
           packages/inbox/links.test.tsx
           packages/inbox/issueRefs.test.tsx
@@ -160,9 +161,11 @@ jobs:
           packages/inbox/decisionMode.test.tsx
           packages/inbox/decisionCardContract.test.tsx
           packages/inbox/threadFolding.test.tsx
+          packages/inbox/choiceLabels.test.tsx
           packages/inbox/pasteTarget.test.ts
           packages/inbox/seenOnSight.test.tsx
           packages/inbox/projectList.test.tsx
+          packages/inbox/rowBadges.test.tsx
           packages/inbox/softQuietRows.test.tsx
           packages/inbox/sidebarQuiet.test.tsx
           packages/inbox/leakedSubject.test.tsx
@@ -247,6 +250,7 @@ jobs:
           packages/inbox/commentSubmitKey.test.tsx
           packages/inbox/skillReferences.test.tsx
           packages/inbox/messageComments.test.tsx
+          packages/inbox/feedbackDialog.test.tsx
           packages/ui/components/HumanOnlySkillNotice.test.tsx
           packages/ui/components/MenuVersionSection.test.tsx
           packages/ui/components/blocks/QuestionBlock.test.tsx
@@ -283,6 +287,7 @@ jobs:
           packages/review-editor/App.guideViewed.test.tsx
           packages/review-editor/App.commitsJj.test.tsx
           packages/review-editor/App.emptyDiffSwitch.test.tsx
+          packages/review-editor/App.planLookTwoTabs.test.tsx
           packages/review-editor/components/AnnotationToolbar.placement.test.tsx
           packages/review-editor/dock/panels/ReviewPROverviewPanel.ui.test.tsx
           packages/review-editor/components/FileHeader.edit.test.tsx
@@ -441,6 +446,8 @@ jobs:
           packages/ui/components/Settings.customFont.test.tsx
           packages/ui/components/Settings.documentTextSize.test.tsx
           packages/ui/components/Settings.experimental.test.tsx
+          packages/ui/components/Settings.gridChoice.test.tsx
+          packages/editor/App.planLookNotice.test.tsx
           packages/ui/config/documentTextSizeSetting.test.ts
           packages/ui/utils/diffFonts.test.ts
           packages/ui/components/Settings.agentTool.test.tsx
