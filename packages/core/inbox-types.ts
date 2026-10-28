@@ -1904,10 +1904,14 @@ export type InboxToolCostHost = "pi" | "opencode";
  * 2026-10-28: Mermaid and Graphviz diagrams, live HTML pages): one sentence,
  * measured on Pi with the ref rule in, 9,848 bytes (+257, about +65 tokens).
  * With the Board on 11,267 (11,009 + 258, estimated).
+ * Then T3 Code's height rule in that sentence ("Let content set its
+ * height: no vh units or height:100% on html or body"): measured on Pi, 9,920
+ * bytes (+72, about +18 tokens, so the rounded token figure stands). With the
+ * Board on 11,339 (11,267 + 72, estimated).
  */
-const INBOX_TOOL_COST_NOW = { bytes: 9848, tokens: 2700 };
+const INBOX_TOOL_COST_NOW = { bytes: 9920, tokens: 2700 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
-export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 11267, tokens: 3100 } as const;
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 11339, tokens: 3100 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,

@@ -60,7 +60,7 @@ export const EMBED_RESPONSE_CSP = [
 export const EMBED_MAX_BYTES = 512 * 1024;
 
 /** The tallest an embed reports itself; a page that keeps growing stops here. */
-export const EMBED_MAX_HEIGHT = 40_000;
+export const EMBED_MAX_HEIGHT = 20_000;
 
 /**
  * The host's theme tokens an embed receives as CSS variables of the same
