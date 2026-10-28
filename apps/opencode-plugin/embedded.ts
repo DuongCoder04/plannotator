@@ -1,4 +1,14 @@
 import { recoverNativeFetchConstructors } from "./fetch-shim";
+import {
+  waitForPlanReviewCloseDelay,
+  waitForPlanReviewDecision,
+} from "@plannotator/shared/plan-review-lifecycle";
+import {
+  getAnnotateApprovedWithNotesPrompt,
+  getAnnotateMessageFeedbackPrompt,
+} from "@plannotator/shared/prompts";
+import { deliverOpenCodePrompt } from "./prompt-delivery-error";
+import type { SessionBridge } from "@plannotator/ai/session-bridge";
 
 export interface EmbeddedPlanReviewInput {
   client: any;
@@ -8,7 +18,12 @@ export interface EmbeddedPlanReviewInput {
   pasteApiUrl?: string;
   htmlContent: string;
   timeoutSeconds: number | null;
+  abortSignal?: AbortSignal;
   logReady: (url: string, isRemote: boolean, port: number) => void;
+  /** "Ask this session": in-process bridge to the session (quick answers while the plan waits). */
+  sessionBridge?: SessionBridge;
+  /** The host can register the `plannotator` tool: serverConfig advertises its switch. */
+  opencodeToolCapable?: boolean;
 }
 
 export interface EmbeddedPlanReviewResult {
@@ -16,6 +31,7 @@ export interface EmbeddedPlanReviewResult {
   feedback?: string;
   savedPath?: string;
   agentSwitch?: string;
+  answersOnly?: boolean;
 }
 
 async function loadPlanServer() {
@@ -28,9 +44,41 @@ async function loadCommandHandlers() {
   return await import("./commands");
 }
 
+export async function deliverEmbeddedAnnotateMessagePrompt(input: {
+  client: any;
+  sessionId: string;
+  approved: boolean;
+  feedback: string;
+  /** The agent that wrote the annotated message, when known and addressable (#1612). */
+  agent?: string;
+}): Promise<void> {
+  const text = input.approved
+    ? getAnnotateApprovedWithNotesPrompt("opencode", undefined, {
+        feedback: input.feedback,
+      })
+    : getAnnotateMessageFeedbackPrompt("opencode", undefined, {
+        feedback: input.feedback,
+      });
+
+  await deliverOpenCodePrompt({
+    client: input.client,
+    prompt: {
+      path: { id: input.sessionId },
+      body: {
+        ...(input.agent && { agent: input.agent }),
+        parts: [{ type: "text", text }],
+      },
+    },
+    failureMessage: input.approved
+      ? "Could not deliver approved annotation notes to the OpenCode session."
+      : "Could not deliver annotation feedback to the OpenCode session.",
+  });
+}
+
 export async function runEmbeddedPlanReview(
   input: EmbeddedPlanReviewInput,
 ): Promise<EmbeddedPlanReviewResult> {
+  input.abortSignal?.throwIfAborted();
   const { startPlannotatorServer, handleServerReady } = await loadPlanServer();
   const server = await startPlannotatorServer({
     plan: input.planContent,
@@ -40,34 +88,37 @@ export async function runEmbeddedPlanReview(
     pasteApiUrl: input.pasteApiUrl,
     htmlContent: input.htmlContent,
     opencodeClient: input.client,
+    sessionBridge: input.sessionBridge,
+    // submit_plan's executor delivers an approval's feedback as the
+    // approved-with-notes prompt.
+    approvalNotesSupported: true,
+    ...(input.opencodeToolCapable ? { opencodeToolCapable: true } : {}),
     onReady: async (url, isRemote, port) => {
-      await handleServerReady(url, isRemote, port);
+      // announce: false. This runs in OpenCode's own process, sharing stderr
+      // with its TUI renderer, and input.logReady already shows the URL (a
+      // toast on OpenCode 1, a transcript notice on OpenCode 2).
+      await handleServerReady(url, isRemote, port, { announce: false });
       input.logReady(url, isRemote, port);
     },
   });
 
   const timeoutMs = input.timeoutSeconds === null ? null : input.timeoutSeconds * 1000;
-  const result = timeoutMs === null
-    ? await server.waitForDecision()
-    : await new Promise<Awaited<ReturnType<typeof server.waitForDecision>>>((resolve) => {
-        const timeoutId = setTimeout(
-          () =>
-            resolve({
-              approved: false,
-              feedback: `[Plannotator] No response within ${input.timeoutSeconds} seconds. Port released automatically. Please call submit_plan again.`,
-            }),
-          timeoutMs,
-        );
+  try {
+    const result = await waitForPlanReviewDecision({
+      waitForDecision: server.waitForDecision,
+      timeoutMs,
+      timeoutResult: {
+        approved: false,
+        feedback: `[Plannotator] No response within ${input.timeoutSeconds} seconds. Port released automatically. Please call submit_plan again.`,
+      },
+      signal: input.abortSignal,
+    });
 
-        server.waitForDecision().then((decision) => {
-          clearTimeout(timeoutId);
-          resolve(decision);
-        });
-      });
-
-  await Bun.sleep(1500);
-  server.stop();
-  return result;
+    await waitForPlanReviewCloseDelay(1500, input.abortSignal);
+    return result;
+  } finally {
+    await server.stop();
+  }
 }
 
 export async function handleEmbeddedCommand(
@@ -77,12 +128,13 @@ export async function handleEmbeddedCommand(
     client: any;
     htmlContent: string;
     reviewHtmlContent: string;
+    reviewDiagramEngineDir?: string;
     getSharingEnabled: () => Promise<boolean>;
     getShareBaseUrl: () => string | undefined;
     getPasteApiUrl: () => string | undefined;
     directory?: string;
   },
-): Promise<{ feedback?: string | null }> {
+): Promise<{ approved?: boolean; feedback?: string | null; agent?: string }> {
   const {
     handleReviewCommand,
     handleAnnotateCommand,
@@ -90,7 +142,7 @@ export async function handleEmbeddedCommand(
   } = await loadCommandHandlers();
 
   if (command === "plannotator-last") {
-    return { feedback: await handleAnnotateLastCommand(event, deps) };
+    return await handleAnnotateLastCommand(event, deps) ?? {};
   }
 
   if (command === "plannotator-annotate") {

@@ -2,7 +2,9 @@ import {
   createDoubleTapShortcutsHook,
   createShortcutRegistry,
   createShortcutScopeHook,
+  decisionControlShortcuts,
   defineShortcutScope,
+  historyShortcuts,
   reviewAiShortcuts,
   reviewAllFilesDiffShortcuts,
   reviewAnnotationToolbarShortcuts,
@@ -10,6 +12,7 @@ import {
   reviewPrCommentsShortcuts,
   reviewSuggestionModalShortcuts,
   reviewTourDialogShortcuts,
+  reviewMarkdownPreviewShortcuts,
   type ShortcutSurface,
 } from '@plannotator/ui/shortcuts';
 
@@ -18,10 +21,17 @@ export const reviewEditorShortcuts = defineShortcutScope({
   title: 'Review Editor',
   shortcuts: {
     submit: {
-      description: 'Approve / Send feedback',
+      description: 'Approve / Send feedback, whichever the header shows',
       bindings: ['Mod+Enter'],
       section: 'Actions',
+      hint: 'Fires the adaptive header primary: Approve with no annotations, Send Feedback otherwise.',
       displayOrder: 10,
+    },
+    copyFeedback: {
+      description: 'Copy feedback to clipboard',
+      bindings: ['Mod+Shift+Y'],
+      section: 'Actions',
+      displayOrder: 20,
     },
     focusSearch: {
       description: 'Focus search',
@@ -95,6 +105,20 @@ export const reviewEditorShortcuts = defineShortcutScope({
       hint: 'Available when staging is supported (not in PR review mode).',
       displayOrder: 20,
     },
+    nextChange: {
+      description: 'Next change',
+      bindings: ['N'],
+      section: 'File Navigation',
+      hint: 'Scrolls to the next run of changed lines: in the open file, or in All files across the expanded files. Collapsed files and Markdown files shown rendered are skipped.',
+      displayOrder: 50,
+    },
+    prevChange: {
+      description: 'Previous change',
+      bindings: ['Shift+N'],
+      section: 'File Navigation',
+      hint: 'Scrolls to the previous run of changed lines.',
+      displayOrder: 60,
+    },
   },
 });
 
@@ -103,8 +127,11 @@ export const useReviewEditorDoubleTap = createDoubleTapShortcutsHook(reviewEdito
 
 export const reviewSettingsShortcutRegistry = createShortcutRegistry([
   reviewEditorShortcuts,
+  decisionControlShortcuts,
+  historyShortcuts,
   reviewFileTreeShortcuts,
   reviewAllFilesDiffShortcuts,
+  reviewMarkdownPreviewShortcuts,
   reviewAnnotationToolbarShortcuts,
   reviewSuggestionModalShortcuts,
   reviewAiShortcuts,

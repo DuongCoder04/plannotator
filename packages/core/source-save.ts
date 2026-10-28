@@ -1,4 +1,4 @@
-export type SourceSaveLanguage = "markdown" | "mdx" | "text" | "asciidoc";
+export type SourceSaveLanguage = "markdown" | "mdx" | "text";
 
 export type SourceSaveDisabledReason =
 	| "not-annotate-mode"
@@ -49,6 +49,8 @@ export interface SourceSaveRequest {
 	baseMtimeMs?: number;
 	baseEol?: SourceFileEol;
 	allowMissingBase?: boolean;
+	/** The stale-tab guard's nonce (server-session.ts); absent from older clients. */
+	serverSession?: string;
 }
 
 export type SourceSaveResponse =
@@ -75,6 +77,25 @@ export type SourceSaveResponse =
 			message: string;
 	  };
 
+/**
+ * The refusal a source save gets once the review is decided (feedback,
+ * approve, Close, or the agent's close), answered with status 409: a tab left
+ * open after the decision can no longer write the reviewer's files.
+ */
+export function sourceSaveDecidedResponse(): SourceSaveResponse & { decided: true } {
+	return {
+		ok: false,
+		code: "not-writable",
+		decided: true,
+		message: "This review is already decided, so the file was not saved.",
+	};
+}
+
+/** The refusal a cross-origin source save gets (status 403). */
+export function sourceSaveCrossOriginResponse(): SourceSaveResponse {
+	return { ok: false, code: "not-writable", message: "Cross-origin source saves are not allowed." };
+}
+
 export type SourceSaveConflictResponse = Extract<SourceSaveResponse, { ok: false; code: "conflict" }>;
 
 export function isSourceFileEol(value: unknown): value is SourceFileEol {
@@ -93,7 +114,7 @@ export function hasSourceSaveConflictSnapshot(response: SourceSaveResponse): res
 	);
 }
 
-export const SOURCE_SAVE_FILE_REGEX = /\.(md|mdx|txt|adoc|asciidoc)$/i;
+export const SOURCE_SAVE_FILE_REGEX = /\.(md|mdx|txt)$/i;
 
 export function isSourceSaveFilePath(filePath: string): boolean {
 	return SOURCE_SAVE_FILE_REGEX.test(filePath);
@@ -104,7 +125,6 @@ export function getSourceSaveLanguage(filePath: string): SourceSaveLanguage | nu
 	if (lower.endsWith(".mdx")) return "mdx";
 	if (lower.endsWith(".md")) return "markdown";
 	if (lower.endsWith(".txt")) return "text";
-	if (lower.endsWith(".adoc") || lower.endsWith(".asciidoc")) return "asciidoc";
 	return null;
 }
 

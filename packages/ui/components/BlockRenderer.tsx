@@ -1,13 +1,29 @@
 import React from "react";
-import { Block } from "../types";
+import type { Block } from "../types";
 import { InlineMarkdown } from "./InlineMarkdown";
 import { ListItemBody } from "./ListItemBody";
 import { CodeBlock } from "./blocks/CodeBlock";
 import { HtmlBlock } from "./blocks/HtmlBlock";
 import { Callout } from "./blocks/Callout";
 import { AlertBlock } from "./blocks/AlertBlock";
+import { BlockquoteBlock } from "./blocks/BlockquoteBlock";
 import { TableBlock } from "./blocks/TableBlock";
 import { MathBlock } from "./blocks/MathBlock";
+import { QuestionBlock, type QuestionBlockProps } from "./blocks/QuestionBlock";
+import {
+  indexQuestionBlocks,
+  isQuestionDirectiveKind,
+  type IndexedQuestion,
+  type QuestionAnswer,
+} from "@plannotator/core/question-block";
+
+/** A question block rendered outside a Viewer's document index (plan diff,
+ *  other markdown surfaces): parsed alone, unnumbered. Its contract lines
+ *  show as context unless the host asks for them (`questionContractLines`). */
+const standaloneQuestion = (block: Block, contractLines: boolean): IndexedQuestion | undefined => {
+  const [indexed] = indexQuestionBlocks([block], { contractLines });
+  return indexed ? { ...indexed, number: 0 } : undefined;
+};
 
 export const BlockRenderer: React.FC<{
   block: Block;
@@ -19,9 +35,46 @@ export const BlockRenderer: React.FC<{
   checkboxOverrides?: Map<string, boolean>;
   orderedIndex?: number | null;
   githubRepo?: string;
+  repoHost?: string;
   headingAnchorId?: string;
   onNavigateAnchor?: (hash: string) => void;
-}> = ({ block, onOpenLinkedDoc, onOpenCodeFile, imageBaseDir, onImageClick, onToggleCheckbox, checkboxOverrides, orderedIndex, githubRepo, headingAnchorId, onNavigateAnchor }) => {
+  /** `:::question` blocks: this block's entry in the document's question
+   *  index (numbering, key, prompt line) and the document's question count.
+   *  Absent, a question block is parsed on its own and shows no "N of M". */
+  question?: IndexedQuestion;
+  questionTotal?: number;
+  /** The answer to draw (from the annotation carrying `questionAnswer`). */
+  questionAnswer?: QuestionAnswer;
+  /** Absent: question blocks render read-only. */
+  onAnswerQuestion?: (blockId: string, answer: QuestionAnswer | null, key: string) => void;
+  /** Explicit save mode for question cards (see `QuestionBlock`). */
+  onSaveQuestionAnswer?: QuestionBlockProps['onSaveAnswer'];
+  /** Label of the explicit-save-mode Save button (see `QuestionBlock`). */
+  saveQuestionAnswerLabel?: QuestionBlockProps['saveLabel'];
+  /** Host actions in a question card's footer (see `QuestionBlock`). */
+  renderQuestionFooter?: QuestionBlockProps['renderFooter'];
+  /** Whether answering this question records a decision (see `QuestionBlock`). */
+  questionDecisionRecording?: QuestionBlockProps['decisionRecording'];
+  /** `'any'` lets a question without a decision line carry the tag (see `QuestionBlock`). */
+  questionDecisionScope?: QuestionBlockProps['decisionScope'];
+  /** Makes the "Records a decision" tag a toggle (see `QuestionBlock`). */
+  onToggleQuestionDecisionRecording?: QuestionBlockProps['onToggleDecisionRecording'];
+  /** Opens the host's decision card from the tag's words (see `QuestionBlock`). */
+  onOpenQuestionDecision?: QuestionBlockProps['onOpenDecision'];
+  /** `'none'` hides the card's own status tag (see `QuestionBlock`). */
+  questionStatusTag?: QuestionBlockProps['statusTag'];
+  /** The host's words for a question's status tag (see `QuestionBlock`). */
+  questionStatusLabel?: QuestionBlockProps['statusLabel'];
+  /** Host content under a question's prompt (see `QuestionBlock`). */
+  renderQuestionBelowPrompt?: QuestionBlockProps['renderBelowPrompt'];
+  /** Read a standalone question's contract lines into the card (default
+   *  false: context). A `question` the host passes was parsed by the host. */
+  questionContractLines?: boolean;
+  /** Picture choices as tiles (see `QuestionBlock` `pictureChoices`). */
+  questionPictureChoices?: QuestionBlockProps['pictureChoices'];
+  /** A label over each picture tile (see `QuestionBlock` `pictureBadge`). */
+  questionPictureBadge?: QuestionBlockProps['pictureBadge'];
+}> = ({ block, onOpenLinkedDoc, onOpenCodeFile, imageBaseDir, onImageClick, onToggleCheckbox, checkboxOverrides, orderedIndex, githubRepo, repoHost, headingAnchorId, onNavigateAnchor, question, questionTotal, questionAnswer, onAnswerQuestion, onSaveQuestionAnswer, saveQuestionAnswerLabel, renderQuestionFooter, questionDecisionRecording, questionDecisionScope, onToggleQuestionDecisionRecording, onOpenQuestionDecision, questionStatusTag, questionStatusLabel, renderQuestionBelowPrompt, questionContractLines = false, questionPictureChoices, questionPictureBadge }) => {
   switch (block.type) {
     case 'heading': {
       const Tag = `h${block.level || 1}` as React.ElementType;
@@ -37,7 +90,7 @@ export const BlockRenderer: React.FC<{
           data-block-id={block.id}
           data-block-type="heading"
         >
-          <InlineMarkdown imageBaseDir={imageBaseDir} onImageClick={onImageClick} text={block.content} onOpenLinkedDoc={onOpenLinkedDoc} onOpenCodeFile={onOpenCodeFile} githubRepo={githubRepo} onNavigateAnchor={onNavigateAnchor} />
+          <InlineMarkdown imageBaseDir={imageBaseDir} onImageClick={onImageClick} text={block.content} onOpenLinkedDoc={onOpenLinkedDoc} onOpenCodeFile={onOpenCodeFile} githubRepo={githubRepo} repoHost={repoHost} onNavigateAnchor={onNavigateAnchor} />
         </Tag>
       );
     }
@@ -54,24 +107,24 @@ export const BlockRenderer: React.FC<{
             imageBaseDir={imageBaseDir}
             onImageClick={onImageClick}
             githubRepo={githubRepo}
+            repoHost={repoHost}
             onNavigateAnchor={onNavigateAnchor}
           />
         );
       }
-      // Content may span multiple merged `>` lines. Split on blank-line
-      // paragraph breaks so `> a\n>\n> b` renders as two <p> children.
-      const paragraphs = block.content.split(/\n\n+/);
+      // One quote whatever it holds: its content is the quote's own markdown
+      // (paragraphs, code fences, lists, nested quotes), see BlockquoteBlock.
       return (
-        <blockquote
-          className="border-l-2 border-primary/50 pl-4 my-4 text-muted-foreground italic"
-          data-block-id={block.id}
-        >
-          {paragraphs.map((para, i) => (
-            <p key={i} className={i > 0 ? 'mt-2' : ''}>
-              <InlineMarkdown imageBaseDir={imageBaseDir} onImageClick={onImageClick} text={para} onOpenLinkedDoc={onOpenLinkedDoc} onOpenCodeFile={onOpenCodeFile} githubRepo={githubRepo} onNavigateAnchor={onNavigateAnchor} />
-            </p>
-          ))}
-        </blockquote>
+        <BlockquoteBlock
+          block={block}
+          onOpenLinkedDoc={onOpenLinkedDoc}
+          onOpenCodeFile={onOpenCodeFile}
+          imageBaseDir={imageBaseDir}
+          onImageClick={onImageClick}
+          githubRepo={githubRepo}
+          repoHost={repoHost}
+          onNavigateAnchor={onNavigateAnchor}
+        />
       );
     }
 
@@ -83,11 +136,15 @@ export const BlockRenderer: React.FC<{
         : block.checked;
       const isInteractive = isCheckbox && !!onToggleCheckbox;
       const textClass = `text-sm leading-relaxed ${isCheckbox && isChecked ? 'text-muted-foreground line-through' : 'text-foreground/90'}`;
-      const inlineProps = { imageBaseDir, onImageClick, onOpenLinkedDoc, onOpenCodeFile, githubRepo, onNavigateAnchor };
+      const inlineProps = { imageBaseDir, onImageClick, onOpenLinkedDoc, onOpenCodeFile, githubRepo, repoHost, onNavigateAnchor };
       return (
         <div
           className="flex items-start gap-3 my-1.5"
           data-block-id={block.id}
+          data-rich-list-level={block.level || 0}
+          data-rich-list-kind={block.ordered ? 'ol' : 'ul'}
+          data-rich-list-index={orderedIndex ?? undefined}
+          data-rich-list-checked={isCheckbox ? String(isChecked) : undefined}
           style={{ marginLeft: `${indent}rem` }}
         >
           <ListItemBody
@@ -106,7 +163,7 @@ export const BlockRenderer: React.FC<{
     }
 
     case 'code':
-      return <CodeBlock block={block} onHover={() => {}} onLeave={() => {}} isHovered={false} />;
+      return <CodeBlock block={block} isHovered={false} />;
 
     case 'table':
       return (
@@ -117,6 +174,7 @@ export const BlockRenderer: React.FC<{
           onOpenLinkedDoc={onOpenLinkedDoc}
           onOpenCodeFile={onOpenCodeFile}
           githubRepo={githubRepo}
+          repoHost={repoHost}
           onNavigateAnchor={onNavigateAnchor}
         />
       );
@@ -132,6 +190,40 @@ export const BlockRenderer: React.FC<{
 
     case 'directive': {
       const kind = block.directiveKind || 'note';
+      if (isQuestionDirectiveKind(kind)) {
+        // An unparseable question (no prompt) falls through to the callout.
+        const indexed = question ?? standaloneQuestion(block, questionContractLines);
+        if (indexed) {
+          return (
+            <QuestionBlock
+              blockId={block.id}
+              indexed={indexed}
+              total={questionTotal ?? 0}
+              answer={questionAnswer}
+              onAnswer={onAnswerQuestion}
+              onSaveAnswer={onSaveQuestionAnswer}
+              saveLabel={saveQuestionAnswerLabel}
+              renderFooter={renderQuestionFooter}
+              decisionRecording={questionDecisionRecording}
+              decisionScope={questionDecisionScope}
+              onToggleDecisionRecording={onToggleQuestionDecisionRecording}
+              onOpenDecision={onOpenQuestionDecision}
+              statusTag={questionStatusTag}
+              statusLabel={questionStatusLabel}
+              renderBelowPrompt={renderQuestionBelowPrompt}
+              pictureChoices={questionPictureChoices}
+              pictureBadge={questionPictureBadge}
+              onOpenLinkedDoc={onOpenLinkedDoc}
+              onOpenCodeFile={onOpenCodeFile}
+              imageBaseDir={imageBaseDir}
+              onImageClick={onImageClick}
+              githubRepo={githubRepo}
+              repoHost={repoHost}
+              onNavigateAnchor={onNavigateAnchor}
+            />
+          );
+        }
+      }
       return (
         <Callout
           blockId={block.id}
@@ -145,6 +237,7 @@ export const BlockRenderer: React.FC<{
           imageBaseDir={imageBaseDir}
           onImageClick={onImageClick}
           githubRepo={githubRepo}
+          repoHost={repoHost}
           onNavigateAnchor={onNavigateAnchor}
         />
       );
@@ -156,7 +249,7 @@ export const BlockRenderer: React.FC<{
           className="mb-4 leading-relaxed text-foreground/90 text-[15px]"
           data-block-id={block.id}
         >
-          <InlineMarkdown imageBaseDir={imageBaseDir} onImageClick={onImageClick} text={block.content} onOpenLinkedDoc={onOpenLinkedDoc} onOpenCodeFile={onOpenCodeFile} githubRepo={githubRepo} onNavigateAnchor={onNavigateAnchor} />
+          <InlineMarkdown imageBaseDir={imageBaseDir} onImageClick={onImageClick} text={block.content} onOpenLinkedDoc={onOpenLinkedDoc} onOpenCodeFile={onOpenCodeFile} githubRepo={githubRepo} repoHost={repoHost} onNavigateAnchor={onNavigateAnchor} />
         </p>
       );
   }

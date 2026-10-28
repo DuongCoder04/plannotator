@@ -3,6 +3,14 @@ import {
   type ResolvedReviewProfile,
 } from "@plannotator/shared/review-profiles";
 import {
+  CURSOR_CLI_SIGNATURE,
+  isSameProgram,
+  resolveProgram,
+  type ProgramSignature,
+  type ResolvedProgram,
+  type SameProgramCheck,
+} from "@plannotator/shared/agent-program";
+import {
   transformSeverityFindings,
   type ReviewSeverity,
   type ReviewFinding,
@@ -12,7 +20,7 @@ import {
 /**
  * Marker Review Engines — the shared machinery for review CLIs that expose NO
  * schema-validation flag, so their final review output is prose. Cursor (the
- * `agent` binary), OpenCode (`opencode run`), and Pi (`pi --mode json`) are the
+ * `cursor-agent` binary, or `agent` when that is Cursor's), OpenCode (`opencode run`), and Pi (`pi --mode json`) are the
  * three. Because they can't be told to emit validated structured output, they
  * are instead told to emit a marker-delimited JSON block, and we extract the
  * LAST complete block from the reconstructed canonical text.
@@ -193,12 +201,19 @@ export interface MarkerModel {
 export type MarkerStreamEvent = Record<string, unknown>;
 
 /** Optional per-engine run knobs. Engines ignore fields they have no flag
- *  for — today only Pi consumes `thinking` (its unified reasoning level). */
+ *  for — today Pi consumes `thinking` (its unified reasoning level) and
+ *  Cursor consumes `cursorSandbox`. */
 export interface MarkerBuildOptions {
   /** Pi: `--thinking off|minimal|low|medium|high|xhigh` (Pi's default is
    *  medium; xhigh is accepted only by codex-max models — Pi errors clearly
    *  otherwise, surfaced as a failed job). */
   thinking?: string;
+  /** Cursor: pass `--sandbox enabled` (default true). Callers resolve this via
+   *  resolveCursorSandbox() (PLANNOTATOR_CURSOR_SANDBOX env var / config.json
+   *  `cursorSandbox`) — this module stays env-free. When false the pair is
+   *  OMITTED entirely (never `--sandbox disabled`), deferring to the user's
+   *  own Cursor Agent sandbox configuration. */
+  cursorSandbox?: boolean;
 }
 
 /** Stable ids of the marker engines — the single union every cast/lookup
@@ -210,14 +225,24 @@ export interface MarkerEngine {
   id: MarkerEngineId;
   /** Display name for the capabilities/provider listing (e.g. "Cursor CLI"). */
   name: string;
-  /** The CLI binary to spawn (NOTE: cursor's binary is `agent`). */
+  /** The CLI binary to spawn, by its own name (Cursor's: `cursor-agent`). */
   binary: string;
+  /**
+   * Other names the same CLI is installed under, tried after `binary` (Cursor's
+   * installer also links `agent`). A program found under one is used only when
+   * it has `binarySignature`: other tools install a generic `agent` too.
+   */
+  altBinaries?: readonly string[];
+  binarySignature?: ProgramSignature;
   /** Author string stamped on every annotation this engine produces. */
   author: string;
   /** Build the full argv (binary + flags + trailing prompt) for a review run. */
   buildArgv: (prompt: string, model?: string, cwd?: string, opts?: MarkerBuildOptions) => string[];
   /** Pull readable text out of one parsed stream event, or null if none. */
   extractText: (event: MarkerStreamEvent) => string | null;
+  /** Update the stream's provider failure: undefined = unrelated event,
+   *  null = successful terminal assistant outcome, string = safe failure. */
+  extractError?: (event: MarkerStreamEvent) => string | null | undefined;
   /** Argv (after the binary) for model discovery, e.g. ["models"]. */
   modelsArgv: string[];
   /** Parse the model-discovery stdout into a catalog. */
@@ -359,7 +384,9 @@ function cursorFormatLogEvent(event: MarkerStreamEvent): string | null {
 }
 
 /**
- * Build the `agent -p` command. NOTE the binary is `agent`, NOT `cursor`.
+ * Build the `cursor-agent -p` command. NOTE the binary is `cursor-agent` (or
+ * Cursor's own `agent`, swapped in at spawn by resolveMarkerBinary), NOT
+ * `cursor`, and never another program named `agent`.
  *
  * Read-only posture comes entirely from `--mode ask` + `--sandbox enabled` and
  * the absence of `--force`/`--yolo`. `--trust` is required in headless print
@@ -368,12 +395,27 @@ function cursorFormatLogEvent(event: MarkerStreamEvent): string | null {
  * `agent` reads task text from argv, not stdin. `--model` is omitted when the
  * model is `Auto`/empty so Cursor uses its default model selection. `--workspace`
  * is set to the launch cwd when provided.
+ *
+ * Escape hatch: on systems where Cursor's sandbox cannot start (NixOS,
+ * AppArmor-restricted Linux) the hardcoded `--sandbox enabled` hard-fails the
+ * job ("Sandbox mode is enabled but not available on this system") and
+ * overrides the user's own `agent sandbox` configuration. `opts.cursorSandbox:
+ * false` (resolved from PLANNOTATOR_CURSOR_SANDBOX / config.json
+ * `cursorSandbox`) OMITS the pair entirely — never `--sandbox disabled` — so
+ * the user's Cursor Agent configuration governs. Tradeoff stated plainly:
+ * opting out means the review job's write protection rests on `--mode ask`
+ * plus whatever sandboxing the user's own Cursor config provides.
  */
-function cursorBuildArgv(prompt: string, model?: string, cwd?: string): string[] {
+function cursorBuildArgv(
+  prompt: string,
+  model?: string,
+  cwd?: string,
+  opts?: MarkerBuildOptions,
+): string[] {
   // `auto` is Cursor's default model id — omit --model so the CLI chooses.
   const useModel = !!model && model.toLowerCase() !== "auto";
   return [
-    "agent",
+    "cursor-agent",
     "-p",
     "--mode",
     "ask",
@@ -382,8 +424,7 @@ function cursorBuildArgv(prompt: string, model?: string, cwd?: string): string[]
     "--stream-partial-output",
     "--trust",
     ...(cwd ? ["--workspace", cwd] : []),
-    "--sandbox",
-    "enabled",
+    ...(opts?.cursorSandbox === false ? [] : ["--sandbox", "enabled"]),
     ...(useModel ? ["--model", model] : []),
     // Prompt is the trailing positional arg — agent reads it from argv, not stdin.
     prompt,
@@ -462,11 +503,18 @@ function opencodeFormatLogEvent(event: MarkerStreamEvent): string | null {
  *
  * `--format json` emits NDJSON events we capture on stdout. `--agent plan` is
  * OpenCode's read-oriented agent — a sensible default for review (it does not
- * edit). `--dir <cwd>` matches the spawn cwd. The message (prompt) is the
- * trailing positional arg. `--model` is `provider/model` and is omitted when
- * empty so OpenCode uses the configured default.
+ * edit). The message (prompt) is the trailing positional arg. `--model` is
+ * `provider/model` and is omitted when empty so OpenCode uses the configured
+ * default.
+ *
+ * NO `--dir` (#1609): OpenCode 1.x's `run --dir` means "directory to run in,
+ * path on remote server if attaching", and OpenCode v2's `run` rejects the flag
+ * outright ("Unrecognized flag: --dir"). We never attach to a remote server, so
+ * the working directory is expressed the same way as Pi's: the job's spawn cwd
+ * (spawnJob already spawns with the build result's `cwd`). `cwd` is accepted
+ * only to match the shared `MarkerEngine["buildArgv"]` signature.
  */
-function opencodeBuildArgv(prompt: string, model?: string, cwd?: string): string[] {
+function opencodeBuildArgv(prompt: string, model?: string, _cwd?: string): string[] {
   const useModel = !!model && model.trim().length > 0;
   return [
     "opencode",
@@ -476,7 +524,6 @@ function opencodeBuildArgv(prompt: string, model?: string, cwd?: string): string
     "--agent",
     "plan",
     ...(useModel ? ["--model", model] : []),
-    ...(cwd ? ["--dir", cwd] : []),
     // Message (prompt) is the trailing positional arg.
     prompt,
   ];
@@ -513,6 +560,87 @@ function piExtractText(event: MarkerStreamEvent): string | null {
 function stripAnsi(text: string): string {
   // eslint-disable-next-line no-control-regex
   return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+const MAX_PROVIDER_ERROR_CHARS = 500;
+
+/**
+ * Project a provider-owned diagnostic into a single bounded, redaction-safe
+ * line suitable for AgentJobInfo.error and server logs. The raw NDJSON record
+ * is never surfaced: it may be large and can contain provider metadata.
+ */
+function sanitizeProviderError(message: unknown, fallback: string): string {
+  if (typeof message !== "string") return fallback;
+
+  let withoutControls = "";
+  for (const char of stripAnsi(message)) {
+    const code = char.charCodeAt(0);
+    withoutControls += code < 32 || code === 127 ? " " : char;
+  }
+
+  const collapsed = withoutControls.replace(/\s+/g, " ").trim();
+  if (!collapsed) return fallback;
+
+  const redacted = collapsed
+    .replace(
+      /\b((?:api[-_ ]?key|access[-_ ]?token|authorization|client[-_ ]?secret)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|(?:Bearer\s+)?[^\s,;]+)/gi,
+      "$1[REDACTED]",
+    )
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer [REDACTED]")
+    .replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{12,}\b/g, "[REDACTED]");
+
+  if (redacted.length <= MAX_PROVIDER_ERROR_CHARS) return redacted;
+  return redacted.slice(0, MAX_PROVIDER_ERROR_CHARS - 1).trimEnd() + "…";
+}
+
+/** Read Pi's final assistant-message outcome contract without trusting it. */
+function piAssistantError(message: unknown): string | null | undefined {
+  if (!message || typeof message !== "object") return undefined;
+  if (Reflect.get(message, "role") !== "assistant") return undefined;
+
+  const stopReason = Reflect.get(message, "stopReason");
+  if (stopReason !== "error" && stopReason !== "aborted") {
+    return stopReason === "stop" || stopReason === "length" || stopReason === "toolUse"
+      ? null
+      : undefined;
+  }
+
+  const fallback = stopReason === "aborted" ? "Pi request aborted" : "Pi request failed";
+  return sanitizeProviderError(Reflect.get(message, "errorMessage"), fallback);
+}
+
+/**
+ * Extract Pi's exit-0 in-run failure from its documented JSON event stream.
+ * The same AssistantMessage is repeated across message_update, message_end,
+ * turn_end, and agent_end; accepting each location makes the completed buffer
+ * robust to a truncated final event without inspecting arbitrary output text.
+ */
+function piExtractError(event: MarkerStreamEvent): string | null | undefined {
+  switch (event.type) {
+    case "message_update": {
+      const assistantEvent = event.assistantMessageEvent;
+      if (!assistantEvent || typeof assistantEvent !== "object") return undefined;
+      if (Reflect.get(assistantEvent, "type") !== "error") return undefined;
+      const nested = piAssistantError(Reflect.get(assistantEvent, "error"));
+      if (typeof nested === "string") return nested;
+      const reason = Reflect.get(assistantEvent, "reason");
+      return reason === "aborted" ? "Pi request aborted" : "Pi request failed";
+    }
+    case "message_end":
+    case "turn_end":
+      return piAssistantError(event.message);
+    case "agent_end": {
+      const messages = event.messages;
+      if (!Array.isArray(messages)) return undefined;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const error = piAssistantError(messages[i]);
+        if (error !== undefined) return error;
+      }
+      return undefined;
+    }
+    default:
+      return undefined;
+  }
 }
 
 /**
@@ -599,7 +727,7 @@ function piFormatLogEvent(event: MarkerStreamEvent): string | null {
  * NEVER be allowed to load for an arbitrary review job. `--no-session` keeps
  * the run ephemeral so background jobs don't accumulate in the user's
  * `~/.pi/agent/sessions`. Pi has NO `--cwd`/`--workspace`/`--dir` flag (unlike
- * Cursor's `--workspace` or OpenCode's `--dir`) — it always operates on the
+ * Cursor's `--workspace`; OpenCode's run also relies on the spawn cwd) — it always operates on the
  * process's actual working directory, which is exactly the job's spawn cwd
  * (spawnJob already spawns with the build result's `cwd`), so `cwd` is
  * accepted only to match the shared `MarkerEngine["buildArgv"]` signature and
@@ -610,12 +738,12 @@ function piFormatLogEvent(event: MarkerStreamEvent): string | null {
  * SEMANTICS NOTE (do not "fix" this later): `pi --mode json` exits 0 even when
  * the agent's own run errored or was aborted — the text-mode stopReason check
  * in Pi's print-mode is gated on `mode === "text"`, so JSON mode never sets a
- * non-zero exit for an in-run failure. This is fine for us: the marker
- * pipeline is already fail-closed (a missing/invalid marker block fails the
- * job regardless of exit code), so a silently-errored Pi run still surfaces as
- * a failed Plannotator job. Exit 1 here means Pi itself crashed or was
- * misconfigured (bad model, no auth, extension load failure), which is a
- * separate, correctly-surfaced failure mode.
+ * non-zero exit for an in-run failure. The marker pipeline is fail-closed;
+ * when marker parsing fails, the shared stream reducer preserves Pi's
+ * structured assistant error instead of misclassifying it as malformed marker
+ * output. Exit 1 here means Pi itself crashed or was misconfigured (bad model,
+ * no auth, extension load failure), which is a separate, correctly-surfaced
+ * failure mode.
  */
 function piBuildArgv(prompt: string, model?: string, cwd?: string, opts?: MarkerBuildOptions): string[] {
   void cwd; // no cwd flag exists — spawn cwd is authoritative (see comment above)
@@ -819,7 +947,9 @@ function copilotBuildArgv(prompt: string, model?: string, cwd?: string): string[
 const CURSOR_ENGINE: MarkerEngine = {
   id: "cursor",
   name: "Cursor CLI",
-  binary: "agent",
+  binary: "cursor-agent",
+  altBinaries: ["agent"],
+  binarySignature: CURSOR_CLI_SIGNATURE,
   author: "Cursor",
   buildArgv: cursorBuildArgv,
   extractText: cursorExtractText,
@@ -847,6 +977,7 @@ const PI_ENGINE: MarkerEngine = {
   author: "Pi",
   buildArgv: piBuildArgv,
   extractText: piExtractText,
+  extractError: piExtractError,
   modelsArgv: ["--list-models"],
   parseModels: piParseModels,
   formatLogEvent: piFormatLogEvent,
@@ -880,6 +1011,8 @@ export interface MarkerStreamReduction {
   canonicalText: string;
   /** Number of NDJSON records that parsed successfully. */
   recordCount: number;
+  /** Last structured, sanitized provider failure found in the stream. */
+  providerError: string | null;
 }
 
 /**
@@ -895,8 +1028,9 @@ export interface MarkerStreamReduction {
 export function reduceMarkerStream(stdout: string, engine: MarkerEngine): MarkerStreamReduction {
   let canonicalText = "";
   let recordCount = 0;
+  let providerError: string | null = null;
 
-  if (!stdout) return { canonicalText, recordCount };
+  if (!stdout) return { canonicalText, recordCount, providerError };
 
   for (const rawLine of stdout.split("\n")) {
     const line = rawLine.trim();
@@ -912,9 +1046,12 @@ export function reduceMarkerStream(stdout: string, engine: MarkerEngine): Marker
 
     const text = engine.extractText(event);
     if (text) canonicalText += text;
+
+    const error = engine.extractError?.(event);
+    if (error !== undefined) providerError = error;
   }
 
-  return { canonicalText, recordCount };
+  return { canonicalText, recordCount, providerError };
 }
 
 // ---------------------------------------------------------------------------
@@ -1158,6 +1295,34 @@ export function composeMarkerReviewPrompt(
 
 export interface MarkerCommandResult {
   command: string[];
+}
+
+/**
+ * The engine's CLI on PATH: `binary`, else an `altBinaries` name that is the
+ * same CLI (Cursor's `agent`, never Grok Build's or another tool's). Null when
+ * none is installed. `which` is the runtime's PATH lookup.
+ */
+export function resolveMarkerBinary(
+  engine: MarkerEngine,
+  which: (name: string) => string | null,
+  sameProgram: SameProgramCheck = isSameProgram,
+): Promise<ResolvedProgram | null> {
+  return resolveProgram({ command: engine.binary, alt: engine.altBinaries, signature: engine.binarySignature }, which, sameProgram);
+}
+
+/**
+ * The argv to spawn: when it starts with one of the engine's names, that name
+ * is replaced by the one resolveMarkerBinary found. When none was found the
+ * argv keeps the engine's own name, so the spawn fails as "not found" rather
+ * than starting another program.
+ */
+export function withMarkerBinary(command: string[], engine: MarkerEngine, resolved: ResolvedProgram | null): string[] {
+  if (!engine.altBinaries?.length) return command;
+  const names = [engine.binary, ...engine.altBinaries];
+  if (command.length === 0 || !names.includes(command[0]!)) return command;
+  // By name: the spawn looks it up on the same PATH and finds the file that
+  // was checked (on Windows with the same .exe/.cmd extension).
+  return [resolved?.name ?? engine.binary, ...command.slice(1)];
 }
 
 /** Build the full argv for a review run with the given engine. */

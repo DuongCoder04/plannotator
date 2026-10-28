@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   markerOpen,
   markerClose,
@@ -21,6 +22,11 @@ import type { ResolvedReviewProfile } from "@plannotator/shared/review-profiles"
 
 const cursor = MARKER_ENGINES.cursor;
 const opencode = MARKER_ENGINES.opencode;
+const pi = MARKER_ENGINES.pi;
+const piInsufficientCreditsStdout = readFileSync(
+  new URL("./fixtures/pi-insufficient-credits.ndjson", import.meta.url),
+  "utf8",
+);
 
 // A fixed, valid nonce (pn + 12 hex) for deterministic tests.
 const NONCE = "pn0123456789ab";
@@ -78,9 +84,9 @@ const validReview: MarkerReviewOutput = {
 // ===========================================================================
 
 describe("buildMarkerCommand: cursor", () => {
-  test("uses the `agent` binary, read-only flags, prompt as trailing argv", () => {
+  test("uses the `cursor-agent` binary, read-only flags, prompt as trailing argv", () => {
     const { command } = buildMarkerCommand(cursor, "review this", "gpt-5", "/repo");
-    expect(command[0]).toBe("agent");
+    expect(command[0]).toBe("cursor-agent");
     expect(command).toContain("-p");
     expect(command[command.indexOf("--mode") + 1]).toBe("ask");
     expect(command[command.indexOf("--sandbox") + 1]).toBe("enabled");
@@ -100,6 +106,26 @@ describe("buildMarkerCommand: cursor", () => {
     expect(buildMarkerCommand(cursor, "p", undefined, "/repo").command).not.toContain("--model");
     expect(buildMarkerCommand(cursor, "p").command).not.toContain("--workspace");
   });
+
+  test("cursorSandbox: false omits the --sandbox pair entirely (escape hatch)", () => {
+    const { command } = buildMarkerCommand(cursor, "review this", "gpt-5", "/repo", { cursorSandbox: false });
+    expect(command).not.toContain("--sandbox");
+    // The pair is OMITTED, never flipped to `--sandbox disabled`.
+    expect(command).not.toContain("enabled");
+    expect(command).not.toContain("disabled");
+    // The rest of the read-only posture is unchanged.
+    expect(command[command.indexOf("--mode") + 1]).toBe("ask");
+    expect(command).not.toContain("--force");
+    expect(command).not.toContain("--yolo");
+    expect(command[command.length - 1]).toBe("review this");
+  });
+
+  test("cursorSandbox: true and undefined keep --sandbox enabled (default)", () => {
+    const explicit = buildMarkerCommand(cursor, "p", "gpt-5", "/repo", { cursorSandbox: true }).command;
+    expect(explicit[explicit.indexOf("--sandbox") + 1]).toBe("enabled");
+    const omitted = buildMarkerCommand(cursor, "p", "gpt-5", "/repo", {}).command;
+    expect(omitted[omitted.indexOf("--sandbox") + 1]).toBe("enabled");
+  });
 });
 
 describe("buildMarkerCommand: opencode", () => {
@@ -109,14 +135,23 @@ describe("buildMarkerCommand: opencode", () => {
     expect(command[1]).toBe("run");
     expect(command[command.indexOf("--format") + 1]).toBe("json");
     expect(command[command.indexOf("--agent") + 1]).toBe("plan");
-    expect(command[command.indexOf("--dir") + 1]).toBe("/repo");
     expect(command[command.indexOf("--model") + 1]).toBe("opencode/glm-5.1");
     expect(command).not.toContain("--dangerously-skip-permissions");
     expect(command[command.length - 1]).toBe("review this");
   });
 
-  test("omits --model when empty; --dir when no cwd", () => {
+  test("omits --model when empty", () => {
     expect(buildMarkerCommand(opencode, "p", "", "/repo").command).not.toContain("--model");
+  });
+
+  // #1609: OpenCode v2's `run` rejects `--dir` ("Unrecognized flag: --dir in
+  // command opencode run"). The working directory rides the job's spawn cwd
+  // instead (asserted end-to-end in agent-jobs-launch.test.ts), so the argv must
+  // never carry it, with or without a cwd.
+  test("never passes --dir, with or without a cwd (#1609)", () => {
+    const withCwd = buildMarkerCommand(opencode, "p", "opencode/glm-5.1", "/repo").command;
+    expect(withCwd).not.toContain("--dir");
+    expect(withCwd).not.toContain("/repo");
     expect(buildMarkerCommand(opencode, "p").command).not.toContain("--dir");
   });
 });
@@ -266,6 +301,54 @@ describe("reduceMarkerStream: opencode", () => {
   test("survives chunk-joined buffer and malformed lines", () => {
     const stdout = opencodeText("a") + "not json\n" + opencodeText("b");
     expect(reduceMarkerStream(stdout, opencode).canonicalText).toBe("ab");
+  });
+});
+
+describe("reduceMarkerStream: pi", () => {
+  test("extracts a structured provider failure from Pi's exit-0 NDJSON stream", () => {
+    const reduction = reduceMarkerStream(piInsufficientCreditsStdout, pi);
+    expect(reduction.canonicalText).toBe("");
+    expect(reduction.providerError).toBe("Insufficient API credits");
+  });
+
+  test("bounds and redacts provider diagnostics without dumping the NDJSON record", () => {
+    const secret = `sk-${"a".repeat(32)}`;
+    const stdout = ndjson({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: `Insufficient credits\nAuthorization: Bearer ${secret}; ${"x".repeat(700)}`,
+      },
+    });
+
+    const { providerError } = reduceMarkerStream(stdout, pi);
+    expect(providerError).toStartWith("Insufficient credits Authorization: [REDACTED]");
+    expect(providerError).not.toContain(secret);
+    expect(providerError).not.toContain("\n");
+    expect(providerError?.length).toBe(500);
+  });
+
+  test("uses an actionable fallback for an aborted Pi assistant message", () => {
+    const stdout = ndjson({
+      type: "message_end",
+      message: { role: "assistant", content: [], stopReason: "aborted" },
+    });
+    expect(reduceMarkerStream(stdout, pi).providerError).toBe("Pi request aborted");
+  });
+
+  test("clears a transient Pi error after a later successful assistant outcome", () => {
+    const transientErrorPrefix = piInsufficientCreditsStdout
+      .trimEnd()
+      .split("\n")
+      .slice(0, 5)
+      .join("\n");
+    const successfulMessage = ndjson({
+      type: "message_end",
+      message: { role: "assistant", content: [], stopReason: "stop" },
+    });
+    expect(reduceMarkerStream(`${transientErrorPrefix}\n${successfulMessage}`, pi).providerError).toBeNull();
   });
 });
 

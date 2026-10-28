@@ -26,6 +26,39 @@ export interface AgentJobDiffContext {
   mode: string;
   base?: string;
   worktreePath?: string | null;
+  /** Human-readable label captured with provider-specific selectors. */
+  label?: string;
+  /** Exact server snapshot that supplied the reviewed line coordinates. */
+  snapshotId?: string;
+}
+
+export interface AgentJobAnnotationContext {
+  commitSha?: string;
+  gitButlerDiffType?: string;
+  gitButlerDiffLabel?: string;
+  gitButlerBase?: string;
+  gitButlerSnapshotId?: string;
+}
+
+/** Stamp completed review findings with the diff snapshot the agent reviewed. */
+export function getAgentJobAnnotationContext(
+  diffContext?: AgentJobDiffContext,
+): AgentJobAnnotationContext {
+  if (!diffContext) return {};
+  // `commit:<sha>` (git) and `jj-commit:<commit id>` (jj) are the same
+  // single-commit detour; findings anchor to that commit's diff either way.
+  const commitPrefix = ["commit:", "jj-commit:"].find((prefix) => diffContext.mode.startsWith(prefix));
+  if (commitPrefix) {
+    const commitSha = diffContext.mode.slice(commitPrefix.length);
+    return commitSha ? { commitSha } : {};
+  }
+  if (!diffContext.mode.startsWith("gitbutler:")) return {};
+  return {
+    gitButlerDiffType: diffContext.mode,
+    ...(diffContext.label ? { gitButlerDiffLabel: diffContext.label } : {}),
+    ...(diffContext.base ? { gitButlerBase: diffContext.base } : {}),
+    ...(diffContext.snapshotId ? { gitButlerSnapshotId: diffContext.snapshotId } : {}),
+  };
 }
 
 export interface AgentJobInfo {
@@ -59,6 +92,9 @@ export interface AgentJobInfo {
   exitCode?: number;
   /** Last ~500 chars of stderr on failure. */
   error?: string;
+  /** Non-fatal problem worth surfacing on a job that may still be "done"
+   *  (e.g. a Claude job whose every shell command was refused, #1627). */
+  warning?: string;
   /** The actual command that was spawned (for display/debug). */
   command: string[];
   /** Working directory where the process was spawned. */
@@ -81,6 +117,19 @@ export interface AgentJobInfo {
   reviewProfileId?: string;
   /** Resolved review profile label — rides on findings so the UI can show a profile tag. */
   reviewProfileLabel?: string;
+  /**
+   * Launch-time review-target snapshot for guide jobs (#1112). Guide jobs run
+   * for minutes while the session supports mid-generation PR/diff switching,
+   * so the persisted envelope must be labeled with the context the guide was
+   * GENERATED against — captured here at build time (same discipline as
+   * changedFilesSnapshot), never re-read from live session state at
+   * completion. Structurally matches guide-store's GuideLaunchContext.
+   */
+  guideContext?: {
+    pr?: { url: string; headSha: string; label: string } | null;
+    branchLabel?: string;
+    headSha?: string;
+  };
 }
 
 export interface AgentCapability {

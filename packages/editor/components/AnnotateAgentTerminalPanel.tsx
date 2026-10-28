@@ -27,6 +27,8 @@ import {
   resolveAgentTerminalWebSocketUrl,
   resolveAnnotateAgentId,
   saveAnnotateAgentId,
+  type AnnotateAgentTerminalPlacement,
+  type AnnotateAgentTerminalSide,
 } from "@plannotator/ui/utils/annotateAgentTerminal";
 import { getItem, setItem } from "@plannotator/ui/utils/storage";
 import { WebSocketPtyBackend } from "@plannotator/webtui/browser";
@@ -53,7 +55,7 @@ type TerminalStatus = "idle" | "starting" | "running" | "stopping" | "exited";
 type AgentTerminalFontFamily = "theme" | "system" | "geist";
 type AgentTerminalFontWeight = "light" | "regular" | "medium";
 
-type AgentTerminalDisplaySettings = {
+export type AgentTerminalDisplaySettings = {
   fontFamily: AgentTerminalFontFamily;
   fontSize: number;
   fontWeight: AgentTerminalFontWeight;
@@ -63,6 +65,11 @@ type AgentTerminalDisplaySettings = {
 interface AnnotateAgentTerminalPanelProps {
   capability: AgentTerminalCapability;
   width: number | string;
+  /** The durable preference, which the Position control reflects. */
+  side: AnnotateAgentTerminalSide;
+  /** The edge actually docked against ('hidden' opened for a session = left). */
+  placement: AnnotateAgentTerminalPlacement;
+  onSideChange: (side: AnnotateAgentTerminalSide) => void;
   onSessionActiveChange?: (active: boolean) => void;
   onSessionReadyChange?: (ready: boolean) => void;
   onClose: () => void;
@@ -72,7 +79,7 @@ const DISPLAY_STORAGE_KEY = "plannotator-agent-terminal-display";
 const MIN_FONT_SIZE = 10;
 const MAX_FONT_SIZE = 24;
 
-const DEFAULT_DISPLAY_SETTINGS: AgentTerminalDisplaySettings = {
+export const DEFAULT_DISPLAY_SETTINGS: AgentTerminalDisplaySettings = {
   fontFamily: "theme",
   fontSize: 14,
   fontWeight: "regular",
@@ -121,7 +128,16 @@ const AGENT_TERMINAL_FONT_ZOOM = {
 export const AnnotateAgentTerminalPanel = forwardRef<
   AnnotateAgentTerminalPanelHandle,
   AnnotateAgentTerminalPanelProps
->(function AnnotateAgentTerminalPanel({ capability, width, onSessionActiveChange, onSessionReadyChange, onClose }, ref) {
+>(function AnnotateAgentTerminalPanel({
+  capability,
+  width,
+  side,
+  placement,
+  onSideChange,
+  onSessionActiveChange,
+  onSessionReadyChange,
+  onClose,
+}, ref) {
   const agents = capability.enabled ? capability.agents : [];
   const availableAgents = useMemo(
     () => agents.filter((agent) => agent.available),
@@ -219,11 +235,6 @@ export const AnnotateAgentTerminalPanel = forwardRef<
     [],
   );
 
-  const resetDisplaySettings = useCallback(() => {
-    setDisplaySettings(DEFAULT_DISPLAY_SETTINGS);
-    writeDisplaySettings(DEFAULT_DISPLAY_SETTINGS);
-  }, []);
-
   const selectedAgent =
     availableAgents.find((agent) => agent.id === selectedAgentId) ?? null;
   const canStart =
@@ -251,12 +262,8 @@ export const AnnotateAgentTerminalPanel = forwardRef<
     stopRequestedRef.current = true;
     const session = sessionRef.current;
     if (!session) {
-      if (startedAgentId) {
-        closeAfterStopRef.current = closeAfterStop;
-        setStatus("stopping");
-        return;
-      }
       clearTimers();
+      closeAfterStopRef.current = false;
       stopRequestedRef.current = false;
       setStartedAgentId(null);
       setStatus("idle");
@@ -276,7 +283,7 @@ export const AnnotateAgentTerminalPanel = forwardRef<
       sessionRef.current?.pty.kill();
       if (closeAfterStopRef.current) onClose();
     }, 1400));
-  }, [clearTimers, onClose, onSessionActiveChange, onSessionReadyChange, startedAgentId]);
+  }, [clearTimers, onClose, onSessionActiveChange, onSessionReadyChange]);
 
   const sendMessage = useCallback((message: string) => {
     const text = message.trim();
@@ -310,10 +317,14 @@ export const AnnotateAgentTerminalPanel = forwardRef<
     setStatus("exited");
   }, [clearTimers, onClose, onSessionActiveChange, onSessionReadyChange]);
 
+  const sideBorderClass = placement === "left"
+    ? "border-r border-border"
+    : "border-l border-border/50";
+
   return (
     <aside
       data-annotate-agent-terminal="true"
-      className="hidden lg:flex h-full flex-shrink-0 flex-col border-r border-border bg-card"
+      className={`hidden lg:flex h-full flex-shrink-0 flex-col bg-card ${sideBorderClass}`}
       style={{ width }}
     >
       {!capability.enabled ? (
@@ -334,8 +345,9 @@ export const AnnotateAgentTerminalPanel = forwardRef<
             <div className="flex shrink-0 items-center gap-1">
               <AgentTerminalDisplayPopover
                 settings={displaySettings}
+                side={side}
                 onChange={updateDisplaySettings}
-                onReset={resetDisplaySettings}
+                onSideChange={onSideChange}
               />
               <button
                 type="button"
@@ -348,7 +360,12 @@ export const AnnotateAgentTerminalPanel = forwardRef<
               </button>
             </div>
           </div>
-          <div className="min-h-0 flex-1" style={terminalTheme.shellStyle}>
+          <div className="relative min-h-0 flex-1" style={terminalTheme.shellStyle}>
+            {status === "starting" && (
+              <div className="pointer-events-none absolute left-3 top-3 z-10 rounded border border-border/50 bg-card/95 px-2 py-1 text-[11px] text-muted-foreground shadow-sm">
+                Starting terminal...
+              </div>
+            )}
             <WebTuiTerminal
               key={startedAgentId}
               backend={backend}
@@ -357,7 +374,7 @@ export const AnnotateAgentTerminalPanel = forwardRef<
               prompt={null}
               terminalOptions={terminalOptions}
               terminalColorScheme={terminalTheme.colorScheme}
-              terminalGpuAcceleration="auto"
+              terminalGpuAcceleration="off"
               fontZoom={AGENT_TERMINAL_FONT_ZOOM}
               className="h-full border-0"
               onReady={(session) => {
@@ -437,23 +454,25 @@ function AgentSelect({
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label="Select agent"
-          disabled={agents.length === 0}
-          className="flex h-8 w-full items-center gap-1.5 rounded-md border border-border/70 bg-muted/50 px-2.5 text-xs text-foreground transition-colors hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring data-[state=open]:border-primary/50 data-[state=open]:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <span className="min-w-0 flex-1 truncate text-left">
-            {selectedAgent?.name ?? "Select agent"}
-          </span>
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        </button>
+      <DropdownMenuTrigger
+        render={
+          <button
+            type="button"
+            aria-label="Select agent"
+            disabled={agents.length === 0}
+            className="flex h-8 w-full items-center gap-1.5 rounded-md border border-border/70 bg-muted/50 px-2.5 text-xs text-foreground transition-colors hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring data-[popup-open]:border-primary/50 data-[popup-open]:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+          />
+        }
+      >
+        <span className="min-w-0 flex-1 truncate text-left">
+          {selectedAgent?.name ?? "Select agent"}
+        </span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
         sideOffset={4}
-        className="z-[100] min-w-[var(--radix-dropdown-menu-trigger-width)]"
+        className="z-[100] min-w-[var(--anchor-width)]"
       >
         {agents.map((agent) => {
           const selected = agent.id === selectedAgentId;
@@ -462,7 +481,7 @@ function AgentSelect({
           return (
             <DropdownMenuItem
               key={agent.id}
-              onSelect={() => onSelect(agent.id)}
+              onClick={() => onSelect(agent.id)}
               className={`h-7 text-xs ${tone}`}
             >
               <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
@@ -511,40 +530,67 @@ function formatExit(event: PtyExit): string {
   return `Exited ${event.exitCode}`;
 }
 
-function AgentTerminalDisplayPopover({
+/** Exported for tests (the surrounding panel needs a live WebTUI session to
+ * render this popover). `defaultOpen` is a test seam only. */
+export function AgentTerminalDisplayPopover({
   settings,
+  side,
   onChange,
-  onReset,
+  onSideChange,
+  defaultOpen,
 }: {
   settings: AgentTerminalDisplaySettings;
+  side: AnnotateAgentTerminalSide;
   onChange: (updates: Partial<AgentTerminalDisplaySettings>) => void;
-  onReset: () => void;
+  onSideChange: (side: AnnotateAgentTerminalSide) => void;
+  defaultOpen?: boolean;
 }) {
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label="Terminal display settings"
-          title="Display settings"
-          className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground/80 transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring data-[state=open]:bg-primary/15 data-[state=open]:text-primary"
-        >
-          <SettingsIcon className="h-3.5 w-3.5" />
-        </button>
+    <Popover defaultOpen={defaultOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            aria-label="Terminal display settings"
+            title="Display settings"
+            className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground/80 transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring data-[popup-open]:bg-primary/15 data-[popup-open]:text-primary"
+          />
+        }
+      >
+        <SettingsIcon className="h-3.5 w-3.5" />
       </PopoverTrigger>
       <PopoverContent align="end" sideOffset={6} className="w-64 p-2.5">
         <div className="space-y-2.5">
           <div className="flex items-center justify-between gap-2">
             <div className="text-xs font-medium text-foreground">Display</div>
+            {/* Resets DISPLAY settings only, exactly as the label says.
+                Position is deliberately untouched: it is a durable layout
+                preference (config.json via onSideChange), not a display
+                setting, and the segmented control below is its one explicit,
+                disclosed way to change. Resetting it here silently overwrote
+                a chosen right/hidden placement. */}
             <button
               type="button"
               aria-label="Reset terminal display settings"
-              onClick={onReset}
+              onClick={() => onChange(DEFAULT_DISPLAY_SETTINGS)}
               className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
             >
               <RotateCcw className="h-3.5 w-3.5" />
             </button>
           </div>
+
+          {/* Hidden closes the terminal (and this popover with it). The same
+              control lives in Settings, which is how it is reopened. */}
+          <TerminalDisplaySegmented
+            label="Position"
+            value={side}
+            options={[
+              { value: "left", label: "Left" },
+              { value: "right", label: "Right" },
+              { value: "hidden", label: "Hidden" },
+            ]}
+            onChange={onSideChange}
+          />
 
           <TerminalDisplayStepper
             label="Font size"

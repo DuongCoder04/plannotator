@@ -52,6 +52,19 @@ function makeSseResponse(textDelta: string): Response {
   });
 }
 
+function makeAbortableSseResponse(signal: AbortSignal): Response {
+  return new Response(new ReadableStream({
+    start(controller) {
+      signal.addEventListener('abort', () => {
+        controller.error(new DOMException('aborted', 'AbortError'));
+      }, { once: true });
+    },
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' },
+  });
+}
+
 async function mountHook(context: AIContext | null): Promise<{
   result: { current: HookResult | null };
   unmount: () => Promise<void>;
@@ -71,6 +84,49 @@ async function mountHook(context: AIContext | null): Promise<{
       host.remove();
     },
   };
+}
+
+async function expectResetAbortsActiveTurn(resetKind: 'session' | 'thread'): Promise<void> {
+  const abortBodies: unknown[] = [];
+  let resolveQueryStarted: () => void = () => {};
+  const queryStarted = new Promise<void>((resolve) => {
+    resolveQueryStarted = resolve;
+  });
+
+  const fakeTransport: AITransport = {
+    session: async () => new Response(JSON.stringify({ sessionId: 'fake-session-reset' }), { status: 200 }),
+    query: async (_body, signal) => {
+      resolveQueryStarted();
+      return makeAbortableSseResponse(signal);
+    },
+    abort: async (body) => { abortBodies.push(body); },
+    permission: () => {},
+  };
+
+  setAITransport(fakeTransport);
+
+  const session = await mountHook(TEST_CONTEXT);
+  let askPromise: Promise<void> = Promise.resolve();
+
+  await act(async () => {
+    askPromise = session.result.current!.ask({ prompt: 'slow question' });
+  });
+  await queryStarted;
+
+  await act(async () => {
+    if (resetKind === 'session') {
+      session.result.current!.resetSession();
+    } else {
+      session.result.current!.resetThread();
+    }
+  });
+
+  await act(async () => { await new Promise<void>((r) => setTimeout(r, 0)); });
+  await askPromise;
+
+  expect(abortBodies).toEqual([{ sessionId: 'fake-session-reset' }]);
+
+  await session.unmount();
 }
 
 describe('AITransport seam', () => {
@@ -147,5 +203,52 @@ describe('AITransport seam', () => {
     expect(fetchCalls.some((u) => u.includes('/api/ai/session'))).toBe(true);
 
     await session.unmount();
+  });
+
+  test.skipIf(!hasDom)('supersede reaches the server before disconnecting the old answer', async () => {
+    const signals: AbortSignal[] = [];
+    const abortBodies: unknown[] = [];
+    let acknowledge = () => {};
+    const acknowledged = new Promise<void>(resolve => { acknowledge = resolve; });
+    setAITransport({
+      session: async () => Response.json({ sessionId: 's1' }),
+      query: async (_body, signal) => {
+        signals.push(signal);
+        return signals.length === 1 ? makeAbortableSseResponse(signal) : makeSseResponse('second answer');
+      },
+      abort: async body => { abortBodies.push(body); await acknowledged; },
+      permission: () => {},
+    });
+    const session = await mountHook(TEST_CONTEXT);
+    let first = Promise.resolve();
+    let second = Promise.resolve();
+    try {
+      await act(async () => { first = session.result.current!.ask({ prompt: 'first' }); });
+      expect(signals).toHaveLength(1);
+      await act(async () => { second = session.result.current!.ask({ prompt: 'second' }); });
+
+      // Disconnecting first would reach the server's SSE cancel handler and
+      // stop Pi before it can distinguish supersede from the Stop button.
+      expect(signals[0].aborted).toBe(false);
+      expect(signals).toHaveLength(1);
+      expect(abortBodies).toEqual([{ sessionId: 's1', reason: 'supersede' }]);
+
+      await act(async () => { acknowledge(); await Promise.all([first, second]); });
+      expect(signals[0].aborted).toBe(true);
+      expect(signals).toHaveLength(2);
+      expect(session.result.current!.messages[1].response.text).toBe('second answer');
+    } finally {
+      acknowledge();
+      await act(async () => { await Promise.all([first, second]); });
+      await session.unmount();
+    }
+  });
+
+  test.skipIf(!hasDom)('resetSession aborts the active server turn', async () => {
+    await expectResetAbortsActiveTurn('session');
+  });
+
+  test.skipIf(!hasDom)('resetThread aborts the active server turn', async () => {
+    await expectResetAbortsActiveTurn('thread');
   });
 });

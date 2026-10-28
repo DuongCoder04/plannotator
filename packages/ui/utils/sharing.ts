@@ -8,7 +8,8 @@
  * Inspired by textarea.my's approach.
  */
 
-import { Annotation, AnnotationType, type ImageAttachment } from '../types';
+import { AnnotationType, type Annotation, type DocumentRenderAs, type ImageAttachment } from '../types';
+import { isDiagramRenderKind } from '@plannotator/core/annotatable';
 import { compress, decompress } from '@plannotator/core/compress';
 import { encrypt, decrypt } from '@plannotator/core/crypto';
 
@@ -29,7 +30,32 @@ export interface SharePayload {
   s?: (string | undefined)[];  // source per annotation (external tool identifier), parallel to `a`
   h?: string;  // raw HTML content (direct HTML rendering mode)
   r?: 'html';  // render mode flag (omitted = markdown)
-  f?: 'adoc';  // source document format flag (omitted = markdown) — picks the block parser on load
+}
+
+/**
+ * The markdown a document ships as in a share payload's `p`.
+ *
+ * A whole-file diagram source (.mmd/.dot) has no fence of its own — the
+ * annotate session renders it as one diagram because the SERVER said so in
+ * `renderAs`, and a share link carries no server. So it travels as the fenced
+ * form, which the portal's ordinary markdown parse turns back into the same
+ * diagram block. This is deliberately smaller than adding a render-mode flag
+ * (`r: 'html'`'s sibling): the portal needs no change at all.
+ *
+ * Diagram comments themselves still degrade to text comments in a share link,
+ * exactly as they do today — `diagramAnchor` is dropped like `htmlAnchor`
+ * (see sharing.multiTarget.test.ts).
+ */
+export function shareableDocumentMarkdown(
+  markdown: string,
+  renderAs: DocumentRenderAs | undefined,
+): string {
+  if (!isDiagramRenderKind(renderAs) || markdown === '') return markdown;
+  const language = renderAs === 'graphviz' ? 'dot' : 'mermaid';
+  // A diagram source can itself contain a ``` run only in a comment/label;
+  // a four-backtick fence keeps such a body intact.
+  const fence = markdown.includes('```') ? '````' : '```';
+  return `${fence}${language}\n${markdown.replace(/\n+$/, '')}\n${fence}`;
 }
 
 /**
@@ -166,7 +192,6 @@ export async function generateShareUrl(
   globalAttachments?: ImageAttachment[],
   baseUrl: string = DEFAULT_SHARE_BASE,
   rawHtml?: string,
-  docFormat?: 'markdown' | 'asciidoc',
 ): Promise<string | null> {
   // HTML content is too large for URL hashes — force paste service path
   if (rawHtml) return null;
@@ -178,7 +203,6 @@ export async function generateShareUrl(
     g: globalAttachments?.length ? toShareableImages(globalAttachments) : undefined,
     ...(diffContexts ? { d: diffContexts } : {}),
     ...(sources ? { s: sources } : {}),
-    ...(docFormat === 'asciidoc' ? { f: 'adoc' as const } : {}),
   };
 
   const hash = await compress(payload);
@@ -250,7 +274,6 @@ export async function createShortShareUrl(
     shareBaseUrl?: string;
   },
   rawHtml?: string,
-  docFormat?: 'markdown' | 'asciidoc',
 ): Promise<{ shortUrl: string; id: string } | null> {
   const pasteApi = options?.pasteApiUrl ?? DEFAULT_PASTE_API;
   const shareBase = options?.shareBaseUrl ?? DEFAULT_SHARE_BASE;
@@ -265,7 +288,6 @@ export async function createShortShareUrl(
       ...(diffContexts ? { d: diffContexts } : {}),
       ...(sources ? { s: sources } : {}),
       ...(rawHtml ? { h: rawHtml, r: 'html' as const } : {}),
-      ...(docFormat === 'asciidoc' ? { f: 'adoc' as const } : {}),
     };
 
     const compressed = await compress(payload);
@@ -303,7 +325,6 @@ export async function createShortShareUrl(
     }
     // Service unavailable — expected for self-hosted setups without a paste backend.
     // The caller is responsible for falling back to hash-based sharing silently.
-    console.debug('[sharing] Short URL service unavailable, using hash-based sharing:', e);
     return null;
   }
 }
