@@ -221,6 +221,13 @@ test('the link is the Inbox one address plus #thread=, and the items follow the 
   // An Inbox that keeps pins (approval "inbox-pinned-threads"): Pin or Unpin leads, an archived row's too.
   expect(rowMenuActions(base, true, false)).toEqual(['pin', 'copy-link', 'copy-id', 'read', 'archive']);
   expect(rowMenuActions({ ...base, section: 'quiet', resolved_at: '2026-10-20T00:00:00Z' }, true, true)).toEqual(['unpin', 'copy-link', 'copy-id']);
+  // A seen update the held list still draws in New keeps Mark read; drawn in Quiet, or marked read, or archived, it does not.
+  const seen = { ...base, section: 'quiet' } as typeof base;
+  expect(rowMenuActions(seen, true, null, 'new')).toEqual(['copy-link', 'copy-id', 'read', 'archive']);
+  expect(rowMenuActions(seen, true, null, 'quiet')).toEqual(['copy-link', 'copy-id', 'archive']);
+  expect(rowMenuActions(seen, false, null, 'new')).toEqual(['copy-link', 'copy-id', 'archive']);
+  expect(rowMenuActions({ ...seen, read_at: '2026-10-20T00:00:00Z' }, true, null, 'new')).toEqual(['copy-link', 'copy-id', 'unread', 'archive']);
+  expect(rowMenuActions({ ...seen, resolved_at: '2026-10-20T00:00:00Z' }, true, null, 'new')).toEqual(['copy-link', 'copy-id']);
 });
 
 test.skipIf(!hasDom)('a right-click opens the menu on that row, without opening the thread; Copy link writes its address', async () => {

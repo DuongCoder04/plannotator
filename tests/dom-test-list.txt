@@ -15,6 +15,7 @@ packages/ui/components/html-viewer/htmlPinpointProtocol.test.tsx
 packages/ui/components/html-viewer/htmlLiveProtocol.test.tsx
 packages/ui/components/html-viewer/HtmlViewer.vimHud.test.tsx
 packages/ui/components/html-viewer/HtmlViewer.bridgeAsset.test.tsx
+packages/ui/components/html-embed/HtmlEmbedBlock.test.tsx
 packages/ui/components/Viewer.vimMode.integration.test.tsx
 packages/ui/components/CodeFilePopout.lineScroll.test.tsx
 packages/ui/hooks/useVimSelection.test.tsx
@@ -56,6 +57,7 @@ packages/inbox/images.test.tsx
 packages/inbox/inlineImages.test.tsx
 packages/inbox/refusedImages.test.tsx
 packages/inbox/codeAttachment.test.tsx
+packages/inbox/copyFile.test.tsx
 packages/inbox/fileViewClean.test.tsx
 packages/inbox/links.test.tsx
 packages/inbox/issueRefs.test.tsx
@@ -70,14 +72,17 @@ packages/inbox/openQuestions.test.tsx
 packages/inbox/decisionMode.test.tsx
 packages/inbox/decisionCardContract.test.tsx
 packages/inbox/threadFolding.test.tsx
+packages/inbox/choiceLabels.test.tsx
 packages/inbox/pasteTarget.test.ts
 packages/inbox/seenOnSight.test.tsx
 packages/inbox/projectList.test.tsx
+packages/inbox/rowBadges.test.tsx
 packages/inbox/softQuietRows.test.tsx
 packages/inbox/sidebarQuiet.test.tsx
 packages/inbox/leakedSubject.test.tsx
 packages/inbox/connectPromptRow.test.tsx
 packages/inbox/boardPage.test.tsx
+packages/inbox/boardProjectFilter.test.tsx
 packages/inbox/boardSend.test.tsx
 packages/inbox/boardOff.test.tsx
 packages/inbox/soundIntro.test.tsx
@@ -106,6 +111,8 @@ packages/inbox/questionCardPhone.test.tsx
 packages/inbox/markRead.test.tsx
 packages/inbox/ack.test.tsx
 packages/inbox/actionChecklist.test.tsx
+packages/inbox/actionDraftSend.test.tsx
+packages/inbox/actionNoteRefusal.test.tsx
 packages/inbox/wordsOnlyTwoAsks.test.tsx
 packages/inbox/firstRunNotifications.test.tsx
 packages/inbox/tour.test.tsx
@@ -140,6 +147,7 @@ packages/inbox/sidebarUpdateDot.test.tsx
 packages/inbox/updateStuck.test.tsx
 packages/inbox/palettePicker.test.tsx
 packages/inbox/textSize.test.tsx
+packages/inbox/runLine.test.tsx
 packages/inbox/agentNoteDialog.test.tsx
 packages/inbox/agentsSettings.test.tsx
 packages/inbox/promptsSettings.test.tsx
@@ -150,9 +158,11 @@ packages/inbox/searchShortcut.test.tsx
 packages/inbox/openIn.test.tsx
 packages/inbox/htmlLinks.test.tsx
 packages/inbox/videoAttachment.test.tsx
+packages/inbox/markupAddsToReply.test.tsx
 packages/inbox/commentSubmitKey.test.tsx
 packages/inbox/skillReferences.test.tsx
 packages/inbox/messageComments.test.tsx
+packages/inbox/feedbackDialog.test.tsx
 packages/ui/components/HumanOnlySkillNotice.test.tsx
 packages/ui/components/MenuVersionSection.test.tsx
 packages/ui/components/blocks/QuestionBlock.test.tsx
@@ -189,6 +199,7 @@ packages/review-editor/App.agentTool.test.tsx
 packages/review-editor/App.guideViewed.test.tsx
 packages/review-editor/App.commitsJj.test.tsx
 packages/review-editor/App.emptyDiffSwitch.test.tsx
+packages/review-editor/App.planLookTwoTabs.test.tsx
 packages/review-editor/components/AnnotationToolbar.placement.test.tsx
 packages/review-editor/dock/panels/ReviewPROverviewPanel.ui.test.tsx
 packages/review-editor/components/FileHeader.edit.test.tsx
@@ -240,6 +251,7 @@ packages/ui/components/AnnotationPanel.editMentions.test.tsx
 packages/ui/components/Viewer.consumer.test.tsx
 packages/ui/components/Viewer.documentHeader.test.tsx
 packages/ui/components/Viewer.codeBlockHighlightSwap.test.tsx
+packages/ui/components/ImageAnnotator/ImageAnnotator.escape.test.tsx
 packages/ui/components/ImageAnnotator/ImageAnnotator.layout.test.tsx
 packages/ui/components/ImageAnnotator/ImageAnnotator.shortcuts.test.tsx
 packages/ui/utils/undoHistory.dom.test.ts
@@ -249,6 +261,7 @@ packages/ui/components/ImageThumbnail.seam.test.tsx
 packages/ui/hooks/useAnnotationHighlighter.test.tsx
 packages/ui/hooks/annotationRestoreVerify.test.tsx
 packages/ui/hooks/useAnnotationDraft.seam.test.tsx
+packages/ui/hooks/useAnnotationDraft.documents.test.tsx
 packages/ui/hooks/useExternalAnnotations.seam.test.tsx
 packages/ui/hooks/useAIChat.seam.test.tsx
 packages/ui/hooks/useAIChat.supersede.test.tsx
@@ -258,6 +271,7 @@ packages/ui/hooks/useLinkedDoc.test.tsx
 packages/ui/components/DocBadges.test.tsx
 packages/editor/planDiffAutoExit.test.tsx
 packages/editor/App.archiveReadOnly.test.tsx
+packages/editor/App.refCards.test.tsx
 packages/editor/App.htmlChrome.test.tsx
 packages/editor/App.sidebarTabsAgentTerminal.test.tsx
 packages/editor/App.htmlLinkDraft.test.tsx
@@ -311,6 +325,7 @@ packages/editor/App.editModeCrossBlockHighlights.test.tsx
 packages/editor/App.markdownUnanchored.test.tsx
 packages/editor/App.restoreAcrossEdit.test.tsx
 packages/editor/App.documentDrafts.test.tsx
+packages/editor/App.planLinkedDrafts.test.tsx
 packages/editor/App.bundle.test.tsx
 packages/editor/App.bundleBackScroll.test.tsx
 packages/editor/annotationDraftStaleRetry.test.tsx
@@ -345,6 +360,8 @@ packages/ui/components/Settings.compactDisplay.test.tsx
 packages/ui/components/Settings.customFont.test.tsx
 packages/ui/components/Settings.documentTextSize.test.tsx
 packages/ui/components/Settings.experimental.test.tsx
+packages/ui/components/Settings.gridChoice.test.tsx
+packages/editor/App.planLookNotice.test.tsx
 packages/ui/config/documentTextSizeSetting.test.ts
 packages/ui/utils/diffFonts.test.ts
 packages/ui/components/Settings.agentTool.test.tsx
