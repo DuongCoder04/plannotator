@@ -167,7 +167,7 @@ Notes:
 - A `--base` ref that does not resolve is a startup error (with near-match branch suggestions), never a silently wrong diff.
 - If your saved default diff mode is not base-relative (for example `uncommitted`), `--base` opens the session on `since-base` for that session and says so on stderr; your saved default is untouched.
 - A base with no remote tracking branch works fine — it simply never shows the "Baseline is behind" banner, which only applies to the remote default branch.
-- The flags are git-only: they error on jj, GitButler, Perforce, multi-repo workspace reviews, and with PR URLs (a PR's base comes from the pull request).
+- The flags work in Git and jj (see [Jujutsu (jj) diff modes](#jujutsu-jj-diff-modes): in jj, `--base` opens Line of work against that base). They error on GitButler, Perforce, multi-repo workspace reviews, and with PR URLs (a PR's base comes from the pull request).
 
 ### Jujutsu (jj) diff modes
 

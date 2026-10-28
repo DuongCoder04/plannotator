@@ -14,7 +14,7 @@ Run:
 plannotator review [--base <ref>] [--diff-type <type>] [directory-or-pr-url]
 ```
 
-Reviewing one layer of a stacked branch? Pass `--base <the branch immediately below yours>` so the review shows only what this layer adds, instead of everything since `main`. Both flags are session-only (the reviewer can change either in the UI; nothing is persisted) and git-only.
+Reviewing one layer of a stacked branch? Pass `--base <the branch immediately below yours>` so the review shows only what this layer adds, instead of everything since `main`. Both flags are session-only (the reviewer can change either in the UI; nothing is persisted) and work in Git and jj.
 
 To review another repository or worktree, pass its directory (relative to the current session or absolute), e.g. `plannotator review ../feature-worktree`. Quote paths containing spaces. Feedback names the selected directory; apply changes there.
 
