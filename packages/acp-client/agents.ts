@@ -1,5 +1,7 @@
 /**
- * Which agents can write a guide, and how to start them over ACP.
+ * Which agents Plannotator can start over ACP, and how: Guides' agents (the
+ * VS Code extension, `KNOWN_AGENTS`) and the Inbox runner's (packages/server/
+ * inbox-acp-runner.ts, which picks its own entries, `GROK` first).
  *
  * A small, bundled list: every entry's launch command and install command come
  * from the agent's own documentation (the source is linked on each entry). An
@@ -14,16 +16,35 @@
  * no setting source is narrowed. What the agent may do is governed by its own
  * settings; every permission request it sends is shown to the user with all
  * of its options. Guides adds only what a guide needs: its own MCP server (the
- * builder tools), the model and effort the user picked, and the prompt. An
- * adapter that would run its own bundled copy of the agent (Claude Code,
- * Codex) is pointed at the user's installed CLI instead (`cli`).
+ * builder tools), the model and effort the user picked, and the prompt.
  */
 
-import { findExecutable } from "../sources/runner";
-import type { ManagedAdapterSpec, ManagedLaunch } from "./adapters";
+import { findExecutable } from "./which";
 import { isSameProgram, type SameProgramCheck, type SameProgramSignature } from "./same-program";
-import { readEffortSelect, readModelSelect, type AgentLaunch, type ConfigChoice, type ConfigSelect } from "./client";
+import { readEffortSelect, readModelSelect, type ConfigChoice, type ConfigSelect } from "./client";
 import type { AuthMethod, SessionConfigOption } from "@agentclientprotocol/sdk";
+
+/** An npm package that starts the agent's ACP server, pinned to one version (Guides installs it: the extension's adapters.ts). */
+export interface ManagedAdapterSpec {
+  package: string;
+  /** Exact version (published at least 7 days before it was pinned). */
+  version: string;
+  /** The package's `bin` entry to run. */
+  bin: string;
+  /**
+   * `npm install --before`: the day the pin was chosen less 7 days, so every
+   * dependency npm resolves was published at least 7 days before the pin.
+   */
+  before: string;
+}
+
+/** What `managedLaunch` answers: run `command args` (with `env`). */
+export interface ManagedLaunch {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+  dir: string;
+}
 
 export interface AgentDescriptor {
   id: string;
@@ -56,14 +77,6 @@ export interface AgentDescriptor {
    * this exact version into its own storage when the adapter is missing.
    */
   adapter?: ManagedAdapterSpec;
-  /**
-   * The agent's own CLI, which its adapter runs only when the environment
-   * variable `env` names it; otherwise the adapter runs the copy it brings
-   * with it (claude-agent-acp: the Agent SDK's bundled Claude; codex-acp: its
-   * `@openai/codex` dependency). Guides sets `env` to the user's installed
-   * CLI, so a guide runs the same Claude or Codex the user set up.
-   */
-  cli?: { command: string; env: string; label: string };
   /** A program the adapter runs, which must be installed for it to work (Pi's `pi`). */
   requires?: { command: string; label: string; installCommand: string; docsUrl: string };
   docsUrl: string;
@@ -88,7 +101,15 @@ export interface AgentDescriptor {
    * Without `command`, the program that starts the agent (as resolved) runs `args`.
    */
   signIn?: { command?: string; args: readonly string[] };
+  /**
+   * The first line `<program> --version` prints, as this agent prints it. The
+   * Inbox's runner starts its program only when it answers this way
+   * (packages/server/inbox-acp-runner.ts), so another program installed under
+   * the same name is never started as this agent.
+   */
+  versionShape?: RegExp;
 }
+
 
 /**
  * `npm install --before` for every pinned adapter: the pins were chosen on
@@ -107,8 +128,6 @@ export const CLAUDE_CODE: AgentDescriptor = {
   installCommand: "npm install -g @agentclientprotocol/claude-agent-acp@0.91.0",
   // 0.91.0 was published 2026-10-15 (the repo installs nothing published in the last 7 days).
   adapter: { package: "@agentclientprotocol/claude-agent-acp", version: "0.91.0", bin: "claude-agent-acp", before: ADAPTER_PIN_BEFORE },
-  // claude-agent-acp 0.91.0 runs `CLAUDE_CODE_EXECUTABLE` when set (dist/acp-agent.js: `claudeCliPath`, and `pathToClaudeCodeExecutable` for each session).
-  cli: { command: "claude", env: "CLAUDE_CODE_EXECUTABLE", label: "Claude Code" },
   docsUrl: "https://github.com/agentclientprotocol/claude-agent-acp",
   defaultModel: /sonnet/i,
   defaultEffort: /^low$/i,
@@ -127,8 +146,6 @@ export const CODEX: AgentDescriptor = {
   installCommand: "npm install -g @agentclientprotocol/codex-acp@2.2.2",
   // 2.2.2 was published 2026-10-10; it brings the Codex CLI with it (@openai/codex).
   adapter: { package: "@agentclientprotocol/codex-acp", version: "2.2.2", bin: "codex-acp", before: ADAPTER_PIN_BEFORE },
-  // codex-acp 2.2.2 runs `CODEX_PATH` when set (dist/index.js: `startAcpServer`, and the `cli` subcommand).
-  cli: { command: "codex", env: "CODEX_PATH", label: "Codex" },
   docsUrl: "https://github.com/agentclientprotocol/codex-acp",
   defaultEffort: /^low$/i,
   // codex-acp's `agent` mode ("Auto review") writes in the workspace without asking; `agent-full-access` asks even less; `read-only` asks first.
@@ -236,6 +253,24 @@ export const PI: AgentDescriptor = {
   note: "Can't write guides yet: pi-acp does not pass MCP servers on to Pi (its README says they are \"accepted … but not wired through to pi\"), so Pi cannot reach the guide's tools.",
 };
 
+/**
+ * Grok Build, xAI's terminal agent, in its ACP mode (`grok agent stdio`).
+ * Source: ~/.grok/README.md ("Agent mode", "Installation"). Not one of Guides'
+ * agents: the Inbox runner starts it. It updates itself when it starts.
+ */
+export const GROK: AgentDescriptor = {
+  id: "grok",
+  label: "Grok Build",
+  engine: "grok",
+  command: "grok",
+  args: ["agent", "stdio"],
+  installCommand: "curl -fsSL https://x.ai/cli/install.sh | bash",
+  installCommandWindows: null,
+  docsUrl: "https://x.ai/cli",
+  // `grok --version`: `grok 1.0.70 (f50904eaee6c) [stable]`.
+  versionShape: /^grok \d+\.\d+\.\d+\b/,
+};
+
 /** The known agents, in the order the picker lists them (installed ones first). */
 export const KNOWN_AGENTS: readonly AgentDescriptor[] = [CLAUDE_CODE, CODEX, OPENCODE, COPILOT, CURSOR, KIRO, KILO, PI];
 
@@ -274,9 +309,9 @@ export type AdapterResolution =
       args: string[];
       env?: Record<string, string>;
       source: "setting" | "path" | "managed";
-      /** For an adapter that runs the agent's CLI (`cli`): which copy it runs, for the log on each launch. */
+      /** Set by a caller that adds to the launch (Guides' user-CLI choice): a line for its log on each launch. */
       cliLog?: string;
-      /** Guides pointed the adapter at the user's CLI: added to a failure before the session starts (an older CLI). */
+      /** Set by such a caller: `AgentLaunch.startHint` (added to a failure before the first session is ready). */
       startHint?: string;
     }
   | {
@@ -304,8 +339,7 @@ export interface CommandOverride {
  * the adapter copy Guided Reviews installed (`managed`).
  * When none is there, the answer says whether Guided Reviews can install the
  * adapter now (`reason: "adapter"`) or the user must install the agent. The
- * same for a local run and a pull request run. An adapter that runs the
- * agent's own CLI is pointed at the user's (`withAgentCli`).
+ * same for a local run and a pull request run.
  */
 export function resolveAgentLaunch(
   agent: AgentDescriptor,
@@ -314,75 +348,6 @@ export function resolveAgentLaunch(
   managed: (agent: AgentDescriptor) => ManagedLaunch | null = () => null,
   platform: NodeJS.Platform = process.platform,
   sameProgram: SameProgramCheck = isSameProgram,
-  cliChoice: CliChoice = {},
-): AdapterResolution {
-  const launch = resolveAdapter(agent, override, find, managed, platform, sameProgram);
-  return launch.ok ? withAgentCli(agent, launch, find, platform, cliChoice) : launch;
-}
-
-/** How an adapter's agent CLI is chosen (`withAgentCli`). */
-export interface CliChoice {
-  /** The environment the adapter inherits: a variable already set there is kept. Default: this process's. */
-  env?: Record<string, string | undefined>;
-  /** `plannotator.guides.useInstalledCli` (default on); off: the adapter runs its own copy. */
-  useInstalled?: boolean;
-}
-
-/**
- * Point the adapter at the user's own CLI (`claude`, `codex`), found the same
- * way as the adapter (PATH plus the usual install folders), so a guide runs
- * the Claude or Codex the user installed and configured. A variable the user
- * already set is left alone, and `useInstalled: false` keeps the adapter's
- * own copy. When the CLI is not found the adapter runs the copy it brings, as
- * it did before: someone who uses only the Claude Code VS Code extension has
- * no `claude` on PATH, and their guides keep working.
- *
- * Windows: only an `.exe` is used; a `.cmd` / `.bat` (what npm installs:
- * `%APPDATA%\npm\claude.cmd`) keeps the adapter's own copy. claude-agent-acp
- * 0.91.0 starts the path without a shell (the SDK's spawn, the `--cli`
- * sign-in, `auth status`), which Node refuses for a `.cmd`. codex-acp 2.2.2
- * starts its app-server through cross-spawn, but its `cli` subcommand uses
- * `shell: true` with the path unquoted, which breaks on a path with spaces.
- */
-export function withAgentCli(
-  agent: AgentDescriptor,
-  launch: Extract<AdapterResolution, { ok: true }>,
-  find: (name: string) => string | null,
-  platform: NodeJS.Platform = process.platform,
-  choice: CliChoice = {},
-): Extract<AdapterResolution, { ok: true }> {
-  const cli = agent.cli;
-  if (!cli) return launch;
-  const env = choice.env ?? process.env;
-  const own = `the copy of ${cli.label} that comes with ${agent.label}'s ACP adapter`;
-  const mine = env[cli.env]?.trim();
-  if (mine) return { ...launch, cliLog: `${agent.label} runs ${mine} (${cli.env}, set in your environment).` };
-  if (choice.useInstalled === false) return { ...launch, cliLog: `${agent.label} runs ${own} (plannotator.guides.useInstalledCli is off).` };
-  const found = find(cli.command);
-  if (!found) return { ...launch, cliLog: `\`${cli.command}\` is not on PATH, so ${agent.label} runs ${own}. Install the ${cli.label} CLI to use your own version.` };
-  if (platform === "win32" && !/\.exe$/i.test(found)) {
-    return { ...launch, cliLog: `${found} is not an .exe, which the adapter cannot start on Windows, so ${agent.label} runs ${own}. Install ${cli.label}'s native ${cli.command}.exe, or set ${cli.env} to an .exe, to use your own.` };
-  }
-  return {
-    ...launch,
-    env: { ...launch.env, [cli.env]: found },
-    cliLog: `${agent.label} runs your ${cli.command} at ${found} (${cli.env}).`,
-    startHint: `Guided Reviews ran your ${cli.command} at ${found}; it may be older than ${agent.label}'s ACP adapter expects. Update it, or turn off plannotator.guides.useInstalledCli to use ${own}.`,
-  };
-}
-
-/** What `AcpClient.start` needs to start a resolved agent in `cwd`. */
-export function agentLaunchFor(launch: Extract<AdapterResolution, { ok: true }>, cwd: string): AgentLaunch {
-  return { command: launch.command, args: launch.args, cwd, ...(launch.env && { env: launch.env }), ...(launch.startHint && { startHint: launch.startHint }) };
-}
-
-function resolveAdapter(
-  agent: AgentDescriptor,
-  override: CommandOverride,
-  find: (name: string) => string | null,
-  managed: (agent: AgentDescriptor) => ManagedLaunch | null,
-  platform: NodeJS.Platform,
-  sameProgram: SameProgramCheck,
 ): AdapterResolution {
   const configured = override.command?.trim();
   if (configured) {

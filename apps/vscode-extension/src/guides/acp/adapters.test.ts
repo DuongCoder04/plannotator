@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Runner } from "../sources/runner";
 import { adaptersRoot, hasManagedCopy, installAdapter, managedDir, managedLaunch, manualInstallCommand, npmCommand, npmReason, satisfiesNodeRange, sweepCopies } from "./adapters";
-import { ensureAgentLaunch } from "./ensure-launch";
-import { CLAUDE_CODE, CODEX, COPILOT, CURSOR, KILO, KIRO, KNOWN_AGENTS, OPENCODE, PI, canStart, detectAgents, resolveAgentLaunch, type AgentDescriptor } from "./agents";
+import { ensureAgentLaunch } from "@plannotator/acp-client/ensure-launch";
+import { CLAUDE_CODE, CODEX, COPILOT, CURSOR, KILO, KIRO, KNOWN_AGENTS, OPENCODE, PI, canStart, detectAgents, resolveAgentLaunch, type AgentDescriptor } from "@plannotator/acp-client/agents";
 
 const dirs: string[] = [];
 function tempRoot(): string {
@@ -66,7 +66,7 @@ describe("resolution order: setting, PATH, the installed copy, then install now"
     expect(resolveAgentLaunch(CLAUDE_CODE, { command: "mine" }, FOUND(["mine", "claude-agent-acp"]), managed)).toMatchObject({ ok: true, command: "/bin/mine", source: "setting" });
     expect(resolveAgentLaunch(CLAUDE_CODE, {}, FOUND(["claude-agent-acp"]), managed)).toMatchObject({ ok: true, command: "/bin/claude-agent-acp", source: "path" });
     const entry = join(managedDir(root, "claude-code"), "c1", "node_modules", "@agentclientprotocol", "claude-agent-acp", "dist", "index.js");
-    expect(resolveAgentLaunch(CLAUDE_CODE, {}, FOUND(["claude"]), managed, undefined, undefined, { env: {} })).toMatchObject({ ok: true, command: "/bin/node", args: [entry], env: { CLAUDE_CODE_EXECUTABLE: "/bin/claude" }, source: "managed" });
+    expect(resolveAgentLaunch(CLAUDE_CODE, {}, FOUND([]), managed)).toEqual({ ok: true, command: "/bin/node", args: [entry], source: "managed" });
   });
 
   it("says the adapter can be installed now when none is there, and a missing agent CLI needs the user", () => {

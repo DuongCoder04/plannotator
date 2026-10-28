@@ -1,20 +1,21 @@
 /**
  * claude-agent-acp and codex-acp run their own bundled Claude / Codex unless
  * CLAUDE_CODE_EXECUTABLE / CODEX_PATH name another one. These start the FAKE
- * ACP agent (tests/fake-acp-agent.ts, never a real adapter) the way Guides
- * starts an adapter, and read back what the adapter process was given.
+ * ACP agent (tests/helpers/fake-acp-agent.ts, never a real adapter) the way
+ * Guides starts an adapter, and read back what the adapter process was given.
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentLaunchFor, CLAUDE_CODE, CODEX, loginCommands, OPENCODE, resolveAgentLaunch, type AgentDescriptor, type CliChoice } from "./agents";
-import { AcpClient } from "./client";
-import { isSameProgram } from "./same-program";
+import { CLAUDE_CODE, CODEX, GROK, KNOWN_AGENTS, loginCommands, OPENCODE, resolveAgentLaunch, type AgentDescriptor } from "@plannotator/acp-client/agents";
+import { AcpClient } from "@plannotator/acp-client/client";
+import { isSameProgram } from "@plannotator/acp-client/same-program";
+import { AGENT_CLIS, agentLaunchFor, resolveGuidesLaunch, type CliChoice } from "./agent-cli";
 import { planSignIn } from "./sign-in";
 
-const FAKE_AGENT = join(import.meta.dir, "..", "..", "..", "tests", "fake-acp-agent.ts");
+const FAKE_AGENT = join(import.meta.dir, "..", "..", "..", "..", "..", "tests", "helpers", "fake-acp-agent.ts");
 const dir = mkdtempSync(join(tmpdir(), "pn-agent-cli-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -37,7 +38,7 @@ const onPath = (clis: string[], prefix = "/opt/me/bin/") => (name: string) => (n
 
 /** Resolve the agent as Guides does, with the fake adapter as its command. */
 function resolve(agent: AgentDescriptor, find: (name: string) => string | null, platform: NodeJS.Platform = process.platform, choice: CliChoice = {}) {
-  const launch = resolveAgentLaunch(agent, { command: process.execPath, args: [FAKE_AGENT] }, find, () => null, platform, isSameProgram, choice);
+  const launch = resolveGuidesLaunch(agent, { command: process.execPath, args: [FAKE_AGENT] }, find, () => null, platform, isSameProgram, choice);
   if (!launch.ok) throw new Error(launch.message);
   return launch;
 }
@@ -107,14 +108,37 @@ describe("an adapter runs the user's own CLI, not the copy it bundles", () => {
 describe("Windows: only an .exe, since the adapters start the path without a shell", () => {
   const npmDir = "C:\\Users\\me\\AppData\\Roaming\\npm\\";
   for (const agent of [CLAUDE_CODE, CODEX]) {
+    const cli = AGENT_CLIS[agent.id];
     it(`${agent.label}: an npm .cmd shim keeps the adapter's own copy; an .exe is used`, () => {
-      const cmd = resolve(agent, (name) => (name === process.execPath ? name : name === agent.cli!.command ? `${npmDir}${name}.cmd` : null), "win32", { env: {} });
+      const cmd = resolve(agent, (name) => (name === process.execPath ? name : name === cli.command ? `${npmDir}${name}.cmd` : null), "win32", { env: {} });
       expect(cmd.env).toBeUndefined();
       expect(cmd.cliLog).toContain(".cmd is not an .exe");
-      const exe = resolve(agent, (name) => (name === process.execPath ? name : name === agent.cli!.command ? `C:\\Users\\me\\.local\\bin\\${name}.EXE` : null), "win32", { env: {} });
-      expect(exe.env).toEqual({ [agent.cli!.env]: `C:\\Users\\me\\.local\\bin\\${agent.cli!.command}.EXE` });
+      const exe = resolve(agent, (name) => (name === process.execPath ? name : name === cli.command ? `C:\\Users\\me\\.local\\bin\\${name}.EXE` : null), "win32", { env: {} });
+      expect(exe.env).toEqual({ [cli.env]: `C:\\Users\\me\\.local\\bin\\${cli.command}.EXE` });
     });
   }
+});
+
+describe("scope: Guides only", () => {
+  const found = (name: string) => `/bin/${name}`;
+  it("Guides adds exactly one variable, and only for Claude Code and Codex", () => {
+    for (const a of KNOWN_AGENTS) {
+      const r = resolveGuidesLaunch(a, {}, found, () => null, "darwin", isSameProgram, { env: {} });
+      if (!r.ok) throw new Error(r.message);
+      const cli = AGENT_CLIS[a.id];
+      expect(r.env).toEqual(cli ? { [cli.env]: `/bin/${cli.command}` } : undefined);
+    }
+    expect(Object.keys(AGENT_CLIS).sort()).toEqual([CLAUDE_CODE.id, CODEX.id].sort());
+  });
+
+  it("the shared resolver (the Inbox runner's) adds no CLI variable, and Grok has none either way", () => {
+    for (const a of [CLAUDE_CODE, CODEX, GROK]) {
+      const shared = resolveAgentLaunch(a, {}, found, () => null, "darwin");
+      expect(shared.ok && shared.env).toBeFalsy();
+    }
+    const grok = resolveGuidesLaunch(GROK, {}, found, () => null, "darwin", isSameProgram, { env: {} });
+    expect(grok.ok && (grok.env ?? grok.cliLog ?? grok.startHint)).toBeFalsy();
+  });
 });
 
 describe("an older CLI: a start failure says which one Guides used", () => {

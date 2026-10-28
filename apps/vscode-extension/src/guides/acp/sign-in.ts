@@ -3,9 +3,9 @@
  * its environment are tested directly.
  */
 
+import type { AdapterResolution, AgentDescriptor, LoginCommand } from "@plannotator/acp-client/agents";
+import { planSpawn } from "@plannotator/acp-client/spawn-plan";
 import { findExecutable } from "../sources/runner";
-import type { AdapterResolution, AgentDescriptor, LoginCommand } from "./agents";
-import { planSpawn } from "./spawn-plan";
 
 export type SignInPlan =
   | { ok: true; command: string; args: string[]; env: Record<string, string> }

@@ -11,9 +11,8 @@ import { createGuideHtml, guideExportFilename, resolveGuideViewerAssets } from "
 import { GUIDE_VIEWER_MANIFEST } from "@plannotator/core/guide-viewer-manifest";
 import { findSavedGuideById } from "@plannotator/shared/guide-store";
 import { readGuideInstructions } from "@plannotator/shared/guide-instructions-store";
-import { AcpClient } from "../acp/client";
+import { AcpClient, killPendingProcessGroups } from "@plannotator/acp-client/client";
 import {
-  agentLaunchFor,
   CLAUDE_CODE,
   CUSTOM_AGENT_ID,
   customAgent,
@@ -23,18 +22,18 @@ import {
   installCommandFor,
   KNOWN_AGENTS,
   readAgentOptions,
-  resolveAgentLaunch,
   type AdapterResolution,
   type AgentDescriptor,
   type AgentOptionsCache,
   type AgentStatus,
   type CommandOverride,
   type LoginCommand,
-} from "../acp/agents";
-import { isSameProgram } from "../acp/same-program";
+} from "@plannotator/acp-client/agents";
+import { isSameProgram } from "@plannotator/acp-client/same-program";
+import { agentLaunchFor, resolveGuidesLaunch } from "../acp/agent-cli";
 import { planSignIn } from "../acp/sign-in";
 import { adaptersRoot, hasManagedCopy, installAdapter, managedLaunch, type InstallResult } from "../acp/adapters";
-import { ensureAgentLaunch, type ReadyLaunch } from "../acp/ensure-launch";
+import { ensureAgentLaunch, type ReadyLaunch } from "@plannotator/acp-client/ensure-launch";
 import { parseGuideLink } from "../core/adapter";
 import { loadDashboard, type DashboardModel } from "../dashboard";
 import { GuideGeneration, type GenerationState, type PendingPermission, type PermissionAnswer } from "../generation";
@@ -643,7 +642,7 @@ export class GuidesController implements vscode.Disposable {
 
   /** Resolution order: the command in settings, the agent on PATH, the adapter Guided Reviews installed. */
   private launchFor(agent: AgentDescriptor): AdapterResolution {
-    return resolveAgentLaunch(agent, agent.id === CUSTOM_AGENT_ID ? {} : this.agentOverride(agent.id), findExecutable, this.managedFor, process.platform, isSameProgram, {
+    return resolveGuidesLaunch(agent, agent.id === CUSTOM_AGENT_ID ? {} : this.agentOverride(agent.id), findExecutable, this.managedFor, process.platform, isSameProgram, {
       useInstalled: vscode.workspace.getConfiguration("plannotator.guides").get<boolean>("useInstalledCli") ?? true,
     });
   }
@@ -1728,6 +1727,8 @@ export class GuidesController implements vscode.Disposable {
     // VS Code is closing: no grace period for the agent or anything it started.
     this.run?.gen.kill();
     this.asks.kill();
+    // An agent stopped, exited or crashed earlier whose group still waits out its grace: killed now too.
+    killPendingProcessGroups();
     for (const d of this.disposables) d.dispose();
   }
 }

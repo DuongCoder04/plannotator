@@ -21,9 +21,9 @@ import {
   readAgentOptions,
   resolveAgentLaunch,
   type AgentDescriptor,
-} from "./agents";
-import { forgetSameProgramAnswers, isSameProgram, readVersionLine } from "./same-program";
-import { planSpawn, shimEntry } from "./spawn-plan";
+} from "@plannotator/acp-client/agents";
+import { forgetSameProgramAnswers, isSameProgram, readVersionLine } from "@plannotator/acp-client/same-program";
+import { planSpawn, shimEntry } from "@plannotator/acp-client/spawn-plan";
 
 /** What `npm install -g` writes on Windows for a package bin. */
 const NPM_SHIM = [
@@ -115,11 +115,8 @@ describe("the agent registry", () => {
 
   it("carries nothing that changes the user's agent config: no extra arguments, environment or session _meta", () => {
     for (const a of KNOWN_AGENTS) {
-      const r = resolveAgentLaunch(a, {}, FOUND([a.command, ...(a.requires ? [a.requires.command] : []), ...(a.cli ? [a.cli.command] : [])]), () => null, "darwin", isSameProgram, { env: {} });
-      if (!r.ok) throw new Error(r.message);
-      expect({ command: r.command, args: r.args, source: r.source }).toEqual({ command: `/bin/${a.command}`, args: [...a.args], source: "path" });
-      // The one variable added: the path of the user's own CLI, for an adapter that would otherwise run its bundled copy.
-      expect(r.env).toEqual(a.cli ? { [a.cli.env]: `/bin/${a.cli.command}` } : undefined);
+      const r = resolveAgentLaunch(a, {}, FOUND([a.command, ...(a.requires ? [a.requires.command] : [])]));
+      expect(r).toEqual({ ok: true, command: `/bin/${a.command}`, args: [...a.args], source: "path" });
       expect(Object.keys(a).sort()).not.toContain("readOnly");
     }
   });
@@ -165,7 +162,7 @@ describe("starting an agent", () => {
 
   it("uses a command override with its own args, or the agent's", () => {
     expect(resolveAgentLaunch(OPENCODE, { command: "/opt/oc" }, FOUND([]))).toEqual({ ok: true, command: "/opt/oc", args: ["acp"], source: "setting" });
-    expect(resolveAgentLaunch(CODEX, { command: "/opt/codex-acp", args: ["--x"] }, FOUND(["codex"]), () => null, "darwin", isSameProgram, { env: {} })).toMatchObject({ ok: true, command: "/opt/codex-acp", args: ["--x"], env: { CODEX_PATH: "/bin/codex" }, source: "setting" });
+    expect(resolveAgentLaunch(CODEX, { command: "/opt/codex-acp", args: ["--x"] }, FOUND([]))).toEqual({ ok: true, command: "/opt/codex-acp", args: ["--x"], source: "setting" });
     expect(resolveAgentLaunch(CODEX, { command: "nope" }, FOUND([]))).toEqual({ ok: false, reason: "setting", message: "The configured command for Codex, `nope`, was not found." });
   });
 
@@ -215,7 +212,7 @@ describe("cheap defaults", () => {
 
 describe("installing an agent on Windows", () => {
   it("types the documented PowerShell command, the same npm command, or nothing (the docs instead)", async () => {
-    const { installCommandFor } = await import("./agents");
+    const { installCommandFor } = await import("@plannotator/acp-client/agents");
     const win = (a: AgentDescriptor) => installCommandFor(a.installCommand, a.installCommandWindows, "win32");
     expect(win(CURSOR)).toBe("irm 'https://cursor.com/install?win32=true' | iex");
     expect(win(OPENCODE)).toBe("npm install -g opencode-ai");
