@@ -5024,7 +5024,6 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-bpf-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pn-inbox .ib-bpf[data-set] { border: 1px solid color-mix(in oklch, var(--primary) 40%, transparent); background: color-mix(in oklch, var(--primary) 10%, transparent); }
 .pn-inbox .ib-bpf[data-set] .ib-bpf-btn { height: 28px; border: 0; background: none; padding-right: 2px; color: var(--primary); }
-.pn-inbox .ib-bpf-static { cursor: default; }
 .pn-inbox .ib-bpf-x { flex: none; width: 24px; height: 24px; margin-right: 2px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; border: 0; background: none; color: var(--primary); cursor: pointer; }
 .pn-inbox .ib-bpf-x:hover { background: color-mix(in oklch, var(--primary) 16%, transparent); }
 .ib-bpf-menu { max-width: 320px; max-height: min(360px, 60vh); overflow-y: auto; overscroll-behavior: contain; }

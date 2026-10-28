@@ -88,11 +88,6 @@ export interface BoardPageProps {
    */
   project?: string | null;
   onProject?: (project: string | null) => void;
-  /**
-   * How the filter is drawn (throwaway, `?variant=`): 'menu' the Project chip with its menu, 'clear'
-   * only the project with × while the sidebar picks it, 'none' nothing.
-   */
-  projectChip?: 'menu' | 'clear' | 'none';
 }
 
 /**
@@ -361,12 +356,9 @@ export function BoardPage(props: BoardPageProps) {
   };
 
   // The project filter: the chip in the header, and the way back to every card when it hides them all.
-  const chipMode = props.projectChip ?? 'menu';
-  const showFilter =
-    model !== null && props.onProject !== undefined && (chipMode === 'menu' ? offered.length > 1 || project !== null : chipMode === 'clear' && project !== null);
-  const filter = showFilter ? (
-    <ProjectFilter projects={offered} names={names} value={project} phone={phone} menu={chipMode === 'menu'} onChange={(next) => props.onProject?.(next)} />
-  ) : null;
+  // Shown once the cards span two projects (or one is picked): a Board of one project looks as it always did.
+  const showFilter = model !== null && props.onProject !== undefined && (offered.length > 1 || project !== null);
+  const filter = showFilter ? <ProjectFilter projects={offered} names={names} value={project} phone={phone} onChange={(next) => props.onProject?.(next)} /> : null;
   const inProject = <b dir="auto">{projectName ?? 'this project'}</b>;
   const showAll = (
     <button

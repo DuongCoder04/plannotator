@@ -12,8 +12,6 @@ export interface ProjectFilterProps {
   /** The project the Board shows, or null for all of them. */
   value: string | null;
   phone: boolean;
-  /** False: no menu, only the project with × (the sidebar picks the project). */
-  menu?: boolean;
   onChange: (project: string | null) => void;
 }
 
@@ -26,7 +24,7 @@ export interface ProjectFilterProps {
  * Base UI carries the keys: arrows, Home/End, type-ahead, Escape and Tab
  * close, focus back to the chip. No shortcut of its own.
  */
-export function ProjectFilter({ projects, names, value, phone, menu = true, onChange }: ProjectFilterProps) {
+export function ProjectFilter({ projects, names, value, phone, onChange }: ProjectFilterProps) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   // The menu is drawn inside the window's root, so the window's styles (and theme) reach it.
@@ -42,28 +40,13 @@ export function ProjectFilter({ projects, names, value, phone, menu = true, onCh
       data-board-project-clear=""
       onClick={() => {
         onChange(null);
-        // Back on the chip; when the chip goes with the filter (one project left, or no menu), on the Board's heading.
+        // Back on the chip; when the chip goes with the filter (one project left), on the Board's heading.
         requestAnimationFrame(() => (trigger.current ?? document.querySelector<HTMLElement>('.ib-bpage .ib-bhead h1'))?.focus());
       }}
     >
       <Icon name="x" size={13} />
     </button>
   );
-  if (!menu)
-    return (
-      <span className="ib-bpf" data-set={value ? '' : undefined} data-board-project-filter={value ?? ''}>
-        <Tip content={label} when={(el) => isTextCut(el.querySelector('.ib-bpf-l') ?? el)}>
-          <span className="ib-bpf-btn ib-bpf-static">
-            <Icon name="folder" size={14} />
-            <span className="ib-bpf-l" dir="auto">
-              <span className="ib-sr">Project: </span>
-              {label}
-            </span>
-          </span>
-        </Tip>
-        {clear}
-      </span>
-    );
   return (
     <span className="ib-bpf" data-set={value ? '' : undefined} data-board-project-filter={value ?? ''}>
       <Menu.Root open={open} onOpenChange={setOpen} modal={false}>

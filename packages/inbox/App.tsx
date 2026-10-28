@@ -199,16 +199,6 @@ interface ThreadLoad {
   error: string;
 }
 
-/**
- * THROWAWAY (Board project filter, variants for the owner, `?variant=a|b|c`): a the Project chip in
- * the Board's header; b the sidebar's Projects pick the Board's project; c both. Removed once he picks.
- */
-const BOARD_FILTER_VARIANT: 'a' | 'b' | 'c' = (() => {
-  const v = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('variant');
-  return v === 'b' || v === 'c' ? v : 'a';
-})();
-const BOARD_SIDEBAR_SCOPE = BOARD_FILTER_VARIANT !== 'a';
-
 interface Route {
   page: 'inbox' | 'settings' | 'whats-new' | 'drafts' | 'tour' | 'board';
   /** The Board's list (`#board`, `#board=shipped`, `#board=icebox`; approval "inbox-board", step 2). */
@@ -3319,7 +3309,6 @@ function Inbox() {
         rowOf={(threadId) => rowById.get(threadId) ?? null}
         onView={(next) => go({ page: 'board', project: route.project, thread: null, board: next })}
         project={route.project}
-        projectChip={BOARD_FILTER_VARIANT === 'b' ? 'clear' : 'menu'}
         // The filter is a place, like the list's project: each pick is a history entry, and Back undoes it.
         onProject={(project) => {
           // An opened card stays open while the Board still shows it.
@@ -3631,8 +3620,7 @@ function Inbox() {
           ) : (
           <Sidebar
             page={route.page === 'tour' ? 'inbox' : fromCard ? 'board' : route.page}
-            projectId={route.page === 'board' ? (BOARD_SIDEBAR_SCOPE ? route.project : null) : fromCard ? (BOARD_SIDEBAR_SCOPE ? (route.boardProject ?? null) : null) : route.project}
-            boardScope={BOARD_SIDEBAR_SCOPE}
+            projectId={route.project}
             inboxCount={waitingCount(latestSections)}
             projects={projects}
             projectCounts={projectCounts}
@@ -3651,19 +3639,11 @@ function Inbox() {
             draftsCount={(drafts?.length ?? 0) + replyDrafts.length}
             onDrafts={() => leave({ page: 'drafts', project: null, thread: null })}
             // The Board (approval "inbox-board"): a row only while the person has it on; no count (the header has it).
-            onBoard={
-              boardEnabled
-                ? () =>
-                    // b, c: the project the list shows carries to the Board; on the Board the row shows every project again.
-                    leave({ page: 'board', project: BOARD_SIDEBAR_SCOPE && route.page === 'inbox' && !fromCard ? route.project : null, thread: null })
-                : undefined
-            }
+            onBoard={boardEnabled ? () => leave({ page: 'board', project: null, thread: null }) : undefined}
             // On the list it shows, Inbox (or a project) refreshes; with a thread open it closes it as before, and refreshes.
             onInbox={() => (route.page === 'inbox' && route.project === null ? void refreshInbox(null, route.thread !== null) : leave({ page: 'inbox', project: null, thread: null }))}
             onProject={(projectId) =>
-              BOARD_SIDEBAR_SCOPE && (route.page === 'board' || fromCard)
-                ? leave({ page: 'board', project: projectId, thread: null, board: route.page === 'board' ? (route.board ?? 'lanes') : 'lanes' })
-                : route.page === 'inbox' && route.project === projectId ? void refreshInbox(projectId, route.thread !== null) : leave({ page: 'inbox', project: projectId, thread: null })
+              route.page === 'inbox' && route.project === projectId ? void refreshInbox(projectId, route.thread !== null) : leave({ page: 'inbox', project: projectId, thread: null })
             }
             refreshes={route.page === 'inbox' && route.thread === null}
             refreshSpin={refreshSpin}
