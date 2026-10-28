@@ -623,6 +623,16 @@ export function InboxList(props: InboxListProps) {
             <span className="ib-path">{props.path}</span>
           </Tip>
         )}
+        {/* Tidy's ⋮ (the approved mock): before Search and New message, so New message stays at the far right. */}
+        {props.tidy && (
+          <TidyMenu
+            tidy={props.tidy}
+            phone={isMobile}
+            className="ib-lhead-more"
+            onRefresh={() => props.onRefresh?.()}
+            onSetAside={props.onSetAside}
+          />
+        )}
         {props.onSearch && (
           <button type="button" className="ib-lhead-search" data-open-search="" aria-label="Search" aria-haspopup="dialog" onClick={(event) => props.onSearch?.(event.currentTarget)}>
             <Icon name="search" size={20} />
@@ -643,15 +653,6 @@ export function InboxList(props: InboxListProps) {
               <Icon name="compose" size={isMobile ? 20 : 16} />
             </button>
           </Tip>
-        )}
-        {props.tidy && (
-          <TidyMenu
-            tidy={props.tidy}
-            phone={isMobile}
-            className="ib-lhead-more"
-            onRefresh={() => props.onRefresh?.()}
-            onSetAside={props.onSetAside}
-          />
         )}
       </div>
       {pulls && (
