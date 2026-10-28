@@ -34,7 +34,8 @@ import { runningT3Workers, stopT3Workers } from "@plannotator/shared/t3-workers"
 import { inboxStatus, readInboxRegistry, stopInbox } from "@plannotator/shared/inbox/registry";
 import { INBOX_TAILNET_HTTPS_PORT, takeDownInboxTailnet } from "./inbox-devices";
 import { takeDownInboxTailscale } from "./inbox-tailscale";
-import { forgetInboxAgents, planInboxAgentRemoval, type AgentEnvironment } from "./inbox-agents";
+import { agentHomeAllowed, forgetInboxAgents, planInboxAgentRemoval, type AgentEnvironment } from "./inbox-agents";
+import { qwenTrustRemoval } from "./inbox-qwen-trust";
 import { planInboxNoteRemoval } from "./inbox-agent-notes";
 import { INBOX_AGENT_LABELS, type InboxAgentId } from "@plannotator/core/inbox-types";
 import {
@@ -573,11 +574,20 @@ async function removeInboxAgentConnections(
   const plan = planInboxAgentRemoval(state.dataDir, agents, [environment.execPath, "inbox", "mcp"]);
   // The notes (inbox-agent-notes.ts): only the marked section, as the person left it.
   const notes = planInboxNoteRemoval(state.dataDir, agents, INBOX_AGENT_LABELS);
+  // Plannotator's trusted-sender token in Qwen Code (inbox-qwen-trust.ts): revoked in Qwen, whoever added the MCP entry.
+  const trust = agentHomeAllowed(agents) ? qwenTrustRemoval(state.dataDir, agents) : null;
   for (const skipped of [...plan.skipped, ...notes.skipped]) state.warnings.push(`Skipped: ${skipped}.`);
+  if (trust?.manual) state.warnings.push(`Skipped: ${trust.describe}: qwen is not where Plannotator can run it; run \`${trust.manual}\`.`);
   if (request.dryRun) {
     for (const item of plan.items) state.planned.push(item.describe);
     for (const note of notes.items) state.planned.push(note.describe);
+    if (trust && !trust.manual) state.planned.push(trust.describe);
     return;
+  }
+  if (trust && !trust.manual) {
+    const problem = await trust.apply();
+    if (problem) state.warnings.push(`Could not remove ${trust.describe}: ${problem}.`);
+    else state.removed.push(trust.describe);
   }
   for (const note of notes.items) {
     const result = note.apply();

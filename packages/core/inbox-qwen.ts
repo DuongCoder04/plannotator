@@ -13,6 +13,13 @@
  * session on every tool call (`_meta["qwen-code/invocation"].sessionId`).
  */
 
+/**
+ * The first Qwen Code the Inbox wakes (v0.24.0): it has trusted senders
+ * (`qwen sessions controllers`), so a reply goes in without review
+ * (packages/server/inbox-qwen-wake.ts).
+ */
+export const INBOX_QWEN_WAKE_MIN_VERSION = "0.24.0";
+
 /** The host id a Qwen Code session is recorded under. */
 export const INBOX_QWEN_HOST = "qwen";
 
@@ -66,6 +73,8 @@ export interface InboxQwenSessionRecord {
   procStart: string | null;
   /** Inode of the writer's pid namespace on Linux, null elsewhere. */
   pidNs: number | null;
+  /** The session's working folder when it registered (its project's `.qwen/settings.json` is read from there); null when the record does not say. */
+  cwd: string | null;
   /** Epoch ms. */
   startedAt: number;
   /** The record's file had the `<pid>-<8 hex>` form: a process hosting several sessions (ACP, the daemon). */
@@ -109,6 +118,7 @@ export function parseQwenSessionRecord(value: unknown, file: { pid: number; shar
     ipcToken,
     procStart: typeof record.procStart === "string" && record.procStart.length < 256 ? record.procStart : null,
     pidNs: typeof record.pidNs === "number" && Number.isSafeInteger(record.pidNs) ? record.pidNs : null,
+    cwd: typeof record.cwd === "string" && record.cwd.startsWith("/") && record.cwd.length < 4096 && !record.cwd.includes("\u0000") ? record.cwd : null,
     startedAt: typeof record.startedAt === "number" && Number.isFinite(record.startedAt) ? record.startedAt : 0,
     shared: file.shared,
   };

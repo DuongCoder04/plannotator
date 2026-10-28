@@ -132,6 +132,44 @@ function main() {
     else process.exit(code);
     return;
   }
+  // qwen sessions controllers add|list|remove (Qwen's trusted senders): kept in $QWEN_HOME/peer-controllers.json as Qwen
+  // does, with the token itself (Qwen keeps a hash) so a test can tell which token is still good.
+  // FAKE_QWEN_CONTROLLERS_FAIL=1 makes every call fail as a write error does.
+  if (name === "qwen" && args[0] === "sessions" && args[1] === "controllers") {
+    const home = process.env.QWEN_HOME ? path.resolve(process.env.QWEN_HOME) : path.join(fakeHome, ".qwen");
+    const file = path.join(home, "peer-controllers.json");
+    const registry = readJson(file);
+    const grants = Array.isArray(registry.controllers) ? registry.controllers : [];
+    if (process.env.FAKE_QWEN_CONTROLLERS_FAIL === "1") {
+      process.stderr.write("Error: could not write " + file + ": EACCES: permission denied\n");
+      process.exit(1);
+    }
+    const save = () => writeJson(file, { schemaVersion: 1, controllers: grants });
+    if (args[2] === "add") {
+      const label = args[args.indexOf("--label") + 1] || "";
+      if (grants.some((g) => g.label.toLowerCase() === label.toLowerCase())) {
+        process.stderr.write("Error: A controller called \"" + label + "\" already exists. Labels are how you tell them apart when revoking, so pick another.\n");
+        process.exit(1);
+      }
+      const crypto = require("crypto");
+      const grant = { id: "c_" + crypto.randomBytes(4).toString("hex"), label, token: "qpc_" + crypto.randomBytes(32).toString("hex"), createdAt: Date.now() };
+      grants.push(grant);
+      save();
+      process.stdout.write(JSON.stringify(grant) + "\n");
+    } else if (args[2] === "list") {
+      for (const g of grants) process.stdout.write(JSON.stringify({ id: g.id, label: g.label, createdAt: g.createdAt }) + "\n");
+    } else if (args[2] === "remove") {
+      const at = grants.findIndex((g) => g.id === args[3]);
+      if (at < 0) {
+        process.stderr.write("Error: no controller has the id \"" + args[3] + "\". Run \"qwen sessions controllers list\" to see them.\n");
+        process.exit(1);
+      }
+      grants.splice(at, 1);
+      save();
+      process.stdout.write("Removed controller.\n");
+    }
+    process.exit(0);
+  }
   if (args[0] !== "mcp") process.exit(0);
   switch (name) {
     case "codex": {

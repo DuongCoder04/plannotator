@@ -7,7 +7,7 @@
  */
 import { expect, test } from 'bun:test';
 import type { InboxAgentRow, InboxAgentsModel } from '@plannotator/core/inbox-types';
-import { cardReport, notePrimaryAction, noteQuestionRows, noteWithoutMarkers, primaryAction, sentence, splitPath, tidyReason } from './agents';
+import { bandLines, cardReport, notePrimaryAction, noteQuestionRows, noteWithoutMarkers, primaryAction, sentence, splitPath, tidyReason } from './agents';
 
 function row(id: InboxAgentRow['id'], over: Partial<InboxAgentRow> = {}): InboxAgentRow {
   return {
@@ -62,6 +62,16 @@ test('the band reads only unseen news, and never a skipped run', () => {
   expect(cardReport(model({ last_report: report }))).not.toBeNull();
   expect(cardReport(model({ last_report: { ...report, seen: true } }))).toBeNull();
   expect(cardReport(model({ last_report: { ...report, added: [] } }))).toBeNull();
+});
+
+test('a run that made Plannotator a trusted sender in Qwen Code says so in the band, alone or with what it connected', () => {
+  const report = { at: '', first: true, added: ['qwen' as const], already: [], failed: [], foreign: [], manual: [], unfinished: [], claude_code: false, trusted: ['qwen' as const] };
+  const lines = bandLines(report);
+  expect(lines.connected).toBe('Connected Qwen Code to the Inbox.');
+  expect(lines.trusted).toBe('Plannotator is now a trusted sender in Qwen Code, so your replies go into its running sessions.');
+  // Already connected before: the token alone is news.
+  expect(cardReport(model({ last_report: { ...report, added: [] } }))).not.toBeNull();
+  expect(bandLines({ ...report, trusted: [] }).trusted).toBeNull();
 });
 
 test('the primary: up to three names, then a count; nothing ticked closes without adding', () => {

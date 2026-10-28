@@ -48,13 +48,15 @@ export function noteQuestionOpen(model: InboxAgentsModel): boolean {
 export function cardReport(model: InboxAgentsModel): InboxConnectReport | null {
   const report = model.last_report;
   if (!report || report.seen || report.skipped) return null;
-  const news = report.added.length + report.failed.length + report.foreign.length + (report.manual_why?.length ?? 0);
+  const news = report.added.length + report.failed.length + report.foreign.length + (report.manual_why?.length ?? 0) + (report.trusted?.length ?? 0);
   return news > 0 ? report : null;
 }
 
 /** The band's lines (option A of the approved dialog): what was connected, who needs a person, what failed, whose entry is someone else's. */
 export interface BandLines {
   connected: string | null;
+  /** Agents this run registered Plannotator with as a trusted sender (Qwen Code), so replies go into their running sessions. */
+  trusted: string | null;
   byHand: string | null;
   failed: { agent: InboxAgentId; text: string }[];
   foreign: { agent: InboxAgentId; text: string }[];
@@ -65,6 +67,7 @@ export function bandLines(report: InboxConnectReport): BandLines {
   const manual = [...new Set((report.manual_why ?? []).map((m) => m.agent))];
   return {
     connected: report.added.length > 0 ? `Connected ${joinNames(report.added.map(label))} to the Inbox${report.first ? '' : ' (new on this computer)'}.` : null,
+    trusted: report.trusted?.length ? `Plannotator is now a trusted sender in ${joinNames(report.trusted.map(label))}, so your replies go into its running sessions.` : null,
     byHand: manual.length > 0 ? `${joinNames(manual.map(label))} ${manual.length === 1 ? 'needs' : 'need'} connecting by hand:` : null,
     failed: report.failed.map((f) => ({ agent: f.agent, text: `Couldn't connect ${label(f.agent)}: ${sentence(tidyReason(f.reason))}` })),
     foreign: report.foreign.map((f) => ({ agent: f.agent, text: `${label(f.agent)} has its own plannotator-inbox entry${f.path ? ` in ${f.path}` : ''}; Plannotator left it alone.` })),

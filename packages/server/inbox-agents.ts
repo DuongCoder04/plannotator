@@ -54,6 +54,7 @@ import {
 } from "@plannotator/shared/config";
 import { inboxDir } from "@plannotator/shared/inbox/schema";
 import { qwenHome } from "@plannotator/shared/inbox/qwen-sessions";
+import { INBOX_QWEN_TRUST_ON_CONNECT, ensureQwenTrust, setQwenTrust, type QwenTrustOutcome } from "./inbox-qwen-trust";
 import { addJsonMember, removeJsonMember } from "./json-edit";
 import {
   describeFsError,
@@ -1336,8 +1337,19 @@ export async function connectInboxAgents(options: ConnectOptions): Promise<Inbox
     const record = file.agents[spec.id];
     if (record && (record.state === "added" || record.state === "found") && !record.removed_outside_at) report.already.push(spec.id);
   }
+  // Qwen Code connected: Plannotator registers itself as its trusted sender, so the person's replies go into its
+  // running sessions (inbox-qwen-trust.ts; the owner's answer, 2026-10-27). A token already held is kept.
+  const qwen = file.agents.qwen;
+  if (INBOX_QWEN_TRUST_ON_CONNECT && qwen?.reach === "mcp" && (qwen.state === "added" || qwen.state === "found") && !qwen.removed_outside_at) {
+    const trust = await ensureQwenTrust(options.dataDir, e, { ...(options.signal ? { signal: options.signal } : {}), now }).catch(
+      (error: unknown): QwenTrustOutcome => ({ kind: "failed", reason: error instanceof Error ? error.message : String(error) }),
+    );
+    if (options.signal?.aborted) return report;
+    if (trust.kind === "added") (report.trusted ??= []).push("qwen");
+    if (trust.kind === "failed" && !trust.repeated) (report.trust_failed ??= []).push({ agent: "qwen", reason: trust.reason });
+  }
   if (report.added.length > 0 && !file.first_connected_at) file.first_connected_at = at;
-  const news = report.added.length > 0 || report.failed.length > 0 || report.foreign.length > 0;
+  const news = report.added.length > 0 || report.failed.length > 0 || report.foreign.length > 0 || (report.trusted?.length ?? 0) > 0;
   file.last_report = news ? { ...report, seen: false } : file.last_report;
   try {
     writeInboxAgents(options.dataDir, file);
@@ -1362,6 +1374,12 @@ export function formatConnectReport(report: InboxConnectReport): string[] {
       lines.push(`Connected ${inboxAgentList(report.added)} to the Inbox (new on this computer).`);
     }
     if (report.added.includes("claude-app")) lines.push("Restart the Claude app to use it there.");
+  }
+  if (report.trusted?.length) {
+    lines.push(`Plannotator is now a trusted sender in ${inboxAgentList(report.trusted)}, so your replies go into its running sessions. Turning it off in Settings → Agents, or plannotator uninstall, removes that.`);
+  }
+  for (const failure of report.trust_failed ?? []) {
+    lines.push(`${INBOX_AGENT_LABELS[failure.agent]} won't get your replies by itself: ${failure.reason}. Plannotator tries again at the next plannotator inbox.`);
   }
   for (const failure of report.failed) {
     lines.push(`Couldn't connect ${INBOX_AGENT_LABELS[failure.agent]}: ${failure.reason}. Plannotator tries again at the next plannotator inbox.`);
@@ -1640,7 +1658,14 @@ export async function setInboxAgentReach(id: InboxAgentId, on: boolean, options:
     if (outcome.kind === "manual") return `${INBOX_AGENT_LABELS[id]} is connected by hand: ${outcome.why}`;
     if ("record" in outcome && outcome.record) file.agents[id] = outcome.record;
     else if (previous) delete file.agents[id];
+    // Turned on by the person: also a trusted sender again, even after a revoke in Qwen. A failure leaves it reached through MCP.
+    if (id === "qwen" && INBOX_QWEN_TRUST_ON_CONNECT) await setQwenTrust(true, options.dataDir, e).catch(() => null);
   } else {
+    // Qwen Code: its trusted-sender token goes first; one that cannot be revoked keeps Qwen Code on, and says why.
+    if (id === "qwen") {
+      const problem = await setQwenTrust(false, options.dataDir, e);
+      if (problem) return `Plannotator's trusted-sender token in Qwen Code could not be removed: ${problem}`;
+    }
     const record = file.agents[id];
     const ours = ourCommands(options, record);
     const item = planInboxAgentRemoval(options.dataDir, e, ours[0]!).items.find((candidate) => candidate.agent === id);
