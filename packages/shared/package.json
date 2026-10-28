@@ -48,6 +48,7 @@
     "./html-diff": "./html-diff.ts",
     "./integrations-common": "./integrations-common.ts",
     "./repo": "./repo.ts",
+    "./repo-file": "./repo-file.ts",
     "./reference-common": "./reference-common.ts",
     "./file-browser-watch-core": "./file-browser-watch-core.ts",
     "./favicon": "./favicon.ts",
