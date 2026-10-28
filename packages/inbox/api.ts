@@ -48,6 +48,7 @@ import type {
   InboxMessageWire,
   InboxNoteAgentId,
   InboxNotifyReach,
+  InboxProjectRepo,
   InboxWindowPermission,
 } from '@plannotator/core/inbox-types';
 
@@ -875,8 +876,8 @@ export const inboxApi = {
   /** The opened card's edits: title, notes; a link (a thread, an issue or PR); sent to an agent (the thread just started). */
   editCard: (id: string, change: { op: 'edit'; title?: string; notes?: string | null } | { op: 'link'; thread_id?: string; ref?: string } | { op: 'send'; thread_id: string }) =>
     post<{ card: InboxCardWire }>(`/api/inbox/cards/${encodeURIComponent(id)}`, change),
-  /** The opened card: the card and its history, newest first. */
-  card: (id: string) => get<{ card: InboxCardWire; history: InboxCardHistoryEntry[] }>(`/api/inbox/cards/${encodeURIComponent(id)}`),
+  /** The opened card: the card and its history, newest first, and its project's repo (absent from an older Inbox). */
+  card: (id: string) => get<{ card: InboxCardWire; history: InboxCardHistoryEntry[]; repo?: InboxProjectRepo | null }>(`/api/inbox/cards/${encodeURIComponent(id)}`),
   /** The opened card's links, resolved now (read only). */
   cardRefs: (id: string) => get<{ refs: { ref: InboxCardRef; result: ForgeRefCardResult }[] }>(`/api/inbox/cards/${encodeURIComponent(id)}/refs`),
   /** The person opened the Board: the look runs through the cursor of the read it showed (the server clamps it). */

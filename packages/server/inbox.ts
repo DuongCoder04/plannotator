@@ -2709,10 +2709,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       if (cardMatch && req.method === "GET") {
         const refused = crossSiteCardRead(req);
         if (refused) return refused;
-        // The opened card: the card and its history, newest first.
+        // The opened card: the card and its history, newest first, and (additive) its own
+        // project's repo, so `#123` and `owner/repo#123` in its text link as in a thread.
         const card = store.card(cardMatch[1]!);
         if (!card) throw new InboxError("card_not_found", `No card ${cardMatch[1]}.`);
-        return json({ serverSession, card: store.cardWire(card), history: store.cardHistory(card.id) });
+        const root = store.project(card.project_id)?.root;
+        return json({ serverSession, card: store.cardWire(card), history: store.cardHistory(card.id), repo: root ? repos.get(root) : null });
       }
       if (cardMatch) {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);

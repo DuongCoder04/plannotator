@@ -344,3 +344,56 @@ describe('digit-only #refs vs hex swatches (#1932)', () => {
     }
   });
 });
+
+describe('cross-repo owner/repo#N refs', () => {
+  const render = (text: string, opts: { githubRepo?: string; repoHost?: string; onOpenCodeFile?: (p: string) => void } = {}) =>
+    renderToStaticMarkup(createElement(InlineMarkdown, { text, ...opts }));
+  const hrefs = (html: string) => [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
+
+  test('links on GitHub with the label as written; a bare #N still goes to the project', () => {
+    const html = render('herdr#104 is backnotprop/plannotator-tui#104, not #104.', { githubRepo: 'acme/herdr', repoHost: 'github.com' });
+    expect(html).toContain('>backnotprop/plannotator-tui#104</a>');
+    expect(hrefs(html)).toEqual([
+      'https://github.com/backnotprop/plannotator-tui/issues/104',
+      'https://github.com/acme/herdr/issues/104',
+    ]);
+  });
+
+  test('links on the project\'s GitLab host with /-/issues', () => {
+    const html = render('See group/project#7.', { githubRepo: 'team/app', repoHost: 'gitlab.example.com' });
+    expect(hrefs(html)).toEqual(['https://gitlab.example.com/group/project/-/issues/7']);
+  });
+
+  test('no remote links on github.com; an unknown self-hosted host stays plain text', () => {
+    expect(hrefs(render('See owner/repo#5'))).toEqual(['https://github.com/owner/repo/issues/5']);
+    const html = render('See owner/repo#5', { githubRepo: 'a/b', repoHost: 'git.internal.example' });
+    expect(html).not.toContain('<a');
+    expect(html).toContain('owner/repo#5');
+  });
+
+  test('a repo named like a .js file is a ref, not a code path', () => {
+    const html = render('Fixed in vercel/next.js#1 and my_org/repo#2', { onOpenCodeFile: () => {} });
+    expect(hrefs(html)).toEqual([
+      'https://github.com/vercel/next.js/issues/1',
+      'https://github.com/my_org/repo/issues/2',
+    ]);
+  });
+
+  test('file paths with a fragment are not refs', () => {
+    for (const text of ['docs/guide.md#2', 'src/foo.ts#L10', 'src/foo.ts#10', 'packages/core/forge-refs.ts#12', '../repo#3']) {
+      expect(render(text)).not.toContain('/issues/');
+    }
+  });
+
+  test('a URL containing owner/repo#N is linked once, whole', () => {
+    const url = 'https://example.com/search?q=owner/repo#12';
+    const html = render(`Open ${url} now`);
+    expect(hrefs(html)).toEqual([url]);
+  });
+
+  test('inside inline code it is not linked', () => {
+    const html = render('Run `gh pr view owner/repo#12`');
+    expect(html).not.toContain('<a');
+    expect(html).toContain('<code');
+  });
+});

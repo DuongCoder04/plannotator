@@ -421,6 +421,12 @@ describe("questions end to end: MCP send, window picks and Send, agent reads", (
     expect(example!.parsed.choices.map((choice) => choice.recommended)).toEqual([true, false]);
     expect(agentTool.description).toContain("plannotator inbox --help");
     expect(agentTool.description.length).toBeLessThan(2048);
+    // Where a ref links (a bare #104 meant for another repo once linked into the thread's project):
+    // in both `body` descriptions, which reach the model whole; the capped texts above stay as they were.
+    const refRule = "A bare #123 links to this project's repository. For an issue or PR in another repo, write owner/repo#123 or its full URL.";
+    expect(bodySchema.description).toContain(refRule);
+    expect(agentBody).toContain(refRule);
+    expect(INBOX_MCP_INSTRUCTIONS).not.toContain(refRule);
 
     const sendResult = await client.callTool({
       name: "send_message",
