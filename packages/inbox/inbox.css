@@ -265,12 +265,17 @@
 
   height: 100%;
   font-family: var(--font-sans);
+  /* Inter's stylistic sets; on Linux, Inter's only (see body in packages/ui/theme.css, #1961). */
   font-feature-settings: "ss01", "ss02", "cv01";
   color: var(--foreground);
   background: var(--ib-ground);
   font-size: var(--ib-fs-14, 14px);
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
+}
+:root.pn-os-linux .pn-inbox {
+  font-feature-settings: normal;
+  font-variant-alternates: styleset(pn-inter) character-variant(pn-inter-one);
 }
 /* Where relative colours and sign() are there: the shadows' colour is the background taken toward black in its
    own hue, and text Soft draws on the deeper ground or a lifted surface is mixed a little toward black on a light
