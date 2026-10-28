@@ -1297,7 +1297,37 @@ export interface InboxListRow extends InboxThreadSummary {
    * agent wrote last, a 👍 not sent). Absent from an older Inbox.
    */
   delivery?: InboxRowDelivery | null;
+  /**
+   * What the row's Stopped / Holds up badge holds (approval "inbox-row-badges",
+   * hover card A): each open question or action item that stops the agent or
+   * holds something up, in thread order, at most `INBOX_ROW_WAITS_MAX`, its
+   * words capped (`INBOX_ROW_WAIT_TEXT_MAX`, `INBOX_ROW_WAIT_HOLDS_MAX`). Absent
+   * when none does, and from an older Inbox (the card then lists
+   * `questions.holds_up`). The window's list only: agents' rows never carry it.
+   */
+  waits?: InboxRowWait[];
 }
+
+/** One question behind a row's badge (`InboxListRow.waits`). */
+export interface InboxRowWait {
+  message_id: string;
+  key: string;
+  /** Its place among its message's blocks of its kind: Q1 is 0 (A1 for an action item, `key` starts `a-`). */
+  position: number;
+  prompt: string;
+  /** Its `Stopped:` line, or null. */
+  stopped: string | null;
+  /** Its `Holds up:` entries. */
+  holds_up: string[];
+}
+
+/** At most this many questions on a row's `waits`. */
+export const INBOX_ROW_WAITS_MAX = 8;
+/** A wait's prompt and `Stopped:` line are cut to this many characters ("…"). */
+export const INBOX_ROW_WAIT_TEXT_MAX = 200;
+/** At most this many `Holds up:` entries per wait, each cut to `INBOX_ROW_WAIT_ENTRY_MAX`. */
+export const INBOX_ROW_WAIT_HOLDS_MAX = 8;
+export const INBOX_ROW_WAIT_ENTRY_MAX = 120;
 
 export interface InboxListSection {
   id: InboxSectionId;
