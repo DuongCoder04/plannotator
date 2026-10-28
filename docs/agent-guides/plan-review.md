@@ -70,7 +70,9 @@ holding the tool call until the reviewer decides, so the session stays usable
 during review and "Ask this session" works there. The decision is delivered
 later by `deliverPlanDecision` (`apps/pi-extension/index.ts`) as a
 `pi.sendUserMessage(..., { deliverAs: "followUp" })`, the same delivery review
-and annotate feedback use: approval switches to the executing phase first
+and annotate feedback use (Oh My Pi only queues a message that names
+`deliverAs`, even when idle, so there an idle session gets it without one:
+`resolveIdleDeliveryOptions` in `current-pi-session.ts`): approval switches to the executing phase first
 (tools, model, `plannotator-execute` entry) and sends the approved /
 approved-with-notes prompt, which starts the execution turn and its framing;
 deny and answers-only send `composePlanDeniedMessage`; external execution mode
