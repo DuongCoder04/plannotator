@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import type { Block } from '../../types';
 import { copyTextToClipboard } from '../../utils/clipboard';
-import { applyHighlight, codeBlockClassName } from '../../utils/codeHighlight';
+import { applyHighlight, codeBlockClassName, codeBlockKeepsLayout } from '../../utils/codeHighlight';
 import { useFenceTheme } from '../../hooks/useFenceTheme';
 
 interface CodeBlockProps {
@@ -54,7 +54,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ block, onHover, onLeave })
     >
       <button
         onClick={handleCopy}
-        className="absolute top-2 right-2 p-1.5 rounded-md bg-muted/80 hover:bg-muted text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity z-10"
+        className="absolute top-2 right-2 p-1.5 rounded-md bg-muted/80 hover:bg-muted text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity z-10"
         title={copied ? 'Copied!' : 'Copy code'}
       >
         {copied ? (
@@ -68,7 +68,11 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ block, onHover, onLeave })
         )}
       </button>
       <pre className="rounded-lg text-[13px] overflow-x-auto bg-muted/50 border border-border/30">
-        <code ref={codeRef} className={codeClassName}>{block.content}</code>
+        <code
+          ref={codeRef}
+          className={codeClassName}
+          data-keep-layout={codeBlockKeepsLayout(block.content) ? '' : undefined}
+        >{block.content}</code>
       </pre>
     </div>
   );

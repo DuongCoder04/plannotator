@@ -111,6 +111,22 @@ describe("feedback archive: record shape", () => {
     expect(record.annotations?.find((a) => a.id === "l1")?.scope).toBeUndefined();
   });
 
+  test("a comment made in a Markdown preview records the text it quotes", () => {
+    const dataDir = useTempDataDir();
+    appendFeedbackRecord({
+      project: PROJECT,
+      surface: "review",
+      decision: "feedback",
+      feedback: "preview comment",
+      annotations: [
+        { id: "m1", type: "comment", scope: "file", filePath: "docs/a.md", lineStart: 1, lineEnd: 1, text: "Link it", markdownPreview: { originalText: "new installer", view: "diff" } },
+      ],
+    });
+    const record = readIndex(dataDir)[0];
+    expect(record.annotations?.[0]?.originalText).toBe("new installer");
+    expect(record.annotations?.[0]?.scope).toBe("file");
+  });
+
   test("provenance is preserved so `source == null` filters the reviewer's own comments", () => {
     // Regression: external/WebMCP/agent findings are archived (the submitted
     // text already embeds them) but must stay distinguishable, or "analyze my
@@ -310,6 +326,95 @@ describe("feedback archive: project bucketing", () => {
     expect(normalizeFeedbackProject("../../etc")).toBe("etc");
     expect(deriveFeedbackProject("/Users/x/code/plannotator")).toBe("plannotator");
     expect(deriveFeedbackProject(undefined)).toBe("_unknown");
+  });
+});
+
+describe("feedback archive: diagram anchors", () => {
+  test("a diagram comment records its validated anchor; a malformed one and a text comment stay anchor-free", () => {
+    // Regression: without the field a comment on a flowchart node archives
+    // as the quote "Approve?" and the index cannot say WHICH node, in WHICH
+    // fence line, the comment was about.
+    const dataDir = useTempDataDir();
+    const anchor = { v: 1, family: "flowchart", kind: "node", id: "D", label: "Approve?", sourceLine: [7, 7] };
+    appendFeedbackRecord({
+      project: PROJECT,
+      origin: "claude-code",
+      surface: "plan",
+      decision: "deny",
+      target: { slug: "plan-2026-09-17" },
+      feedback: "rename",
+      annotations: [
+        { id: "d1", type: "COMMENT", text: "rename", originalText: "Approve?", blockId: "block-4", diagramAnchor: anchor },
+        { id: "d2", type: "COMMENT", text: "junk", originalText: "x", diagramAnchor: { kind: "node" } },
+        { id: "t1", type: "COMMENT", text: "plain", originalText: "some words" },
+      ],
+    });
+    const record = readIndex(dataDir)[0]!;
+    expect(record.annotations?.[0]?.diagramAnchor).toEqual(anchor);
+    expect(record.annotations?.[1]).not.toHaveProperty("diagramAnchor");
+    expect(record.annotations?.[2]).not.toHaveProperty("diagramAnchor");
+  });
+});
+
+describe("feedback archive: image regions (#2100)", () => {
+  test("a region comment records its validated region; a malformed one is left out", () => {
+    // Regression: without the field a comment on part of a screenshot
+    // archives as the image's src and the index cannot say WHERE on it.
+    const dataDir = useTempDataDir();
+    const region = { v: 1, src: "figures/status-colors.png", sourceLine: 6, box: { x: 1820, y: 380, w: 420, h: 160 }, naturalWidth: 3664, naturalHeight: 1453 };
+    appendFeedbackRecord({
+      project: PROJECT,
+      origin: "claude-code",
+      surface: "plan",
+      decision: "deny",
+      target: { slug: "plan-2026-10-23" },
+      feedback: "grey",
+      annotations: [
+        { id: "r1", type: "COMMENT", text: "grey", originalText: region.src, blockId: "block-2", imageRegion: { ...region, extra: 1 } },
+        { id: "r2", type: "COMMENT", text: "junk", originalText: "x", imageRegion: { ...region, box: { x: 9999, y: 0, w: 1, h: 1 } } },
+      ],
+    });
+    const record = readIndex(dataDir)[0]!;
+    expect(record.annotations?.[0]?.imageRegion).toEqual(region);
+    expect(record.annotations?.[1]).not.toHaveProperty("imageRegion");
+  });
+});
+
+describe("feedback archive: question answers", () => {
+  test("an answer records its validated questionAnswer; a malformed one and a plain comment stay answer-free", () => {
+    // Regression: without the field an answer archives only as its one-line
+    // text, so the index cannot say which question it answered (key), which
+    // labels were picked, or that it was skipped.
+    const dataDir = useTempDataDir();
+    const answer = {
+      v: 1,
+      key: "q-1a2b3c4d",
+      kind: "single",
+      prompt: "Where should losing conflict versions be kept?",
+      selected: ["Local only, purged after 30 days"],
+      note: "keep the log reachable",
+      sourceLine: 22,
+    };
+    appendFeedbackRecord({
+      project: PROJECT,
+      origin: "claude-code",
+      surface: "annotate",
+      decision: "feedback",
+      target: { filePath: "/tmp/plan.md" },
+      feedback: "## Answers to your questions",
+      annotations: [
+        { id: "ann-question-q-1a2b3c4d", type: "COMMENT", text: "Answer: Local only", originalText: answer.prompt, blockId: "block-3", questionAnswer: { ...answer, unknownField: "dropped" } },
+        { id: "ann-question-bad", type: "COMMENT", text: "x", originalText: "y", questionAnswer: { v: 2, key: "nope" } },
+        { id: "t1", type: "COMMENT", text: "plain", originalText: "some words" },
+      ],
+    });
+    const record = readIndex(dataDir)[0]!;
+    expect(record.annotations?.[0]?.questionAnswer).toEqual(answer);
+    expect(record.annotations?.[1]).not.toHaveProperty("questionAnswer");
+    expect(record.annotations?.[2]).not.toHaveProperty("questionAnswer");
+    // Additive: the existing fields of an answer row are unchanged.
+    expect(record.annotations?.[0]?.text).toBe("Answer: Local only");
+    expect(record.annotations?.[0]?.blockId).toBe("block-3");
   });
 });
 

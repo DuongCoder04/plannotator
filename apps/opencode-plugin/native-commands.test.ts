@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   NATIVE_COMMANDS,
@@ -10,6 +11,7 @@ import {
 } from "./native-commands";
 import {
   createV2BridgeClient,
+  formatInboxNotice,
   formatSessionUrlNotice,
   normalizeAgentList,
   readListPayload,
@@ -120,7 +122,7 @@ describe("OpenCode 2 native command registration", () => {
     expect(applied).toBe(true);
   });
 
-  test("registers exactly the three Plannotator commands when the draft supports add", async () => {
+  test("registers exactly the Plannotator commands when the draft supports add", async () => {
     const { deps, added } = makeDeps();
     expect(await registerNativeCommands(deps)).toBe(true);
     // Command names are the user-visible slash commands and are deliberately
@@ -129,6 +131,7 @@ describe("OpenCode 2 native command registration", () => {
       "plannotator-review",
       "plannotator-annotate",
       "plannotator-last",
+      "plannotator-inbox",
     ]);
     for (const command of added) expect(command.execute).toBeInstanceOf(Function);
   });
@@ -314,9 +317,20 @@ describe("reclaiming the command names from the config-loaded stubs", () => {
 
 describe("V2 list shapes", () => {
   test("reads an agent list as a bare array or a { data } envelope", () => {
-    const entries = [{ id: "plan", mode: "primary", hidden: false }];
+    const entries = [{
+      id: "plan",
+      mode: "primary",
+      hidden: false,
+      model: { providerID: "openai", id: "gpt-5.6-sol", variant: "high" },
+    }];
     expect(normalizeAgentList(entries)).toEqual([
-      { name: "plan", description: undefined, mode: "primary", hidden: false },
+      {
+        name: "plan",
+        description: undefined,
+        mode: "primary",
+        hidden: false,
+        model: { providerID: "openai", id: "gpt-5.6-sol", variant: "high" },
+      },
     ]);
     expect(normalizeAgentList({ location: {}, data: entries })).toEqual(normalizeAgentList(entries));
   });
@@ -327,21 +341,104 @@ describe("V2 list shapes", () => {
     expect(normalizeAgentList([{ mode: "primary" }])).toEqual([]);
     expect(readListPayload({ data: [{ description: "nameless" }] })).toEqual([]);
   });
+
+  test("drops a malformed configured model without dropping its agent", () => {
+    expect(normalizeAgentList([{
+      id: "build",
+      model: { providerID: "openai", id: 42 },
+    }])).toEqual([{
+      name: "build",
+      description: undefined,
+      mode: undefined,
+      hidden: false,
+      model: undefined,
+    }]);
+  });
 });
 
 describe("V2 agent switching", () => {
-  test("switches the session agent when the host exposes switchAgent", async () => {
+  test("switches the session agent and its configured model", async () => {
+    const calls: string[] = [];
     const switchAgent = mock(async (_input: { sessionID: string; agent: string }) => {});
+    switchAgent.mockImplementation(async () => { calls.push("agent"); });
+    const switchModel = mock(async () => { calls.push("model"); });
     const result = await switchV2SessionAgent({
-      ctx: { session: { switchAgent } },
+      ctx: { session: { switchAgent, switchModel } },
       sessionID: "session-1",
       requestedAgent: "build",
-      getAgents: async () => [{ name: "build" }],
+      getAgents: async () => [{
+        name: "build",
+        model: { providerID: "openai", id: "gpt-5.6-terra", variant: "low" },
+      }],
       warn: () => {},
     });
 
     expect(switchAgent).toHaveBeenCalledWith({ sessionID: "session-1", agent: "build" });
+    expect(switchModel).toHaveBeenCalledWith({
+      sessionID: "session-1",
+      model: { providerID: "openai", id: "gpt-5.6-terra", variant: "low" },
+    });
+    expect(calls).toEqual(["agent", "model"]);
     expect(result).toBe("build");
+  });
+
+  test("keeps the selected model when the target agent has no configured model", async () => {
+    const switchAgent = mock(async () => {});
+    const switchModel = mock(async () => {});
+
+    expect(await switchV2SessionAgent({
+      ctx: { session: { switchAgent, switchModel } },
+      sessionID: "session-1",
+      requestedAgent: "build",
+      getAgents: async () => [{ name: "build" }],
+      warn: () => {},
+    })).toBe("build");
+
+    expect(switchAgent).toHaveBeenCalledTimes(1);
+    expect(switchModel).not.toHaveBeenCalled();
+  });
+
+  test("switches the agent when the host cannot apply its configured model", async () => {
+    const switchAgent = mock(async () => {});
+    const warnings: string[] = [];
+
+    expect(await switchV2SessionAgent({
+      ctx: { session: { switchAgent } },
+      sessionID: "session-1",
+      requestedAgent: "build",
+      getAgents: async () => [{
+        name: "build",
+        model: { providerID: "openai", id: "gpt-5.6-terra" },
+      }],
+      warn: (message) => warnings.push(message),
+    })).toBe("build");
+
+    expect(switchAgent).toHaveBeenCalledWith({ sessionID: "session-1", agent: "build" });
+    expect(warnings).toHaveLength(1);
+  });
+
+  test("keeps the switched agent when its model switch fails", async () => {
+    const switchAgent = mock(async () => {});
+    const warnings: string[] = [];
+
+    expect(await switchV2SessionAgent({
+      ctx: {
+        session: {
+          switchAgent,
+          switchModel: async () => { throw new Error("model unavailable"); },
+        },
+      },
+      sessionID: "session-1",
+      requestedAgent: "build",
+      getAgents: async () => [{
+        name: "build",
+        model: { providerID: "openai", id: "gpt-5.6-terra" },
+      }],
+      warn: (message) => warnings.push(message),
+    })).toBe("build");
+
+    expect(switchAgent).toHaveBeenCalledTimes(1);
+    expect(warnings.some((line) => line.includes("model unavailable"))).toBe(true);
   });
 
   test("warns and leaves the agent alone when the host has no switchAgent", async () => {
@@ -359,16 +456,26 @@ describe("V2 agent switching", () => {
   });
 
   test("a failing switch does not fail the approval", async () => {
+    const switchModel = mock(async () => {});
     const warnings: string[] = [];
     const result = await switchV2SessionAgent({
-      ctx: { session: { switchAgent: async () => { throw new Error("busy"); } } },
+      ctx: {
+        session: {
+          switchAgent: async () => { throw new Error("busy"); },
+          switchModel,
+        },
+      },
       sessionID: "session-1",
       requestedAgent: "build",
-      getAgents: async () => [{ name: "build" }],
+      getAgents: async () => [{
+        name: "build",
+        model: { providerID: "openai", id: "gpt-5.6-terra" },
+      }],
       warn: (message) => warnings.push(message),
     });
 
     expect(result).toBeUndefined();
+    expect(switchModel).not.toHaveBeenCalled();
     expect(warnings.some((line) => line.includes("busy"))).toBe(true);
   });
 
@@ -455,6 +562,64 @@ describe("V2 feedback delivery", () => {
 
     expect(synthetic.mock.calls[0]![0]).toMatchObject({ delivery: "steer" });
     expect(prompt.mock.calls[0]![0]).toMatchObject({ delivery: "steer" });
+  });
+
+  // The `plannotator` tool's launches: the session is mid-turn when their
+  // notice is posted (only while their own tool call is open), so a
+  // still-pending notice must not turn a late decision into a steer that lands
+  // inside a running turn.
+  test("a tool launch's decision is queued even while its notice is pending", async () => {
+    const synthetic = mock(async (_input: unknown) => ({}));
+    const prompt = mock(async (_input: unknown) => ({}));
+    const client = createV2BridgeClient({
+      ctx: { session: { synthetic, prompt } } as never,
+      getAgents: async () => [],
+      sessionID: "session-1",
+      alwaysQueue: true,
+    });
+
+    await client.notifyUrl!({ url: "http://127.0.0.1:19432", message: "ready" });
+    await client.session.prompt({
+      path: { id: "session-1" },
+      body: { parts: [{ type: "text", text: "fix the null check" }] },
+    });
+
+    expect(prompt.mock.calls[0]![0]).toMatchObject({ delivery: "queue" });
+  });
+
+  // A notice posted into ANOTHER session (a subagent tool call's own session)
+  // is not in the decision session's inbox, so it can never be co-promoted
+  // there: steering the decision would only push it into a running turn.
+  test("a notice in another session never steers the decision", async () => {
+    const synthetic = mock(async (_input: unknown) => ({}));
+    const prompt = mock(async (_input: unknown) => ({}));
+    const client = createV2BridgeClient({
+      ctx: { session: { synthetic, prompt } } as never,
+      getAgents: async () => [],
+      sessionID: "root",
+      notice: { sessionID: "child", open: () => true },
+    });
+
+    await client.notifyUrl!({ url: "http://127.0.0.1:19432", message: "ready" });
+    await client.session.prompt({ path: { id: "root" }, body: { parts: [{ type: "text", text: "fix it" }] } });
+
+    expect(synthetic.mock.calls[0]![0]).toMatchObject({ sessionID: "child" });
+    expect(prompt.mock.calls[0]![0]).toMatchObject({ sessionID: "root", delivery: "queue" });
+  });
+
+  test("a closed notice window posts nothing", async () => {
+    const synthetic = mock(async (_input: unknown) => ({}));
+    let open = true;
+    const client = createV2BridgeClient({
+      ctx: { session: { synthetic, prompt: async () => ({}) } } as never,
+      getAgents: async () => [],
+      sessionID: "root",
+      notice: { sessionID: "child", open: () => open },
+    });
+
+    open = false;
+    await client.notifyUrl!({ url: "http://127.0.0.1:19432", message: "ready" });
+    expect(synthetic).not.toHaveBeenCalled();
   });
 
   /**
@@ -544,10 +709,9 @@ describe("V2 feedback delivery", () => {
     expect(prompt.mock.calls[0]![0]).toMatchObject({ delivery: "queue" });
   });
 
-  // The CI-pinned host (`@opencode-ai/plugin@0.0.0-next-16775`) predates the
-  // inbox-event rename and reports the same fact as `session.input.promoted`
-  // with `data.inputID`. Reading only the v2.0.x spelling would leave the
-  // mis-steer live on exactly the host this package pins.
+  // Older V2 hosts predate the inbox-event rename and report the same fact as
+  // `session.input.promoted` with `data.inputID`. Reading only the v2.0.x
+  // spelling would leave feedback mis-steered on those hosts.
   test("the pre-rename session.input.promoted event settles the notice too", async () => {
     const stream = createTestEventStream();
     const { client, prompt } = makeNoticeBridge({ stream });
@@ -772,8 +936,9 @@ describe("shared command stubs", () => {
     test(`${command.name}.md carries no shell interpolation`, () => {
       const { body } = readStub(command.name);
       expect(body).not.toContain("!`");
-      // The model-mediated fallback needs the argument tail to reach the CLI.
-      expect(body).toContain("$ARGUMENTS");
+      // The model-mediated fallback needs the argument tail to reach the CLI
+      // (/plannotator-inbox takes none).
+      if (command.name !== "plannotator-inbox") expect(body).toContain("$ARGUMENTS");
     });
 
     // The reclaim tells our definition from the config-loaded stub by reading
@@ -785,6 +950,60 @@ describe("shared command stubs", () => {
       expect(frontmatter).not.toContain(command.description);
     });
   }
+});
+
+// The person closed the Inbox tab: /plannotator-inbox on OpenCode 2 opens it
+// (`plannotator inbox --open`, a stand-in here) and shows the address as a
+// transcript notice, without a model turn.
+describe.skipIf(process.platform === "win32")("V2 /plannotator-inbox", () => {
+  const savedBin = process.env.PLANNOTATOR_BIN;
+  const dirs: string[] = [];
+  afterEach(() => {
+    if (savedBin === undefined) delete process.env.PLANNOTATOR_BIN;
+    else process.env.PLANNOTATOR_BIN = savedBin;
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function stubCli(body: string): string {
+    const dir = mkdtempSync(path.join(tmpdir(), "plannotator-oc2-inbox-"));
+    dirs.push(dir);
+    const bin = path.join(dir, "plannotator");
+    const calls = path.join(dir, "calls");
+    writeFileSync(bin, `#!/bin/sh\necho "$*" >> '${calls}'\n${body}\n`, { mode: 0o755 });
+    process.env.PLANNOTATOR_BIN = bin;
+    return calls;
+  }
+
+  async function runInbox() {
+    const synthetic = mock(async (_input: unknown) => ({}));
+    const prompt = mock(async (_input: unknown) => ({}));
+    const ctx = { session: { synthetic, prompt } } as any;
+    await runNativeCommand("plannotator-inbox", { sessionID: "session-1" } as never, {
+      ctx,
+      getAgents: async () => [],
+      getBridgeContext: async () => ({}),
+    });
+    return { synthetic, prompt };
+  }
+
+  test("opens the Inbox and posts its address as a notice, with no model turn", async () => {
+    const calls = stubCli("echo 'http://localhost:61234/'");
+    const { synthetic, prompt } = await runInbox();
+    expect(readFileSync(calls, "utf8").trim()).toBe("inbox --open");
+    expect(synthetic).toHaveBeenCalledTimes(1);
+    const notice = synthetic.mock.calls[0]![0] as { description: string; resume: boolean };
+    // Says it is the Inbox, never the review's "session ready" line.
+    expect(notice.description).toBe(formatInboxNotice("http://localhost:61234/"));
+    expect(notice.resume).toBe(false);
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  test("an older plannotator without --open shows that it needs updating", async () => {
+    stubCli("echo 'Unknown inbox option: --open' >&2; exit 1");
+    const { synthetic, prompt } = await runInbox();
+    expect(JSON.stringify(synthetic.mock.calls)).toContain("plannotator update");
+    expect(prompt).not.toHaveBeenCalled();
+  });
 });
 
 describe("V2 session URL delivery", () => {

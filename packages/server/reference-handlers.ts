@@ -6,9 +6,9 @@
  */
 
 import { existsSync, statSync } from "fs";
-import { readdir } from "fs/promises";
-import { join, relative, resolve } from "path";
+import { resolve } from "path";
 import { buildFileTree, isFileBrowserExcludedPath } from "@plannotator/shared/reference-common";
+import { listFileBrowserFiles } from "@plannotator/shared/file-browser-files";
 import {
 	filterWorkspaceStatusForDirectory,
 	getWorkspaceStatusForDirectory,
@@ -19,12 +19,12 @@ import { parseCodePath, type ParsedCodePath } from "@plannotator/shared/code-fil
 import { detectObsidianVaults } from "./integrations";
 import {
 	resolveUserPath,
-	getFileBrowserMaxFiles,
 	warmFileListCache,
 	getAnnotatableDocRegex,
 	MAX_ANNOTATABLE_FILE_BYTES,
 	isAnnotatableTextPath,
 } from "@plannotator/shared/resolve-file";
+import { diagramRenderKindForPath, isDiagramRenderKind } from "@plannotator/shared/annotatable";
 import {
 	DOC_ACCESS_DENIED,
 	DOC_TOO_LARGE,
@@ -32,16 +32,20 @@ import {
 	getAllowedRootPaths,
 	getTrustedBaseDir,
 	isPathAllowed,
+	isPlanDirBase,
 	relativizeToAllowedRoots,
 	resolveAllowedDocPath,
+	resolvePlanLinkedDoc,
 	resolveCodeFileInRoots,
 	resolveDocTarget,
+	type PlanFile,
 	type DocErrorPayload,
 	type ResolveAllowedDocPathResult,
 } from "@plannotator/shared/doc-resolve";
 import { htmlToMarkdown } from "@plannotator/shared/html-to-markdown";
 import { disabledSourceSave, type SourceFileSnapshot, type SourceSaveCapability } from "@plannotator/shared/source-save";
 import {
+	createBundleSourceSaveCapability,
 	createSourceSaveCapability,
 	createSourceSaveCapabilityFromSnapshot,
 	readSourceFileSnapshot,
@@ -57,7 +61,7 @@ import { preloadFile } from "@pierre/diffs/ssr";
  * payload still returns the full AnnotateHistoryResult, `diffCurrent`
  * included, for legacy shape parity — see annotate.ts).
  */
-export type FolderAnnotateHistory = Omit<AnnotateHistoryResult, "diffCurrent">;
+export type FolderAnnotateHistory = Omit<AnnotateHistoryResult, "diffCurrent" | "isNew">;
 
 // --- Route handlers ---
 
@@ -72,8 +76,13 @@ export interface HandleDocOptions {
 	rewriteHtml?: (html: string, filepath: string) => string;
 	sourceSaveFilePath?: string;
 	sourceSaveFolderPath?: string;
+	/** A review of several files: the real paths of its own files that source save may write
+	 *  (`resolveBundleSourceSavePaths`). Every other document stays read-only. */
+	sourceSaveBundlePaths?: ReadonlySet<string>;
 	onSourceDocumentServed?: (path: string) => void;
 	rootPaths?: string[];
+	/** Plan review: the plan file on disk, whose directory serves the documents the plan links. */
+	planFile?: PlanFile | null;
 	/**
 	 * When set, /api/doc runs annotate's per-file version-history pipeline for
 	 * eligible markdown-branch documents (local file under an allowed root,
@@ -156,7 +165,9 @@ function applyDocOptions<T extends Record<string, unknown>>(
 	if (
 		options.annotateHistory &&
 		typeof data.filepath === "string" &&
-		data.renderAs === "markdown" &&
+		// Diagram sources (.mmd/.dot) take the markdown branch's raw text, so
+		// they keep per-file version history exactly like a .txt.
+		(data.renderAs === "markdown" || isDiagramRenderKind(data.renderAs)) &&
 		data.isConverted !== true &&
 		typeof data.markdown === "string" &&
 		isAnnotatableTextPath(data.filepath)
@@ -168,7 +179,7 @@ function applyDocOptions<T extends Record<string, unknown>>(
 		}
 	}
 	if (typeof data.filepath !== "string") {
-		return (options.sourceSaveFolderPath || options.sourceSaveFilePath
+		return (options.sourceSaveFolderPath || options.sourceSaveFilePath || options.sourceSaveBundlePaths
 			? { ...next, sourceSave: disabledSourceSave("not-local-file") }
 			: next) as DocOptionsResult<T>;
 	}
@@ -184,6 +195,13 @@ function applyDocOptions<T extends Record<string, unknown>>(
 			? createSourceSaveCapabilityFromSnapshot("single-file", data.filepath, sourceSnapshot)
 			: createSourceSaveCapability("single-file", data.filepath);
 		if (sourcePath && doc.enabled && sourcePath === doc.path) {
+			options.onSourceDocumentServed?.(doc.path);
+			return { ...next, sourceSave: doc } as DocOptionsResult<T>;
+		}
+	}
+	if (options.sourceSaveBundlePaths) {
+		const doc = createBundleSourceSaveCapability(data.filepath, options.sourceSaveBundlePaths, sourceSnapshot);
+		if (doc?.enabled) {
 			options.onSourceDocumentServed?.(doc.path);
 			return { ...next, sourceSave: doc } as DocOptionsResult<T>;
 		}
@@ -215,7 +233,15 @@ async function readDocument(path: string, convert: boolean, options: HandleDocOp
 				? docJson({ markdown: htmlToMarkdown(snapshot.text), filepath: path, isConverted: true, renderAs: "markdown" }, options)
 				: docJson({ rawHtml: snapshot.text, renderAs: "html", filepath: path }, options);
 		}
-		return docJson({ markdown: snapshot.text, filepath: path, renderAs: "markdown" }, options, snapshot);
+		// A diagram source is served as its raw text with the engine named in
+		// `renderAs`; the editor renders it through the same DiagramBlock a
+		// ```mermaid fence uses instead of the markdown pipeline.
+		const diagramKind = diagramRenderKindForPath(path);
+		return docJson(
+			{ markdown: snapshot.text, filepath: path, renderAs: diagramKind ?? "markdown" },
+			options,
+			snapshot,
+		);
 	} catch {
 		return Response.json({ error: "Failed to read file" }, { status: 500 });
 	}
@@ -260,8 +286,12 @@ export async function handleDoc(req: Request, options: HandleDocOptions = {}): P
 		void warmFileListCache(root, "code");
 	}
 
-	// A base is only honored when it is itself inside an allowed root.
-	const resolvedBase = getTrustedBaseDir(url.searchParams.get("base"), allowedRoots);
+	const base = url.searchParams.get("base");
+	// A base is only honored when it is itself inside an allowed root. The plan
+	// directory base is for the plan's own links (below): root resolution runs
+	// without it, so a plan stored inside the project keeps the project-root
+	// fallback, HTML links included.
+	const resolvedBase = isPlanDirBase(base, options.planFile) ? null : getTrustedBaseDir(base, allowedRoots);
 	// HTML renders raw by default; `?convert=1` (set by the frontend when the session's
 	// --markdown preference is on) forces Turndown conversion instead.
 	const convert = url.searchParams.get("convert") === "1";
@@ -270,6 +300,12 @@ export async function handleDoc(req: Request, options: HandleDocOptions = {}): P
 	// .xml). Without it, those paths keep the syntax-highlighted code-file
 	// popout response, so code-file links inside documents are unaffected.
 	const forceDoc = url.searchParams.get("doc") === "1";
+
+	// The plan's own directory is usually outside every root, so a document it
+	// links is served here rather than through root resolution. A linked file
+	// beside the plan shadows a project document of the same relative name.
+	const planDoc = resolvePlanLinkedDoc(requestedPath, base, options.planFile);
+	if (planDoc) return readDocument(planDoc, convert, options);
 
 	const resolution = await resolveDocTarget(requestedPath, {
 		base: resolvedBase,
@@ -469,44 +505,6 @@ function includeWorkspaceFile(relativePath: string, _change: WorkspaceFileChange
 	return getAnnotatableDocRegex().test(relativePath) && !isFileBrowserExcludedPath(relativePath);
 }
 
-type FileBrowserWalkState = {
-	files: Set<string>;
-	limit: number;
-	truncated: boolean;
-};
-
-function addFileBrowserFile(state: FileBrowserWalkState, relativePath: string): void {
-	if (state.files.has(relativePath)) return;
-	if (state.files.size >= state.limit) {
-		state.truncated = true;
-		return;
-	}
-	state.files.add(relativePath);
-}
-
-async function walkFileBrowserFiles(dir: string, root: string, state: FileBrowserWalkState): Promise<void> {
-	if (state.truncated) return;
-	let entries;
-	try {
-		entries = await readdir(dir, { withFileTypes: true });
-	} catch {
-		return;
-	}
-
-	for (const entry of entries) {
-		if (state.truncated) return;
-		const fullPath = join(dir, entry.name);
-		const relativePath = relative(root, fullPath).replace(/\\/g, "/");
-		if (entry.isDirectory()) {
-			if (isFileBrowserExcludedPath(relativePath)) continue;
-			await walkFileBrowserFiles(fullPath, root, state);
-		} else if (entry.isFile() && getAnnotatableDocRegex().test(entry.name)) {
-			if (isFileBrowserExcludedPath(relativePath)) continue;
-			addFileBrowserFile(state, relativePath);
-		}
-	}
-}
-
 /** List markdown files in a directory as a nested tree. */
 export async function handleFileBrowserFiles(req: Request): Promise<Response> {
 	const url = new URL(req.url);
@@ -524,29 +522,20 @@ export async function handleFileBrowserFiles(req: Request): Promise<Response> {
 	}
 
 	try {
-		const state: FileBrowserWalkState = {
-			files: new Set<string>(),
-			limit: getFileBrowserMaxFiles(),
-			truncated: false,
-		};
-		// Seed the user's own modified/untracked files BEFORE the bulk walk: the
-		// walk fills the cap in raw readdir order and addFileBrowserFile drops
-		// everything once the cap latches — the one set of files that must never
-		// silently vanish from the browser is the ones the user just touched.
+		// The user's own modified/untracked files are seeded before the walk, so
+		// they are never the ones the cap leaves out.
 		const workspaceStatus = filterWorkspaceStatusForDirectory(await getWorkspaceStatusForDirectory(resolvedDir), resolvedDir, includeWorkspaceFile);
-		for (const match of getWorkspaceStatusRelativePaths(workspaceStatus, resolvedDir, includeWorkspaceFile)) {
-			addFileBrowserFile(state, match);
-			if (state.truncated) break;
-		}
-		await walkFileBrowserFiles(resolvedDir, resolvedDir, state);
-		const sortedFiles = [...state.files].sort();
+		const listing = await listFileBrowserFiles(resolvedDir, {
+			seed: getWorkspaceStatusRelativePaths(workspaceStatus, resolvedDir, includeWorkspaceFile),
+		});
+		const sortedFiles = listing.files;
 
 		const tree = buildFileTree(sortedFiles);
 		return Response.json({
 			tree,
 			workspaceStatus,
-			truncated: state.truncated,
-			fileLimit: state.limit,
+			truncated: listing.truncated,
+			fileLimit: listing.limit,
 		});
 	} catch {
 		return Response.json(

@@ -112,9 +112,10 @@ describe('shortcuts', () => {
       'Search',
       'Layout',
       'File Actions',
-      'History',
       'File Navigation',
+      'History',
       'All-Files View',
+      'Markdown Files',
       'Annotations',
       'Suggestion Editor',
       'AI Assistant',
@@ -136,6 +137,20 @@ describe('shortcuts', () => {
         .map(entry => `${entry.scopeId}.${entry.actionId}`);
       expect(claimants).toEqual(['document-view.toggleFocusMode']);
     }
+  });
+
+  // Change navigation (#1543) is N / Shift+N in both review views. `P` is the
+  // Markdown view key, so previous-change must never be P; and with no
+  // cross-scope arbitration a second claimant on either key would double-fire.
+  it('binds next / previous change once, to N and Shift+N, clear of the Markdown P', () => {
+    expect(getShortcut(reviewSettingsShortcutRegistry, 'review-editor', 'nextChange')?.bindings).toEqual(['N']);
+    expect(getShortcut(reviewSettingsShortcutRegistry, 'review-editor', 'prevChange')?.bindings).toEqual(['Shift+N']);
+    const claimants = (binding: string) => listRegistryShortcuts(reviewSettingsShortcutRegistry)
+      .filter(entry => entry.bindings.includes(binding))
+      .map(entry => `${entry.scopeId}.${entry.actionId}`);
+    expect(claimants('N')).toEqual(['review-editor.nextChange']);
+    expect(claimants('Shift+N')).toEqual(['review-editor.prevChange']);
+    expect(claimants('P')).toEqual(['review-markdown-preview.cycleMarkdownView']);
   });
 
   // The two HTML-surface chords are the only way back into annotate mode after
@@ -448,5 +463,28 @@ describe('shortcuts', () => {
     }, altGrEvent);
 
     expect(handled).toBe(false);
+  });
+
+  // Rich-text copy is the toolbar's Copy button only (owner's decision on #2191):
+  // Cmd+Option+C is Chrome's Inspect Element key on a Mac, and new shortcuts
+  // need the owner's approval. No surface may bind Alt+C, and Mod+C stays the
+  // one copy binding, described as before.
+  it('registers no keyboard shortcut for rich-text copy', () => {
+    const registries = [
+      planReviewSettingsShortcutRegistry,
+      annotateSettingsShortcutRegistry,
+      reviewSettingsShortcutRegistry,
+    ];
+    const altC = { key: 'c', code: 'KeyC', ctrlKey: true, metaKey: false, shiftKey: false, altKey: true } as KeyboardEvent;
+    const macAltC = { key: 'ç', code: 'KeyC', ctrlKey: false, metaKey: true, shiftKey: false, altKey: true } as KeyboardEvent;
+    for (const registry of registries) {
+      for (const entry of listRegistryShortcuts(registry)) {
+        expect(entry.description.toLowerCase()).not.toContain('rich');
+        for (const binding of entry.bindings) {
+          expect(matchesShortcutBinding(altC, binding)).toBe(false);
+          expect(matchesShortcutBinding(macAltC, binding)).toBe(false);
+        }
+      }
+    }
   });
 });

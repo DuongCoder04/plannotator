@@ -23,6 +23,16 @@
 import type { Mermaid, MermaidConfig } from 'mermaid';
 
 /**
+ * Width in px at which node labels wrap (#2064). Mermaid 12 lowered the
+ * default from 200 to 120, and at Plannotator's 16 px label text that wraps
+ * after about eight CJK characters and splits short Latin labels. 140 is the
+ * owner-approved middle: long labels still wrap, short ones stay on one line.
+ * The themed path (`buildMermaidConfig`) spreads this config, so both the
+ * themed and the host-fallback `initialize` carry it.
+ */
+export const MERMAID_LABEL_WRAP_WIDTH = 140;
+
+/**
  * Hoisted verbatim from the former module-scope `mermaid.initialize(...)` in
  * MermaidBlock. Nothing in it reads a CSS token or the resolved mode.
  * `securityLevel: 'strict'` is a deliberate security pin (see MermaidBlock.test.ts).
@@ -45,10 +55,30 @@ export const MERMAID_CONFIG: MermaidConfig = {
     clusterBorder: '#475569',
     titleColor: '#f8fafc',
     edgeLabelBackground: '#1e293b',
+    /**
+     * Mermaid 12's neo look shadows every node from a fixed
+     * `drop-shadow(1px 2px 2px rgba(185,185,185,1))` grey, which reads as a
+     * halo. The token-driven mapping replaces it per palette
+     * (`buildMermaidShadow` in `./mermaidTheme`); this static config is what a
+     * host with no theme tokens renders with, so it carries the same
+     * toned-down 0.7 geometry with a fixed colour. The value is what
+     * `buildMermaidShadow(#1e293b, 0.7)` returns for THIS config's own slate
+     * ground, which is dark — hence a light shadow, exactly as Mermaid's own
+     * `insertLookDefs` uses a white flood colour on dark themes.
+     */
+    dropShadow: 'drop-shadow(0.79px 1.58px 1.58px rgba(210, 212, 217, 0.684))',
   },
   flowchart: {
     htmlLabels: true,
     curve: 'basis',
+    wrappingWidth: MERMAID_LABEL_WRAP_WIDTH,
+  },
+  /**
+   * Mermaid 11 drew state labels with the flowchart width; Mermaid 12 gives
+   * state diagrams their own `wrappingWidth`, also 120, so it is pinned too.
+   */
+  state: {
+    wrappingWidth: MERMAID_LABEL_WRAP_WIDTH,
   },
 };
 
