@@ -21,6 +21,7 @@ import {
 	buildHashtags,
 	buildBearContent,
 	detectObsidianVaults,
+	obsidianFolderEscapesVault,
 } from "../generated/integrations-common.ts";
 import { sanitizeTag } from "../generated/project.ts";
 import { resolveUserPath } from "../generated/resolve-file.ts";
@@ -41,6 +42,7 @@ export {
 function detectProjectNameSync(): string | null {
 	try {
 		const toplevel = execSync("git rev-parse --show-toplevel", {
+			env: process.env,
 			encoding: "utf-8",
 			stdio: ["pipe", "pipe", "pipe"],
 		}).trim();
@@ -127,6 +129,11 @@ export async function saveToObsidian(
 				error: `Vault path is not a directory: ${normalizedVault}`,
 			};
 		const folderName = folder.trim() || "plannotator";
+		if (obsidianFolderEscapesVault(folderName))
+			return {
+				success: false,
+				error: `Folder must be inside the vault: ${folderName}`,
+			};
 		const targetFolder = join(normalizedVault, folderName);
 		if (!existsSync(targetFolder)) mkdirSync(targetFolder, { recursive: true });
 		const filename = generateFilename(

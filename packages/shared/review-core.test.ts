@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -19,6 +20,9 @@ import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import {
   detectRemoteDefaultInfo,
+  nextRemoteBaseCheckInterval,
+  REMOTE_BASE_CHECK_INTERVAL_MS,
+  REMOTE_BASE_CHECK_MAX_INTERVAL_MS,
   getDefaultBranch,
   getFileContentsForDiff,
   getGitSnapshotMaterializationPatch,
@@ -28,12 +32,15 @@ import {
   gitAddFile,
   gitResetFile,
   isBinaryPatchFile,
+  commitFamilyId,
   isSameCwdCommitSwitch,
   listPatchFiles,
   listRecentCommits,
   MAX_REVIEW_FILE_CONTENT_BYTES,
   parseCommitDiffType,
+  parseJjCommitDiffType,
   parseWorktreeDiffType,
+  GIT_COLOR_FREE_ARGS,
   prepareGitCommand,
   runGitDiff,
   splitPorcelainRename,
@@ -212,6 +219,7 @@ describe("review-core", () => {
       GIT_SSH_COMMAND: "custom-ssh --proxy jump-host",
     });
     expect(command.args).toEqual([
+      ...GIT_COLOR_FREE_ARGS,
       "-c",
       "core.quotePath=false",
       "-c",
@@ -258,7 +266,7 @@ describe("review-core", () => {
     );
 
     expect(command).toEqual({
-      args: ["-c", "core.quotePath=false", "fetch", "origin", "main"],
+      args: [...GIT_COLOR_FREE_ARGS, "-c", "core.quotePath=false", "fetch", "origin", "main"],
       isolateProcessGroup: false,
     });
   });
@@ -272,7 +280,7 @@ describe("review-core", () => {
 
     // argv must stay byte-identical to the configless invocation: callers and
     // test mocks match on the exact argument vector.
-    expect(command.args).toEqual(["-c", "core.quotePath=false", "diff", "--no-ext-diff", "--cached"]);
+    expect(command.args).toEqual([...GIT_COLOR_FREE_ARGS, "-c", "core.quotePath=false", "diff", "--no-ext-diff", "--cached"]);
     expect(command.env).toEqual({
       PATH: "/usr/bin",
       GIT_CONFIG_COUNT: "1",
@@ -962,6 +970,52 @@ describe("review-core", () => {
     expect(result.patch.length).toBeLessThan(4_000);
   }, 20_000);
 
+  test("a failed size probe never lets a textconv driver render an oversized blob (#1206)", async () => {
+    // core.bigFileThreshold only applies when git decides binaryness itself. A
+    // textconv driver skips that decision and formats the whole converted blob,
+    // so on the probe-failure path (no JS-side exclusion) the rendered diff
+    // must turn textconv off to keep the git-native bound.
+    const repoDir = initRepo();
+    git(repoDir, ["config", "diff.inflate.textconv", "sed p"]);
+    writeFileSync(join(repoDir, ".gitattributes"), "*.big diff=inflate\n", "utf-8");
+    git(repoDir, ["add", ".gitattributes"]);
+    git(repoDir, ["commit", "-m", "textconv driver"]);
+    const lines = Math.ceil((MAX_REVIEW_FILE_CONTENT_BYTES + 1) / 2);
+    writeFileSync(join(repoDir, "huge.big"), "a\n".repeat(lines), "utf-8");
+    writeFileSync(join(repoDir, "tracked.txt"), "after\n", "utf-8");
+    git(repoDir, ["add", "huge.big", "tracked.txt"]);
+
+    const runtime = makeConfigForwardingRuntime(repoDir, (args) =>
+      args.some((arg) => arg.startsWith("--batch-check"))
+        ? { stdout: "", stderr: "fatal: probe unavailable", exitCode: 128 }
+        : null,
+    );
+
+    const result = await runGitDiff(runtime, "staged", "main");
+
+    // Length first, so a regression fails without printing megabytes.
+    expect(result.patch.length).toBeLessThan(4_000);
+    expect(result.patch).toContain("+after");
+    expect(result.patch).toContain("Binary files /dev/null and b/huge.big differ");
+  }, 20_000);
+
+  test("a working size probe keeps textconv for files under the cap", async () => {
+    // The textconv opt-out is for the probe-failure path only: with sizes
+    // known, oversized paths are excluded up front and small textconv'd files
+    // keep rendering through their driver.
+    const repoDir = initRepo();
+    git(repoDir, ["config", "diff.upper.textconv", "tr a-z A-Z <"]);
+    writeFileSync(join(repoDir, ".gitattributes"), "*.up diff=upper\n", "utf-8");
+    git(repoDir, ["add", ".gitattributes"]);
+    git(repoDir, ["commit", "-m", "textconv driver"]);
+    writeFileSync(join(repoDir, "note.up"), "hello\n", "utf-8");
+    git(repoDir, ["add", "note.up"]);
+
+    const result = await runGitDiff(makeConfigForwardingRuntime(repoDir), "staged", "main");
+
+    expect(result.patch).toContain("+HELLO");
+  }, 20_000);
+
   test("a failed size probe still excludes oversized working-tree files by stat", async () => {
     const repoDir = initRepo();
     const largeSize = MAX_REVIEW_FILE_CONTENT_BYTES + 1;
@@ -1316,6 +1370,17 @@ describe("review-core", () => {
     const context = await getGitContext(makeRuntime(repoDir), repoDir);
 
     expect(context.diffOptions.map((option) => option.id)).not.toContain("local-vs-remote");
+  });
+
+  test("git context names the repository top level when started from a subfolder", async () => {
+    const repoDir = initRepo();
+    const subDir = join(repoDir, "docs");
+    mkdirSync(subDir, { recursive: true });
+    const context = await getGitContext(makeRuntime(subDir), subDir);
+
+    // Patch paths are relative to the top level, not to where the review began.
+    expect(context.cwd).toBe(subDir);
+    expect(realpathSync(context.root!)).toBe(realpathSync(repoDir));
   });
 
   test("since-base falls back to HEAD when the requested base cannot resolve", async () => {
@@ -1740,6 +1805,20 @@ describe("isSameCwdCommitSwitch", () => {
   });
 });
 
+describe("jj-commit family", () => {
+  test("parses bare hex commit ids only, and reads as a commit detour", () => {
+    expect(parseJjCommitDiffType(`jj-commit:${"a".repeat(40)}`)).toEqual({ commitId: "a".repeat(40) });
+    expect(parseJjCommitDiffType("jj-commit:main")).toBeNull();
+    expect(parseJjCommitDiffType("jj-commit:@-")).toBeNull();
+    expect(parseJjCommitDiffType("commit:abc1234")).toBeNull();
+    expect(commitFamilyId("jj-commit:abc1234")).toBe("abc1234");
+    expect(commitFamilyId("worktree:/tmp/wt:commit:abc1234")).toBe("abc1234");
+    expect(commitFamilyId("jj-current")).toBeNull();
+    // The rail's hot path skips the jj context recompute too.
+    expect(isSameCwdCommitSwitch("jj-current", "jj-commit:abc1234")).toBe(true);
+  });
+});
+
 describe("parseCommitDiffType", () => {
   test("accepts full and abbreviated hex shas", () => {
     expect(parseCommitDiffType("commit:abc1234")).toEqual({ sha: "abc1234" });
@@ -1840,5 +1919,47 @@ describe("commit diff mode", () => {
 
     const after = await getGitDiffFingerprint(runtime, `commit:${rootSha}` as DiffType, "main");
     expect(after).toBe(before);
+  });
+});
+
+/**
+ * Failure backoff for the remote-default probe (#1553). The regression this
+ * guards is the one the issue reported: a remote that never answers being
+ * retried on the same 60s cadence for the life of the session, which on a
+ * smartcard-backed SSH setup is one physical touch prompt per minute. The
+ * reset leg matters just as much — a network that comes back must return to
+ * the normal cadence rather than stay parked at the cap.
+ */
+describe("nextRemoteBaseCheckInterval", () => {
+  test("doubles on failure, from the base interval up to the cap", () => {
+    const seen: number[] = [];
+    let interval = REMOTE_BASE_CHECK_INTERVAL_MS;
+    for (let i = 0; i < 8; i++) {
+      interval = nextRemoteBaseCheckInterval(interval, false);
+      seen.push(interval);
+    }
+    expect(seen).toEqual([
+      120_000,
+      240_000,
+      480_000,
+      REMOTE_BASE_CHECK_MAX_INTERVAL_MS,
+      REMOTE_BASE_CHECK_MAX_INTERVAL_MS,
+      REMOTE_BASE_CHECK_MAX_INTERVAL_MS,
+      REMOTE_BASE_CHECK_MAX_INTERVAL_MS,
+      REMOTE_BASE_CHECK_MAX_INTERVAL_MS,
+    ]);
+  });
+
+  test("a success resets to the base interval from any backoff level", () => {
+    expect(nextRemoteBaseCheckInterval(REMOTE_BASE_CHECK_MAX_INTERVAL_MS, true))
+      .toBe(REMOTE_BASE_CHECK_INTERVAL_MS);
+    expect(nextRemoteBaseCheckInterval(240_000, true)).toBe(REMOTE_BASE_CHECK_INTERVAL_MS);
+    expect(nextRemoteBaseCheckInterval(REMOTE_BASE_CHECK_INTERVAL_MS, true))
+      .toBe(REMOTE_BASE_CHECK_INTERVAL_MS);
+  });
+
+  test("the cap is never exceeded even from an already-capped interval", () => {
+    expect(nextRemoteBaseCheckInterval(REMOTE_BASE_CHECK_MAX_INTERVAL_MS, false))
+      .toBe(REMOTE_BASE_CHECK_MAX_INTERVAL_MS);
   });
 });

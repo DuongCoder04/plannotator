@@ -3,9 +3,11 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { useVimDocumentFocus } from "../../hooks/useVimDocumentFocus";
@@ -13,9 +15,11 @@ import {
   isVimSelectionActionId,
   type VimSelectionHudContext,
 } from "../../shortcuts";
-import type { Annotation, EditorMode, ImageAttachment, InputMethod } from "../../types";
+import type { Annotation, EditorMode, HostDraft, ImageAttachment, InputMethod } from "../../types";
 import { AnnotationType } from "../../types";
 import { copyTextPreservingFocus } from "../../utils/clipboard";
+import { getRichCopyEnabled } from "../../utils/richCopyPolicy";
+import { elementIdentityForAskAI } from "../../utils/parser";
 import { getIdentity } from "../../utils/identity";
 import { THUMBS_UP_LABEL } from "../../utils/quickLabels";
 import {
@@ -24,6 +28,8 @@ import {
   type VimHudCommand,
 } from "../../utils/vimHud";
 import { AnnotationToolbar } from "../AnnotationToolbar";
+import type { SelectionAction } from "../../utils/selectionActions";
+import type { MentionSource } from "../../utils/mentions";
 import { AttachmentsButton } from "../AttachmentsButton";
 import {
   CommentPopover,
@@ -134,6 +140,14 @@ function parseVimBridgeHelp(value: unknown): boolean | null {
 
 const MAX_VIM_COPY_TEXT_LENGTH = 2 * 1024 * 1024;
 
+/**
+ * The srcdoc frame's sandbox. `allow-modals` lets the page's alert, confirm
+ * and prompt open (#2063: people's own pages and local sites). Never
+ * `allow-same-origin`: the page stays at an opaque origin, away from the
+ * session's API. Live-app mode is unsandboxed and does not use this.
+ */
+export const HTML_VIEWER_SANDBOX = "allow-scripts allow-modals";
+
 /** Default wait for the bridge's `ready` on the `bridgeScriptUrl` path. */
 export const DEFAULT_BRIDGE_READY_TIMEOUT_MS = 5000;
 
@@ -177,6 +191,9 @@ function parseVimBridgeCopy(value: unknown): string | null {
 }
 
 /** Inputs for the sandboxed raw-HTML viewer and its parent-side annotation UI. */
+/** The fewest milliseconds between two honored `step` messages from the page. */
+export const STEP_MESSAGE_MIN_INTERVAL_MS = 150;
+
 export interface HtmlViewerProps {
   rawHtml: string;
   /** Live proxied-app mode: render `src` (no sandbox, no srcdoc) instead of
@@ -224,6 +241,20 @@ export interface HtmlViewerProps {
   /** Mod+Shift+X pressed while focus lived inside the iframe: show/hide the
    *  host's floating tools over the page. The host owns that state. */
   onToolsToggle?: () => void;
+  /** A plain `]` (1) or `[` (-1) pressed inside the page while the surface is
+   *  armed (Annotate) and the page's focus is not in a text field: the host's
+   *  next / previous file (the Inbox steps through a thread's attachments).
+   *  The bridge forwards nothing in Interact, and the page still gets the
+   *  key. Honored only while the frame holds focus, and at most once per
+   *  STEP_MESSAGE_MIN_INTERVAL_MS. Absent: the message is ignored, as before. */
+  onStep?: (dir: 1 | -1) => void;
+  /** Escape pressed inside the page in Interact that the page did not use
+   *  itself (no handler of the page cancelled it or stopped it, and focus was
+   *  not in one of its text fields): the host may close something of its own
+   *  (the Inbox leaves full screen). Never sent in Annotate, whose Escape is
+   *  `onAnnotateModeExit`. Honored only while the frame holds focus, and at
+   *  most once per STEP_MESSAGE_MIN_INTERVAL_MS. Absent: ignored, as before. */
+  onPageEscape?: () => void;
   /** Opt-in Vim-style keyboard selection. Default false for compatibility. */
   vimModeEnabled?: boolean;
   /** Replace the iframe-local compact badge with the shared live key HUD. */
@@ -265,6 +296,18 @@ export interface HtmlViewerProps {
    *  to the bridge so the in-page toggle stops at the same number. Default
    *  16 (the package cap); absent leaves every message unchanged. */
   maxAdditionalTargets?: number;
+  /** Opt-in host capability, passed straight through to the selection
+   *  toolbar: the host's own commands for the current selection, rendered as
+   *  one wand button that opens the package's dropdown. Absent → unchanged. */
+  selectionActions?: SelectionAction[];
+  /** Opt-in host capability: the glyph on the `selectionActions` button.
+   *  Absent → the package's own wand. */
+  selectionActionsIcon?: ReactNode;
+  /** Opt-in host capability, forwarded to BOTH comment composers this viewer
+   *  mounts (the pinpoint/selection composer and the global one): the `@`
+   *  mention source for the composer's picker. The picked ids ride onto the
+   *  created annotation as `Annotation.mentions`. Absent → unchanged. */
+  mentionSource?: MentionSource;
   /** scrollIntoView behavior when a selected annotation is scrolled into
    *  view inside the page. Default 'smooth'; pass 'auto' to carry the
    *  parent's reduced-motion preference across the iframe boundary. */
@@ -309,6 +352,27 @@ export interface HtmlViewerProps {
    * warning). Meaningless on the inline path, which never shows a strip.
    */
   bridgeErrorDisplay?: "banner" | "none";
+  /**
+   * Opt-in host capability: the composer handed to the host (see
+   * `HostDraft`). A text selection reports `intent: 'selection'` and a pin
+   * `intent: 'compose'` with the element's label, instead of opening the
+   * toolbar or the composer; the selection clearing reports null. With it the
+   * handle's `stepPin` moves a pinned draft to the element around it or back
+   * in. The host saves the comment and draws it through `annotations` /
+   * `applySharedAnnotations`. Ignored when `readOnly`. Absent → unchanged.
+   */
+  onHostDraft?: (draft: HostDraft | null) => void;
+  /**
+   * Opt-in host capability for a native shell whose web view decides every
+   * navigation itself (the Inbox surface in the iPhone app). A link the
+   * person taps in Interact opens as a new window (`window.open`, the sandbox
+   * gains `allow-popups`) instead of being reported through the frame
+   * protocol (`onOpenLink` does not fire for it); the host's web view hands
+   * that window to its own delegate, which decides it. A scripted click opens
+   * nothing. In-page `#` links still scroll here, and an armed pinpoint tap
+   * still pins. Absent → unchanged.
+   */
+  hostNavigates?: boolean;
 }
 
 /**
@@ -335,6 +399,8 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
       onAnnotateModeExit,
       onAnnotateModeToggle,
       onToolsToggle,
+      onStep,
+      onPageEscape,
       vimModeEnabled = false,
       vimHudEnabled = false,
       vimHudKeyPanelEnabled = true,
@@ -352,12 +418,17 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
       readOnly = false,
       onUnanchoredChange,
       maxAdditionalTargets,
+      selectionActions,
+      selectionActionsIcon,
+      mentionSource,
       scrollBehavior,
       title = "HTML Plan Viewer",
       bridgeScriptUrl,
       bridgeReadyTimeoutMs = DEFAULT_BRIDGE_READY_TIMEOUT_MS,
       onBridgeUnavailable,
       bridgeErrorDisplay = "banner",
+      onHostDraft,
+      hostNavigates = false,
     },
     ref,
   ) => {
@@ -392,6 +463,15 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
     onAnnotateModeToggleRef.current = onAnnotateModeToggle;
     const onToolsToggleRef = useRef(onToolsToggle);
     onToolsToggleRef.current = onToolsToggle;
+    const onStepRef = useRef(onStep);
+    onStepRef.current = onStep;
+    // The step message is honored only while the host has the surface armed.
+    const annotateModeActiveRef = useRef(annotateModeActive);
+    annotateModeActiveRef.current = annotateModeActive;
+    const lastStepAtRef = useRef(0);
+    const onPageEscapeRef = useRef(onPageEscape);
+    onPageEscapeRef.current = onPageEscape;
+    const lastPageEscapeAtRef = useRef(0);
 
     /** Single choke point for direct-to-bridge posts: live sessions get the
      *  token + concrete targetOrigin, srcdoc keeps "*" and no token. */
@@ -594,6 +674,7 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
       onUnanchoredChange: handleBridgeUnanchored,
       maxAdditionalTargets,
       scrollBehavior,
+      onHostDraft: readOnly ? undefined : onHostDraft,
     });
     createdIdsRef.current = hook.createdAnnotationIds;
 
@@ -656,7 +737,19 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
       }));
     }, [hook.draftTargets]);
 
-    useEffect(() => {
+    // Ask AI from a pinpoint draft: which element(s) the question is about,
+    // in the identity lines the feedback export prints (no outline).
+    const askAIElementDetail = useMemo(
+      () => elementIdentityForAskAI(hook.draftTargets) || undefined,
+      [hook.draftTargets],
+    );
+
+    // Registered in the commit that inserts the iframe (a layout effect), so
+    // the bridge's `ready` can never arrive before anyone listens: a passive
+    // effect can run after a fast srcdoc frame has already posted it, and a
+    // lost ready leaves the bridge unconfigured for good (seen on a Linux
+    // WebKit runner, the Inbox surface's proof).
+    useLayoutEffect(() => {
       function handler(e: MessageEvent<unknown>) {
         if (e.source !== iframeRef.current?.contentWindow) return;
         // Live sessions verify origin + token before reading anything.
@@ -720,6 +813,31 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
         }
         if (isRecord(e.data) && e.data.type === `${PREFIX}tools-toggle`) {
           onToolsToggleRef.current?.();
+          return;
+        }
+        if (isRecord(e.data) && e.data.type === `${PREFIX}step`) {
+          // The page itself can post this message, so it is honored only for
+          // a key the person pressed: the frame holds focus, the surface is
+          // armed, and at most one step per STEP_MESSAGE_MIN_INTERVAL_MS (a
+          // page cannot push itself out of view by posting in a loop).
+          const dir = e.data.dir;
+          if (!annotateModeActiveRef.current || (dir !== 1 && dir !== -1)) return;
+          if (document.activeElement !== iframeRef.current) return;
+          const now = Date.now();
+          if (now - lastStepAtRef.current < STEP_MESSAGE_MIN_INTERVAL_MS) return;
+          lastStepAtRef.current = now;
+          onStepRef.current?.(dir);
+          return;
+        }
+        if (isRecord(e.data) && e.data.type === `${PREFIX}page-escape`) {
+          // Like a step, the page could post this itself: honored only for a
+          // key pressed in the frame, in Interact, at most once per interval.
+          if (annotateModeActiveRef.current) return;
+          if (document.activeElement !== iframeRef.current) return;
+          const now = Date.now();
+          if (now - lastPageEscapeAtRef.current < STEP_MESSAGE_MIN_INTERVAL_MS) return;
+          lastPageEscapeAtRef.current = now;
+          onPageEscapeRef.current?.();
           return;
         }
         const vimCopy = parseVimBridgeCopy(e.data);
@@ -792,9 +910,15 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
       return true;
     }, [readOnly, vimModeEnabled]);
 
+    // A composer hidden with its target (a slide the page hid) is not on
+    // screen: it neither blocks Vim's document focus nor counts as an open
+    // overlay. Escape still closes it, as its own rung (below).
+    const composerShown = !!hook.commentPopover && hook.pinVisible;
+    const composerHidden = !!hook.commentPopover && !hook.pinVisible;
+
     useVimDocumentFocus({
       enabled: !readOnly && vimModeEnabled,
-      blocked: !!hook.toolbarState || !!hook.commentPopover || !!hook.quickLabelPicker,
+      blocked: !!hook.toolbarState || composerShown || !!hook.quickLabelPicker,
       focusDocument: focusVimDocument,
     });
 
@@ -890,6 +1014,33 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
       );
     }, [iframeReadyVersion, annotateModeActive]);
 
+    // A native host decides link navigations itself (`hostNavigates`).
+    useEffect(() => {
+      if (iframeReadyVersion === 0 || !hostNavigates) return;
+      postToBridge({ type: `${PREFIX}set-host-navigates`, active: true });
+    }, [iframeReadyVersion, hostNavigates]);
+
+    // The hidden composer's Escape rung: with focus outside the iframe,
+    // Escape closes the hidden draft (its text stays in the draft store) and
+    // is used, so the next press reaches the rest of the ladder. Capture
+    // phase, so it runs before the Vim document-focus rung. Inside the
+    // iframe the bridge closes the draft and the hook closes the composer.
+    const handleCommentCloseRef = useRef(hook.handleCommentClose);
+    handleCommentCloseRef.current = hook.handleCommentClose;
+    useEffect(() => {
+      if (readOnly || !composerHidden) return;
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
+        const target = e.target as HTMLElement | null;
+        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+        if (document.querySelector('[data-plannotator-confirm-dialog="true"]')) return;
+        e.preventDefault();
+        handleCommentCloseRef.current();
+      };
+      window.addEventListener('keydown', onKeyDown, true);
+      return () => window.removeEventListener('keydown', onKeyDown, true);
+    }, [readOnly, composerHidden]);
+
     // Parent-side Esc rung: with focus outside the iframe the bridge never
     // sees the keydown. Any open composer/toolbar/picker still closes first —
     // their state is read from this render's closure, so an Esc that closed
@@ -900,6 +1051,7 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
         !!hook.toolbarState || !!hook.commentPopover || !!hook.quickLabelPicker || !!globalCommentPopover;
       const onKeyDown = (e: KeyboardEvent) => {
         if (e.key !== 'Escape' || e.defaultPrevented) return;
+        // A hidden composer is closed by its own rung above.
         if (overlayOpen) return;
         // A text field or dialog owns its own Escape.
         const target = e.target as HTMLElement | null;
@@ -942,7 +1094,7 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
 
     const vimOverlayWasOpenRef = useRef(false);
     useEffect(() => {
-      const overlayOpen = !!hook.toolbarState || !!hook.commentPopover || !!hook.quickLabelPicker;
+      const overlayOpen = !!hook.toolbarState || composerShown || !!hook.quickLabelPicker;
       const wasOpen = vimOverlayWasOpenRef.current;
       vimOverlayWasOpenRef.current = overlayOpen;
       if (
@@ -957,7 +1109,7 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
           { type: `${PREFIX}focus-vim` },
         );
       }
-    }, [hook.commentPopover, hook.quickLabelPicker, hook.toolbarState, readOnly, vimModeEnabled]);
+    }, [composerShown, hook.quickLabelPicker, hook.toolbarState, readOnly, vimModeEnabled]);
 
     useEffect(() => {
       if (iframeReadyVersion === 0) return;
@@ -986,10 +1138,13 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
       // Shared/draft restores respect the live page filter too.
       applySharedAnnotations: (anns: Annotation[]) =>
         hook.applyAnnotations(forCurrentPage(anns)),
+      stepPin: (direction: "parent" | "child") =>
+        postToBridge({ type: `${PREFIX}step-pin`, direction }),
+      revealPin: () => postToBridge({ type: `${PREFIX}reveal-pin` }),
     }));
 
     const handleGlobalCommentSubmit = useCallback(
-      (text: string, images?: ImageAttachment[]) => {
+      (text: string, images?: ImageAttachment[], mentions?: readonly string[]) => {
         if (readOnly) return;
         onAddAnnotation({
           id: `global-${Date.now()}`,
@@ -1002,6 +1157,7 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
           author: getIdentity(),
           createdA: Date.now(),
           images,
+          ...(mentions && mentions.length > 0 ? { mentions } : {}),
         });
         setGlobalCommentPopover(null);
       },
@@ -1139,7 +1295,7 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
                 same-origin XHR) and no srcdoc. Srcdoc mode is unchanged. */}
             <iframe
               ref={iframeRef}
-              {...(src ? { src } : { srcDoc: srcdoc, sandbox: "allow-scripts" })}
+              {...(src ? { src } : { srcDoc: srcdoc, sandbox: HTML_VIEWER_SANDBOX + (hostNavigates ? " allow-popups" : "") })}
               style={{
                 width: "100%",
                 height: fullViewport ? "100%" : `${iframeHeight}px`,
@@ -1196,12 +1352,15 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
               positionMode="center-above"
               element={hook.toolbarState.element}
               copyText={hook.toolbarState.selectionText}
+              getRichCopy={getRichCopyEnabled() ? hook.toolbarState.getRichCopy : undefined}
               // HTML/live surfaces are comment-only: no Delete, no label
               // picker, no Alt+digit labels (commentOnly). Exactly ONE label
               // affordance is restored: the hardcoded 👍 "Looks good". The
               // wrapper filters by id as defense in depth, so no present or
               // future toolbar path can emit an arbitrary label here.
               commentOnly
+              selectionActions={selectionActions}
+              selectionActionsIcon={selectionActionsIcon}
               onQuickLabel={(label) => {
                 if (label.id === THUMBS_UP_LABEL.id) hook.handleQuickLabel(label);
               }}
@@ -1212,8 +1371,10 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
             document.body,
           )}
 
-        {/* Comment popover portal */}
-        {!readOnly && hook.commentPopover &&
+        {/* Hidden with its target (a slide the page hid): CommentPopover's draft
+            store keeps the text and images, and shown again it does not take
+            focus from where the person is. */}
+        {!readOnly && hook.pinVisible && hook.commentPopover &&
           createPortal(
             <CommentPopover
               anchorEl={hook.commentPopover.anchorEl}
@@ -1222,9 +1383,11 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
               isGlobal={false}
               draftKey={`html:${hook.commentPopover.draftKey}`}
               onSubmit={hook.handleCommentSubmit}
-              // Pinpoint clicks open this composer directly, so it carries
-              // the surface's one-click "Looks good" (the global composer
-              // does not: a document-wide thumbs-up is not a thing).
+              mentionSource={mentionSource}
+              // A pinpoint click opens this composer directly (never the
+              // selection toolbar), so it carries the surface's one-click 👍.
+              // It also shows when the composer opens from a text selection's
+              // Comment button: a harmless duplicate of the toolbar 👍.
               onQuickLookGood={hook.handleCommentLooksGood}
               onClose={hook.handleCommentClose}
               skillReferences
@@ -1233,11 +1396,13 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
                 kind: "selection",
                 label: "Selected HTML",
                 text: hook.commentPopover.selectedText ?? hook.commentPopover.contextText,
+                ...(askAIElementDetail ? { detail: askAIElementDetail } : {}),
               }}
               targetChips={targetChips}
               onRemoveTargetChip={targetChips ? hook.removeDraftTarget : undefined}
               onHoverTargetChip={targetChips ? hook.flashDraftTarget : undefined}
               refocusToken={targetChips ? hook.composerFocusToken : undefined}
+              autoFocus={hook.composerAutoFocus}
               captureStrayKeys={multiSelectActive}
               yieldState={multiSelectActive ? composerYield : undefined}
             />,
@@ -1253,6 +1418,7 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
               isGlobal={true}
               onSubmit={handleGlobalCommentSubmit}
               onClose={() => setGlobalCommentPopover(null)}
+              mentionSource={mentionSource}
               skillReferences
               onAskAI={onAskAI}
               askAIContext={{ kind: "general", label: "Document" }}
