@@ -83,9 +83,17 @@ any port) and `https://*.ts.net`, plus `ALLOWED_ORIGINS`. Requests with no
 Origin (the Inbox's server, the CLI) are allowed. CORS limits what a browser
 page can do; it does not stop a script, which the limits above are for.
 
+## Deployment
+
+Deployed 2026-10-27 at `https://plannotator-feedback.plannotator.workers.dev/feedback`
+(the default `PRODUCT_FEEDBACK_URL`), with its D1 database `plannotator-feedback`
+(id in `wrangler.toml`). A change to the Worker ships with `bun run deploy`; a
+change to `schema.sql` with `bun run db:migrate` first.
+
 ## First-time setup (owner only)
 
-Nothing in CI creates, migrates or deploys this Worker.
+Nothing in CI creates, migrates or deploys this Worker. These are the steps
+that were run once; a new account repeats them.
 
 ```bash
 cd apps/feedback-service

@@ -4,12 +4,12 @@ compatibility_date = "2024-12-01"
 
 # Owner-deployed only: nothing in CI creates, migrates or deploys this Worker.
 #
-# PLACEHOLDER: run `bun run db:create` once, then paste the `database_id` it
-# prints here. Until then `wrangler deploy` fails, which is intended.
+# The owner's D1 database `plannotator-feedback` (created 2026-10-27 with
+# `bun run db:create`; schema applied with `bun run db:migrate`).
 [[d1_databases]]
 binding = "FEEDBACK_DB"
 database_name = "plannotator-feedback"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "d378d61f-b046-4ac4-b8b8-bc1e590171d1"
 
 # Cloudflare's rate limiting binding, keyed by the caller's IP (counted by
 # Cloudflare, never stored by this Worker). 5 submissions per IP per 60 s:
