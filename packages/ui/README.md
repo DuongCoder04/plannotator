@@ -401,16 +401,36 @@ slot and mentions on the edit box (0.45.0)".
   their own (the Inbox sorts a video's comments by the moment they are at).
   Ties keep creation order; replies still thread under their parent. Omit it
   and the panel sorts by creation exactly as before.
-- **`title?`, `titleNote?`, `cardParts?: (annotation) => { quote?, images? }`**
-  (ui 0.53.0) — the header's title (default "Annotations") and a quiet note
-  at its right, and per card whether the built-in quote and image row are
-  drawn (the Inbox's video comments draw the moment and the frame in
-  `renderCardHeader` instead). Omit them and the panel is as before.
+- **`title?`, `titleNote?`, `cardParts?: (annotation) => { quote?, images?, text? }`**
+  (ui 0.53.0; `text` unreleased) — the header's title (default "Annotations")
+  and a quiet note at its right, and per card whether the built-in quote,
+  image row and comment text are drawn (the Inbox's video comments draw the
+  moment and the frame in `renderCardHeader` instead). `text: false` treats
+  the stored text as the host's stand-in, not the person's words: it is not
+  drawn and the card's edit box starts empty (the Inbox's drawing with no
+  words, whose text "See the marked-up image." is for the agent). Omit them
+  and the panel is as before.
+- **`renderCardBody?: (annotation) => ReactNode`** (unreleased) — the host's
+  own body for a plan-annotation card, drawn where the comment text goes,
+  inside the card (a click on it selects the card). The Inbox draws a
+  drawing with no words as its picture. Omit it and nothing extra is drawn.
 - **Export: `exportLocation`** (ui 0.53.0) — a string a host sets on the
   COPY of an annotation it hands the exporters (`exportAnnotations`,
   `exportLinkedDocAnnotations`): one line printed under the entry's heading
   (the Inbox's `At 1:42 (102.4 s of 7:41)`). Never stored; an annotation
   without it exports byte-identically.
+
+### Image annotator seams (`components/ImageAnnotator`; unreleased)
+
+- **`escapeCancels?: boolean`** — Escape closes the drawing screen and accepts
+  nothing; Enter and the ✓ accept; a click outside closes only an empty
+  drawing (strokes are never lost to a stray click); the ✓'s title reads
+  "Save (Enter)". The Inbox passes it (the owner's rule, 2026-10-26). Omit it
+  and Escape, Enter and a click outside all accept, under "Save (Esc)", as
+  plan review has always done.
+- **`hint?: ReactNode`** — the line under the image in place of "Press Esc or
+  Enter or click outside to accept" (the Inbox: "Enter or ✓ adds to your
+  reply · Esc cancels"). Omit it and the line is as before.
 
 ### WebMCP provider (`@plannotator/ui/webmcp`; 0.32.0)
 
