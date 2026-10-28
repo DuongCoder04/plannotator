@@ -94,7 +94,7 @@ describe("connecting Qwen Code", () => {
     expect(text).not.toContain(SECRET.GITHUB_TOKEN);
     expect(readAgentEntry("qwen", environment(), [OURS])).toEqual({ kind: "ours", argv: OURS });
     // `qwen mcp add` writes every server back resolved (the fake does as Qwen 0.26 does): it is never run.
-    expect(fake.calls().filter((call) => call.name === "qwen")).toEqual([]);
+    expect(fake.calls().filter((call) => call.name === "qwen" && call.args[0] === "mcp")).toEqual([]);
     expect(readInboxAgents(dataDir).agents.qwen).toMatchObject({ state: "added", reach: "mcp", path: settingsPath() });
     expect(formatConnectReport(report)[0]).toContain("Qwen Code");
 
@@ -104,12 +104,14 @@ describe("connecting Qwen Code", () => {
     expect(readFileSync(settingsPath(), "utf8")).toBe(text);
   });
 
-  test("qwen is asked its version in the home folder, never in the Inbox's working folder (Qwen rewrites that folder's .qwen/settings.json)", async () => {
+  test("every qwen run is in the home folder, never the Inbox's working folder (Qwen rewrites that folder's .qwen/settings.json); its version is asked once", async () => {
     fake.install("qwen");
     await connect();
     const runs = qwenRuns();
-    expect(runs.map((run) => run.args)).toEqual([["--version"]]);
-    expect(runs[0]!.cwd).toBe(fake.home);
+    expect(runs.length).toBeGreaterThan(0);
+    for (const run of runs) expect(run.cwd).toBe(fake.home);
+    // The connect step and the trusted-sender check share one answer.
+    expect(runs.filter((run) => run.args[0] === "--version")).toHaveLength(1);
   });
 
   test("found by its folder alone (no qwen on PATH): connected the same way", async () => {
@@ -233,7 +235,7 @@ describe("Qwen's settings.json is never left broken", () => {
     expect(plan.items.map((item) => item.describe)).toEqual(["MCP server plannotator-inbox from Qwen Code (~/.qwen/settings.json, that entry only)"]);
     expect(await plan.items[0]!.apply()).toBeNull();
     expect(readFileSync(settingsPath(), "utf8")).toBe(MINE.replace('"$version": 3,', '"$version": 4,\n  "ui": { "theme": "dark" }, // new'));
-    expect(fake.calls().filter((call) => call.name === "qwen")).toEqual([]);
+    expect(fake.calls().filter((call) => call.name === "qwen" && call.args[0] === "mcp")).toEqual([]);
   });
 
   test("a settings.json Plannotator created is deleted again on removal once only the empty containers are left", async () => {

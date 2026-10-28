@@ -8,8 +8,9 @@
  * real ~/.qwen never read.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, type Server } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { InboxThread } from "@plannotator/core/inbox-types";
@@ -18,8 +19,8 @@ import { createFakeAgents, type FakeAgents } from "../../tests/helpers/fake-agen
 import { createAgentEnvironmentFor } from "./inbox-agents";
 import { startInboxServer, type InboxServer } from "./inbox";
 import { INBOX_REPLY_ARRIVES_TEXT, INBOX_REPLY_WAITS_TEXT } from "./inbox-mcp";
-import { ensureQwenTrust, readQwenTrust } from "./inbox-qwen-trust";
-import { qwenRecordLive } from "./inbox-qwen-wake";
+import { ensureQwenTrust, qwenWakeToken, readQwenTrust } from "./inbox-qwen-trust";
+import { qwenRecordLive, qwenSettingsKeepOut, type QwenAgentsSettings } from "./inbox-qwen-wake";
 
 const SESSION = "8e016be8-5b48-4c13-ad22-1f5326ae64ac";
 
@@ -35,13 +36,21 @@ afterEach(async () => {
   for (const fake of fakes.splice(0)) fake.remove();
 });
 
-/** Linux's record guards for this process, as Qwen writes them; null elsewhere. */
+/**
+ * Linux's record guards for this process, as Qwen writes them; null elsewhere.
+ * The pid namespace is read in another process (`readlink` names it
+ * `pid:[<inode>]`, the namespace's own inode, which Qwen records), so a value
+ * that differs per process could never match.
+ */
 function identity(pid: number): { procStart: string | null; pidNs: number | null } {
   if (process.platform !== "linux") return { procStart: null, pidNs: null };
   const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
   const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
   const ticks = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-  return { procStart: `${boot}:${ticks}`, pidNs: lstatSync("/proc/self/ns/pid").ino };
+  const link = Bun.spawnSync(["readlink", "/proc/self/ns/pid"]).stdout.toString().trim();
+  const pidNs = Number(/^pid:\[(\d+)\]$/.exec(link)?.[1]);
+  expect(Number.isSafeInteger(pidNs)).toBe(true);
+  return { procStart: `${boot}:${ticks}`, pidNs };
 }
 
 type Receipt = "delivered" | "held" | "refused" | "denied" | "misaddressed" | "dropped" | "expired" | null;
@@ -165,7 +174,7 @@ async function world(options: { trust?: boolean; env?: Record<string, string>; k
 }
 
 async function connect(server: InboxServer): Promise<Client> {
-  const client = new Client({ name: "qwen-code-mcp-client", version: "0.26.2" });
+  const client = new Client({ name: "qwen-cli-mcp-client-plannotator-inbox", version: "0.26.2" });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.port}/mcp`)));
   clients.push(client);
   return client;
@@ -281,8 +290,21 @@ describe("a reply to a running Qwen Code session", () => {
     expect((await qwenSends(w.client, w.project, "D?")).text).toContain(INBOX_REPLY_ARRIVES_TEXT);
   });
 
-  test("the person's Qwen settings that hold or refuse other programs' messages (theirs or the project's) turn the wake off", async () => {
-    const w = await world();
+  test("Qwen settings that hold or refuse other programs' messages (system, the person's, the project's; a value Qwen does not know) turn the wake off", async () => {
+    const system = join(realpathSync(mkdtempSync(join(tmpdir(), "plannotator-qwen-system-"))), "settings.json");
+    const w = await world({ env: { QWEN_CODE_SYSTEM_SETTINGS_PATH: system } });
+    try {
+      // An administrator's system settings hold them: so does every session.
+      writeFileSync(system, JSON.stringify({ agents: { crossSessionInbound: "hold" } }));
+      expect((await qwenSends(w.client, w.project, "S?")).text).toContain(INBOX_REPLY_WAITS_TEXT);
+      // A value this Qwen does not know is held too (Qwen fails closed).
+      writeFileSync(system, JSON.stringify({ agents: { crossSessionInbound: "review-later" } }));
+      await w.server.qwenWake.sweep(); // reads the registry and settings again
+      expect((await qwenSends(w.client, w.project, "U?")).text).toContain(INBOX_REPLY_WAITS_TEXT);
+    } finally {
+      rmSync(join(system, ".."), { recursive: true, force: true });
+    }
+    await w.server.qwenWake.sweep();
     writeFileSync(join(w.qwenHome, "settings.json"), '{\n  // mine\n  "agents": { "crossSessionInbound": "hold" }\n}\n');
     expect((await qwenSends(w.client, w.project, "A?")).text).toContain(INBOX_REPLY_WAITS_TEXT);
     writeFileSync(join(w.qwenHome, "settings.json"), "{}");
@@ -393,6 +415,66 @@ describe("a reply to a running Qwen Code session", () => {
     expect(w.session.received[1]!.frame.msgId).not.toBe(w.session.received[0]!.frame.msgId);
   });
 
+  test("Qwen stops confirming because the grant was revoked in Qwen: the token is dropped, and later agents are told to wait", async () => {
+    const w = await world();
+    const sent = await qwenSends(w.client, w.project, "Ship it?");
+    expect(sent.text).toContain(INBOX_REPLY_ARRIVES_TEXT);
+    // The person runs `qwen sessions controllers remove <id>`: Qwen now drops Plannotator's frames without a word.
+    writeFileSync(join(w.qwenHome, "peer-controllers.json"), JSON.stringify({ schemaVersion: 1, controllers: [] }));
+    const replyId = await reply(w.server, sent.message_id, "Yes.");
+    await w.server.qwenWake.sweep();
+    await until(() => w.server.qwenWake.uncertain(SESSION, replyId), 3_000);
+    expect(w.server.qwenWake.uncertain(SESSION, replyId)).toBe(true);
+    await until(() => qwenWakeToken(w.dataDir, w.qwenHome) === null, 5_000);
+    expect(readQwenTrust(w.dataDir)).toMatchObject({ revoked_outside_at: expect.any(String) });
+    await until(() => !w.server.qwenWake.canWake());
+    expect((await qwenSends(w.client, w.project, "Again?")).text).toContain(INBOX_REPLY_WAITS_TEXT);
+  });
+
+  test("a malformed receipt (a token of the right length in characters, not in bytes; a line that is not JSON) ends only its own connection", async () => {
+    const w = await world();
+    const sent = await qwenSends(w.client, w.project, "Ship it?");
+    w.session.answer = null;
+    const replyId = await reply(w.server, sent.message_id, "Yes.");
+    await w.server.qwenWake.sweep();
+    await until(() => w.session.received.length > 0);
+    const frame = w.session.received[0]!.frame;
+    await sendReceipt({ ...frame, replyToken: "é".repeat(64) }, "delivered");
+    await new Promise<void>((done) => {
+      const socket = createConnection({ path: frame.from as string });
+      socket.on("connect", () => socket.end("not json\n\u0000\n"));
+      socket.on("close", () => done());
+      socket.on("error", () => done());
+    });
+    // The Inbox still answers, and still believes the right token.
+    expect((await fetch(`${base(w.server)}/api/inbox/threads/${sent.thread_id}`)).status).toBe(200);
+    await w.session.receipt(frame, "delivered");
+    await until(() => !w.server.qwenWake.uncertain(SESSION, replyId) && (w.server.qwenWake.uncertainItems(SESSION).length === 0));
+    expect((await qwenSends(w.client, w.project, "Again?")).text).toContain(INBOX_REPLY_ARRIVES_TEXT);
+  });
+
+  test("a receipts folder a crashed Inbox left is cleared; a running one's is kept", async () => {
+    // Short enough for a socket path under it (else the wake uses /tmp, and clears there).
+    const parent = realpathSync(mkdtempSync(join("/tmp", "pq-")));
+    try {
+      const exited = Bun.spawn(["/bin/sh", "-c", "exit 0"]);
+      await exited.exited;
+      const left = join(parent, `plannotator-qwen-${exited.pid}-abc123`);
+      const running = join(parent, `plannotator-qwen-${process.pid}-def456`);
+      mkdirSync(left);
+      mkdirSync(running);
+      const w = await world({ knobs: { socketParent: parent } });
+      const sent = await qwenSends(w.client, w.project, "Ship it?");
+      await reply(w.server, sent.message_id, "Yes.");
+      await w.server.qwenWake.sweep();
+      await until(() => w.session.received.length > 0);
+      expect(existsSync(left)).toBe(false);
+      expect(existsSync(running)).toBe(true);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
   test("a receipt is believed only with the reply token its frame carried", async () => {
     const w = await world();
     const sent = await qwenSends(w.client, w.project, "Ship it?");
@@ -406,6 +488,30 @@ describe("a reply to a running Qwen Code session", () => {
     // The forged refusal changed nothing: the session is still woken.
     expect((await qwenSends(w.client, w.project, "Again?")).text).toContain(INBOX_REPLY_ARRIVES_TEXT);
     void replyId;
+  });
+});
+
+describe("Qwen's settings, merged as Qwen merges them", () => {
+  const file = (agents: { messaging?: unknown; inbound?: unknown }): QwenAgentsSettings => ({ kind: "file", messaging: agents.messaging, inbound: agents.inbound });
+  const none: QwenAgentsSettings = { kind: "missing" };
+  const keptOut = (scopes: Partial<Record<"systemDefaults" | "user" | "workspace" | "system", QwenAgentsSettings>>) =>
+    qwenSettingsKeepOut({ systemDefaults: none, user: none, workspace: none, system: none, ...scopes });
+
+  test("unset lets a trusted sender in; hold, refuse, an unknown value, messaging off, or a file Qwen cannot read keep it out", () => {
+    expect(keptOut({})).toBe(false);
+    expect(keptOut({ user: file({ inbound: "accept" }) })).toBe(false);
+    for (const inbound of ["hold", "refuse", "later"]) expect(keptOut({ user: file({ inbound }) })).toBe(true);
+    expect(keptOut({ user: file({ messaging: false }) })).toBe(true);
+    expect(keptOut({ user: file({ messaging: "no" }) })).toBe(true);
+    expect(keptOut({ user: { kind: "unreadable" } })).toBe(true);
+  });
+
+  test("system settings win over the person's; a project can only tighten; system defaults give way to the person's", () => {
+    expect(keptOut({ user: file({ inbound: "hold" }), system: file({ inbound: "accept" }) })).toBe(false);
+    expect(keptOut({ user: file({ inbound: "accept" }), system: file({ inbound: "refuse" }) })).toBe(true);
+    expect(keptOut({ user: file({ inbound: "hold" }), workspace: file({ inbound: "accept" }) })).toBe(true);
+    expect(keptOut({ workspace: file({ inbound: "hold" }) })).toBe(true);
+    expect(keptOut({ systemDefaults: file({ inbound: "hold" }), user: file({ inbound: "accept" }) })).toBe(false);
   });
 });
 

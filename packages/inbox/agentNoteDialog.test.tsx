@@ -160,10 +160,18 @@ test.skipIf(!hasDom)('unticking renames the primary; with nothing ticked it is "
 test.skipIf(!hasDom)('a run that made Plannotator a trusted sender in Qwen Code says so in the band, under what it connected', () => {
   const qwen = row('qwen', 'Qwen Code', { path: '~/.qwen/QWEN.md', create: true });
   const { el } = mount([qwen, CLAUDE], { ...REPORT, added: ['qwen'], manual_why: [], trusted: ['qwen'] });
-  expect([...el.querySelectorAll('.ib-anote-band p')].map((p) => p.textContent)).toEqual([
-    'Connected Qwen Code to the Inbox.',
-    'Plannotator is now a trusted sender in Qwen Code, so your replies go into its running sessions.',
-  ]);
+  const lines = [...el.querySelectorAll('.ib-anote-band p')].map((p) => p.textContent ?? '');
+  expect(lines).toHaveLength(2);
+  expect(lines[0]).toBe('Connected Qwen Code to the Inbox.');
+  expect(el.querySelector('[data-anote-trusted]')?.textContent).toContain('Qwen Code');
+});
+
+test.skipIf(!hasDom)('a trusted sender removed in Qwen is a warning in the band, with the way to Settings', () => {
+  const qwen = row('qwen', 'Qwen Code', { path: '~/.qwen/QWEN.md', create: true });
+  const { el } = mount([qwen, CLAUDE], { ...REPORT, added: [], manual_why: [], trust_failed: [{ agent: 'qwen', reason: 'removed in Qwen' }] });
+  const warn = el.querySelector('.ib-anote-band .ib-anote-warn');
+  expect(warn?.textContent).toContain('removed in Qwen');
+  expect(warn?.querySelector('button')?.textContent).toBe('Settings → Agents');
 });
 
 test.skipIf(!hasDom)('four or more ticked: "Add to N agents"', () => {

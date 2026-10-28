@@ -17,9 +17,12 @@
  *    a headless run ends after its turn, and sessions driven over ACP or by
  *    `qwen serve` refuse messages);
  *  - the call is not a daemon's (`_meta["qwen-code/invocation"]`);
- *  - neither the person's Qwen settings nor the project's turn messaging off
- *    (`agents.crossSessionMessaging: false`) or hold or refuse what comes in
- *    (`agents.crossSessionInbound`).
+ *  - no Qwen settings scope (system defaults, the person's, the project's,
+ *    system) turns messaging off (`agents.crossSessionMessaging` anything but
+ *    true) or holds or refuses what comes in (`agents.crossSessionInbound`
+ *    "hold", "refuse", or a value Qwen does not know), merged as Qwen merges
+ *    them (a project can only tighten); a settings file Qwen cannot read
+ *    counts as holding.
  *
  * Then each item waiting for that session (`InboxStore.pendingRepliesFor`) is
  * sent once: one connection to the session's socket, the auth line with the
@@ -36,7 +39,10 @@
  *  - `held`, `denied`, `refused`, or no receipt within a while (a token Qwen
  *    no longer accepts is dropped without a word): it may not have gone, so it
  *    is never sent again and the window says it is saved for the session's
- *    next read. `refused` also stops waking that session.
+ *    next read. `refused` also stops waking that session. No receipt also
+ *    asks Qwen once whether the grant is still listed (inbox-qwen-trust.ts
+ *    `checkQwenTrust`): one revoked in Qwen drops the token, so nothing more
+ *    is said to arrive by itself.
  *  - `misaddressed` (the socket now serves another session): the session has
  *    ended; the reply waits for the next agent.
  *  - `expired`: the session closed with it unread (it is sent again if the
@@ -50,10 +56,10 @@
  */
 
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, chmodSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { INBOX_QWEN_HOST, isQwenSessionId, qwenSessionOfCall, type InboxMessage, type InboxQwenSessionRecord } from "@plannotator/core/inbox-types";
 import { isPidAlive } from "@plannotator/shared/inbox/registry";
 import { listQwenSessionRecords } from "@plannotator/shared/inbox/qwen-sessions";
@@ -62,7 +68,7 @@ import type { InboxStore } from "@plannotator/shared/inbox/store";
 import { stripJsonComments } from "./agent-files";
 import { codexQueueMessage } from "./inbox-codex-wake";
 import type { AgentEnvironment } from "./inbox-agents";
-import { qwenTrustHome, qwenWakeToken } from "./inbox-qwen-trust";
+import { checkQwenTrust, qwenTrustHome, qwenWakeToken } from "./inbox-qwen-trust";
 
 /** One send (connect, write, the peer's close) may take this long. */
 export const INBOX_QWEN_SEND_TIMEOUT_MS = 5_000;
@@ -83,6 +89,10 @@ const LINE_DEADLINE_MS = 30_000;
 const MAX_RECEIPT_CONNECTIONS = 64;
 /** A unix socket path may not pass this many bytes (Qwen's own limit, the smallest of macOS and Linux). */
 const SOCKET_PATH_MAX = 103;
+/** The receipts socket's folder: `<prefix><this pid>-XXXXXX`, so a later Inbox can clear one a crash left. */
+const SOCKET_FOLDER_PREFIX = "plannotator-qwen-";
+/** Asking Qwen whether the grant is still listed (after a send it never confirmed): at most this often. */
+const TRUST_CHECK_EVERY_MS = 5 * 60_000;
 
 type ClaimState = "sent" | "delivered" | "held" | "denied" | "refused" | "uncertain";
 
@@ -135,7 +145,8 @@ function linuxIdentity(): { bootId: string | null; pidNs: number | null } {
     // Not Linux.
   }
   try {
-    pidNs = lstatSync("/proc/self/ns/pid").ino;
+    // The namespace's own inode, as Qwen records it (`stat` follows the link; `lstat` would give the link's, per process).
+    pidNs = statSync("/proc/self/ns/pid").ino;
   } catch {
     // Not Linux.
   }
@@ -167,18 +178,89 @@ export function qwenRecordLive(record: InboxQwenSessionRecord, identity: { bootI
   return isPidAlive(record.pid);
 }
 
-/** What the person's (or the project's) Qwen settings say about messages from other programs. */
-function settingsRefuse(path: string): boolean {
+/** One Qwen settings file's say on messages from other programs: missing, unreadable, or its two values. */
+export type QwenAgentsSettings = { kind: "missing" } | { kind: "unreadable" } | { kind: "file"; messaging: unknown; inbound: unknown };
+
+export function readQwenAgentsSettings(path: string): QwenAgentsSettings {
+  let text: string;
   try {
-    const stat = lstatSync(path);
-    if (!stat.isFile() || stat.size > 4 * 1024 * 1024) return false;
-    const parsed = JSON.parse(stripJsonComments(readFileSync(path, "utf8"))) as { agents?: { crossSessionMessaging?: unknown; crossSessionInbound?: unknown } } | null;
-    const agents = parsed?.agents;
-    if (!agents || typeof agents !== "object") return false;
-    if (agents.crossSessionMessaging !== undefined && agents.crossSessionMessaging !== true) return true;
-    return agents.crossSessionInbound === "hold" || agents.crossSessionInbound === "refuse";
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size > 4 * 1024 * 1024) return { kind: "unreadable" };
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR" ? { kind: "missing" } : { kind: "unreadable" };
+  }
+  try {
+    const parsed = JSON.parse(stripJsonComments(text.replace(/^\uFEFF/, ""))) as { agents?: { crossSessionMessaging?: unknown; crossSessionInbound?: unknown } } | null;
+    const agents = parsed && typeof parsed === "object" ? parsed.agents : undefined;
+    if (!agents || typeof agents !== "object") return { kind: "file", messaging: undefined, inbound: undefined };
+    return { kind: "file", messaging: agents.crossSessionMessaging, inbound: agents.crossSessionInbound };
   } catch {
-    return false;
+    return { kind: "unreadable" };
+  }
+}
+
+/** How strict a value is, as Qwen ranks it (`WORKSPACE_TIGHTEN_ONLY_SETTINGS`): messaging unset or true is open; inbound accept < unset < hold (and any unknown value) < refuse. */
+const messagingStrictness = (value: unknown): number => (value === true || value === undefined ? 0 : 1);
+const inboundStrictness = (value: unknown): number => (value === "accept" ? 0 : value === undefined ? 1 : value === "refuse" ? 3 : 2);
+
+/**
+ * Whether Qwen's merged settings keep a message from a trusted sender out of
+ * a session (held for review, refused, or messaging off), as Qwen merges
+ * them: system defaults, then the person's, then the project's (which may
+ * only tighten), then system settings over all. A file that is there and
+ * cannot be read counts as holding (Qwen's gate holds then). The project's
+ * file counts even in a folder Qwen does not trust: it can only tighten, so
+ * at worst a reply is said to wait that would have arrived.
+ */
+export function qwenSettingsKeepOut(scopes: { systemDefaults: QwenAgentsSettings; user: QwenAgentsSettings; workspace: QwenAgentsSettings; system: QwenAgentsSettings }): boolean {
+  const all = [scopes.systemDefaults, scopes.user, scopes.workspace, scopes.system];
+  if (all.some((scope) => scope.kind === "unreadable")) return true;
+  const value = (scope: QwenAgentsSettings, field: "messaging" | "inbound"): unknown => (scope.kind === "file" ? scope[field] : undefined);
+  const merged = (field: "messaging" | "inbound", strictness: (value: unknown) => number): unknown => {
+    const system = value(scopes.system, field);
+    if (system !== undefined) return system;
+    const user = value(scopes.user, field);
+    const base = user !== undefined ? user : value(scopes.systemDefaults, field);
+    const workspace = value(scopes.workspace, field);
+    return workspace !== undefined && strictness(workspace) > strictness(base) ? workspace : base;
+  };
+  return messagingStrictness(merged("messaging", messagingStrictness)) >= 1 || inboundStrictness(merged("inbound", inboundStrictness)) >= 2;
+}
+
+/** Qwen's system settings file and its system defaults (`QWEN_CODE_SYSTEM_SETTINGS_PATH`, `QWEN_CODE_SYSTEM_DEFAULTS_PATH`). */
+function qwenSystemSettingsPaths(e: Pick<AgentEnvironment, "env" | "platform">): { system: string; systemDefaults: string } {
+  const system =
+    e.env.QWEN_CODE_SYSTEM_SETTINGS_PATH ||
+    (e.platform === "darwin" ? "/Library/Application Support/QwenCode/settings.json" : e.platform === "win32" ? "C:\\ProgramData\\qwen-code\\settings.json" : "/etc/qwen-code/settings.json");
+  return { system, systemDefaults: e.env.QWEN_CODE_SYSTEM_DEFAULTS_PATH || join(dirname(system), "system-defaults.json") };
+}
+
+/**
+ * Remove receipts-socket folders an Inbox left when it crashed: this
+ * prefix, a pid that is not running, owned by this user. Never another
+ * running Inbox's.
+ */
+function clearLeftFolders(base: string): void {
+  let names: string[];
+  try {
+    names = readdirSync(base);
+  } catch {
+    return;
+  }
+  const uid = process.getuid?.();
+  for (const name of names) {
+    const match = new RegExp(`^${SOCKET_FOLDER_PREFIX}(\\d+)-[A-Za-z0-9]{6}$`).exec(name);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (pid === process.pid || isPidAlive(pid)) continue;
+    try {
+      const stat = lstatSync(join(base, name));
+      if (!stat.isDirectory() || (uid !== undefined && stat.uid !== uid)) continue;
+      rmSync(join(base, name), { recursive: true, force: true });
+    } catch {
+      // Gone meanwhile, or not ours to remove.
+    }
   }
 }
 
@@ -197,6 +279,8 @@ export function createInboxQwenWake(options: {
   comebackMs?: number;
   /** Where the receipts socket's folder goes (default: the OS temp dir, or /tmp when that path is too long). */
   socketParent?: string;
+  /** Whether Qwen still lists Plannotator's grant (default: inbox-qwen-trust.ts `checkQwenTrust`, which drops a revoked token). */
+  checkTrust?: () => Promise<"listed" | "gone" | "unknown">;
   log?: (line: string) => void;
 }): InboxQwenWake {
   const { store, environment } = options;
@@ -226,14 +310,26 @@ export function createInboxQwenWake(options: {
     return live;
   };
   /** What a settings file says, read at most every two seconds (presence reads it often). */
-  const settingsRead = new Map<string, { at: number; refuses: boolean }>();
-  const refusing = (path: string): boolean => {
+  const settingsRead = new Map<string, { at: number; settings: QwenAgentsSettings }>();
+  const settingsOf = (path: string): QwenAgentsSettings => {
     const cached = settingsRead.get(path);
-    if (cached && Date.now() - cached.at < REGISTRY_TTL_MS) return cached.refuses;
-    const refuses = settingsRefuse(path);
+    if (cached && Date.now() - cached.at < REGISTRY_TTL_MS) return cached.settings;
+    const settings = readQwenAgentsSettings(path);
     if (settingsRead.size > 256) settingsRead.clear();
-    settingsRead.set(path, { at: Date.now(), refuses });
-    return refuses;
+    settingsRead.set(path, { at: Date.now(), settings });
+    return settings;
+  };
+  const systemPaths = qwenSystemSettingsPaths(environment);
+  /** Whether Qwen's settings for a session in `cwd` keep a trusted sender's message out (`qwenSettingsKeepOut`). */
+  const keptOut = (cwd: string | null): boolean => {
+    // A session in the home folder has no project settings (Qwen skips that scope there).
+    const project = cwd !== null && resolve(cwd) !== resolve(environment.homeDir) ? join(cwd, ".qwen", "settings.json") : null;
+    return qwenSettingsKeepOut({
+      systemDefaults: settingsOf(systemPaths.systemDefaults),
+      user: settingsOf(join(home(), "settings.json")),
+      workspace: project ? settingsOf(project) : { kind: "missing" },
+      system: settingsOf(systemPaths.system),
+    });
   };
   const forgetRegistry = () => {
     registry = null;
@@ -249,8 +345,30 @@ export function createInboxQwenWake(options: {
   /** Whether a live record can be messaged: a terminal session alone in its process, with an inbox socket and token, and settings that let it in. */
   const reachable = (record: InboxQwenSessionRecord): boolean => {
     if (record.shared || record.kind !== "tui" || !dialable(record.ipcPath) || !record.ipcToken) return false;
-    if (refusing(join(home(), "settings.json"))) return false;
-    return !(record.cwd !== null && refusing(join(record.cwd, ".qwen", "settings.json")));
+    return !keptOut(record.cwd);
+  };
+
+  // ── The grant, asked about when Qwen stops confirming ──
+  const checkTrust = options.checkTrust ?? (() => checkQwenTrust(options.dataDir, environment));
+  let trustCheckedAt = -Infinity;
+  let trustChecking = false;
+  /** A send Qwen never confirmed: is Plannotator's grant still there? A revoked one drops the token (asked at most every five minutes). */
+  const askTrust = () => {
+    if (trustChecking || stopped || Date.now() - trustCheckedAt < TRUST_CHECK_EVERY_MS) return;
+    trustChecking = true;
+    trustCheckedAt = Date.now();
+    void checkTrust()
+      .then((answer) => {
+        if (answer !== "gone") return;
+        tokenRead = null;
+        log("Plannotator's trusted-sender grant was removed in Qwen Code, so replies to Qwen Code sessions wait until they read the Inbox.");
+      })
+      .catch(() => {
+        // Asked again after the next unconfirmed send.
+      })
+      .finally(() => {
+        trustChecking = false;
+      });
   };
 
   // ── The sessions it wakes ──
@@ -361,9 +479,11 @@ export function createInboxQwenWake(options: {
   let receipts: { server: Server; path: string; folder: string } | null = null;
   let binding: Promise<string | null> | null = null;
   const connections = new Set<Socket>();
+  const replyTokenBytes = Buffer.from(replyToken);
   const tokenMatches = (presented: unknown) => {
-    if (typeof presented !== "string" || presented.length !== replyToken.length) return false;
-    return timingSafeEqual(Buffer.from(presented), Buffer.from(replyToken));
+    // Compared as bytes: a token of the same length in characters may not be in bytes (timingSafeEqual would throw).
+    if (typeof presented !== "string" || Buffer.byteLength(presented) !== replyTokenBytes.length) return false;
+    return timingSafeEqual(Buffer.from(presented), replyTokenBytes);
   };
   const onReceipt = (frame: Record<string, unknown>) => {
     if (frame.type !== "control" || frame.action !== "delivery_status" || typeof frame.msgV !== "number" || frame.msgV > 1) return;
@@ -462,34 +582,40 @@ export function createInboxQwenWake(options: {
     };
     arm();
     socket.on("data", (chunk: string) => {
-      buffer += chunk;
-      let at = buffer.indexOf("\n");
-      while (at >= 0) {
-        const line = buffer.slice(0, at);
-        buffer = buffer.slice(at + 1);
-        at = buffer.indexOf("\n");
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
-        const frame = parsed as Record<string, unknown>;
-        if (!authed) {
-          // The first line must present the token the frame carried; anything else ends the connection.
-          if (frame.type !== "auth" || !tokenMatches(frame.token)) {
-            socket.destroy();
-            return;
+      // Whatever a line holds, it ends at most this connection, never the Inbox.
+      try {
+        buffer += chunk;
+        let at = buffer.indexOf("\n");
+        while (at >= 0) {
+          const line = buffer.slice(0, at);
+          buffer = buffer.slice(at + 1);
+          at = buffer.indexOf("\n");
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(line);
+          } catch {
+            continue;
           }
-          authed = true;
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+          const frame = parsed as Record<string, unknown>;
+          if (!authed) {
+            // The first line must present the token the frame carried; anything else ends the connection.
+            if (frame.type !== "auth" || !tokenMatches(frame.token)) {
+              socket.destroy();
+              return;
+            }
+            authed = true;
+            arm();
+            continue;
+          }
           arm();
-          continue;
+          onReceipt(frame);
         }
-        arm();
-        onReceipt(frame);
+        if (buffer.length > LINE_MAX_CHARS) socket.destroy();
+      } catch (error) {
+        log(`a Qwen Code receipt could not be read: ${error instanceof Error ? error.message : String(error)}`);
+        socket.destroy();
       }
-      if (buffer.length > LINE_MAX_CHARS) socket.destroy();
     });
     const done = () => {
       if (deadline) clearTimeout(deadline);
@@ -504,8 +630,10 @@ export function createInboxQwenWake(options: {
       let folder: string;
       try {
         const parent = options.socketParent ?? tmpdir();
-        const base = Buffer.byteLength(join(parent, "plannotator-qwen-XXXXXX", "r.sock")) <= SOCKET_PATH_MAX ? parent : "/tmp";
-        folder = mkdtempSync(join(base, "plannotator-qwen-"));
+        const prefix = `${SOCKET_FOLDER_PREFIX}${process.pid}-`;
+        const base = Buffer.byteLength(join(parent, `${prefix}XXXXXX`, "r.sock")) <= SOCKET_PATH_MAX ? parent : "/tmp";
+        for (const folder of new Set([parent, base])) clearLeftFolders(folder);
+        folder = mkdtempSync(join(base, prefix));
         chmodSync(folder, 0o700);
       } catch (error) {
         log(`the Qwen Code receipts socket could not be made: ${error instanceof Error ? error.message : String(error)}`);
@@ -615,6 +743,8 @@ export function createInboxQwenWake(options: {
         claim.state = "uncertain";
         persist(claim);
         log(`Qwen Code did not confirm a reply to session ${session}; it is not sent again, and the session sees it when it reads the thread.`);
+        // Qwen drops a frame without a word when the grant is gone: ask whether it still is.
+        askTrust();
       }, options.receiptTimeoutMs ?? INBOX_QWEN_RECEIPT_TIMEOUT_MS);
       unref(timer);
       receiptTimers.set(key, timer);
