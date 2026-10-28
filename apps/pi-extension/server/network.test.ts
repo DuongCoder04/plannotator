@@ -32,6 +32,7 @@ const envKeys = [
 	"PLANNOTATOR_BROWSER",
 	"BROWSER",
 	"PLANNOTATOR_URL_HOST",
+	"PLANNOTATOR_PUBLIC_URL",
 ];
 // The values this file found (the preload's NO_BROWSER among them). Every
 // test is put back to these, however many times it cleared the env: saving
@@ -341,48 +342,11 @@ describe("pi PLANNOTATOR_BROWSER script path", () => {
 });
 
 describe("pi buildAdvertisedUrl", () => {
-	test("defaults to localhost", () => {
+	test("passes the Pi runtime's remote state to the shared URL policy", () => {
 		clearEnv();
 		process.env.PLANNOTATOR_REMOTE = "1";
-		// An empty (but set) env var suppresses any urlHost in the developer's
-		// real config.json, isolating the default path.
-		process.env.PLANNOTATOR_URL_HOST = "";
-		expect(buildAdvertisedUrl(19432)).toBe("http://localhost:19432");
-	});
-
-	test("a local session ignores the override and advertises localhost", () => {
-		clearEnv();
-		process.env.PLANNOTATOR_URL_HOST = "my-machine.tailnet.ts.net";
-		expect(buildAdvertisedUrl(1234)).toBe("http://localhost:1234");
-	});
-
-	test("appends the runtime port to the override host", () => {
-		clearEnv();
-		process.env.PLANNOTATOR_REMOTE = "1";
-		process.env.PLANNOTATOR_URL_HOST = "my-machine.tailnet.ts.net";
-		expect(buildAdvertisedUrl(19432)).toBe("http://my-machine.tailnet.ts.net:19432");
-	});
-
-	test("keeps bracketed IPv6 hosts intact", () => {
-		clearEnv();
-		process.env.PLANNOTATOR_REMOTE = "1";
-		process.env.PLANNOTATOR_URL_HOST = "[fd7a::1]";
-		expect(buildAdvertisedUrl(9999)).toBe("http://[fd7a::1]:9999");
-	});
-
-	test("an invalid host falls back to localhost instead of throwing", () => {
-		clearEnv();
-		process.env.PLANNOTATOR_REMOTE = "1";
-		process.env.PLANNOTATOR_URL_HOST = "https://evil.example/path";
-		expect(buildAdvertisedUrl(1234)).toBe("http://localhost:1234");
-	});
-
-	test("the override never affects the bind hostname", () => {
-		clearEnv();
-		process.env.PLANNOTATOR_URL_HOST = "my-machine.tailnet.ts.net";
-		expect(getServerHostname()).toBe("127.0.0.1");
-		process.env.PLANNOTATOR_REMOTE = "1";
-		expect(getServerHostname()).toBe("0.0.0.0");
+		process.env.PLANNOTATOR_PUBLIC_URL = "https://plannotator.example.com";
+		expect(buildAdvertisedUrl(19432)).toBe("https://plannotator.example.com");
 	});
 });
 
@@ -530,6 +494,9 @@ describe("pi darwin configured browser launch", () => {
 	// The other half of the decision table: widening the script branch must not
 	// swallow app names or .app bundles, which only `open -a` can launch.
 	test("an app name or .app bundle still launches through open -a", async () => {
+		// Once, before the loop: a second clearEnv() would save the first pass's
+		// PLANNOTATOR_BROWSER as the value afterEach restores, leaking it.
+		clearEnv();
 		for (const value of ["Google Chrome", "/Applications/Firefox.app"]) {
 			const dir = mkdtempSync(join(tmpdir(), "plannotator-pi-darwin-"));
 			const log = join(dir, "open.txt");
@@ -537,7 +504,6 @@ describe("pi darwin configured browser launch", () => {
 			const originalPath = process.env.PATH;
 			try {
 				process.env.PATH = `${dir}${delimiter}${originalPath ?? ""}`;
-				clearEnv();
 				mockDarwin();
 				process.env.PLANNOTATOR_BROWSER = value;
 

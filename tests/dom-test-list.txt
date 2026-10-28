@@ -397,3 +397,10 @@ packages/editor/components/AppHeader.mobile.test.tsx
 packages/editor/components/AppHeader.documentName.test.tsx
 packages/editor/components/CompactAnnotationControls.test.tsx
 packages/editor/components/AnnotateAgentTerminalPanel.displayReset.test.tsx
+packages/inbox/shortcutHints.test.tsx
+packages/inbox/tagHandoff.test.tsx
+packages/review-editor/App.localReviewDraft.test.tsx
+packages/review-editor/utils/localReviewDraft.test.tsx
+packages/ui/components/Settings.documentFont.test.tsx
+packages/ui/components/sidebar/FileBrowser.hover.test.tsx
+packages/ui/config/documentFontSetting.test.ts
