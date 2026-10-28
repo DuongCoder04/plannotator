@@ -6,7 +6,7 @@ import { jobMatchesReviewContext } from '@plannotator/ui/hooks/useAgentJobs';
 import { useReviewState } from '../ReviewStateContext';
 import { useJobLogs } from '../JobLogsContext';
 import { CopyButton } from '../../components/CopyButton';
-import { CommentActions } from '../../components/CommentActions';
+import { ExplainButton } from '../../components/CommentActions';
 import { LiveLogViewer } from '../../components/LiveLogViewer';
 import { ScrollFade } from '../../components/ScrollFade';
 import { exportReviewFeedback } from '../../utils/exportFeedback';
@@ -515,7 +515,7 @@ function AnnotationRow({ annotation: ann, dismissed, onClick, onExplain, explain
   const severity = ann.severity ? SEVERITY_STYLES[ann.severity] : null;
   return (
     <div
-      className={`group w-full text-left px-3 py-2.5 rounded bg-card border transition-all duration-150 shadow-[0_1px_3px_rgba(0,0,0,0.06)] ${
+      className={`group/finding w-full text-left px-3 py-2.5 rounded bg-card border transition-all duration-150 shadow-[0_1px_3px_rgba(0,0,0,0.06)] ${
         dismissed ? 'opacity-30 cursor-default border-border/20' : 'border-border/40 hover:shadow-[0_2px_6px_rgba(0,0,0,0.08)] cursor-pointer'
       }`}
       onClick={() => !dismissed && onClick(ann)}
@@ -550,6 +550,12 @@ function AnnotationRow({ annotation: ann, dismissed, onClick, onExplain, explain
         {dismissed && (
           <span className="px-1 py-0.5 rounded text-[10px] uppercase tracking-wider bg-muted text-muted-foreground/60">dismissed</span>
         )}
+        {!dismissed && (copyText || onExplain) && (
+          <span className="ml-auto flex items-center gap-1 opacity-0 group-hover/finding:opacity-100 group-focus-within/finding:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
+            {onExplain && <ExplainButton onExplain={() => onExplain(ann.id)} disabled={explainDisabled} />}
+            {copyText && <CopyButton text={copyText} variant="inline" />}
+          </span>
+        )}
       </div>
       {ann.text && (
         <p className={`text-xs mt-1 leading-relaxed break-words [overflow-wrap:anywhere] ${dismissed ? 'text-muted-foreground/40' : 'text-foreground/80'}`}>
@@ -560,13 +566,6 @@ function AnnotationRow({ annotation: ann, dismissed, onClick, onExplain, explain
         <p className="text-[11px] text-muted-foreground/60 leading-relaxed mt-1.5 break-words [overflow-wrap:anywhere]">
           {ann.reasoning}
         </p>
-      )}
-      {!dismissed && (onExplain || copyText) && (
-        <CommentActions
-          onExplain={onExplain ? () => onExplain(ann.id) : undefined}
-          explainDisabled={explainDisabled}
-          copyText={copyText || undefined}
-        />
       )}
     </div>
   );

@@ -1131,6 +1131,10 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     if (!ann) return;
     toolbarHostRef.current?.startEdit(ann);
   });
+  // Same for Explain: the portal'd card keeps whatever handler it was given, so
+  // it calls the latest one (the Ask AI provider may have changed since).
+  const handleExplainAnnotation = useStableCallback((id: string) => onExplainAnnotation?.(id));
+  const explainHandler = onExplainAnnotation ? handleExplainAnnotation : undefined;
 
   // Per-file file-scoped comments, namespaced to the active PR/diff-scope. These
   // render in the file HEADER (renderCustomHeader, below the path) when the file
@@ -1181,7 +1185,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
           onSelect={onSelectAnnotation}
           onEdit={handleEditAnnotation}
           onDelete={onDeleteAnnotation}
-          onExplain={onExplainAnnotation}
+          onExplain={explainHandler}
           agentFindingSources={agentFindingSources}
           explainDisabled={isAILoading}
         />
@@ -3057,7 +3061,7 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
             onSelect={onSelectAnnotation}
             onEdit={onEditAnnotation}
             onDelete={onDeleteAnnotation}
-            onExplain={onExplainAnnotation}
+            onExplain={explainHandler}
             agentFindingSources={agentFindingSources}
             explainDisabled={isAILoading}
             // Re-measure the item when a comment expands/collapses/edits — the

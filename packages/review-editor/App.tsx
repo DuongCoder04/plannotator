@@ -1763,6 +1763,7 @@ const ReviewApp: React.FC = () => {
     return { sha, subject: info?.subject, shortId: info?.shortSha };
   }, [activeDiffBase, commitInfo]);
   const isAILoading = aiIsCreatingSession || aiIsStreaming;
+  const openReviewSidebar = reviewSidebar.open;
   const handleExplainAnnotation = useCallback((id: string) => {
     if (!aiAvailable || isAILoading) return;
     const annotation = allAnnotationsRef.current.find((item) => item.id === id);
@@ -1771,11 +1772,11 @@ const ReviewApp: React.FC = () => {
     const file = annotation.filePath
       ? files.find((item) => item.path === annotation.filePath)
       : undefined;
-    reviewSidebar.open('ai');
+    openReviewSidebar('ai');
     void askAI(buildExplainFindingRequest(annotation, file?.patch, {
       activeCommitSha: activeCommitContext?.sha,
     }));
-  }, [activeCommitContext?.sha, agentFindingSources, aiAvailable, askAI, files, isAILoading, reviewSidebar]);
+  }, [activeCommitContext?.sha, agentFindingSources, aiAvailable, askAI, files, isAILoading, openReviewSidebar]);
   const activeGitButlerContext = useMemo(() => {
     if (!activeDiffBase.startsWith('gitbutler:')) return null;
     return {
@@ -4198,7 +4199,7 @@ const ReviewApp: React.FC = () => {
     selectedAnnotationId, scrollTargetAnnotation, pendingSelection, handleLineSelection,
     handleRequestLineAnnotation, handleAddCallFlowAnnotation,
     handleAddAnnotation, handleAddFileComment, handleAddFileCommentForFile, handleEditAnnotation,
-    handleSelectAnnotation, handleNavigateToAnnotation, handleDeleteAnnotation, viewedFiles,
+    handleSelectAnnotation, handleNavigateToAnnotation, handleDeleteAnnotation, handleExplainAnnotation, agentFindingSources, viewedFiles,
     generatedFiles, expandedGeneratedFiles, handleGeneratedFileCollapsedChange,
     handleToggleViewed, reviewShowViewedControls, reviewShowStageControls, stagedFiles, stagingFile, stageFile,
     canStageFiles, isPathStageable, activeWorktreePath, guideRevealFile, handleGuideRevealFile, stageError, isSearchPending, debouncedSearchQuery,

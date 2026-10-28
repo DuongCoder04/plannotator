@@ -831,7 +831,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         explainDisabled={isAILoading}
       />
     );
-  }, [filePath, selectedAnnotationId, onSelectAnnotation, handleEdit, onDeleteAnnotation, onExplainAnnotation, isAILoading, onClickAIMarker]);
+  }, [filePath, selectedAnnotationId, onSelectAnnotation, handleEdit, onDeleteAnnotation, onExplainAnnotation, agentFindingSources, isAILoading, onClickAIMarker]);
 
   const handleLineSelectionInteraction = useCallback((
     source: LineSelectionSource,

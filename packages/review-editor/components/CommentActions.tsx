@@ -55,18 +55,7 @@ export const CommentActions: React.FC<CommentActionsProps> = ({ onEdit, onExplai
         </svg>
       </button>
     )}
-    {onExplain && (
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); onExplain(); }}
-        disabled={explainDisabled}
-        className={`${ACTION_BTN} hover:bg-primary/10 hover:text-primary disabled:cursor-not-allowed disabled:opacity-40`}
-        title="Explain finding"
-        aria-label="Explain finding"
-      >
-        <SparklesIcon className="w-3 h-3" />
-      </button>
-    )}
+    {onExplain && <ExplainButton onExplain={onExplain} disabled={explainDisabled} />}
     {copyText && <CopyButton text={copyText} variant="inline" />}
     {onDelete && (
       <button
@@ -83,3 +72,17 @@ export const CommentActions: React.FC<CommentActionsProps> = ({ onEdit, onExplai
   </div>
   );
 };
+
+/** "Explain finding": asks Ask AI about a review agent's finding. */
+export const ExplainButton: React.FC<{ onExplain: () => void; disabled?: boolean }> = ({ onExplain, disabled = false }) => (
+  <button
+    type="button"
+    onClick={(e) => { e.stopPropagation(); onExplain(); }}
+    disabled={disabled}
+    className={`${ACTION_BTN} hover:bg-primary/10 hover:text-primary disabled:cursor-not-allowed disabled:opacity-40`}
+    title="Explain finding"
+    aria-label="Explain finding"
+  >
+    <SparklesIcon className="w-3 h-3" />
+  </button>
+);
