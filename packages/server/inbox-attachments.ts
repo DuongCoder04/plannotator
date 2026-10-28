@@ -5,7 +5,8 @@
  * guards.
  *
  * A file is reached ONLY by its attachment id: there is no route that takes a
- * path. The current file is read through its record with the rules in
+ * bare path (`markdown-image` takes only an image the Markdown file itself
+ * shows, relative to its folder). The current file is read through its record with the rules in
  * packages/shared/inbox/attachments.ts; `?version=sent` reads the blob of
  * the bytes the agent sent. Raw bytes of a text kind always go out as
  * `text/plain` with a `sandbox` CSP and nosniff, so an attached HTML page

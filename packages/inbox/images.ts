@@ -7,8 +7,10 @@
  * only when the message's body shows it: for an agent's message from
  * anywhere the user can read, for the person's own from its project, never
  * from a hidden folder outside those or a dotenv file
- * (packages/shared/inbox/message-images.ts). There is no route that takes a
- * bare path.
+ * (packages/shared/inbox/message-images.ts). An attached Markdown file's
+ * images work the same way with `inboxMarkdownImageBase(attachment, version)`:
+ * `/api/inbox/attachments/<id>/markdown-image?path=<src>&version=…`, relative
+ * to the file's folder (#2228). There is no route that takes a bare path.
  *
  * Remote images (`http(s)`, protocol-relative `//host/…`) are left as
  * written: the window's CSP (`img-src 'self' data: blob:`) does not load them.
