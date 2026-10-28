@@ -10,6 +10,7 @@ import {
   jjLineBaseRevset,
   parseJjBookmarkList,
   parseJjRemoteBookmarkList,
+  resolveJjLineBase,
   type ReviewJjRuntime,
   runJjDiff,
   selectDefaultJjCompareTarget,
@@ -167,7 +168,8 @@ describe("jj compare targets", () => {
     : test.skip;
 
   // Every `jj` process below runs against a throwaway JJ_CONFIG. Reading the
-  // developer's real config is banned outright by CLAUDE.md, and it is also
+  // developer's real config is banned outright by the Testing Rules
+  // (docs/agent-guides/project-and-development.md), and it is also
   // what makes these fixtures reproducible: commit signing, a custom
   // `immutable_heads()` alias or a non-default `git.push-bookmark-prefix` in a
   // real config would otherwise fail or silently reshape them.
@@ -243,8 +245,37 @@ describe("jj compare targets", () => {
       // Verify the fixture's configured boundary independently of the code under test.
       expect(jj(["log", "--no-graph", "-r", "roots(reachable(@, mutable()))-", "-T", "bookmarks"], immutable).trim())
         .toBe("development");
+      const developmentCommitId = jj(["log", "--no-graph", "-r", "development", "-T", "commit_id"], immutable).trim();
       await expect(selectDefaultJjCompareTarget(sandbox.runtime(immutable), workspace))
-        .resolves.toBe("development");
+        .resolves.toBe(developmentCommitId);
+    } finally {
+      sandbox.cleanup();
+    }
+  });
+
+  testIfJj("keeps the resolved base when its bookmark moves", async () => {
+    const sandbox = createJjSandbox();
+    const workspace = join(sandbox.root, "repo");
+    const immutable = immutableHeadsAlias('bookmarks(exact:"development")');
+    const jj = (args: string[], config?: string[]) => sandbox.jj(args, { cwd: workspace, config });
+
+    try {
+      mkdirSync(workspace);
+      jj(["git", "init", "."]);
+      writeFileSync(join(workspace, "history.txt"), "development\n");
+      jj(["commit", "-m", "development"]);
+      jj(["bookmark", "create", "development", "-r", "@-"]);
+      jj(["new", "development"]);
+      appendFileSync(join(workspace, "history.txt"), "feature\n");
+      jj(["commit", "-m", "feature"]);
+
+      const resolvedBase = await selectDefaultJjCompareTarget(sandbox.runtime(immutable), workspace);
+      jj(["bookmark", "set", "development", "-r", "@-"], immutable);
+
+      const stable = await runJjDiff(sandbox.runtime(immutable), "jj-line", resolvedBase, workspace);
+      const moving = await runJjDiff(sandbox.runtime(immutable), "jj-line", "development", workspace);
+      expect(stable.patch).toContain("+feature");
+      expect(moving.patch).not.toContain("+feature");
     } finally {
       sandbox.cleanup();
     }
@@ -273,8 +304,9 @@ describe("jj compare targets", () => {
         jj(["bookmark", "create", change, "-r", "@-"]);
       }
 
+      const mainCommitId = jj(["log", "--no-graph", "-r", "main", "-T", "commit_id"], immutable).trim();
       await expect(selectDefaultJjCompareTarget(sandbox.runtime(immutable), workspace))
-        .resolves.toBe("main");
+        .resolves.toBe(mainCommitId);
     } finally {
       sandbox.cleanup();
     }
@@ -300,10 +332,10 @@ describe("jj compare targets", () => {
       writeFileSync(join(colleague, "history.txt"), "main\n");
       asColleague(["commit", "-m", "main"]);
       asColleague(["bookmark", "create", "main", "-r", "@-"]);
-      asColleague(["git", "push", "-b", "main", "--allow-new"]);
+      asColleague(["git", "push", "-b", "main"]);
       appendFileSync(join(colleague, "history.txt"), "colleague work\n");
       asColleague(["commit", "-m", "colleague work"]);
-      asColleague(["git", "push", "--change", "@-", "--allow-new"]);
+      asColleague(["git", "push", "--change", "@-"]);
 
       sandbox.jj(["git", "clone", remote, workspace, "--colocate"]);
       const jj = (args: string[]) => sandbox.jj(args, { cwd: workspace });
@@ -359,53 +391,69 @@ describe("jj compare targets", () => {
         jj(["bookmark", "create", feature, "-r", "@-"]);
       }
 
+      const mainCommitId = jj(["log", "--no-graph", "-r", "main", "-T", "commit_id"], immutable).trim();
       await expect(selectDefaultJjCompareTarget(sandbox.runtime(immutable), workspace))
-        .resolves.toBe("main");
+        .resolves.toBe(mainCommitId);
     } finally {
       sandbox.cleanup();
     }
   });
 
-  test("resolves the line base in one JJ query and prefers its remote bookmark", async () => {
+  test("resolves the line base in one JJ query and keeps bookmark metadata separate", async () => {
     const calls: string[][] = [];
     const runtime: ReviewJjRuntime = {
       async runJj(args) {
         calls.push(args);
         return {
-          stdout: '[{"name":"development"},{"name":"development","remote":"origin"}]\\t0123456789abcdef\\n',
+          stdout: '[{"name":"development"},{"name":"development","remote":"origin"}]\\t0123456789abcdef\\t"Develop the feature"\\n',
           stderr: "",
           exitCode: 0,
         };
       },
     };
 
-    await expect(selectDefaultJjCompareTarget(runtime, "/repo")).resolves.toBe("development@origin");
+    await expect(resolveJjLineBase(runtime, "/repo")).resolves.toEqual({
+      kind: "resolved",
+      revision: {
+        commitId: "0123456789abcdef",
+        bookmarks: ["development@origin", "development"],
+        subject: "Develop the feature",
+      },
+    });
+    // Deliberate pin: the revset IS the behavior under test — `exactly(...)`
+    // vs the old `latest(...)` is the whole fix, so drift here must fail.
     expect(calls).toEqual([[
       "log",
       "--no-graph",
       "-r",
-      "latest(fork_point(roots(reachable(@, mutable()))-), 1)",
+      "exactly(fork_point(roots(reachable(@, mutable()))-), 1)",
       "-T",
-      'json(bookmarks) ++ "\\t" ++ commit_id ++ "\\n"',
+      'json(bookmarks) ++ "\\t" ++ commit_id ++ "\\t" ++ json(description.first_line()) ++ "\\n"',
     ]]);
   });
 
-  // The remote-before-local preference is only meaningful within one commit.
-  // `latest(..., 1)` is what keeps the answer to one record; if a second one
-  // ever arrives, the nearer commit's local bookmark must still win over a
-  // remote bookmark further away.
-  test("reads only the first record, so bookmark preference cannot cross commits", async () => {
+  test("reports every fork point instead of choosing one by timestamp", async () => {
+    let calls = 0;
     const runtime: ReviewJjRuntime = {
       async runJj() {
+        calls += 1;
+        if (calls === 1) return { stdout: "", stderr: "Revset `exactly()` expected 1 revision", exitCode: 1 };
         return {
-          stdout: '[{"name":"nearest"}]\\tabc\\n[{"name":"further","remote":"origin"}]\\tdef\\n',
+          stdout: '[{"name":"left"}]\\t' + "a".repeat(40) + '\\t"Merge left"\\n'
+            + '[{"name":"right","remote":"origin"}]\\t' + "b".repeat(40) + '\\t"Merge right"\\n',
           stderr: "",
           exitCode: 0,
         };
       },
     };
 
-    await expect(selectDefaultJjCompareTarget(runtime)).resolves.toBe("nearest");
+    await expect(resolveJjLineBase(runtime)).resolves.toEqual({
+      kind: "ambiguous",
+      candidates: [
+        { commitId: "a".repeat(40), bookmarks: ["left"], subject: "Merge left" },
+        { commitId: "b".repeat(40), bookmarks: ["right@origin"], subject: "Merge right" },
+      ],
+    });
   });
 
   test("uses the base commit id when it has no usable bookmark", async () => {
@@ -415,10 +463,10 @@ describe("jj compare targets", () => {
       },
     });
 
-    await expect(selectDefaultJjCompareTarget(runtimeFor("[]\\t0123456789abcdef\\n")))
+    await expect(selectDefaultJjCompareTarget(runtimeFor('[]\\t0123456789abcdef\\t"Base"\\n')))
       .resolves.toBe("0123456789abcdef");
     // A generated push bookmark is not a usable name, so the id is used instead.
-    await expect(selectDefaultJjCompareTarget(runtimeFor('[{"name":"push-vmopwunwxopv","remote":"origin"}]\\t0123456789abcdef\\n')))
+    await expect(selectDefaultJjCompareTarget(runtimeFor('[{"name":"push-vmopwunwxopv","remote":"origin"}]\\t0123456789abcdef\\t"Base"\\n')))
       .resolves.toBe("0123456789abcdef");
   });
 
@@ -436,7 +484,7 @@ describe("jj compare targets", () => {
     // e.g. a jj too old for `fork_point`/`reachable`.
     await expect(selectDefaultJjCompareTarget(runtimeFor("", "unknown function", 1))).resolves.toBe("trunk()");
     // A repo with no immutable history forks at the all-zero root commit.
-    await expect(selectDefaultJjCompareTarget(runtimeFor(`[]\\t${"0".repeat(40)}\\n`))).resolves.toBe("trunk()");
+    await expect(selectDefaultJjCompareTarget(runtimeFor(`[]\\t${"0".repeat(40)}\\t""\\n`))).resolves.toBe("trunk()");
   });
 
   test("treats bookmarks and revsets correctly in line-of-work revsets", () => {

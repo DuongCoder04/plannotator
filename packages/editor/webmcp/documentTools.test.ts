@@ -202,6 +202,17 @@ describe('read_document', () => {
     expect(res.nudges.map((n) => n.code)).toEqual(['annotations_new', 'pending_unsent']);
   });
 
+  test('a comment on part of an image carries its validated region; a malformed region is left out (#2100)', async () => {
+    const fx = fake();
+    const region = { v: 1 as const, src: 'shots/upload.png', sourceLine: 9, box: { x: 10, y: 20, w: 30, h: 40 }, naturalWidth: 800, naturalHeight: 600 };
+    humanComment(fx, 'rotate the signing key on every deploy', 'This button is wrong.', { imageRegion: region });
+    humanComment(fx, 'Protect the upload endpoint from abuse', 'junk', { imageRegion: { ...region, box: { x: 790, y: 0, w: 30, h: 40 } } });
+    const data = dataOf(await fx.call('read_document'));
+    const byText = (t: string) => data.annotations.find((a: any) => a.text === t);
+    expect(byText('This button is wrong.').imageRegion).toEqual(region);
+    expect(byText('junk')).not.toHaveProperty('imageRegion');
+  });
+
   test('the watermark advances per response so the same comment is new exactly once; since re-opens the window', async () => {
     const fx = fake();
     humanComment(fx, 'Ship behind a flag', 'why?');
@@ -317,6 +328,18 @@ describe('add_comments anchoring cascade', () => {
     expect(data.results[2].anchoredBy).toBe('document');
     expect(data.results[2].annotation.kind).toBe('note');
     expect(fx.annotations[1]!.type).toBe(AnnotationType.GLOBAL_COMMENT);
+  });
+
+  test('a reply to a diagram comment inherits the diagram anchor', async () => {
+    // What regresses: the reply has no anchor, falls to text search on the
+    // node's label, and the highlighter wraps a <mark> wherever the prose
+    // (or the svg) repeats it.
+    const fx = fake();
+    const diagramAnchor = { v: 1 as const, family: 'flowchart' as const, kind: 'node' as const, id: 'D', label: 'Approve?', sourceLine: [7, 7] as const };
+    const parent = humanComment(fx, 'Ship behind a flag', 'Rename this step', { diagramAnchor });
+    dataOf(await fx.call('add_comments', { comments: [{ inReplyTo: parent.id, text: 'Agreed.' }] }));
+    expect(fx.annotations[1]!.diagramAnchor).toEqual(diagramAnchor);
+    expect(fx.annotations[1]!.blockId).toBe(parent.blockId);
   });
 
   test('inReplyTo inherits the parent anchor and threads under it', async () => {

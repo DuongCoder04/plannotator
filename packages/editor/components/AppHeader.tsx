@@ -1,16 +1,22 @@
+import type { UpdateCheckSetting } from '@plannotator/ui/hooks/useUpdateCheckSetting';
 import React from 'react';
 import type { Origin } from '@plannotator/shared/agents';
-import type { Agent } from '@plannotator/ui/hooks/useAgents';
 import type { UpdateInfo } from '@plannotator/ui/hooks/useUpdateCheck';
 import { FeedbackButton, ApproveButton, ExitButton } from '@plannotator/ui/components/ToolbarButtons';
-import { ApproveDropdown } from '@plannotator/ui/components/ApproveDropdown';
+import { DecisionControl, type DecisionControlProps, type DecisionHandler } from '@plannotator/ui/components/DecisionControl';
+import { QuestionProgressChip } from '@plannotator/ui/components/QuestionProgressChip';
+import type { DecisionActionId, DecisionSpec } from '@plannotator/ui/utils/decisionSpec';
 import { Settings } from '@plannotator/ui/components/Settings';
 import { PlanHeaderMenu } from '@plannotator/ui/components/PlanHeaderMenu';
 import type { CallbackConfig } from '@plannotator/ui/utils/callback';
 import type { UIPreferences } from '@plannotator/ui/utils/uiPreferences';
+import type { PermissionMode } from '@plannotator/ui/utils/permissionMode';
+import type { AgentToolSetting } from '@plannotator/ui/utils/agentToolSetting';
 import { SparklesIcon } from '@plannotator/ui/components/SparklesIcon';
 import type { CompactPlanAction } from '@plannotator/ui/components/PlanHeaderMenu';
 import { HtmlSurfaceControls } from '@plannotator/ui/components/HtmlSurfaceControls';
+import { Tooltip } from '@plannotator/ui/components/Tooltip';
+import { BundleSwitcher, type BundleSwitcherProps } from './BundleSwitcher';
 
 /** Plannotator's refresh strings for the published control: the document
  * is a file on disk, so the refresh says so. */
@@ -37,6 +43,11 @@ interface AppHeaderProps {
   canRefreshHtml?: boolean;
   isRefreshingHtml?: boolean;
   onRefreshHtml?: () => void;
+  /** Leave a linked HTML document. Passed only while one is open; the sidebar's
+   *  own "Back to …" header is not reachable when the sidebar stays closed. */
+  onHtmlLinkedDocBack?: () => void;
+  /** "Back to <root file name>" for the control's tooltip and accessible name. */
+  htmlLinkedDocBackDescription?: string;
   /** Compact touch layouts replace the brand mark with a task-focused entry
    * into the full-stage document navigator. Desktop never receives it. */
   compactTouchLayout?: boolean;
@@ -46,6 +57,14 @@ interface AppHeaderProps {
   compactDocumentTitle?: string;
   compactSessionActions?: CompactPlanAction[];
   compactDocumentActions?: CompactPlanAction[];
+  /** A review of several files: the "2 of 3 · mock.html ‹ ›" switcher beside
+   *  the logo. Desktop only; the compact shell names the position in its
+   *  title and offers previous/next in its Options menu. */
+  bundleSwitcher?: BundleSwitcherProps;
+  /** The open document's name beside the logo ("Plannotator / notes.md"),
+   *  its full path or URL in a tooltip. Desktop only, and not drawn beside
+   *  a `bundleSwitcher`, which already names the open file. */
+  documentName?: { name: string; title?: string };
   // Mode flags (stable after mount)
   isApiMode: boolean;
   annotateMode: boolean;
@@ -54,7 +73,6 @@ interface AppHeaderProps {
   goalSetupCanSubmit: boolean;
   goalSetupIsSubmitting: boolean;
   goalSetupSubmitLabel: string;
-  gate: boolean;
   isSharedSession: boolean;
   origin: Origin | null;
 
@@ -65,16 +83,33 @@ interface AppHeaderProps {
   aiAvailable: boolean;
   isAIChatOpen: boolean;
   aiHasMessages: boolean;
-  hasAnyAnnotations: boolean;
   annotationCount: number;
   linkedDocIsActive: boolean;
   callbackShareUrlReady: boolean;
   canShareCurrentSession: boolean;
-  agentName: string;
-  availableAgents: Agent[];
-  showAnnotationsWarning: boolean;
-  annotateApproveLabel: string;
-  annotateApproveTitle: string;
+  /** `:::question` progress: the "N/M answered" chip beside the decision
+   *  control. Absent (or total 0): no chip. */
+  questionProgress?: { done: number; total: number; hasOpen: boolean; onJump: () => void };
+  /** Plan review's decision control (#1057): the same DecisionControl as
+   *  annotate, without the ghost Close (a plan review ends with a decision).
+   *  App owns the spec and every handler; `menuFooter` carries the OpenCode
+   *  agent picker or Claude Code's permission-mode line. */
+  planDecision?: {
+    spec: DecisionSpec;
+    handlers: Record<DecisionActionId, DecisionHandler>;
+    menuFooter?: DecisionControlProps['menuFooter'];
+  };
+  /** The unified annotate decision control (spec + handlers + close title).
+   *  App owns the spec derivation and every handler; the header only mounts
+   *  the control beside the ghost Close. Absent outside annotate mode. */
+  annotateDecision?: {
+    spec: DecisionSpec;
+    handlers: Record<DecisionActionId, DecisionHandler>;
+    closeTitle: string;
+    /** Framed surfaces (raw-HTML srcdoc / live-app proxy): iframe focus
+     *  dismisses the popover since clicks never reach the parent document. */
+    dismissOnIframeFocus?: boolean;
+  };
 
   // Callback config (null when no bot callback)
   callbackConfig: CallbackConfig | null;
@@ -83,11 +118,19 @@ interface AppHeaderProps {
   taterMode: boolean;
   mobileSettingsOpen: boolean;
   gitUser: string | undefined;
+  /** Present when the server advertises the auto-update setting; Settings shows its switch. */
+  autoUpdateSetting?: { env?: boolean };
+  updateCheckSetting?: UpdateCheckSetting;
+  /** The `plannotator` agent tool switch (parseAgentToolSetting of serverConfig); Settings shows its row. */
+  agentToolSetting?: AgentToolSetting;
+  onAgentToolChange?: (enabled: boolean) => Promise<void>;
   /** This session offers the Agent TUI, so Settings shows its Position row. */
   agentTerminalAvailable: boolean;
   /** The browser exposes WebMCP, so Settings shows the "Agent tools" opt-out.
    *  Nothing in the header renders for this alone. */
   webmcpAvailable?: boolean;
+  /** The open document is markdown or text, so Settings offers Text size (raw HTML and diagram files draw themselves). */
+  documentTextSizeAvailable?: boolean;
   /** A browser agent has completed at least one tool call in this session.
    *  Only then does the unobtrusive "Agent" indicator appear. */
   agentConnected?: boolean;
@@ -98,10 +141,6 @@ interface AppHeaderProps {
   onAnnotateExit: () => void;
   onGoalSetupExit: () => void;
   onGoalSetupSubmit: () => void;
-  onAnnotateFeedback: () => void;
-  onAnnotateApprove: () => void;
-  onFeedback: () => void;
-  onApprove: () => void;
   onAnnotationPanelToggle: () => void;
   onAIChatToggle: () => void;
   onArchiveCopy: () => void;
@@ -109,6 +148,8 @@ interface AppHeaderProps {
   onTaterModeChange: (enabled: boolean) => void;
   onIdentityChange: (oldId: string, newId: string) => void;
   onUIPreferencesChange: (prefs: UIPreferences) => void;
+  /** Settings changed Claude Code's permission mode (plan review). */
+  onPermissionModeChange?: (mode: PermissionMode) => void;
   onOpenSettings: () => void;
   onCloseSettings: () => void;
   onOpenExport: () => void;
@@ -141,6 +182,8 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   canRefreshHtml,
   isRefreshingHtml,
   onRefreshHtml,
+  onHtmlLinkedDocBack,
+  htmlLinkedDocBackDescription,
   compactTouchLayout = false,
   compactNavigatorAvailable = false,
   compactNavigatorOpen = false,
@@ -148,6 +191,8 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   compactDocumentTitle,
   compactSessionActions,
   compactDocumentActions,
+  bundleSwitcher,
+  documentName,
   isApiMode,
   annotateMode,
   archiveMode,
@@ -155,7 +200,6 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   goalSetupCanSubmit,
   goalSetupIsSubmitting,
   goalSetupSubmitLabel,
-  gate,
   isSharedSession,
   origin,
   isSubmitting,
@@ -164,32 +208,30 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   aiAvailable,
   isAIChatOpen,
   aiHasMessages,
-  hasAnyAnnotations,
   annotationCount,
   linkedDocIsActive,
   callbackShareUrlReady,
   canShareCurrentSession,
-  agentName,
-  availableAgents,
-  showAnnotationsWarning,
-  annotateApproveLabel,
-  annotateApproveTitle,
+  questionProgress,
+  annotateDecision,
+  planDecision,
   callbackConfig,
   taterMode,
   mobileSettingsOpen,
   gitUser,
+  autoUpdateSetting,
+  updateCheckSetting,
+  agentToolSetting,
+  onAgentToolChange,
   agentTerminalAvailable,
   webmcpAvailable = false,
+  documentTextSizeAvailable = false,
   agentConnected = false,
   onCallbackFeedback,
   onCallbackApprove,
   onAnnotateExit,
   onGoalSetupExit,
   onGoalSetupSubmit,
-  onAnnotateFeedback,
-  onAnnotateApprove,
-  onFeedback,
-  onApprove,
   onAnnotationPanelToggle,
   onAIChatToggle,
   onArchiveCopy,
@@ -197,6 +239,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   onTaterModeChange,
   onIdentityChange,
   onUIPreferencesChange,
+  onPermissionModeChange,
   onOpenSettings,
   onCloseSettings,
   onOpenExport,
@@ -221,7 +264,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
       data-app-header="true"
       className={`${compactTouchLayout ? 'h-[52px] grid grid-cols-[44px_minmax(0,1fr)_44px] items-center px-1' : 'h-12 flex items-center justify-between px-2 md:px-4'} border-b border-border/50 bg-card/50 backdrop-blur-xl z-[50] ${sticky ? 'sticky top-0' : 'relative'}`}
     >
-      <div className={compactTouchLayout ? 'flex items-center justify-start' : 'flex items-center gap-2'}>
+      <div className={compactTouchLayout ? 'flex items-center justify-start' : 'flex min-w-0 items-center gap-2'}>
         {compactTouchLayout ? (
           compactNavigatorAvailable && onCompactNavigatorToggle ? (
             <CompactPlanNavigatorTrigger
@@ -232,7 +275,14 @@ export const AppHeader = React.memo<AppHeaderProps>(({
             <span className="block h-11 w-11" aria-hidden="true" />
           )
         ) : (
-          <AppHeaderLogo />
+          <>
+            <AppHeaderLogo />
+            {bundleSwitcher ? (
+              <BundleSwitcher {...bundleSwitcher} />
+            ) : documentName ? (
+              <HeaderDocumentName {...documentName} />
+            ) : null}
+          </>
         )}
       </div>
 
@@ -246,7 +296,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
         </div>
       )}
 
-      <div className={`flex items-center gap-1 md:gap-2 ${compactTouchLayout ? 'justify-end' : ''}`}>
+      <div className={`flex items-center gap-1 md:gap-2 ${compactTouchLayout ? 'justify-end' : 'shrink-0'}`}>
         {/* Bot callback buttons — only shown when ?cb=&ct= params are present */}
         {!compactTouchLayout && callbackConfig && !isApiMode && isSharedSession && (
           <>
@@ -311,74 +361,55 @@ export const AppHeader = React.memo<AppHeaderProps>(({
 
         {!compactTouchLayout && isApiMode && (!linkedDocIsActive || annotateMode) && !archiveMode && !goalSetupMode && (
           <>
+            {questionProgress && questionProgress.total > 0 && (
+              <QuestionProgressChip
+                done={questionProgress.done}
+                total={questionProgress.total}
+                hasOpen={questionProgress.hasOpen}
+                onJump={questionProgress.onJump}
+              />
+            )}
             {annotateMode ? (
               <>
                 <ExitButton
+                  appearance="ghost"
                   onClick={onAnnotateExit}
                   disabled={isSubmitting || isExiting}
                   isLoading={isExiting}
+                  title={annotateDecision?.closeTitle}
                 />
-                {hasAnyAnnotations && (
-                  <FeedbackButton
-                    onClick={onAnnotateFeedback}
-                    disabled={isSubmitting || isExiting}
+                {annotateDecision && (
+                  <DecisionControl
+                    spec={annotateDecision.spec}
+                    handlers={annotateDecision.handlers}
+                    busy={isSubmitting || isExiting}
                     isLoading={isSubmitting}
-                    label="Send Feedback"
-                    title="Send Feedback"
+                    dismissOnIframeFocus={annotateDecision.dismissOnIframeFocus}
                   />
                 )}
               </>
-            ) : (
-              <FeedbackButton
-                onClick={onFeedback}
-                disabled={isSubmitting}
+            ) : planDecision ? (
+              <DecisionControl
+                spec={planDecision.spec}
+                handlers={planDecision.handlers}
+                busy={isSubmitting}
                 isLoading={isSubmitting}
-                label="Send Feedback"
-                title="Send Feedback"
+                menuFooter={planDecision.menuFooter}
               />
-            )}
-
-            {(!annotateMode || gate) && (
-              origin === 'opencode' && !annotateMode && availableAgents.length > 0 ? (
-                <ApproveDropdown
-                  onApprove={onApprove}
-                  agents={availableAgents}
-                  disabled={isSubmitting}
-                  isLoading={isSubmitting}
-                />
-              ) : (
-                <div className="relative group/approve">
-                  <ApproveButton
-                    onClick={onApprove}
-                    disabled={isSubmitting || (annotateMode && isExiting)}
-                    isLoading={isSubmitting}
-                    dimmed={!annotateMode && (origin === 'claude-code' || origin === 'gemini-cli') && showAnnotationsWarning}
-                    label={annotateMode ? annotateApproveLabel : undefined}
-                    mobileLabel={annotateMode ? annotateApproveLabel : undefined}
-                    title={annotateMode ? annotateApproveTitle : undefined}
-                  />
-                  {!annotateMode && (origin === 'claude-code' || origin === 'gemini-cli') && showAnnotationsWarning && (
-                    <div className="absolute top-full right-0 mt-2 px-3 py-2 bg-popover border border-border rounded-lg shadow-xl text-xs text-foreground w-56 text-center opacity-0 invisible group-hover/approve:opacity-100 group-hover/approve:visible transition-all pointer-events-none z-50">
-                      <div className="absolute bottom-full right-4 border-4 border-transparent border-b-border" />
-                      <div className="absolute bottom-full right-4 mt-px border-4 border-transparent border-b-popover" />
-                      {agentName} doesn't support feedback on approval. Your feedback won't be seen.
-                    </div>
-                  )}
-                </div>
-              )
-            )}
+            ) : null}
 
             <div className="w-px h-5 bg-border/50 mx-1 hidden md:block" />
           </>
         )}
 
-        {/* HTML and live-app surfaces only: the eye (show/hide tools, the
-            only way back from hidden), the refresh, and the Interact/Annotate
-            pen, in that order. The published control carries the markup;
-            the compact touch shell offers the same three actions in its
-            Options menu instead (compactDocumentActions in App: Show/Hide
-            tools, Interact/Annotate, Refresh from disk). */}
-        {htmlSurface && (onToggleHtmlTools || onToggleHtmlAnnotate) && (
+        {/* HTML and live-app surfaces only: back (while a linked document is
+            open), the eye (show/hide tools, the only way back from hidden),
+            the refresh, and the Interact/Annotate pen, in that order. The
+            published control carries the markup; the compact touch shell
+            offers the same actions in its Options menu instead
+            (compactDocumentActions in App: Back to <file>, Show/Hide tools,
+            Interact/Annotate, Refresh from disk). */}
+        {htmlSurface && (onToggleHtmlTools || onToggleHtmlAnnotate || onHtmlLinkedDocBack) && (
           <HtmlSurfaceControls
             compact={compactTouchLayout}
             armed={!!htmlAnnotateArmed}
@@ -388,6 +419,8 @@ export const AppHeader = React.memo<AppHeaderProps>(({
             canRefresh={!!canRefreshHtml && !!onRefreshHtml}
             onRefresh={() => onRefreshHtml?.()}
             isRefreshing={!!isRefreshingHtml}
+            onBack={onHtmlLinkedDocBack}
+            backDescription={htmlLinkedDocBackDescription}
             labels={PLANNOTATOR_HTML_REFRESH_LABELS}
           />
         )}
@@ -454,12 +487,19 @@ export const AppHeader = React.memo<AppHeaderProps>(({
             onIdentityChange={onIdentityChange}
             origin={origin}
             mode={annotateMode ? 'annotate' : 'plan'}
+            annotateParity
             onUIPreferencesChange={onUIPreferencesChange}
+            onPermissionModeChange={onPermissionModeChange}
             externalOpen={mobileSettingsOpen}
             onExternalClose={onCloseSettings}
             gitUser={gitUser}
+            autoUpdateSetting={autoUpdateSetting}
+            updateCheckSetting={updateCheckSetting}
+            agentToolSetting={agentToolSetting}
+            onAgentToolChange={onAgentToolChange}
             agentTerminalAvailable={agentTerminalAvailable}
             webmcpAvailable={webmcpAvailable}
+            showDocumentTextSize={documentTextSizeAvailable}
           />
         </div>
 
@@ -523,6 +563,41 @@ export const CompactPlanNavigatorTrigger = ({
     <span className="sr-only">Plan navigation</span>
   </button>
 );
+
+/** "/ notes.md" after the logo: the name cut with an ellipsis when the header
+ *  runs short, the full path in the app's tooltip (and to screen readers).
+ *  The tooltip wraps a long path rather than running off a narrow window. */
+const HeaderDocumentName: React.FC<{ name: string; title?: string }> = ({ name, title }) => {
+  const descriptionId = React.useId();
+  const label = (
+    <span
+      data-header-document-name="true"
+      className="min-w-0 truncate text-sm text-foreground/90 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      tabIndex={title ? 0 : undefined}
+      aria-describedby={title ? descriptionId : undefined}
+    >
+      {name}
+    </span>
+  );
+  return (
+    <div className="flex min-w-0 items-center gap-2 md:gap-2.5 pl-0.5">
+      <span className="shrink-0 text-sm text-muted-foreground/60" aria-hidden="true">/</span>
+      {title ? (
+        <>
+          <Tooltip
+            content={<span className="block max-w-[min(560px,calc(100vw-2rem))] whitespace-normal font-mono [overflow-wrap:anywhere]">{title}</span>}
+            side="bottom"
+            align="start"
+            delayDuration={400}
+          >
+            {label}
+          </Tooltip>
+          <span id={descriptionId} className="sr-only">{title}</span>
+        </>
+      ) : label}
+    </div>
+  );
+};
 
 const AppHeaderLogo = () => (
   <div className="flex items-center gap-2 md:gap-3">

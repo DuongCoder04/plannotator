@@ -4,6 +4,7 @@ import { reviewSettingsShortcutRegistry } from '../review-editor/shortcuts';
 import {
   annotationModeShortcuts,
   createShortcutRegistry,
+  decisionControlShortcuts,
   defineShortcutScope,
   dispatchShortcutEvent,
   formatShortcutBindingText,
@@ -82,6 +83,7 @@ describe('shortcuts', () => {
       'Vim Text Navigation',
       'Vim Annotation Actions',
       'Image Annotator',
+      'History',
     ]);
 
     expect(annotateSections.map(section => section.title)).toEqual([
@@ -94,11 +96,14 @@ describe('shortcuts', () => {
       'Vim Text Navigation',
       'Vim Annotation Actions',
       'Image Annotator',
+      'History',
     ]);
 
     expect(getShortcut(planReviewSettingsShortcutRegistry, 'plan-review-editor-settings', 'submitPlan')?.description).toBe('Approve / Send feedback');
     expect(getShortcut(planReviewSettingsShortcutRegistry, 'plan-review-editor-settings', 'submitAnnotations')).toBeUndefined();
-    expect(getShortcut(annotateSettingsShortcutRegistry, 'annotate-editor-settings', 'submitAnnotations')?.description).toBe('Send annotations');
+    // Fact-guard, not a prose pin: the annotate registry's submit action must
+    // describe the adaptive Done/Send primary (distinct from plan review's).
+    expect(getShortcut(annotateSettingsShortcutRegistry, 'annotate-editor-settings', 'submitAnnotations')?.description).toContain('Done / Send feedback');
     expect(getShortcut(annotateSettingsShortcutRegistry, 'annotate-editor-settings', 'submitPlan')).toBeUndefined();
     expect(getShortcut(annotateSettingsShortcutRegistry, 'annotate-sidebar', 'toggleContents')?.description).toBe('Toggle Contents sidebar');
 
@@ -108,7 +113,9 @@ describe('shortcuts', () => {
       'Layout',
       'File Actions',
       'File Navigation',
+      'History',
       'All-Files View',
+      'Markdown Files',
       'Annotations',
       'Suggestion Editor',
       'AI Assistant',
@@ -129,6 +136,44 @@ describe('shortcuts', () => {
         .filter(entry => entry.bindings.includes('Mod+.'))
         .map(entry => `${entry.scopeId}.${entry.actionId}`);
       expect(claimants).toEqual(['document-view.toggleFocusMode']);
+    }
+  });
+
+  // Change navigation (#1543) is N / Shift+N in both review views. `P` is the
+  // Markdown view key, so previous-change must never be P; and with no
+  // cross-scope arbitration a second claimant on either key would double-fire.
+  it('binds next / previous change once, to N and Shift+N, clear of the Markdown P', () => {
+    expect(getShortcut(reviewSettingsShortcutRegistry, 'review-editor', 'nextChange')?.bindings).toEqual(['N']);
+    expect(getShortcut(reviewSettingsShortcutRegistry, 'review-editor', 'prevChange')?.bindings).toEqual(['Shift+N']);
+    const claimants = (binding: string) => listRegistryShortcuts(reviewSettingsShortcutRegistry)
+      .filter(entry => entry.bindings.includes(binding))
+      .map(entry => `${entry.scopeId}.${entry.actionId}`);
+    expect(claimants('N')).toEqual(['review-editor.nextChange']);
+    expect(claimants('Shift+N')).toEqual(['review-editor.prevChange']);
+    expect(claimants('P')).toEqual(['review-markdown-preview.cycleMarkdownView']);
+  });
+
+  // The two HTML-surface chords are the only way back into annotate mode after
+  // Esc and the only keyboard way to the header eye, so they have to reach both
+  // plan registries (the marketing docs page and the help modal read them from
+  // there) and each has to stay a single claimant: the dispatcher has no
+  // cross-scope arbitration, so a second claimant would double-fire and the
+  // toggle would land back where it started.
+  it('binds the HTML annotate and tools chords once on every plan surface', () => {
+    const expected = {
+      toggleAnnotateMode: 'Mod+Shift+A',
+      toggleTools: 'Mod+Shift+X',
+    };
+
+    for (const registry of [planReviewSettingsShortcutRegistry, annotateSettingsShortcutRegistry]) {
+      for (const [actionId, binding] of Object.entries(expected)) {
+        expect(getShortcut(registry, 'html-annotate', actionId)?.bindings).toEqual([binding]);
+
+        const claimants = listRegistryShortcuts(registry)
+          .filter(entry => entry.bindings.includes(binding))
+          .map(entry => `${entry.scopeId}.${entry.actionId}`);
+        expect(claimants).toEqual([`html-annotate.${actionId}`]);
+      }
     }
   });
 
@@ -348,6 +393,18 @@ describe('shortcuts', () => {
     expect(preventDefaultCalls).toBe(0);
   });
 
+  it('assigns review history, copy, and collapse chords to their real registry owners', () => {
+    const claimants = (binding: string) => listRegistryShortcuts(reviewSettingsShortcutRegistry)
+      .filter((entry) => entry.bindings.includes(binding))
+      .map((entry) => `${entry.scopeId}.${entry.actionId}`);
+
+    expect(claimants('Mod+Z')).toEqual(['history.undo']);
+    expect(claimants('Mod+Shift+Z')).toEqual(['history.redo']);
+    expect(claimants('Mod+Y')).toEqual(['history.redo']);
+    expect(claimants('Z')).toEqual(['review-all-files-diff.undoCollapse']);
+    expect(claimants('Mod+Shift+Y')).toEqual(['review-editor.copyFeedback']);
+  });
+
   it('switches annotation mode on Shift+1-4 across keyboard layouts', () => {
     const calls: string[] = [];
     const handlers = {
@@ -377,6 +434,19 @@ describe('shortcuts', () => {
     expect(preventDefaultCalls).toBe(2);
   });
 
+  // PR2/PR3 registered the decision-control scope in both adopting settings
+  // registries (the entries feed the help modal and the generated marketing
+  // shortcuts page — bindings must match shipped behavior). Guards the live
+  // registrations: a duplicate scope id or non-normalized binding token would
+  // only surface as a throw at app startup otherwise.
+  it('decision-control scope is registered for annotate and review', () => {
+    expect(decisionControlShortcuts.id).toBe('decision-control');
+    expect([...annotateSettingsShortcutRegistry].some((scope) => scope.id === 'decision-control')).toBe(true);
+    expect([...reviewSettingsShortcutRegistry].some((scope) => scope.id === 'decision-control')).toBe(true);
+    expect(validateShortcutRegistry([...annotateSettingsShortcutRegistry])).toEqual([]);
+    expect(validateShortcutRegistry([...reviewSettingsShortcutRegistry])).toEqual([]);
+  });
+
   it('leaves annotation mode alone when Alt is held', () => {
     // AltGr sends Ctrl+Alt; the binding declares no Alt, so it must not fire.
     const altGrEvent = {
@@ -393,5 +463,28 @@ describe('shortcuts', () => {
     }, altGrEvent);
 
     expect(handled).toBe(false);
+  });
+
+  // Rich-text copy is the toolbar's Copy button only (owner's decision on #2191):
+  // Cmd+Option+C is Chrome's Inspect Element key on a Mac, and new shortcuts
+  // need the owner's approval. No surface may bind Alt+C, and Mod+C stays the
+  // one copy binding, described as before.
+  it('registers no keyboard shortcut for rich-text copy', () => {
+    const registries = [
+      planReviewSettingsShortcutRegistry,
+      annotateSettingsShortcutRegistry,
+      reviewSettingsShortcutRegistry,
+    ];
+    const altC = { key: 'c', code: 'KeyC', ctrlKey: true, metaKey: false, shiftKey: false, altKey: true } as KeyboardEvent;
+    const macAltC = { key: 'ç', code: 'KeyC', ctrlKey: false, metaKey: true, shiftKey: false, altKey: true } as KeyboardEvent;
+    for (const registry of registries) {
+      for (const entry of listRegistryShortcuts(registry)) {
+        expect(entry.description.toLowerCase()).not.toContain('rich');
+        for (const binding of entry.bindings) {
+          expect(matchesShortcutBinding(altC, binding)).toBe(false);
+          expect(matchesShortcutBinding(macAltC, binding)).toBe(false);
+        }
+      }
+    }
   });
 });

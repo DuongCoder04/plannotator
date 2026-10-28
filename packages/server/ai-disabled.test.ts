@@ -1,10 +1,8 @@
 import { expect, test } from "bun:test";
 import type { PRMetadata } from "@plannotator/shared/pr-types";
 import type { WorktreePool } from "@plannotator/shared/worktree-pool";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createFakePRRuntime } from "../../tests/helpers/fake-pr-runtime";
 
 const SPA_HTML = "<!doctype html><html><body>test</body></html>";
 const ISOLATED_CHILD_ENV = "PLANNOTATOR_AI_DISABLED_TEST_CHILD";
@@ -76,6 +74,10 @@ async function verifyDisabledServers(): Promise<void> {
       import("./review"),
       import("../../apps/pi-extension/server"),
     ]);
+    // The PR-mode server below asks gh for the user, viewed files and PR
+    // context at startup: a fake runtime answers, never the real gh.
+    const { setPRCommandRuntimeForTests } = await import("../../apps/pi-extension/server/pr");
+    setPRCommandRuntimeForTests(createFakePRRuntime().runtime);
 
     servers.push(await startBunReviewServer({
       rawPatch: "",
@@ -165,46 +167,42 @@ async function verifyDisabledServers(): Promise<void> {
     expect(worktreeEnsureCalls).toBe(0);
   } finally {
     for (const server of servers) server.stop();
+    const { setPRCommandRuntimeForTests } = await import("../../apps/pi-extension/server/pr");
+    setPRCommandRuntimeForTests(null);
   }
 }
 
 async function runInIsolatedDataDirectory(): Promise<void> {
-  const dataDir = mkdtempSync(join(tmpdir(), "plannotator-ai-disabled-"));
   const childEnv = {
     ...process.env,
     [ISOLATED_CHILD_ENV]: "1",
     PLANNOTATOR_AI: "disabled",
-    PLANNOTATOR_DATA_DIR: dataDir,
     PLANNOTATOR_REMOTE: "0",
   };
   delete childEnv.PLANNOTATOR_PORT;
 
-  try {
-    // storage.ts captures PLANNOTATOR_DATA_DIR at module load, so a child
-    // process is required to keep this test isolated regardless of which
-    // test files Bun evaluated first in the parent process.
-    const child = Bun.spawn(
-      [process.execPath, "test", fileURLToPath(import.meta.url)],
-      {
-        cwd: process.cwd(),
-        env: childEnv,
-        stdout: "pipe",
-        stderr: "pipe",
-      },
+  // storage.ts captures PLANNOTATOR_DATA_DIR at module load, so a child
+  // process is required to keep this test isolated regardless of which
+  // test files Bun evaluated first in the parent process. The test preload
+  // owns the child process's data directory and cleans it up on exit.
+  const child = Bun.spawn(
+    [process.execPath, "test", fileURLToPath(import.meta.url)],
+    {
+      cwd: process.cwd(),
+      env: childEnv,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(
+      `Isolated disabled-AI test failed (${exitCode})\n${stdout}\n${stderr}`,
     );
-    const [exitCode, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    if (exitCode !== 0) {
-      throw new Error(
-        `Isolated disabled-AI test failed (${exitCode})\n${stdout}\n${stderr}`,
-      );
-    }
-    expect(existsSync(join(dataDir, "history"))).toBe(true);
-  } finally {
-    rmSync(dataDir, { recursive: true, force: true });
   }
 }
 

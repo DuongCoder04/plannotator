@@ -37,7 +37,9 @@ function writeIfPresent(stream, text) {
   stream.write(text.endsWith("\n") ? text : `${text}\n`);
 }
 
-function runPlannotator(args) {
+// `options.timeout` (ms) bounds a command that must return quickly; reviews
+// wait for the reviewer and pass none.
+function runPlannotator(args, options = {}) {
   const repoBin = findRepoBin(process.cwd());
   const env = {
     ...process.env,
@@ -45,15 +47,18 @@ function runPlannotator(args) {
     PLANNOTATOR_ORIGIN: "droid",
   };
 
+  const timeout = options.timeout;
   let result = childProcess.spawnSync("plannotator", args, {
     encoding: "utf8",
     env,
+    ...(timeout ? { timeout } : {}),
   });
 
   if (result.error && result.error.code === "ENOENT" && repoBin) {
     result = childProcess.spawnSync(process.execPath, [repoBin, ...args], {
       encoding: "utf8",
       env,
+      ...(timeout ? { timeout } : {}),
     });
   }
 
@@ -112,7 +117,9 @@ function emitAnnotateDecision(rawOutput, heading) {
 
       if (parsed.decision === "annotated") {
         const feedback = typeof parsed.feedback === "string" ? parsed.feedback.trim() : "";
-        if (!feedback) {
+        // A Done with nothing to send (#1701): the zero-state sentence rides
+        // `feedback`, and nothing should reach the agent.
+        if (!feedback || parsed.nothingToSend === true) {
           process.stdout.write("Annotation session closed.\n");
           return;
         }

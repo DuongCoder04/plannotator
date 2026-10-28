@@ -37,6 +37,7 @@ These are sent when you approve or deny a plan in the review UI.
 | Key | When it's used | Available variables |
 |-----|---------------|-------------------|
 | `denied` | You deny a plan (with or without annotations) | `{{toolName}}`, `{{feedback}}`, `{{planFileRule}}` |
+| `answered` | You click **Send answers**: your only feedback is answers to the plan's [questions](/docs/guides/questions/) | `{{toolName}}`, `{{feedback}}`, `{{planFileRule}}` |
 | `approved` | You approve a plan without notes | `{{planFilePath}}`, `{{doneMsg}}` |
 | `approvedWithNotes` | You approve but include annotation notes | `{{planFilePath}}`, `{{doneMsg}}`, `{{feedback}}` |
 | `autoApproved` | Plan is auto-approved in non-interactive mode | none |
@@ -116,6 +117,8 @@ Blank or whitespace-only values are treated as "not set" and fall through to the
 
 Valid runtime keys: `claude-code`, `amp`, `droid`, `opencode`, `copilot-cli`, `pi`, `codex`, `gemini-cli`.
 
+The Plannotator Inbox's reminder at session start has its own section, `prompts.inbox`, with the same rule (`prompts.inbox.runtimes.<agent>.reminder` wins over `prompts.inbox.reminder`). The Inbox's **Settings → Prompts** edits it and shows these prompts read-only. See [the Inbox reference](/docs/reference/inbox/#your-own-reminder).
+
 ## Full config example
 
 Here's a config that customizes several messages at once:
@@ -154,6 +157,28 @@ before calling {{toolName}} again.
 
 Rules:
 {{planFileRule}}- Do not resubmit the same plan unchanged.
+- Do NOT change the plan title (first # heading) unless the
+  user explicitly asks you to.
+
+{{feedback}}
+```
+
+**Plan answered (default):** sent instead of the denied message when your only feedback is answers to the plan's questions. A custom `denied` message does not replace it; set `answered` as well if you want both changed.
+
+```
+The user answered the questions in your plan and asked for no
+other changes. Their answers are below.
+
+Revise the plan so each answered question becomes a decision,
+then call {{toolName}} again.
+
+Rules:
+{{planFileRule}}- For each answered question, either remove its
+  `:::question` block and write the decision into the plan, or
+  keep the block and mark the chosen choice `- [x]` (a checked
+  choice reads as settled).
+- Keep every question listed under "Unanswered" as it is.
+- Treat a note on an answer as guidance from the user.
 - Do NOT change the plan title (first # heading) unless the
   user explicitly asks you to.
 
