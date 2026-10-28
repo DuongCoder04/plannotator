@@ -310,7 +310,9 @@ export function createReviewDraftSession() {
     /** A decision (feedback / exit): remove every target this session used. */
     settle(keys: ReviewDraftKeys, draftGeneration?: number, clientId?: string | null): void {
       deleteReviewDraft(keys, draftGeneration);
-      const state = bookkeeping(keys, clientId);
+      // A page whose last switch landed on no target still clears the
+      // targets it saved earlier, or sent comments would come back.
+      const state = bookkeeping(keys, clientId) ?? (!keys.targetKey && clientId ? clients.get(`local:${clientId}`) : undefined);
       if (!state) return;
       const { touched, savedLocalTargets } = state;
       for (const other of touched.values()) {

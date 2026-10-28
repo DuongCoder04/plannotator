@@ -279,6 +279,18 @@ for (const [runtime, start] of [['Bun', startBun], ['Pi', startPi]] as const) {
       expect((await fetch((await open()).endpoint)).status).toBe(404);
     });
 
+    test('a switch never auto-merges an old unscoped draft; only the restore banner offers it', async () => {
+      const a = await open();
+      const switchTo = async (diffType: string) => (await post(`${a.server.url}/api/diff/switch`, { diffType, base: 'main' })).json();
+      const uncommitted = await switchTo('uncommitted');
+      await switchTo('since-base');
+      saveDraft(contentHash(uncommitted.rawPatch), { codeAnnotations: [note], draftGeneration: 7 });
+      const back = await switchTo('uncommitted');
+      expect(back.draftState).toEqual({ found: false, draftGeneration: null });
+      const banner = await fetch(`${a.server.url}/api/draft?target=${back.localDraftTarget}&client=page-2`);
+      expect((await banner.json()).codeAnnotations[0].id).toBe('note');
+    });
+
     test('detached checkouts are scoped to their commit rather than borrowing a branch draft', async () => {
       const branch = await open();
       await post(branch.endpoint, body(branch.view));

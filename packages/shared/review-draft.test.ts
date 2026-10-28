@@ -288,3 +288,11 @@ test('a hung git gives a local review no draft target instead of blocking startu
   expect(target).toBeNull();
   expect(Date.now() - started).toBeLessThan(LOCAL_DRAFT_TARGET_TIMEOUT_MS * 1.5);
 }, 10_000);
+
+test('a decision after switching onto no target still clears the targets this page saved', () => {
+  const session = createReviewDraftSession();
+  const a = localReviewDraftKeys(P1, 'local-a');
+  session.save(a, draft(1), 'page-1');
+  session.settle({ patchKey: P2 }, 2, 'page-1');
+  expect(loadReviewDraft(a).found).toBe(false);
+});

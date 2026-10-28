@@ -732,9 +732,7 @@ export async function startReviewServer(
   // publish each new target atomically with its patch at a snapshot change.
   localDraftTarget = await captureDraftTarget();
   if (currentFingerprint === null) captureDiffFingerprint();
-  else {
-    progressSnapshot = captureProgress();
-  }
+  else progressSnapshot = captureProgress();
 
   const resolveReviewBase = (
     requestedBase?: string,
@@ -3137,15 +3135,15 @@ export async function startReviewServer(
               const sections = await buildSectionsSidecar(nextBase, newDiffType as string);
               const commitInfo = await buildCommitInfoSidecar(newDiffType as string);
               const generatedFiles = await buildGeneratedFilesSidecar(result.patch, newDiffType as string);
-              const [switchSemanticDiff, switchCallFlow] = await Promise.all([
+              const [switchSemanticDiff, switchCallFlow, nextDraftTarget] = await Promise.all([
                 getSemanticDiffAdvert(newDiffType as DiffType),
                 getCallFlowAdvert(newDiffType as DiffType),
+                isPRMode ? null : localGitDraftTargetKey({
+                  diffType: newDiffType, base: nextBase, cwd: gitContext?.cwd ?? process.cwd(),
+                  defaultBase: remoteCheckEnabled && !nextBaseExplicitlyChosen ? detectedCompareTarget() : undefined,
+                  vcsType: sessionVcsType,
+                }, gitRuntime.runGit),
               ]);
-              const nextDraftTarget = isPRMode ? null : await localGitDraftTargetKey({
-                diffType: newDiffType, base: nextBase, cwd: gitContext?.cwd ?? process.cwd(),
-                defaultBase: remoteCheckEnabled && !nextBaseExplicitlyChosen ? detectedCompareTarget() : undefined,
-                vcsType: sessionVcsType,
-              }, gitRuntime.runGit);
               // Final guard: if a newer switch took over during the trailing
               // awaits, don't emit — the client would misapply our stale body
               // over the newer one (which has its own response inbound).
@@ -3202,7 +3200,7 @@ export async function startReviewServer(
                 gitRef: currentGitRef,
                 snapshotId: currentSnapshotId(),
                 localDraftTarget: nextDraftTarget,
-                ...(nextDraftTarget && { draftState: reviewDrafts.state(localReviewDraftKeys(draftKey, nextDraftTarget)) }),
+                ...(nextDraftTarget && { draftState: reviewDrafts.state({ ...localReviewDraftKeys(draftKey, nextDraftTarget), legacyPatchKey: undefined }) }),
                 approvalNotesSupported,
 
                 serverSession,

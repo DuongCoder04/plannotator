@@ -731,9 +731,7 @@ export async function startReviewServer(options: {
 	// publish each new target atomically with its patch at a snapshot change.
 	localDraftTarget = await captureDraftTarget();
 	if (currentFingerprint === null) captureDiffFingerprint();
-	else {
-		progressSnapshot = captureProgress();
-	}
+	else progressSnapshot = captureProgress();
 
 	// --- Base staleness vs the remote (mirrors Bun review.ts) -----------------
 	// `origin/<default>` is GitHub's state as of the last fetch. The startup
@@ -3026,15 +3024,15 @@ export async function startReviewServer(options: {
 				const sections = await buildSectionsSidecar(nextBase, newType as string);
 				const commitInfo = await buildCommitInfoSidecar(newType as string);
 				const generatedFiles = await buildGeneratedFilesSidecar(result.patch, newType as string);
-				const [switchSemanticDiff, switchCallFlow] = await Promise.all([
+				const [switchSemanticDiff, switchCallFlow, nextDraftTarget] = await Promise.all([
 					getSemanticDiffAdvert(newType as DiffType),
 					getCallFlowAdvert(newType as DiffType),
+					isPRMode ? null : localGitDraftTargetKey({
+						diffType: newType, base: nextBase, cwd: options.gitContext?.cwd ?? process.cwd(),
+						defaultBase: remoteCheckEnabled && !nextBaseExplicitlyChosen ? detectedCompareTarget() : undefined,
+						vcsType: sessionVcsType,
+					}, reviewRuntime.runGit),
 				]);
-				const nextDraftTarget = isPRMode ? null : await localGitDraftTargetKey({
-					diffType: newType, base: nextBase, cwd: options.gitContext?.cwd ?? process.cwd(),
-					defaultBase: remoteCheckEnabled && !nextBaseExplicitlyChosen ? detectedCompareTarget() : undefined,
-					vcsType: sessionVcsType,
-				}, reviewRuntime.runGit);
 				// Final guard: a newer switch during trailing awaits wins.
 				if (switchEpoch !== diffSwitchEpoch) {
 					json(res, { superseded: true });
@@ -3090,7 +3088,7 @@ export async function startReviewServer(options: {
 					gitRef: currentGitRef,
 					snapshotId: currentSnapshotId(),
 					localDraftTarget: nextDraftTarget,
-					...(nextDraftTarget && { draftState: reviewDrafts.state(localReviewDraftKeys(draftKey, nextDraftTarget)) }),
+					...(nextDraftTarget && { draftState: reviewDrafts.state({ ...localReviewDraftKeys(draftKey, nextDraftTarget), legacyPatchKey: undefined }) }),
 					approvalNotesSupported,
 					serverSession,
 					imagePreviewSupported,

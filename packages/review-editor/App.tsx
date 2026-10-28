@@ -3326,7 +3326,9 @@ const ReviewApp: React.FC = () => {
       setSnapshotId(data.snapshotId);
       setLocalDraftTarget(data.localDraftTarget ?? null);
       if (localDraftTarget || data.localDraftTarget) {
-        adoptDraftTarget(data.draftState, data.localDraftTarget ? localReviewDraftTransport(data.localDraftTarget, localDraftClientId) : undefined);
+        // An applied switch onto no target (e.g. git timed out) still resumes
+        // saving, so it passes an empty state rather than undefined.
+        adoptDraftTarget(data.draftState ?? { found: false, draftGeneration: null }, data.localDraftTarget ? localReviewDraftTransport(data.localDraftTarget, localDraftClientId) : undefined);
       }
       // Session-constant in practice, but re-read from any payload that
       // carries it so the client stays in lockstep with whatever it last

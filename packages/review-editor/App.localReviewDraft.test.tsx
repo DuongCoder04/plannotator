@@ -162,3 +162,53 @@ for (const lateResponse of ['superseded', 'failure', 'success'] as const) {
     expect(decisionSession).toBe('local-draft-server');
   });
 }
+
+test.skipIf(!hasDom)('a refresh that lands on no draft target clears the paused notice and resumes saving', async () => {
+  const memory = new Map<string, string>([
+    ['plannotator-plan-look-choice-resolved', 'true'],
+    ['plannotator-announce-tui-herdr-seen', '1'],
+    ['plannotator-guide-intro-seen', '2'],
+    ['plannotator-guide-hint-acked', 'true'],
+    ['plannotator-edit-mode-announcement-seen', '3'],
+    ['plannotator-token-hover-announcement-seen', '1'],
+    ['plannotator-review-dest-spotlight-seen', '1'],
+  ]);
+  setStorageBackend({
+    getItem: key => memory.get(key) ?? null,
+    setItem: (key, value) => { memory.set(key, value); },
+    removeItem: key => { memory.delete(key); },
+  });
+  configStore.loadFromBackend();
+  const writes: Array<string | null> = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(String(input), 'http://localhost');
+    if (url.pathname === '/api/diff') return Response.json(view('local-a'));
+    // The git identity could not be read this time: no target, no draftState.
+    if (url.pathname === '/api/diff/switch') return Response.json({ ...view('local-a'), localDraftTarget: null, draftState: undefined });
+    if (url.pathname === '/api/draft') {
+      const target = url.searchParams.get('target');
+      if (init?.method === 'POST') {
+        writes.push(target);
+        if (target) return Response.json({ code: 'draft_target_changed' }, { status: 409 });
+        return Response.json({ ok: true });
+      }
+      return Response.json({ codeAnnotations: [note('local-a')], draftGeneration: 1, ts: Date.now() });
+    }
+    if (url.pathname === '/api/diff/fresh') return Response.json({ fresh: true });
+    if (url.pathname === '/api/ai/capabilities') return Response.json({ available: false, providers: [] });
+    return Response.json({});
+  }) as typeof fetch;
+  globalThis.EventSource = StubEventSource as unknown as typeof EventSource;
+  host = document.createElement('div');
+  document.body.appendChild(host);
+  root = createRoot(host);
+  await act(async () => root!.render(<App />));
+  await waitFor(() => !!button('Restore'));
+  await act(async () => button('Restore')!.click());
+  await tick(650);
+  await waitFor(() => !!button('Refresh review'));
+  await act(async () => button('Refresh review')!.click());
+  await tick(650);
+  expect(button('Refresh review')).toBeUndefined();
+  expect(writes.at(-1)).toBeNull();
+});
