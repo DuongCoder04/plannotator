@@ -7,6 +7,8 @@ import { Icon } from '../icons';
 import type { AttachmentStep } from '../stepping';
 import { changedLine } from './AttachmentTiles';
 import { FileName } from './FileName';
+import { inboxFileViewerShortcuts } from '../shortcuts/fileViewer.shortcuts';
+import { TipKeys } from '../shortcuts/hint';
 
 /** Where a step came from: it decides where focus goes after it. */
 export type StepSource = 'button' | 'menu' | 'key';
@@ -141,8 +143,8 @@ export function FilePeek(props: {
   );
 }
 
-/** Two lines: where the button goes, then its keys. */
-function StepTip({ text, keys, children }: { text: string; keys: string[]; children: React.ReactElement }) {
+/** Two lines: where the button goes, then its key (`[` or `]`, from the registry). */
+function StepTip({ text, action, children }: { text: string; action: 'previous' | 'next'; children: React.ReactElement }) {
   return (
     <Tooltip
       side="top"
@@ -150,18 +152,9 @@ function StepTip({ text, keys, children }: { text: string; keys: string[]; child
       content={
         <span className="flex flex-col gap-1">
           <span>{text}</span>
-          {keys.length > 0 && (
-            <span className="flex items-center gap-1 text-muted-foreground">
-              {keys.map((key, i) => (
-                <span key={key} className="flex items-center gap-1">
-                  {i > 0 && <span>or</span>}
-                  <kbd className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded border border-border/60 bg-muted px-1 font-mono text-[10px] leading-none text-foreground/80">
-                    {key}
-                  </kbd>
-                </span>
-              ))}
-            </span>
-          )}
+          <span className="flex items-center gap-1 text-muted-foreground empty:hidden">
+            <TipKeys scope={inboxFileViewerShortcuts} action={action} />
+          </span>
         </span>
       }
     >
@@ -226,7 +219,7 @@ export function AttachmentStepper(props: AttachmentStepperProps) {
   return (
     <nav className="ib-stepper" aria-label="Files in this thread" data-attachment-stepper="">
       <span className="ib-stepbox">
-        <StepTip text={prev ? `Previous: ${prev.attachment.name}` : 'This is the first file'} keys={['[', '←']}>
+        <StepTip text={prev ? `Previous: ${prev.attachment.name}` : 'This is the first file'} action="previous">
           <button type="button" className="ib-stepbtn" aria-label={prevLabel} aria-disabled={prev ? undefined : 'true'} onClick={() => props.onStep(-1, 'button')} data-step-prev="">
             <Icon name="chevL" size={15} />
           </button>
@@ -257,7 +250,7 @@ export function AttachmentStepper(props: AttachmentStepperProps) {
             <Icon name="chevD" size={13} />
           </span>
         </button>
-        <StepTip text={next ? `Next: ${next.attachment.name}` : 'This is the last file'} keys={[']', '→']}>
+        <StepTip text={next ? `Next: ${next.attachment.name}` : 'This is the last file'} action="next">
           <button type="button" className="ib-stepbtn" aria-label={nextLabel} aria-disabled={next ? undefined : 'true'} onClick={() => props.onStep(1, 'button')} data-step-next="">
             <Icon name="chevR" size={15} />
           </button>
