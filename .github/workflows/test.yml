@@ -194,6 +194,7 @@ jobs:
           packages/inbox/sendNow.test.tsx
           packages/inbox/undelivered.test.tsx
           packages/inbox/tagAgents.test.tsx
+          packages/inbox/tagHandoff.test.tsx
           packages/inbox/restartWarning.test.tsx
           packages/inbox/reloadHosts.test.tsx
           packages/inbox/pasteFiles.test.tsx
@@ -245,6 +246,7 @@ jobs:
           packages/inbox/settingsSections.test.tsx
           packages/inbox/searchPalette.test.tsx
           packages/inbox/searchShortcut.test.tsx
+          packages/inbox/shortcutHints.test.tsx
           packages/inbox/openIn.test.tsx
           packages/inbox/htmlLinks.test.tsx
           packages/inbox/videoAttachment.test.tsx
@@ -288,6 +290,7 @@ jobs:
           packages/review-editor/App.agentTool.test.tsx
           packages/review-editor/App.guideViewed.test.tsx
           packages/review-editor/App.commitsJj.test.tsx
+          packages/review-editor/App.localReviewDraft.test.tsx
           packages/review-editor/App.emptyDiffSwitch.test.tsx
           packages/review-editor/App.planLookTwoTabs.test.tsx
           packages/review-editor/components/AnnotationToolbar.placement.test.tsx
@@ -318,6 +321,7 @@ jobs:
           packages/review-editor/components/TokenHoverCard.test.tsx
           packages/review-editor/components/TokenHoverAnnouncementDialog.test.tsx
           packages/review-editor/utils/stitchTokenIdentifier.test.ts
+          packages/review-editor/utils/localReviewDraft.test.tsx
           packages/review-editor/utils/diffSelection.test.ts
           packages/review-editor/hooks/useAutoViewed.test.tsx
           packages/review-editor/hooks/useReviewProgress.test.tsx
@@ -448,11 +452,13 @@ jobs:
           packages/ui/components/Settings.annotateParity.test.tsx
           packages/ui/components/Settings.compactDisplay.test.tsx
           packages/ui/components/Settings.customFont.test.tsx
+          packages/ui/components/Settings.documentFont.test.tsx
           packages/ui/components/Settings.documentTextSize.test.tsx
           packages/ui/components/Settings.experimental.test.tsx
           packages/ui/components/Settings.gridChoice.test.tsx
           packages/editor/App.planLookNotice.test.tsx
           packages/ui/config/documentTextSizeSetting.test.ts
+          packages/ui/config/documentFontSetting.test.ts
           packages/ui/utils/diffFonts.test.ts
           packages/ui/components/Settings.agentTool.test.tsx
           packages/ui/components/settings/QuickLabelsTab.test.tsx
@@ -652,7 +658,7 @@ jobs:
       # rebuild your environment (rm -rf node_modules && bun install --frozen-lockfile).
       - name: Publish built viewer manifest for pin regeneration
         if: always() && steps.gate.outputs.run == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v6.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: guide-viewer-manifest
           path: apps/guides-show/dist/viewer/manifest.json
@@ -725,7 +731,7 @@ jobs:
         with:
           bun-version: 1.4.4
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
 
