@@ -31,6 +31,8 @@ import type {
   InboxPromptsSettings,
 } from '@plannotator/core/inbox-types';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
+import { FEEDBACK_UNAVAILABLE } from '@plannotator/core/product-feedback';
+import type { InboxRunAgentId, InboxRunAgentsModel, InboxRunStatus } from '@plannotator/core/inbox-acp';
 import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
 import type { RecipientConnection } from './deliveryLine';
 import { parseRestartAgents } from './restartAgents';
@@ -182,7 +184,12 @@ export interface UpdateDetails {
   command: string;
   plugin_command: string | null;
   sessions: { mode: string; project: string; label: string; started_at: string }[];
-  failure: { exit_code: number; log: string } | null;
+  /** `tls` (exit 75 only): the download failed at TLS. Absent from an older Inbox. */
+  /**
+   * `release_first` (macOS, `untrusted` only): the release page before the install command.
+   * `prepare` (exit 75): downloaded, but the temp folder could not hold it; the plain reason.
+   */
+  failure: { exit_code: number; log: string; tls?: 'untrusted' | 'revoked'; release_first?: true; prepare?: string } | null;
   log: string;
   snoozed_until: string | null;
 }
@@ -518,6 +525,36 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<T> 
   );
 }
 
+/** The window waits this long for the Feedback send: the Inbox answers within FEEDBACK_TIMEOUT_MS (8 s), this only covers an Inbox that does not answer. */
+export const FEEDBACK_WINDOW_TIMEOUT_MS = 10_000;
+
+/**
+ * The Feedback dialog's Send. Fails with an Error whose message the dialog
+ * shows as it is: the Worker's refusal or a validation line from the Inbox,
+ * else (Inbox or service unreachable, too slow, failing) the one plain line
+ * FEEDBACK_UNAVAILABLE. Never a raw network or status message.
+ */
+async function sendFeedback(input: { message: string; category: 'bug' | 'idea' | 'other' | null; contact: string | null }): Promise<{ ok: true }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FEEDBACK_WINDOW_TIMEOUT_MS);
+  const body = { message: input.message, ...(input.category ? { category: input.category } : {}), ...(input.contact ? { contact: input.contact } : {}) };
+  try {
+    const response = await fetch('/api/inbox/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(pageSession ? { ...body, serverSession: pageSession } : body),
+      signal: controller.signal,
+    });
+    return await readJson<{ ok: true }>(response);
+  } catch (cause) {
+    // The Inbox's own words: a validation line (400) or the send's outcome (502 feedback_not_sent).
+    if (cause instanceof InboxApiError && (cause.status < 500 || cause.code === 'feedback_not_sent')) throw cause;
+    throw new Error(FEEDBACK_UNAVAILABLE);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** config.json `theme`: the mode and the palette for each half (ThemeConfig in @plannotator/core/config-types). */
 export interface InboxThemeConfig {
   mode?: 'light' | 'dark' | 'system';
@@ -804,6 +841,11 @@ export const inboxApi = {
   saveSound: (change: { enabled?: boolean; volume?: number }) => post<{ sound: InboxSoundSettings }>('/api/inbox/settings', { sound: change }),
   /** Ask to show the one-time sound dialog: `show` is true for the first page that ever asks after an update, and only that one. */
   claimSoundDialog: () => post<{ show: boolean; sound: InboxSoundSettings }>('/api/inbox/sound/dialog', {}),
+  /**
+   * The sidebar's Feedback dialog: the person's words go to the feedback Worker through this Inbox's server
+   * (packages/server/inbox-feedback.ts), which adds the version and the OS name and nothing else.
+   */
+  sendFeedback: (input: { message: string; category: 'bug' | 'idea' | 'other' | null; contact: string | null }) => sendFeedback(input),
   /** Plannotator's appearance, written to config.json `theme` (shared with plan review). */
   saveTheme: (theme: InboxThemeConfig) => post<{ theme: InboxThemeConfig | null }>('/api/inbox/settings', { theme }),
   /** The onboarding tour: each `true` stamps now (started, finished, skipped); `notify_again` sets the first thread's ask. */
@@ -845,6 +887,18 @@ export const inboxApi = {
   // Compose: every live session, a new thread, Send to another session, and drafts.
   composeSessions: (session?: string | null) =>
     get<ComposeSessionsModel>(`/api/inbox/sessions${session ? `?session=${encodeURIComponent(session)}` : ''}`),
+  // The ACP runner (packages/server/inbox-acp-runner.ts): sessions the Inbox runs itself (Grok Build).
+  /** The agents the Inbox can start and the folders it can start them in; an older Inbox answers 404. */
+  runAgents: () => get<InboxRunAgentsModel>('/api/inbox/acp'),
+  /** Compose's "New … session": the session, then the thread addressed to it. */
+  startRun: (input: Omit<StartThreadInput, 'to'> & { agent: InboxRunAgentId; project_id: string }) =>
+    post<{ thread_id: string; message: InboxMessage; project?: { id: string; name: string; root: string }; replayed: boolean; run?: { key: string; agent: InboxRunAgentId } }>('/api/inbox/acp/start', { ...input }),
+  runStatus: (key: string) => get<{ run: InboxRunStatus }>(`/api/inbox/acp/${encodeURIComponent(key)}`),
+  answerRunPermission: (key: string, input: { permission_id: string; option_id: string; approve_rest?: boolean }) =>
+    post<{ run: InboxRunStatus }>(`/api/inbox/acp/${encodeURIComponent(key)}/permission`, { ...input }),
+  stopRun: (key: string) => post<{ run: InboxRunStatus }>(`/api/inbox/acp/${encodeURIComponent(key)}/stop`, {}),
+  retryRun: (key: string) => post<{ run: InboxRunStatus }>(`/api/inbox/acp/${encodeURIComponent(key)}/retry`, {}),
+  setRunEnabled: (agent: InboxRunAgentId, enabled: boolean) => post<InboxRunAgentsModel>(`/api/inbox/acp/agents/${encodeURIComponent(agent)}`, { enabled }),
   startThread: (input: StartThreadInput) =>
     post<{ thread_id: string; message: InboxMessage; project?: { id: string; name: string; root: string }; replayed: boolean }>('/api/inbox/messages', { ...input }),
   readdress: (messageId: string, to: { host: string; session: string }) =>
@@ -1011,6 +1065,8 @@ export interface InboxEventHandlers {
   onDrafts?: (threadId: string) => void;
   /** The sidebar's pins changed (`event: pins`, approval "inbox-pinned-threads"); never called by an older Inbox. */
   onPins?: () => void;
+  /** A session the Inbox runs changed (`event: runs`): a turn started or ended, its activity, a permission. Never called by an older Inbox. */
+  onRuns?: (change: { key: string; thread_ids: string[]; permission?: boolean }) => void;
 }
 
 /** This window, as its event stream (or its report) names it to the server (inbox-windows.ts). */
@@ -1021,7 +1077,7 @@ export interface InboxEventWindow {
 }
 
 /** The event stream's named frames, as they arrive (and as the tab that holds the shared stream passes them on). */
-export const INBOX_EVENT_FRAMES = ['hello', 'record', 'status', 'reach', 'deliveries', 'drafts', 'pins'] as const;
+export const INBOX_EVENT_FRAMES = ['hello', 'record', 'status', 'reach', 'deliveries', 'drafts', 'pins', 'runs'] as const;
 export type InboxEventFrameName = (typeof INBOX_EVENT_FRAMES)[number];
 export interface InboxEventFrame {
   name: InboxEventFrameName;
@@ -1079,6 +1135,20 @@ export function dispatchInboxFrame(frame: InboxEventFrame, handlers: InboxEventH
       return;
     case 'pins':
       handlers.onPins?.();
+      return;
+    case 'runs':
+      try {
+        const data = JSON.parse(frame.data) as { key?: unknown; thread_ids?: unknown; permission?: unknown };
+        if (typeof data.key === 'string') {
+          handlers.onRuns?.({
+            key: data.key,
+            thread_ids: Array.isArray(data.thread_ids) ? data.thread_ids.filter((id): id is string => typeof id === 'string') : [],
+            ...(data.permission === true ? { permission: true } : {}),
+          });
+        }
+      } catch {
+        // A malformed frame changes nothing.
+      }
       return;
     case 'record': {
       let parsed: InboxEvent | null = null;
