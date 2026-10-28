@@ -194,7 +194,7 @@ A test must guard a behavior that can actually regress. Before writing one, name
 
 Every PR push runs the fast tier: the Test workflow (below) and Security. The heavy tier runs on a PR only once it has the `ci:full` label: the Windows workflow (`windows.yml`), the Release dry run, and the Inbox e2e, Pi, Claude Code and relay workflows (those four still only when their paths change). Adding the label starts the heavy tier on the current head, and every later push runs it again; removing it does nothing. Pushes to main and tags run everything. Each heavy workflow ends in a `Full CI (all green)` job that passes only when every job of that workflow ran and succeeded, since a skipped job otherwise looks green. The merge script adds `ci:full` when a PR enters the merge queue and merges only when the fast-tier checks and every `Full CI (all green)` check succeeded, so you need not add the label yourself; add it early only to see the heavy results sooner. `scripts/ci-full-tier.test.ts` fails when a heavy job is missing from its workflow's gate or ignores the label, or when a fast workflow reruns on a label.
 
-Deploy (`deploy.yml`) starts when a Test run for a push to main succeeds (`workflow_run`), and deploys the sites changed since the last such run; Test runs of PRs never start a deploy job.
+Deploy (`deploy.yml`) starts when a Test run for a push to main succeeds (`workflow_run`), and deploys the sites changed since the last such run, one deploy of a site at a time; it skips when a newer main commit has already passed Test. Test runs of PRs never start a deploy job.
 
 ### CI test lanes
 

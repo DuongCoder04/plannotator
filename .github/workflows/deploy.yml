@@ -94,11 +94,22 @@ jobs:
             exit 0
           fi
 
+          # The passed Test runs of pushes to main, newest first (one call).
+          RUNS="$(gh api "repos/${REPOSITORY}/actions/workflows/test.yml/runs?branch=main&event=push&status=success&per_page=50")"
+
+          # A newer main commit already passed Test: its deploy covers this
+          # one, and deploying this older tree now would overwrite it.
+          NEWEST="$(jq -r '.workflow_runs[0].id // 0' <<< "$RUNS")"
+          if (( NEWEST > TEST_RUN_ID )); then
+            echo "Test run ${NEWEST} on a newer main commit passed; it deploys instead."
+            for site in marketing portal paste waitlist; do echo "$site=false" >> "$GITHUB_OUTPUT"; done
+            exit 0
+          fi
+
           # What changed since the last push to main that passed Test. Every
           # push to main runs Test, so that is where the last deploy came
           # from; a push whose Test failed is deployed with the next one.
-          BEFORE_SHA="$(gh api "repos/${REPOSITORY}/actions/workflows/test.yml/runs?branch=main&event=push&status=success&per_page=50" \
-            --jq "[.workflow_runs[] | select(.id < ${TEST_RUN_ID})] | first | .head_sha // empty")"
+          BEFORE_SHA="$(jq -r "[.workflow_runs[] | select(.id < ${TEST_RUN_ID})] | first | .head_sha // empty" <<< "$RUNS")"
           if [[ -z "$BEFORE_SHA" ]] || ! git fetch --no-tags --depth=1 origin "$BEFORE_SHA"; then
             BEFORE_SHA="${CURRENT_SHA}^1"
           fi
@@ -116,6 +127,14 @@ jobs:
   deploy-marketing:
     needs: detect-changes
     if: needs.detect-changes.outputs.marketing == 'true'
+    # One deploy of a site at a time, queued and never cancelled, so two never
+    # sync over each other. The group is on the deploy jobs, not the workflow:
+    # a skipped Deploy run (a failed Test, a PR) must not replace a pending one.
+    # A queued deploy of the same site from a newer commit can replace a pending
+    # one; it ships the whole newer tree, which includes the older change.
+    concurrency:
+      group: deploy-marketing
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -174,6 +193,9 @@ jobs:
   deploy-portal:
     needs: detect-changes
     if: needs.detect-changes.outputs.portal == 'true'
+    concurrency:
+      group: deploy-portal
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -213,6 +235,9 @@ jobs:
   deploy-paste:
     needs: detect-changes
     if: needs.detect-changes.outputs.paste == 'true'
+    concurrency:
+      group: deploy-paste
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -240,6 +265,9 @@ jobs:
   deploy-waitlist:
     needs: detect-changes
     if: needs.detect-changes.outputs.waitlist == 'true'
+    concurrency:
+      group: deploy-waitlist
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     permissions:
       contents: read
