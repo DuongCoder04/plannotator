@@ -17,6 +17,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a PR cancels that PR's older dry run. Tag pushes and manual
+# runs get a group of their own, so a release is never cancelled.
+concurrency:
+  group: release-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # A release tag must identify a commit already contained in main. This runs
   # independently of the build graph so an invalid tag cannot attest, publish,
@@ -69,7 +75,11 @@ jobs:
       - name: Type check
         run: bun run typecheck
 
+      # On a PR the Test workflow runs this same sweep (split into lanes), so
+      # the dry run skips its own copy and goes straight to the build. Tags and
+      # manual runs still test here before building.
       - name: Run tests
+        if: github.event_name != 'pull_request'
         run: bun test
 
   build:

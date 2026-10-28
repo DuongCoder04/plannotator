@@ -201,6 +201,10 @@ The Test workflow (`.github/workflows/test.yml`) runs the suite as parallel jobs
 
 Run one lane locally with `bun run scripts/ci-test-lane.ts unit-2`. Several lanes run at once on one local checkout can race on the `apps/hook/dist` stubs (`tests/helpers/hook-dist-stub.ts`): one process removes the stubs another relies on. On CI each lane is its own machine. `scripts/ci-test-lanes.test.ts` fails when the workflow matrix and the script's lanes differ, when a shard loses a bunfig ignore pattern, or when the DOM list names a missing, repeated or own-process file. `scripts/dom-test-allowlist.test.ts` fails when a DOM-gated file is in neither the list nor an own-process step.
 
+The Inbox window e2e (`.github/workflows/inbox-e2e.yml`) builds the apps once, then runs the Playwright specs as 8 shards, one worker each, through `scripts/ci-e2e-shard.ts <k>`. A shard is a set of whole spec files, spread by their measured time in `tests/e2e/shard-times.json` (Playwright's own `--shard` splits by test count, which left one shard at 17 min). A new spec needs no edit: with no time yet it counts as the median. Refresh the times when the shards drift apart (seconds per spec file, from a CI run's log). `scripts/ci-e2e-shard.test.ts` fails when a spec is in no shard or in two, or when the workflow's matrix and the script's shard count differ.
+
+On a PR, the Release dry run skips its own `bun test` (the Test workflow runs the same sweep); tag pushes and manual runs still test before building. Test, Release and the Inbox e2e, Pi and Claude Code workflows cancel a PR's older run when the PR gets a new push; pushes to main and tags are never cancelled.
+
 ## Build
 
 ```bash
