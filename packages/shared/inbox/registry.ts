@@ -324,12 +324,16 @@ export type InboxStaleReason =
 
 /**
  * The folder that makes an Inbox one data dir's (its `inbox/` folder: the
- * record and the store), with symlinks resolved, so two spellings of one
- * folder compare equal; null when it does not exist.
+ * record and the store): its realpath, so two spellings of one folder
+ * compare equal, and its device and inode, so two paths to one folder that
+ * realpath cannot join (a bind mount, another mount namespace) do too; null
+ * when it does not exist.
  */
-function realInboxDir(dataDir: string): string | null {
+function inboxFolderIdentity(dataDir: string): { path: string; dev: bigint; ino: bigint } | null {
   try {
-    return realpathSync.native(inboxDir(resolve(dataDir)));
+    const path = realpathSync.native(inboxDir(resolve(dataDir)));
+    const stat = statSync(path, { bigint: true });
+    return { path, dev: stat.dev, ino: stat.ino };
   } catch {
     return null;
   }
@@ -337,14 +341,17 @@ function realInboxDir(dataDir: string): string | null {
 
 /**
  * Whether a stop that names `requested` as its data dir is for the Inbox
- * running on `own` (the stop route asks). Only a clear mismatch (both
- * folders exist and differ) says no, so a stop is never refused on a folder
- * that cannot be read.
+ * running on `own` (the stop route asks). Only a clear mismatch says no:
+ * both folders exist, their realpaths differ AND they are different folders
+ * on disk (device and inode). So a stop is never refused on a folder that
+ * cannot be read (a moved or renamed data dir), nor on one folder reached
+ * two ways; a copy is another folder.
  */
 export function isOwnDataDir(own: string, requested: string): boolean {
-  const ownDir = realInboxDir(own);
-  const requestedDir = realInboxDir(requested);
-  return ownDir === null || requestedDir === null || ownDir === requestedDir;
+  const ownDir = inboxFolderIdentity(own);
+  const requestedDir = inboxFolderIdentity(requested);
+  if (!ownDir || !requestedDir || ownDir.path === requestedDir.path) return true;
+  return ownDir.dev === requestedDir.dev && ownDir.ino === requestedDir.ino;
 }
 
 export type InboxStopResult =

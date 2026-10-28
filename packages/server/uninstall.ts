@@ -417,8 +417,9 @@ export async function runPlannotatorUninstall(
         state.removed.push(`Stopped the running Plannotator Inbox (pid ${stopped.pid})`);
       } else if (stopped.state === "not_running" && stopped.stale?.reason === "not_ours") {
         // A copied data dir: its record names another data dir's Inbox, which refused the stop and
-        // runs on. Its tailnet mapping is that Inbox's, so it stays up too.
+        // runs on. Both tailnet mappings the record names are that Inbox's, so they stay up too.
         othersInbox = true;
+        state.warnings.push(`This data dir's record named the Plannotator Inbox of another data dir (pid ${stopped.stale.pid}); it was left running.`);
       } else if (stopped.state === "still_running") {
         inboxBlocksPurge = true;
         state.errors.push(
@@ -437,7 +438,7 @@ export async function runPlannotatorUninstall(
       }
     }
     // "Over your tailnet": the window's mapping a crashed Inbox left behind (a clean stop, including the stop above, takes its own down).
-    const kept = inboxBlocksPurge ? undefined : readInboxRegistry(state.dataDir)?.tailscale;
+    const kept = inboxBlocksPurge || othersInbox ? undefined : readInboxRegistry(state.dataDir)?.tailscale;
     if (kept?.https_port && kept.proxy_port) {
       if (request.dryRun) {
         state.planned.push(`Take down the Plannotator Inbox's tailnet address (tailscale serve --https=${kept.https_port})`);

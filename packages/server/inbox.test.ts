@@ -352,6 +352,24 @@ describe("security refusals, by real requests", () => {
     expect(stopped).toBe(true);
   });
 
+  test("the stop route never refuses on a folder it cannot read: a data dir that does not exist, or this one moved", async () => {
+    const root = tempRoot();
+    const stopVia = async (dataDir: string, named: () => string, before?: () => void) => {
+      let stopped = false;
+      const server = await start(dataDir, { onStopRequested: () => (stopped = true) });
+      const token = readInboxRegistry(dataDir)!.token;
+      before?.();
+      const response = await post(server, "/api/inbox/control/stop", { data_dir: named() }, { Authorization: `Bearer ${token}` });
+      await Bun.sleep(300);
+      return { status: response.status, stopped };
+    };
+    // The caller names a folder that is not there.
+    expect(await stopVia(join(root, "a"), () => join(root, "nowhere"))).toEqual({ status: 200, stopped: true });
+    // The data dir was renamed under the running Inbox: its own folder is gone, the caller names the new one.
+    const moved = join(root, "moved");
+    expect(await stopVia(join(root, "b"), () => moved, () => renameSync(join(root, "b"), moved))).toEqual({ status: 200, stopped: true });
+  });
+
   test("the window ships its CSP (no framing, no other origin) and no CORS anywhere", async () => {
     const server = await start(join(tempRoot(), "data"), { htmlContent: "<!doctype html><div data-window-sentinel></div>" });
     const page = await fetch(`http://127.0.0.1:${server.port}/`, { headers: { Origin: "https://evil.example" } });
