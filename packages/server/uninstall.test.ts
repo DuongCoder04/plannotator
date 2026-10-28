@@ -2291,6 +2291,21 @@ describe("Qwen Code", () => {
     expect(existsSync(join(qwenDir, "skills", "my-own-skill", "SKILL.md"))).toBe(true);
   });
 
+  test("removes the extension source the installers keep in the data folder", async () => {
+    const fixture = createFixture();
+    writeQwenInstall(join(fixture.homeDir, ".qwen"));
+    writeJson(join(fixture.dataDir, "qwen-code", "extension", "qwen-extension.json"), { name: "plannotator", version: "1.0.0" });
+    writeText(join(fixture.dataDir, "config.json"));
+
+    await runPlannotatorUninstall(
+      { purge: false, dryRun: false },
+      { ...fixture.environment, which: (command) => (command === "qwen" ? "/fake/qwen" : null) },
+    );
+
+    expect(existsSync(join(fixture.dataDir, "qwen-code"))).toBe(false);
+    expect(existsSync(join(fixture.dataDir, "config.json"))).toBe(true);
+  });
+
   test("QWEN_HOME with a leading ~ is the Qwen folder", async () => {
     const fixture = createFixture();
     const qwenDir = join(fixture.homeDir, "qwen-home");

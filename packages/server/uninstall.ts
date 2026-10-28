@@ -1072,6 +1072,10 @@ function removeInstallerData(
   // still make it. Every uninstall removes it, purge or not. config.json keys
   // that command wrote (`usageCounts`) stay with the config and are ignored.
   removePath(join(state.dataDir, "usage-counts"), request, state);
+  // The installers keep the Qwen Code extension's source here (Qwen reads it
+  // only to install or update); the extension itself goes with `qwen
+  // extensions uninstall` above.
+  removePath(join(state.dataDir, "qwen-code"), request, state);
 }
 
 function purgeLocalData(

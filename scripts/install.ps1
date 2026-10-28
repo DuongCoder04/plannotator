@@ -1060,8 +1060,11 @@ $vibeAvailable = [bool](Test-Path $vibeHome)
 # Qwen Code keeps its user files in $QWEN_HOME when set, else ~/.qwen. As in
 # Qwen's Storage.getGlobalQwenDir, $QWEN_HOME is the Qwen folder itself, a
 # leading ~ is expanded and a relative path is taken from the current folder.
-# Detected only when that folder exists, as in install.sh; the extension step
-# also needs the qwen command.
+# Detected as in install.sh: that folder must exist, and so must the qwen
+# command or a file only Qwen Code writes there (settings.json,
+# installation_id, projects\, extensions\). The `skills` CLI makes
+# ~/.qwen/skills for people who never installed Qwen Code, so the folder
+# alone is not enough. The extension step needs the qwen command.
 $qwenDir = if ($env:QWEN_HOME) { $env:QWEN_HOME } else { Join-Path $env:USERPROFILE ".qwen" }
 if ($qwenDir -eq "~") {
     $qwenDir = $env:USERPROFILE
@@ -1071,7 +1074,12 @@ if ($qwenDir -eq "~") {
     $qwenDir = Join-Path (Get-Location).Path $qwenDir
 }
 $qwenSkillsDir = Join-Path $qwenDir "skills"
-$qwenAvailable = [bool](Test-Path -LiteralPath $qwenDir -PathType Container)
+$qwenAvailable = [bool](Test-Path -LiteralPath $qwenDir -PathType Container) -and (
+    [bool](Get-Command qwen -CommandType Application -ErrorAction SilentlyContinue) -or
+    (Test-Path -LiteralPath (Join-Path $qwenDir "settings.json") -PathType Leaf) -or
+    (Test-Path -LiteralPath (Join-Path $qwenDir "installation_id") -PathType Leaf) -or
+    (Test-Path -LiteralPath (Join-Path $qwenDir "projects") -PathType Container) -or
+    (Test-Path -LiteralPath (Join-Path $qwenDir "extensions") -PathType Container))
 
 if ($codexAvailable -and $skipCodexResolved) {
     # HONEST three-state reporting (#1178): detected-but-skipped is its own
@@ -1606,9 +1614,136 @@ function Copy-SkillIfPresent {
         # dir copies the source INSIDE it (dest\skill\skill); mirror
         # install.sh's `rm -rf` guard so upgrades stay clean.
         $dest = Join-Path $TargetDir (Split-Path $SourceDir -Leaf)
-        if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+        $existing = Get-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+        if ($existing -and ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            # A link (the `skills` CLI links ~/.qwen/skills/<name> into
+            # ~/.agents/skills). Remove the link itself: Windows PowerShell
+            # 5.1's Remove-Item -Recurse follows a directory link and deletes
+            # what it points to.
+            try { [System.IO.Directory]::Delete($existing.FullName, $false) } catch { [System.IO.File]::Delete($existing.FullName) }
+        } elseif ($existing) {
+            Remove-Item -Recurse -Force -LiteralPath $dest
+        }
         Copy-Item -Recurse -Force $SourceDir $TargetDir
     }
+}
+
+# --- Qwen Code commands (only when Qwen Code is detected) ---
+# Every qwen command runs with a time limit, no input, in an empty temporary
+# folder (so no project's .qwen/settings.json takes part), and its failure
+# never fails the install.
+$qwenSkillsInstalled = $false
+$qwenTooOld = $false
+$qwenVersion = ""
+$qwenMinVersion = "0.13.0"
+
+function Get-QwenPath {
+    $c = Get-Command qwen -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($c) { return $c.Source }
+    return $null
+}
+
+function Get-QwenSeconds {
+    # Seconds per qwen command. Internal knob for the tests.
+    if ($env:PLANNOTATOR_QWEN_EXTENSION_TIMEOUT -match '^[1-9][0-9]*$') { return [int]$env:PLANNOTATOR_QWEN_EXTENSION_TIMEOUT }
+    return 120
+}
+
+# Run `qwen <args>` in $WorkDir. Returns @{ Why; Out; Err }: Why is "" when
+# it exited 0, else why it failed. Arguments are quoted one by one, so a path
+# with spaces stays one argument. npm installs qwen on Windows as qwen.cmd, a
+# batch file, which only cmd.exe runs: it goes through `cmd.exe /d /s /c` with
+# the whole command quoted once more (/s takes off that outer pair). A path
+# with a character cmd.exe would still change there (" % !) is refused.
+function Invoke-QwenCommand {
+    param([string]$QwenPath, [string[]]$Arguments, [int]$Seconds, [string]$WorkDir)
+    $q = [char]34
+    $quoted = ($Arguments | ForEach-Object { $q + $_ + $q }) -join " "
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    if ($QwenPath -match '\.(cmd|bat)$') {
+        if (($QwenPath + ($Arguments -join "")) -match '["%!]') {
+            return @{ Why = "could not run $(Split-Path $QwenPath -Leaf): a path has a character cmd.exe would change"; Out = ""; Err = "" }
+        }
+        $info.FileName = if ($env:ComSpec) { $env:ComSpec } else { "cmd.exe" }
+        $info.Arguments = "/d /s /c " + $q + $q + $QwenPath + $q + " " + $quoted + $q
+    } else {
+        $info.FileName = $QwenPath
+        $info.Arguments = $quoted
+    }
+    $info.WorkingDirectory = $WorkDir
+    $info.UseShellExecute = $false
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.CreateNoWindow = $true
+    try {
+        $p = [System.Diagnostics.Process]::Start($info)
+    } catch {
+        return @{ Why = "could not run qwen: $($_.Exception.Message)"; Out = ""; Err = "" }
+    }
+    try { $p.StandardInput.Close() } catch { }
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+    if (-not $p.WaitForExit($Seconds * 1000)) {
+        try { $p.Kill($true) } catch { try { $null = & taskkill /T /F /PID $p.Id 2>$null } catch { }; try { $p.Kill() } catch { } }
+        return @{ Why = "timed out after ${Seconds}s"; Out = ""; Err = "" }
+    }
+    $p.WaitForExit()
+    $texts = @()
+    foreach ($task in @($outTask, $errTask)) {
+        $text = ""
+        try { if ($task.Wait(5000)) { $text = [string]$task.Result } } catch { }
+        $texts += $text
+    }
+    $last = $null
+    foreach ($text in @($texts[1], $texts[0])) {
+        $last = @($text -split "\r?\n") |
+            ForEach-Object { ($_ -replace '[^\x20-\x7E]', '').Trim() } |
+            Where-Object { $_ } | Select-Object -Last 1
+        if ($last) { break }
+    }
+    if ($last -and $last.Length -gt 200) { $last = $last.Substring(0, 200) }
+    $why = ""
+    if ($p.ExitCode -ne 0) { $why = if ($last) { "qwen exited $($p.ExitCode): $last" } else { "qwen exited $($p.ExitCode)" } }
+    return @{ Why = $why; Out = $texts[0]; Err = $texts[1]; Last = $last }
+}
+
+function New-QwenWorkDir {
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("plannotator-qwen-" + [System.Guid]::NewGuid().ToString("N"))
+    try {
+        New-Item -ItemType Directory -Force -Path (Join-Path $tmp "cwd") -ErrorAction Stop | Out-Null
+        return $tmp
+    } catch {
+        return $null
+    }
+}
+
+# Plan review needs extension hooks, which Qwen Code runs from 0.13.0 on.
+# Below that, nothing is installed for Qwen Code: no extension, no skills. A
+# version that cannot be read does not block the install.
+function Test-QwenVersion {
+    $local:ErrorActionPreference = 'Continue'
+    $qwen = Get-QwenPath
+    if (-not $qwen) { return }
+    $tmp = New-QwenWorkDir
+    if (-not $tmp) { return }
+    try {
+        $r = Invoke-QwenCommand -QwenPath $qwen -Arguments @("--version") -Seconds (Get-QwenSeconds) -WorkDir (Join-Path $tmp "cwd")
+        $m = [regex]::Match([string]$r.Out, '[0-9]+\.[0-9]+\.[0-9]+')
+        if ($m.Success) {
+            $script:qwenVersion = $m.Value
+            if ([version]$m.Value -lt [version]$qwenMinVersion) {
+                $script:qwenTooOld = $true
+                Write-Host ""
+                Write-Host "Qwen Code $($m.Value) is older than $qwenMinVersion, so nothing was installed for it. Update Qwen Code to use plan review."
+            }
+        }
+    } finally {
+        Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
+    }
+}
+if ($qwenAvailable -and -not $skipQwenResolved -and -not $skipSkillsResolved) {
+    try { Test-QwenVersion } catch { }
 }
 
 # Captured tail of git's stderr from the most recent failed clone attempt,
@@ -1747,15 +1882,17 @@ try {
             # these take the place of the shared copies of the same name. The
             # extension is copied out of the checkout here and installed after
             # this block, so its failure never counts as a fetch failure. A
-            # Qwen opt-out leaves $qwenDir untouched.
-            if ($qwenAvailable -and -not $skipQwenResolved -and (Test-Path "apps\qwen-code\skills")) {
+            # Qwen opt-out, or a Qwen Code too old for plan review, leaves
+            # $qwenDir untouched.
+            if ($qwenAvailable -and -not $skipQwenResolved -and -not $qwenTooOld -and (Test-Path "apps\qwen-code\skills")) {
                 New-Item -ItemType Directory -Force -Path $qwenSkillsDir | Out-Null
                 foreach ($skill in @("plannotator-review", "plannotator-annotate", "plannotator-last")) {
                     Copy-SkillIfPresent "apps\qwen-code\skills\$skill" $qwenSkillsDir
                 }
                 Write-Host "Installed Qwen Code skills to $qwenSkillsDir\"
+                $script:qwenSkillsInstalled = $true
             }
-            if ($qwenAvailable -and -not $skipQwenResolved -and (Test-Path "apps\qwen-code\extension\qwen-extension.json")) {
+            if ($qwenAvailable -and -not $skipQwenResolved -and -not $qwenTooOld -and (Test-Path "apps\qwen-code\extension\qwen-extension.json")) {
                 try {
                     Copy-Item -Recurse -Force "apps\qwen-code\extension" (Join-Path $skillsTmp "qwen-extension") -ErrorAction Stop
                 } catch {
@@ -1807,66 +1944,59 @@ try {
 
 # --- Qwen Code extension (only when Qwen Code is detected) ---
 # Same steps and promises as install.sh: the extension (apps/qwen-code/extension,
-# copied out of the skills checkout above) is installed with Qwen's own
-# `qwen extensions install`. An installed copy whose manifest and hooks match
-# is left alone; a changed one is uninstalled first (Qwen refuses to install
-# over it) and put back from a kept copy when the new install fails. Each qwen
-# command has a time limit, reads no input, and runs in an empty temporary
-# folder. A failure never fails the install.
+# copied out of the skills checkout above) is kept at
+# <data dir>\qwen-code\extension, a path that does not change, because Qwen
+# records it as the extension's source, derives the extension's id from it,
+# and reads it on update. Not installed: `qwen extensions install <that path>
+# --consent`. Installed from that path in another version: `qwen extensions
+# update plannotator`, which keeps the id and the user's on/off choices, so an
+# extension turned off stays off (never uninstalled here). The same version:
+# no extension command runs. Linked (`qwen extensions link`) or installed
+# from another source: left as it is.
 $qwenExtensionState = ""
+$qwenExtensionOff = $false
+$qwenExtensionSource = ""
 
-# Run `qwen extensions <args>` with a time limit in $WorkDir. Returns "" on
-# success, else why it failed. Arguments are quoted one by one, so a path
-# with spaces stays one argument.
-function Invoke-QwenExtensionCommand {
-    param([string]$QwenPath, [string[]]$Arguments, [int]$Seconds, [string]$WorkDir)
-    $info = New-Object System.Diagnostics.ProcessStartInfo
-    $info.FileName = $QwenPath
-    $info.Arguments = ((@("extensions") + $Arguments) | ForEach-Object { '"' + $_ + '"' }) -join " "
-    $info.WorkingDirectory = $WorkDir
-    $info.UseShellExecute = $false
-    $info.RedirectStandardInput = $true
-    $info.RedirectStandardOutput = $true
-    $info.RedirectStandardError = $true
-    $info.CreateNoWindow = $true
-    try {
-        $p = [System.Diagnostics.Process]::Start($info)
-    } catch {
-        return "could not run qwen: $($_.Exception.Message)"
-    }
-    try { $p.StandardInput.Close() } catch { }
-    $outTask = $p.StandardOutput.ReadToEndAsync()
-    $errTask = $p.StandardError.ReadToEndAsync()
-    if (-not $p.WaitForExit($Seconds * 1000)) {
-        try { $p.Kill($true) } catch { try { $null = & taskkill /T /F /PID $p.Id 2>$null } catch { }; try { $p.Kill() } catch { } }
-        return "timed out after ${Seconds}s"
-    }
-    $p.WaitForExit()
-    if ($p.ExitCode -eq 0) { return "" }
-    $last = $null
-    foreach ($task in @($errTask, $outTask)) {
-        $text = ""
-        try { if ($task.Wait(5000)) { $text = [string]$task.Result } } catch { }
-        $last = @($text -split "\r?\n") |
-            ForEach-Object { ($_ -replace '[^\x20-\x7E]', '').Trim() } |
-            Where-Object { $_ } | Select-Object -Last 1
-        if ($last) { break }
-    }
-    if ($last -and $last.Length -gt 200) { $last = $last.Substring(0, 200) }
-    if ($last) { return "qwen exited $($p.ExitCode): $last" }
-    return "qwen exited $($p.ExitCode)"
+function Get-QwenManifestVersion {
+    param([string]$Path)
+    try { return [string]((Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json).version) } catch { return "" }
 }
 
-function Test-SameFile {
-    param([string]$A, [string]$B)
-    if (-not (Test-Path -LiteralPath $A -PathType Leaf) -or -not (Test-Path -LiteralPath $B -PathType Leaf)) { return $false }
+# True when the plannotator extension is turned off anywhere: its default or
+# one project in Qwen's extension store (extension-store\state.json), or a "!"
+# rule in the older extensions\extension-enablement.json. Only used to say
+# so: the update keeps those choices either way.
+function Test-QwenExtensionOff {
+    $off = $false
     try {
-        $x = [System.IO.File]::ReadAllBytes($A)
-        $y = [System.IO.File]::ReadAllBytes($B)
+        $s = Get-Content -LiteralPath (Join-Path (Join-Path $qwenDir "extension-store") "state.json") -Raw -ErrorAction Stop | ConvertFrom-Json
+        foreach ($p in @($s.extensions.PSObject.Properties)) {
+            $v = $p.Value
+            if ($v.name -ne "plannotator") { continue }
+            if ($v.defaultActivation -eq "disabled") { $off = $true }
+            if ($v.workspaceOverrides) {
+                foreach ($o in @($v.workspaceOverrides.PSObject.Properties)) { if ($o.Value -eq "disabled") { $off = $true } }
+            }
+        }
+    } catch { }
+    try {
+        $l = Get-Content -LiteralPath (Join-Path (Join-Path $qwenDir "extensions") "extension-enablement.json") -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ($l.plannotator -and $l.plannotator.overrides) {
+            foreach ($r in @($l.plannotator.overrides)) { if (([string]$r).StartsWith("!")) { $off = $true } }
+        }
+    } catch { }
+    return $off
+}
+
+function Test-SameQwenPath {
+    param([string]$A, [string]$B)
+    if (-not $A -or -not $B) { return $false }
+    try {
+        $x = [System.IO.Path]::GetFullPath($A).TrimEnd('\', '/')
+        $y = [System.IO.Path]::GetFullPath($B).TrimEnd('\', '/')
     } catch { return $false }
-    if ($x.Length -ne $y.Length) { return $false }
-    for ($i = 0; $i -lt $x.Length; $i++) { if ($x[$i] -ne $y[$i]) { return $false } }
-    return $true
+    if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { return $x -ieq $y }
+    return $x -ceq $y
 }
 
 function Install-QwenExtensionIfPresent {
@@ -1884,83 +2014,96 @@ function Install-QwenExtensionIfPresent {
         return
     }
     if ($skipSkillsResolved) { return }
+    if ($qwenTooOld) { $script:qwenExtensionState = "too-old"; return }
     if (-not (Test-Path -LiteralPath (Join-Path $Source "qwen-extension.json") -PathType Leaf) -or
         -not (Test-Path -LiteralPath (Join-Path (Join-Path $Source "hooks") "hooks.json") -PathType Leaf)) {
         # A pinned tag older than the Qwen Code integration.
         $script:qwenExtensionState = "not-in-tag"
         return
     }
-    $qwen = Get-Command qwen -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    $dest = Join-Path (Join-Path $qwenDir "extensions") "plannotator"
+    $record = $null
+    try { $record = Get-Content -LiteralPath (Join-Path $dest ".qwen-extension-install.json") -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
+    if ($record -and $record.type -eq "link") {
+        # A developer's `qwen extensions link`: Qwen loads their checkout.
+        $script:qwenExtensionState = "linked"
+        Write-Host "Qwen Code extension: linked from a local folder (qwen extensions link), left as it is."
+        return
+    }
+    $qwen = Get-QwenPath
     if (-not $qwen) {
         $script:qwenExtensionState = "no-cli"
         Write-Host "Qwen Code extension: not installed (the qwen command is not on PATH)."
         return
     }
-    $dest = Join-Path (Join-Path $qwenDir "extensions") "plannotator"
-    if ((Test-SameFile (Join-Path $Source "qwen-extension.json") (Join-Path $dest "qwen-extension.json")) -and
-        (Test-SameFile (Join-Path (Join-Path $Source "hooks") "hooks.json") (Join-Path (Join-Path $dest "hooks") "hooks.json"))) {
+    $dataDir = if ([System.IO.Path]::IsPathRooted($configDir)) { $configDir } else { Join-Path (Get-Location).Path $configDir }
+    $stable = Join-Path (Join-Path $dataDir "qwen-code") "extension"
+    $newVersion = Get-QwenManifestVersion (Join-Path $Source "qwen-extension.json")
+    $had = Test-Path -LiteralPath (Join-Path $dest "qwen-extension.json") -PathType Leaf
+    if ($had) {
+        $from = if ($record) { [string]$record.source } else { "" }
+        if (-not (Test-SameQwenPath $from $stable)) {
+            # Installed by hand, from a fork or another folder: not ours to change.
+            $script:qwenExtensionState = "foreign"
+            $script:qwenExtensionSource = if ($from) { $from } else { "an unknown source" }
+            Write-Host "Qwen Code extension: installed from $($script:qwenExtensionSource), not by this installer, so it was left as it is."
+            return
+        }
+    }
+    # Keep the new source at the stable path (Plannotator's own folder; Qwen
+    # reads it only to install or update).
+    $staged = "$stable.new"
+    try {
+        if (Test-Path -LiteralPath $staged) { Remove-Item -Recurse -Force -LiteralPath $staged -ErrorAction Stop }
+        New-Item -ItemType Directory -Force -Path (Split-Path $stable) -ErrorAction Stop | Out-Null
+        Copy-Item -Recurse -Force -LiteralPath $Source -Destination $staged -ErrorAction Stop
+        if (Test-Path -LiteralPath $stable) { Remove-Item -Recurse -Force -LiteralPath $stable -ErrorAction Stop }
+        Move-Item -LiteralPath $staged -Destination $stable -ErrorAction Stop
+    } catch {
+        Remove-Item -Recurse -Force -LiteralPath $staged -ErrorAction SilentlyContinue
+        $script:qwenExtensionState = "failed"
+        Write-Host "Qwen Code extension: could not write its source to $stable. The installed one was left as it was."
+        return
+    }
+    if ($had) { $script:qwenExtensionOff = [bool](Test-QwenExtensionOff) }
+    if ($had -and ((Get-QwenManifestVersion (Join-Path $dest "qwen-extension.json")) -eq $newVersion)) {
         $script:qwenExtensionState = "current"
         Write-Host "Qwen Code extension: already up to date."
         return
     }
-    # Seconds per qwen command. Internal knob for the tests.
-    $seconds = 120
-    if ($env:PLANNOTATOR_QWEN_EXTENSION_TIMEOUT -match '^[1-9][0-9]*$') { $seconds = [int]$env:PLANNOTATOR_QWEN_EXTENSION_TIMEOUT }
-    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("plannotator-qwen-" + [System.Guid]::NewGuid().ToString("N"))
-    $work = Join-Path $tmp "cwd"
-    try {
-        New-Item -ItemType Directory -Force -Path $work -ErrorAction Stop | Out-Null
-    } catch {
+    $tmp = New-QwenWorkDir
+    if (-not $tmp) {
         $script:qwenExtensionState = "failed"
         Write-Host "Qwen Code extension: could not install it (no temporary directory)."
         return
     }
     try {
-        $had = Test-Path -LiteralPath (Join-Path $dest "qwen-extension.json") -PathType Leaf
-        $previous = Join-Path $tmp "previous"
+        $work = Join-Path $tmp "cwd"
         if ($had) {
-            # Keep the installed copy to put back if the new install fails.
-            # Qwen's own install record is not part of the extension.
-            try {
-                Copy-Item -Recurse -Force -LiteralPath $dest -Destination $previous -ErrorAction Stop
-                Remove-Item -Force -LiteralPath (Join-Path $previous ".qwen-extension-install.json") -ErrorAction SilentlyContinue
-            } catch {
-                $script:qwenExtensionState = "failed"
-                Write-Host "Qwen Code extension: could not update it (could not copy the installed one). It was left as it was."
-                return
-            }
             Write-Host "Updating the Qwen Code extension..."
-            $why = Invoke-QwenExtensionCommand -QwenPath $qwen.Source -Arguments @("uninstall", "plannotator") -Seconds $seconds -WorkDir $work
-            if ($why) {
+            # Qwen's update exits 0 even when it fails: read the installed manifest.
+            $r = Invoke-QwenCommand -QwenPath $qwen -Arguments @("extensions", "update", "plannotator") -Seconds (Get-QwenSeconds) -WorkDir $work
+            if ((Get-QwenManifestVersion (Join-Path $dest "qwen-extension.json")) -eq $newVersion) {
+                $script:qwenExtensionState = "updated"
+                Write-Host "Qwen Code extension: updated (restart Qwen Code to load it)."
+                if ($script:qwenExtensionOff) { Write-Host "It stays turned off where you turned it off in Qwen Code." }
+            } else {
+                $why = if ($r.Why) { $r.Why } elseif ($r.Last) { $r.Last } else { "qwen did not update it" }
                 $script:qwenExtensionState = "failed"
                 Write-Host "Qwen Code extension: could not update it ($why). The installed one was left as it was."
-                return
+                Write-Host "To try again by hand: qwen extensions update plannotator"
             }
         } else {
             Write-Host "Installing the Qwen Code extension..."
-        }
-        $why = Invoke-QwenExtensionCommand -QwenPath $qwen.Source -Arguments @("install", $Source, "--consent") -Seconds $seconds -WorkDir $work
-        if (-not $why) {
-            if ($had) {
-                $script:qwenExtensionState = "updated"
-                Write-Host "Qwen Code extension: updated (restart Qwen Code to load it)."
-            } else {
+            $r = Invoke-QwenCommand -QwenPath $qwen -Arguments @("extensions", "install", $stable, "--consent") -Seconds (Get-QwenSeconds) -WorkDir $work
+            if (-not $r.Why) {
                 $script:qwenExtensionState = "installed"
                 Write-Host "Qwen Code extension: installed (restart Qwen Code to load it)."
-            }
-            return
-        }
-        $script:qwenExtensionState = "failed"
-        if ($had) {
-            $back = Invoke-QwenExtensionCommand -QwenPath $qwen.Source -Arguments @("install", $previous, "--consent") -Seconds $seconds -WorkDir $work
-            if (-not $back) {
-                Write-Host "Qwen Code extension: could not update it ($why). The previous version was put back."
             } else {
-                Write-Host "Qwen Code extension: could not update it ($why), and the previous version could not be put back ($back)."
-                Write-Host "Qwen Code shows its normal plan confirmation until you re-run this installer."
+                $script:qwenExtensionState = "failed"
+                Write-Host "Qwen Code extension: could not install it ($($r.Why))."
+                Write-Host "To try again by hand: qwen extensions install `"$stable`""
             }
-        } else {
-            Write-Host "Qwen Code extension: could not install it ($why)."
         }
     } finally {
         Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
@@ -2049,8 +2192,9 @@ foreach ($skill in @("plannotator-review", "plannotator-annotate", "plannotator-
 if ((-not $skipSkillsResolved) -and $invocableChoice -and ($invocableChoice -ne "none")) {
     foreach ($skill in ($invocableChoice -split ",")) {
         foreach ($scope in @($claudeSkillsDir, $agentsSkillsDir, $qwenSkillsDir)) {
-            # A Qwen opt-out leaves $qwenDir untouched, a previous run's copies included.
-            if (($scope -eq $qwenSkillsDir) -and ((-not $qwenAvailable) -or $skipQwenResolved)) { continue }
+            # A Qwen opt-out (or a Qwen Code too old for plan review) leaves
+            # $qwenDir untouched, a previous run's copies included.
+            if (($scope -eq $qwenSkillsDir) -and ((-not $qwenAvailable) -or $skipQwenResolved -or $qwenTooOld)) { continue }
             $skillMd = Join-Path $scope (Join-Path $skill "SKILL.md")
             if (Test-Path $skillMd) {
                 $content = Get-Content $skillMd
@@ -2277,12 +2421,34 @@ if ($qwenAvailable) {
         Write-Host "Qwen Code was detected, but skills were skipped ($skipSkillsSource). The"
         Write-Host "Qwen Code extension and skills come from the same download, so neither was"
         Write-Host "installed or changed. Re-run without the opt-out to add them."
+    } elseif ($qwenTooOld) {
+        Write-Host "Qwen Code $qwenVersion is older than $qwenMinVersion, the first release that runs"
+        Write-Host "extension hooks, so nothing was installed for it. Update Qwen Code to use"
+        Write-Host "plan review, then re-run this installer."
     } else {
         switch ($qwenExtensionState) {
             { $_ -in @("installed", "updated", "current") } {
-                Write-Host "Plan review: when the agent calls exit_plan_mode, the plan opens in your"
-                Write-Host "browser. After you approve it there, Qwen Code asks you to confirm the plan"
-                Write-Host "once more in the terminal. Restart Qwen Code to load a new extension."
+                if ($qwenExtensionOff) {
+                    Write-Host "The plannotator extension is turned off in Qwen Code (in some or all"
+                    Write-Host "projects), and it stays off. Where it is off, plan review is off. To"
+                    Write-Host "turn it on: qwen extensions enable plannotator"
+                } else {
+                    Write-Host "Plan review: when the agent calls exit_plan_mode, the plan opens in your"
+                    Write-Host "browser. After you approve it there, Qwen Code asks you to confirm the plan"
+                    Write-Host "once more in the terminal. Restart Qwen Code to load a new extension."
+                }
+                break
+            }
+            "linked" {
+                Write-Host "The plannotator extension is linked from a local folder (qwen extensions"
+                Write-Host "link), so this installer left it as it is."
+                break
+            }
+            "foreign" {
+                Write-Host "The plannotator extension was installed from $qwenExtensionSource,"
+                Write-Host "not by this installer, so it was left as it is. To let this installer"
+                Write-Host "manage it, run: qwen extensions uninstall plannotator"
+                Write-Host "and re-run this installer."
                 break
             }
             "no-cli" {
@@ -2299,9 +2465,11 @@ if ($qwenAvailable) {
                 Write-Host "Re-run this installer to try again."
             }
         }
-        Write-Host ""
-        Write-Host "Skills are installed to $qwenSkillsDir\:"
-        Write-Host "  /plannotator-review, /plannotator-annotate, /plannotator-last"
+        if ($qwenSkillsInstalled) {
+            Write-Host ""
+            Write-Host "Skills are installed to $qwenSkillsDir\:"
+            Write-Host "  /plannotator-review, /plannotator-annotate, /plannotator-last"
+        }
     }
 }
 Write-Host ""

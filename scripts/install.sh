@@ -1318,8 +1318,12 @@ fi
 # Qwen Code keeps its user files in $QWEN_HOME when set, else ~/.qwen
 # (Qwen's Storage.getGlobalQwenDir: $QWEN_HOME is the Qwen folder itself, a
 # leading ~ is expanded and a relative path is taken from the current folder).
-# Detection requires that folder, as for Vibe: an unrelated `qwen` on PATH
-# must not gain a ~/.qwen. The extension step also needs the `qwen` command.
+# Detection requires that folder, so an unrelated `qwen` on PATH never gains
+# a ~/.qwen. The folder alone is not enough: the `skills` CLI (npx skills add
+# -g) makes ~/.qwen/skills for people who never installed Qwen Code. So it
+# also needs the qwen command on PATH, or a file only Qwen Code writes there
+# (settings.json, installation_id, projects/, extensions/). The extension
+# step needs the qwen command.
 case "${QWEN_HOME:-}" in
     "") QWEN_DIR="$HOME/.qwen" ;;
     "~") QWEN_DIR="$HOME" ;;
@@ -1330,7 +1334,11 @@ esac
 QWEN_SKILLS_DIR="$QWEN_DIR/skills"
 qwen_available=0
 if [ -d "$QWEN_DIR" ]; then
-    qwen_available=1
+    if command -v qwen >/dev/null 2>&1 || [ -f "$QWEN_DIR/settings.json" ] ||
+        [ -f "$QWEN_DIR/installation_id" ] || [ -d "$QWEN_DIR/projects" ] ||
+        [ -d "$QWEN_DIR/extensions" ]; then
+        qwen_available=1
+    fi
 fi
 
 if [ "$codex_available" -eq 1 ] && [ "$skip_codex" -eq 1 ]; then
@@ -2259,6 +2267,31 @@ copy_commands_if_present() {
     fi
 }
 
+# --- Qwen Code version (only when Qwen Code is detected) ---
+# Plan review needs extension hooks, which Qwen Code runs from 0.13.0 on.
+# Below that, nothing is installed for Qwen Code: no extension, no skills.
+# `qwen --version` runs like every qwen command here: with a time limit, no
+# input, in an empty temporary folder. A version that cannot be read does not
+# block the install.
+QWEN_MIN_VERSION="0.13.0"
+qwen_too_old=0
+qwen_version=""
+if [ "$qwen_available" -eq 1 ] && [ "$skip_qwen" -eq 0 ] && [ "$skip_skills" -eq 0 ] && command -v qwen >/dev/null 2>&1; then
+    _qv_secs="${PLANNOTATOR_QWEN_EXTENSION_TIMEOUT:-120}"
+    case "$_qv_secs" in ''|*[!0-9]*|0) _qv_secs=120 ;; esac
+    _qv_tmp=$(mktemp -d "${TMPDIR:-/tmp}/plannotator-qwen.XXXXXX" 2>/dev/null) || _qv_tmp=""
+    if [ -n "$_qv_tmp" ] && mkdir "$_qv_tmp/cwd" 2>/dev/null; then
+        (cd "$_qv_tmp/cwd" && run_with_time_limit "$_qv_secs" "$_qv_tmp/timed-out" qwen --version) >"$_qv_tmp/out" 2>/dev/null || true
+        qwen_version=$(grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' "$_qv_tmp/out" 2>/dev/null | head -n 1) || qwen_version=""
+    fi
+    if [ -n "$_qv_tmp" ]; then rm -rf "$_qv_tmp" 2>/dev/null || true; fi
+    if [ -n "$qwen_version" ] && ! version_ge "$qwen_version" "$QWEN_MIN_VERSION"; then
+        qwen_too_old=1
+        echo ""
+        echo "Qwen Code ${qwen_version} is older than ${QWEN_MIN_VERSION}, so nothing was installed for it. Update Qwen Code to use plan review."
+    fi
+fi
+
 # Wrap the cd-bearing block in a subshell so any `cd` is scoped to
 # the subshell and can't leave the parent script with a dangling CWD.
 # Previous version chained `cd` inside an `&&` condition, and if
@@ -2424,15 +2457,18 @@ checkout_failed=0
     # shared copies of the same name. The extension is copied out of the
     # checkout here and installed after this block (it needs the qwen
     # command, and its failure must never count as a fetch failure). A Qwen
-    # opt-out leaves $QWEN_DIR untouched.
-    if [ "$qwen_available" -eq 1 ] && [ "$skip_qwen" -eq 0 ] && [ -d "apps/qwen-code/skills" ] && [ -n "$(ls -A apps/qwen-code/skills 2>/dev/null)" ]; then
+    # opt-out, or a Qwen Code too old for plan review, leaves $QWEN_DIR
+    # untouched. This block runs in a subshell, so a marker file tells the
+    # summary below that the skills were installed.
+    if [ "$qwen_available" -eq 1 ] && [ "$skip_qwen" -eq 0 ] && [ "$qwen_too_old" -eq 0 ] && [ -d "apps/qwen-code/skills" ] && [ -n "$(ls -A apps/qwen-code/skills 2>/dev/null)" ]; then
         mkdir -p "$QWEN_SKILLS_DIR"
         copy_skill_if_present apps/qwen-code/skills/plannotator-review "$QWEN_SKILLS_DIR"
         copy_skill_if_present apps/qwen-code/skills/plannotator-annotate "$QWEN_SKILLS_DIR"
         copy_skill_if_present apps/qwen-code/skills/plannotator-last "$QWEN_SKILLS_DIR"
         echo "Installed Qwen Code skills to ${QWEN_SKILLS_DIR}/"
+        : > "$skills_tmp/qwen-skills-installed"
     fi
-    if [ "$qwen_available" -eq 1 ] && [ "$skip_qwen" -eq 0 ] && [ -f "apps/qwen-code/extension/qwen-extension.json" ]; then
+    if [ "$qwen_available" -eq 1 ] && [ "$skip_qwen" -eq 0 ] && [ "$qwen_too_old" -eq 0 ] && [ -f "apps/qwen-code/extension/qwen-extension.json" ]; then
         cp -R apps/qwen-code/extension "$skills_tmp/qwen-extension" 2>/dev/null || rm -rf "$skills_tmp/qwen-extension"
     fi
 
@@ -2458,35 +2494,85 @@ checkout_failed=0
 
 # --- Qwen Code extension (only when Qwen Code is detected) ---
 # The extension (apps/qwen-code/extension: the plan-review hook on
-# exit_plan_mode) is installed with Qwen's own `qwen extensions install`, which
-# copies it into $QWEN_DIR/extensions/plannotator through Qwen's extension
-# store. Plannotator never writes into that folder itself. The source comes
-# from the skills checkout above (same tag as the binary) and was copied to
-# $skills_tmp/qwen-extension there.
+# exit_plan_mode) is installed and updated with Qwen's own commands, which
+# copy it into $QWEN_DIR/extensions/plannotator. Plannotator never writes into
+# that folder itself. The source comes from the skills checkout above (same
+# tag as the binary). It is kept at <data dir>/qwen-code/extension, one path
+# that does not change, because Qwen records the path as the extension's
+# source, derives the extension's id from it, and reads it on update.
 #
-# Never breaks a working Qwen Code, and never fails the install:
-# - An installed copy whose manifest and hooks match the new ones is left
-#   alone (no Qwen command runs), so re-runs and auto-updates change nothing.
-# - Qwen refuses to install over an installed extension, so a changed one is
-#   uninstalled first. The old copy is kept in a temporary folder, and when
-#   the new install fails, the old one is installed again from that copy.
+# Never breaks or silently changes a working Qwen Code, and never fails the
+# install:
+# - Installed and the same version: no extension command runs.
+# - Installed and another version: `qwen extensions update plannotator`.
+#   Qwen keeps the extension's id and its on/off choices (global and per
+#   project), so an extension the user turned off stays off. The installer
+#   never uninstalls it. Qwen's update exits 0 even when it fails, so the
+#   result is read from the installed manifest.
+# - Linked with `qwen extensions link` (a developer's checkout), or installed
+#   from another source: left as it is.
+# - Not installed: `qwen extensions install <source> --consent`.
 # - Every qwen command has a time limit and reads no input (the consent
 #   prompt is answered by --consent). It runs in an empty temporary folder,
 #   so no project's .qwen/settings.json takes part.
 # - Any failure prints what happened and the command to run by hand.
 qwen_extension_state=""
+qwen_extension_off=0
+qwen_extension_source=""
 run_qwen_extension_command() {
     _qx_rc=0
     (cd "$_qx_tmp/cwd" && run_with_time_limit "$_qx_secs" "$_qx_tmp/timed-out" qwen extensions "$@") >"$_qx_log" 2>&1 || _qx_rc=$?
+    _qx_last=$(tr -cd '[:print:]\n' < "$_qx_log" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c 1-200) || _qx_last=""
     if [ "$_qx_rc" -eq 124 ]; then
         _qx_why="timed out after ${_qx_secs}s"
     elif [ "$_qx_rc" -ne 0 ]; then
-        _qx_last=$(tr -cd '[:print:]\n' < "$_qx_log" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c 1-200)
         _qx_why="qwen exited ${_qx_rc}${_qx_last:+: ${_qx_last}}"
     else
         _qx_why=""
     fi
     return "$_qx_rc"
+}
+
+# The "version" of a qwen-extension.json, or nothing.
+qwen_manifest_version() {
+    [ -f "$1" ] || return 0
+    tr -d '\r\n' < "$1" 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+# Succeeds when the plannotator extension is turned off anywhere: its default
+# or one project in Qwen's extension store (extension-store/state.json), or a
+# "!" rule in the older extensions/extension-enablement.json. Only used to
+# say so: the update keeps those choices either way.
+qwen_extension_turned_off() {
+    _qo_state="$QWEN_DIR/extension-store/state.json"
+    if [ -f "$_qo_state" ] && tr -d ' \t\r\n' < "$_qo_state" 2>/dev/null | awk '
+        {
+            s = $0; n = length(s); depth = 0; instr = 0; esc = 0
+            for (i = 1; i <= n; i++) {
+                c = substr(s, i, 1)
+                if (instr) {
+                    if (esc) esc = 0
+                    else if (c == "\\") esc = 1
+                    else if (c == "\"") instr = 0
+                    continue
+                }
+                if (c == "\"") { instr = 1; continue }
+                if (c == "{") { depth++; start[depth] = i; hit[depth] = 0 }
+                else if (c == "}" && depth > 0) {
+                    obj = substr(s, start[depth], i - start[depth] + 1)
+                    if (!hit[depth] && index(obj, "\"name\":\"plannotator\"") && index(obj, "\"defaultActivation\":")) {
+                        if (index(obj, "\"disabled\"")) found = 1
+                        if (depth > 1) hit[depth - 1] = 1
+                    } else if (hit[depth] && depth > 1) hit[depth - 1] = 1
+                    depth--
+                }
+            }
+        }
+        END { exit found ? 0 : 1 }'; then
+        return 0
+    fi
+    _qo_legacy="$QWEN_DIR/extensions/extension-enablement.json"
+    [ -f "$_qo_legacy" ] && tr -d ' \t\r\n' < "$_qo_legacy" 2>/dev/null | grep -q '"plannotator":{"overrides":\[[^]]*"!'
 }
 
 install_qwen_extension_if_present() {
@@ -2502,10 +2588,22 @@ install_qwen_extension_if_present() {
         return 0
     fi
     [ "$skip_skills" -eq 0 ] || return 0
+    if [ "$qwen_too_old" -eq 1 ]; then
+        qwen_extension_state="too-old"
+        return 0
+    fi
     _qx_src="$skills_tmp/qwen-extension"
     if [ ! -f "$_qx_src/qwen-extension.json" ] || [ ! -f "$_qx_src/hooks/hooks.json" ]; then
         # A pinned tag older than the Qwen Code integration.
         qwen_extension_state="not-in-tag"
+        return 0
+    fi
+    _qx_dest="$QWEN_DIR/extensions/plannotator"
+    _qx_record="$_qx_dest/.qwen-extension-install.json"
+    if [ -f "$_qx_record" ] && tr -d ' \t\r\n' < "$_qx_record" 2>/dev/null | grep -q '"type":"link"'; then
+        # A developer's `qwen extensions link`: Qwen loads their checkout.
+        qwen_extension_state="linked"
+        echo "Qwen Code extension: linked from a local folder (qwen extensions link), left as it is."
         return 0
     fi
     if ! command -v qwen >/dev/null 2>&1; then
@@ -2513,10 +2611,40 @@ install_qwen_extension_if_present() {
         echo "Qwen Code extension: not installed (the qwen command is not on PATH)."
         return 0
     fi
-    _qx_dest="$QWEN_DIR/extensions/plannotator"
-    if [ -f "$_qx_dest/qwen-extension.json" ] &&
-        cmp -s "$_qx_src/qwen-extension.json" "$_qx_dest/qwen-extension.json" &&
-        cmp -s "$_qx_src/hooks/hooks.json" "$_qx_dest/hooks/hooks.json"; then
+    case "$_config_dir" in
+        /*) _qx_stable="$_config_dir/qwen-code/extension" ;;
+        *) _qx_stable="$PWD/$_config_dir/qwen-code/extension" ;;
+    esac
+    _qx_new_version=$(qwen_manifest_version "$_qx_src/qwen-extension.json")
+    _qx_had=0
+    if [ -f "$_qx_dest/qwen-extension.json" ]; then
+        _qx_had=1
+        _qx_from=""
+        if [ -f "$_qx_record" ]; then
+            _qx_from=$(tr -d '\r\n' < "$_qx_record" 2>/dev/null | sed -n 's/.*"source"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+        fi
+        if [ "$_qx_from" != "$_qx_stable" ]; then
+            # Installed by hand, from a fork or another folder: not ours to change.
+            qwen_extension_state="foreign"
+            qwen_extension_source="${_qx_from:-an unknown source}"
+            echo "Qwen Code extension: installed from ${qwen_extension_source}, not by this installer, so it was left as it is."
+            return 0
+        fi
+    fi
+    # Keep the new source at the stable path. It is Plannotator's own folder;
+    # Qwen reads it only to install or update.
+    rm -rf "$_qx_stable.new" 2>/dev/null || true
+    if ! mkdir -p "$(dirname "$_qx_stable")" 2>/dev/null || ! cp -R "$_qx_src" "$_qx_stable.new" 2>/dev/null ||
+        ! rm -rf "$_qx_stable" 2>/dev/null || ! mv "$_qx_stable.new" "$_qx_stable" 2>/dev/null; then
+        rm -rf "$_qx_stable.new" 2>/dev/null || true
+        qwen_extension_state="failed"
+        echo "Qwen Code extension: could not write its source to ${_qx_stable}. The installed one was left as it was."
+        return 0
+    fi
+    if [ "$_qx_had" -eq 1 ] && qwen_extension_turned_off; then
+        qwen_extension_off=1
+    fi
+    if [ "$_qx_had" -eq 1 ] && [ "$(qwen_manifest_version "$_qx_dest/qwen-extension.json")" = "$_qx_new_version" ]; then
         qwen_extension_state="current"
         echo "Qwen Code extension: already up to date."
         return 0
@@ -2531,56 +2659,40 @@ install_qwen_extension_if_present() {
         return 0
     fi
     _qx_log="$_qx_tmp/qwen.log"
-    _qx_had=0
-    if [ -f "$_qx_dest/qwen-extension.json" ]; then
-        _qx_had=1
-        # Keep the installed copy to put back if the new install fails. Qwen's
-        # own install record is not part of the extension.
-        if ! cp -R "$_qx_dest" "$_qx_tmp/previous" 2>/dev/null; then
-            qwen_extension_state="failed"
-            echo "Qwen Code extension: could not update it (could not copy the installed one). It was left as it was."
-            rm -rf "$_qx_tmp" 2>/dev/null || true
-            return 0
-        fi
-        rm -f "$_qx_tmp/previous/.qwen-extension-install.json" 2>/dev/null || true
+    if [ "$_qx_had" -eq 1 ]; then
         echo "Updating the Qwen Code extension..."
-        if ! run_qwen_extension_command uninstall plannotator; then
+        run_qwen_extension_command update plannotator || true
+        if [ "$(qwen_manifest_version "$_qx_dest/qwen-extension.json")" = "$_qx_new_version" ]; then
+            qwen_extension_state="updated"
+            echo "Qwen Code extension: updated (restart Qwen Code to load it)."
+            if [ "$qwen_extension_off" -eq 1 ]; then
+                echo "It stays turned off where you turned it off in Qwen Code."
+            fi
+        else
             qwen_extension_state="failed"
-            echo "Qwen Code extension: could not update it (${_qx_why}). The installed one was left as it was."
-            rm -rf "$_qx_tmp" 2>/dev/null || true
-            return 0
+            echo "Qwen Code extension: could not update it (${_qx_why:-${_qx_last:-qwen did not update it}}). The installed one was left as it was."
+            echo "To try again by hand: qwen extensions update plannotator"
         fi
     else
         echo "Installing the Qwen Code extension..."
-    fi
-    if run_qwen_extension_command install "$_qx_src" --consent; then
-        if [ "$_qx_had" -eq 1 ]; then
-            qwen_extension_state="updated"
-            echo "Qwen Code extension: updated (restart Qwen Code to load it)."
-        else
+        if run_qwen_extension_command install "$_qx_stable" --consent; then
             qwen_extension_state="installed"
             echo "Qwen Code extension: installed (restart Qwen Code to load it)."
-        fi
-        rm -rf "$_qx_tmp" 2>/dev/null || true
-        return 0
-    fi
-    _qx_first="$_qx_why"
-    qwen_extension_state="failed"
-    if [ "$_qx_had" -eq 1 ]; then
-        if run_qwen_extension_command install "$_qx_tmp/previous" --consent; then
-            echo "Qwen Code extension: could not update it (${_qx_first}). The previous version was put back."
         else
-            echo "Qwen Code extension: could not update it (${_qx_first}), and the previous version could not be put back (${_qx_why})."
-            echo "Qwen Code shows its normal plan confirmation until you re-run this installer."
+            qwen_extension_state="failed"
+            echo "Qwen Code extension: could not install it (${_qx_why})."
+            echo "To try again by hand: qwen extensions install \"${_qx_stable}\""
         fi
-    else
-        echo "Qwen Code extension: could not install it (${_qx_first})."
     fi
     rm -rf "$_qx_tmp" 2>/dev/null || true
     return 0
 }
 if [ "${checkout_failed:-0}" -eq 0 ]; then
     install_qwen_extension_if_present || true
+fi
+qwen_skills_installed=0
+if [ -f "$skills_tmp/qwen-skills-installed" ]; then
+    qwen_skills_installed=1
 fi
 
 rm -rf "$skills_tmp"
@@ -2670,8 +2782,9 @@ done
 if [ "$skip_skills" -eq 0 ] && [ -n "$invocable_choice" ] && [ "$invocable_choice" != "none" ]; then
     for skill in $(echo "$invocable_choice" | tr ',' ' '); do
         for scope in "$CLAUDE_SKILLS_DIR" "$AGENTS_SKILLS_DIR" "$QWEN_SKILLS_DIR"; do
-            # A Qwen opt-out leaves $QWEN_DIR untouched, a previous run's copies included.
-            if [ "$scope" = "$QWEN_SKILLS_DIR" ] && { [ "$qwen_available" -eq 0 ] || [ "$skip_qwen" -eq 1 ]; }; then
+            # A Qwen opt-out (or a Qwen Code too old for plan review) leaves
+            # $QWEN_DIR untouched, a previous run's copies included.
+            if [ "$scope" = "$QWEN_SKILLS_DIR" ] && { [ "$qwen_available" -eq 0 ] || [ "$skip_qwen" -eq 1 ] || [ "$qwen_too_old" -eq 1 ]; }; then
                 continue
             fi
             skill_md="$scope/$skill/SKILL.md"
@@ -3017,12 +3130,32 @@ if [ "$qwen_available" -eq 1 ]; then
         echo "Qwen Code was detected, but skills were skipped (${skip_skills_source}). The"
         echo "Qwen Code extension and skills come from the same download, so neither was"
         echo "installed or changed. Re-run without the opt-out to add them."
+    elif [ "$qwen_too_old" -eq 1 ]; then
+        echo "Qwen Code ${qwen_version} is older than ${QWEN_MIN_VERSION}, the first release that runs"
+        echo "extension hooks, so nothing was installed for it. Update Qwen Code to use"
+        echo "plan review, then re-run this installer."
     else
         case "$qwen_extension_state" in
             installed|updated|current)
-                echo "Plan review: when the agent calls exit_plan_mode, the plan opens in your"
-                echo "browser. After you approve it there, Qwen Code asks you to confirm the plan"
-                echo "once more in the terminal. Restart Qwen Code to load a new extension."
+                if [ "$qwen_extension_off" -eq 1 ]; then
+                    echo "The plannotator extension is turned off in Qwen Code (in some or all"
+                    echo "projects), and it stays off. Where it is off, plan review is off. To"
+                    echo "turn it on: qwen extensions enable plannotator"
+                else
+                    echo "Plan review: when the agent calls exit_plan_mode, the plan opens in your"
+                    echo "browser. After you approve it there, Qwen Code asks you to confirm the plan"
+                    echo "once more in the terminal. Restart Qwen Code to load a new extension."
+                fi
+                ;;
+            linked)
+                echo "The plannotator extension is linked from a local folder (qwen extensions"
+                echo "link), so this installer left it as it is."
+                ;;
+            foreign)
+                echo "The plannotator extension was installed from ${qwen_extension_source},"
+                echo "not by this installer, so it was left as it is. To let this installer"
+                echo "manage it, run: qwen extensions uninstall plannotator"
+                echo "and re-run this installer."
                 ;;
             no-cli)
                 echo "The qwen command was not found, so the plan-review extension was not"
@@ -3036,9 +3169,11 @@ if [ "$qwen_available" -eq 1 ]; then
                 echo "Re-run this installer to try again."
                 ;;
         esac
-        echo ""
-        echo "Skills are installed to ${QWEN_SKILLS_DIR}/:"
-        echo "  /plannotator-review, /plannotator-annotate, /plannotator-last"
+        if [ "$qwen_skills_installed" -eq 1 ]; then
+            echo ""
+            echo "Skills are installed to ${QWEN_SKILLS_DIR}/:"
+            echo "  /plannotator-review, /plannotator-annotate, /plannotator-last"
+        fi
     fi
 fi
 echo ""

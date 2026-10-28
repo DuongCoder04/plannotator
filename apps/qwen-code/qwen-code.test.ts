@@ -13,8 +13,9 @@
  *   variables instead).
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join, sep } from "node:path";
 import { AGENT_CONFIG } from "../../packages/core/agents";
 
 const root = import.meta.dir;
@@ -27,11 +28,44 @@ function hooks(): Record<string, HookGroup[]> {
   return JSON.parse(readFileSync(join(extensionDir, "hooks", "hooks.json"), "utf8")).hooks;
 }
 
+// Each released version of the extension folder, by its tree hash.
+const EXTENSION_TREE_HASHES: Record<string, string> = {
+  "1.0.0": "df0905f26b1717f8ad89aa6b4235fb48e1e6b9bdcf6c282f29f07285eaa5efaa",
+};
+
+// Paths and contents of every file under extension/ (line endings as LF, so
+// a Windows checkout hashes the same).
+function extensionTreeHash(): string {
+  const hash = createHash("sha256");
+  const files = (readdirSync(extensionDir, { recursive: true }) as string[])
+    .map((file) => file.split(sep).join("/"))
+    .filter((file) => statSync(join(extensionDir, file)).isFile())
+    .sort();
+  for (const file of files) {
+    hash.update(`${file}\0${readFileSync(join(extensionDir, file), "utf8").replace(/\r\n/g, "\n")}\0`);
+  }
+  return hash.digest("hex");
+}
+
 describe("Qwen Code extension", () => {
   test("its manifest names the extension the installers and uninstall manage", () => {
     const manifest = JSON.parse(readFileSync(join(extensionDir, "qwen-extension.json"), "utf8"));
     expect(manifest.name).toBe("plannotator");
     expect(typeof manifest.version).toBe("string");
+  });
+
+  test("a change to the extension comes with a new version", () => {
+    // The installers update an installed extension only when its version
+    // differs (`qwen extensions update` is version-based too), so a change
+    // without a new version never reaches installed users. Bump "version"
+    // in qwen-extension.json and add its hash here. Keep the manifest's name,
+    // displayName and description: Qwen asks for consent again on an update
+    // that changes them, and the installers' update reads no input.
+    const manifest = JSON.parse(readFileSync(join(extensionDir, "qwen-extension.json"), "utf8"));
+    expect({ version: manifest.version, hash: extensionTreeHash() }).toEqual({
+      version: manifest.version,
+      hash: EXTENSION_TREE_HASHES[manifest.version],
+    });
   });
 
   test("exit_plan_mode opens the review and waits long enough", () => {

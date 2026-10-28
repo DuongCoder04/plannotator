@@ -1063,17 +1063,31 @@ set "VIBE_AVAILABLE=0"
 if exist "!VIBE_HOME!" set "VIBE_AVAILABLE=1"
 
 REM Qwen Code keeps its user files in QWEN_HOME when set, else
-REM %USERPROFILE%\.qwen. QWEN_HOME is the Qwen folder itself, and a leading ~
-REM is expanded, as in Qwen. Detected only when that folder exists, as in
-REM install.sh; the extension step also needs the qwen command.
+REM %USERPROFILE%\.qwen. QWEN_HOME is the Qwen folder itself, a leading ~ is
+REM expanded and a relative path is taken from the current folder, as in
+REM Qwen. Detected as in install.sh: that folder must exist, and so must the
+REM qwen command or a file only Qwen Code writes there ^(settings.json,
+REM installation_id, projects\, extensions\^). The `skills` CLI makes
+REM ~/.qwen/skills for people who never installed Qwen Code, so the folder
+REM alone is not enough. The extension step needs the qwen command.
 set "QWEN_DIR=%USERPROFILE%\.qwen"
 if defined QWEN_HOME set "QWEN_DIR=!QWEN_HOME!"
 if "!QWEN_DIR!"=="~" set "QWEN_DIR=%USERPROFILE%"
 if "!QWEN_DIR:~0,2!"=="~/" set "QWEN_DIR=%USERPROFILE%\!QWEN_DIR:~2!"
 if "!QWEN_DIR:~0,2!"=="~\" set "QWEN_DIR=%USERPROFILE%\!QWEN_DIR:~2!"
+for %%P in ("!QWEN_DIR!") do set "QWEN_DIR=%%~fP"
 set "QWEN_SKILLS_DIR=!QWEN_DIR!\skills"
 set "QWEN_AVAILABLE=0"
-if exist "!QWEN_DIR!\" set "QWEN_AVAILABLE=1"
+set "QWEN_SKILLS_INSTALLED=0"
+set "QWEN_TOO_OLD=0"
+if exist "!QWEN_DIR!\" (
+    where $PATH:qwen >nul 2>&1
+    if !ERRORLEVEL! equ 0 set "QWEN_AVAILABLE=1"
+    if exist "!QWEN_DIR!\settings.json" set "QWEN_AVAILABLE=1"
+    if exist "!QWEN_DIR!\installation_id" set "QWEN_AVAILABLE=1"
+    if exist "!QWEN_DIR!\projects\" set "QWEN_AVAILABLE=1"
+    if exist "!QWEN_DIR!\extensions\" set "QWEN_AVAILABLE=1"
+)
 REM HONEST three-state reporting (#1178): detected-but-skipped is its own
 REM state, never conflated with "not detected". A Codex opt-out leaves the
 REM Codex home entirely untouched (no writes, no cleanup, no removal).
@@ -1360,6 +1374,8 @@ if "!SKIP_SKILLS!"=="1" (
         exit /b 1
     )
 )
+REM Qwen Code too old for plan review: nothing is installed for it. See :QwenVersionCheck.
+call :QwenVersionCheck
 set "CHECKOUT_FAILED=0"
 set "KIRO_SKILLS_DIR=%USERPROFILE%\.kiro\skills"
 set "KIRO_AGENTS_DIR=%USERPROFILE%\.kiro\agents"
@@ -1507,9 +1523,9 @@ if "!CLONE_OK!"=="1" (
     REM command in the background, past the shell tool's time limit^). Qwen
     REM reads QWEN_DIR\skills before ~/.agents/skills, so these take the place
     REM of the shared copies. The extension is copied out of the checkout here
-    REM and installed after this block ^(:InstallQwenExtension^). A Qwen opt-out
-    REM leaves QWEN_DIR untouched.
-    if "!QWEN_AVAILABLE!"=="1" if "!SKIP_QWEN!"=="0" if exist "apps\qwen-code\skills" (
+    REM and installed after this block ^(:InstallQwenExtension^). A Qwen opt-out,
+    REM or a Qwen Code too old for plan review, leaves QWEN_DIR untouched.
+    if "!QWEN_AVAILABLE!"=="1" if "!SKIP_QWEN!"=="0" if "!QWEN_TOO_OLD!"=="0" if exist "apps\qwen-code\skills" (
         if not exist "!QWEN_SKILLS_DIR!" mkdir "!QWEN_SKILLS_DIR!"
         for %%S in (plannotator-review plannotator-annotate plannotator-last) do (
             if exist "apps\qwen-code\skills\%%S" (
@@ -1518,8 +1534,9 @@ if "!CLONE_OK!"=="1" (
             )
         )
         echo Installed Qwen Code skills to !QWEN_SKILLS_DIR!\
+        set "QWEN_SKILLS_INSTALLED=1"
     )
-    if "!QWEN_AVAILABLE!"=="1" if "!SKIP_QWEN!"=="0" if exist "apps\qwen-code\extension\qwen-extension.json" (
+    if "!QWEN_AVAILABLE!"=="1" if "!SKIP_QWEN!"=="0" if "!QWEN_TOO_OLD!"=="0" if exist "apps\qwen-code\extension\qwen-extension.json" (
         xcopy /s /i /y /q "apps\qwen-code\extension" "!SKILLS_TMP!\qwen-extension\" >nul 2>&1
     )
 
@@ -1614,9 +1631,10 @@ REM opt-out promised not to make.
 if "!SKIP_SKILLS!"=="0" if defined INVOCABLE_CHOICE if not "!INVOCABLE_CHOICE!"=="none" (
     for %%K in ("!INVOCABLE_CHOICE:,=" "!") do (
         for %%D in ("!CLAUDE_SKILLS_DIR!" "!AGENTS_SKILLS_DIR!" "!QWEN_SKILLS_DIR!") do (
-            REM A Qwen opt-out leaves QWEN_DIR untouched, a previous run's copies included.
+            REM A Qwen opt-out ^(or a Qwen Code too old for plan review^) leaves
+            REM QWEN_DIR untouched, a previous run's copies included.
             set "SCOPE_OK=1"
-            if /i "%%~D"=="!QWEN_SKILLS_DIR!" if not "!QWEN_AVAILABLE!!SKIP_QWEN!"=="10" set "SCOPE_OK=0"
+            if /i "%%~D"=="!QWEN_SKILLS_DIR!" if not "!QWEN_AVAILABLE!!SKIP_QWEN!!QWEN_TOO_OLD!"=="100" set "SCOPE_OK=0"
             if "!SCOPE_OK!"=="1" if exist "%%~D\%%~K\SKILL.md" (
                 findstr /c:"disable-model-invocation: true" "%%~D\%%~K\SKILL.md" >nul 2>&1
                 if !ERRORLEVEL! equ 0 (
@@ -1784,11 +1802,27 @@ if "!QWEN_AVAILABLE!"=="1" (
         echo Qwen Code was detected, but skills were skipped ^(!SKIP_SKILLS_SOURCE!^). The
         echo Qwen Code extension and skills come from the same download, so neither was
         echo installed or changed. Re-run without the opt-out to add them.
+    ) else if "!QWEN_TOO_OLD!"=="1" (
+        echo Qwen Code is older than 0.13.0, the first release that runs extension
+        echo hooks, so nothing was installed for it. Update Qwen Code to use plan
+        echo review, then re-run this installer.
     ) else (
         if "!QWEN_EXTENSION_STATE!"=="ok" (
             echo Plan review: when the agent calls exit_plan_mode, the plan opens in your
             echo browser. After you approve it there, Qwen Code asks you to confirm the plan
             echo once more in the terminal. Restart Qwen Code to load a new extension.
+        ) else if "!QWEN_EXTENSION_STATE!"=="ok-off" (
+            echo The plannotator extension is turned off in Qwen Code ^(in some or all
+            echo projects^), and it stays off. Where it is off, plan review is off. To
+            echo turn it on: qwen extensions enable plannotator
+        ) else if "!QWEN_EXTENSION_STATE!"=="linked" (
+            echo The plannotator extension is linked from a local folder ^(qwen extensions
+            echo link^), so this installer left it as it is.
+        ) else if "!QWEN_EXTENSION_STATE!"=="foreign" (
+            echo The plannotator extension was installed from another source ^(see above^),
+            echo not by this installer, so it was left as it is. To let this installer
+            echo manage it, run: qwen extensions uninstall plannotator
+            echo and re-run this installer.
         ) else if "!QWEN_EXTENSION_STATE!"=="no-cli" (
             echo The qwen command was not found, so the plan-review extension was not
             echo installed. Put qwen on PATH and re-run this installer.
@@ -1798,9 +1832,11 @@ if "!QWEN_AVAILABLE!"=="1" (
             echo The plan-review extension could not be installed ^(see the message above^).
             echo Re-run this installer to try again.
         )
-        echo.
-        echo Skills are installed to !QWEN_SKILLS_DIR!\:
-        echo   /plannotator-review, /plannotator-annotate, /plannotator-last
+        if "!QWEN_SKILLS_INSTALLED!"=="1" (
+            echo.
+            echo Skills are installed to !QWEN_SKILLS_DIR!\:
+            echo   /plannotator-review, /plannotator-annotate, /plannotator-last
+        )
     )
 )
 
@@ -2003,17 +2039,46 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference =
 set "PLN_PI_TARGET="
 goto :eof
 
+REM BEGIN Qwen Code subroutines
 REM ======================================================================
+REM The Qwen Code steps, as in install.sh and install.ps1. One PowerShell
+REM program (:QwenPsDefs) does the work; each of its lines is kept in its
+REM own PLN_QX_Pnnn variable and the program is put together from them, so
+REM no line comes near cmd.exe's 8191-character limit. Its lines carry no
+REM double quote, percent sign, exclamation mark or caret, so cmd.exe passes
+REM them as written. Inputs travel in PLN_QX_* variables, never interpolated.
+REM Every qwen command has a time limit, reads no input and runs in an empty
+REM temporary folder. Its exit code is the result. Best effort: never fails
+REM the install.
+REM ======================================================================
+
+REM :QwenVersionCheck - plan review needs extension hooks, which Qwen Code
+REM runs from 0.13.0 on. Below that, nothing is installed for Qwen Code (no
+REM extension, no skills): QWEN_TOO_OLD=1. A version that cannot be read
+REM does not block the install.
+:QwenVersionCheck
+set "QWEN_TOO_OLD=0"
+if not "!QWEN_AVAILABLE!"=="1" goto :eof
+if "!SKIP_QWEN!"=="1" goto :eof
+if "!SKIP_SKILLS!"=="1" goto :eof
+call :QwenPsDefs
+set "PLN_QX_MODE=version"
+set "PLN_QX_HOME=!QWEN_DIR!"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iex ((Get-ChildItem env: | Where-Object Name -like 'PLN_QX_P*' | Sort-Object Name | ForEach-Object Value) -join [char]10); exit $rc"
+if "!ERRORLEVEL!"=="36" set "QWEN_TOO_OLD=1"
+call :QwenPsClear
+goto :eof
+
 REM :InstallQwenExtension - install or update the plannotator Qwen Code
-REM extension with Qwen's own `qwen extensions install`, as install.sh and
-REM install.ps1 do: an installed copy whose manifest and hooks match is left
-REM alone; a changed one is uninstalled first ^(Qwen refuses to install over
-REM it^) and put back from a kept copy when the new install fails. Each qwen
-REM command has a time limit, reads no input and runs in an empty temporary
-REM folder. Inputs travel in PLN_QX_SRC / PLN_QX_DEST, never interpolated; the
-REM command carries no double quote, percent sign, exclamation mark or caret.
-REM Its exit code is the result. Best effort: never fails the install.
-REM ======================================================================
+REM extension with Qwen's own commands. Its source is kept at
+REM _CONFIG_DIR\qwen-code\extension, a path that does not change: Qwen
+REM records it as the source, derives the extension's id from it and reads
+REM it on update. Not installed: `qwen extensions install that path
+REM --consent`. Installed from that path in another version: `qwen extensions
+REM update plannotator`, which keeps the id and the user's on/off choices
+REM ^(never uninstalled here^). The same version: no extension command runs.
+REM Linked ^(`qwen extensions link`^) or installed from another source: left
+REM as it is.
 :InstallQwenExtension
 if "!SKIP_QWEN!"=="1" (
     echo.
@@ -2022,9 +2087,16 @@ if "!SKIP_QWEN!"=="1" (
     goto :eof
 )
 if "!SKIP_SKILLS!"=="1" goto :eof
+if "!QWEN_TOO_OLD!"=="1" (
+    set "QWEN_EXTENSION_STATE=too-old"
+    goto :eof
+)
+call :QwenPsDefs
+set "PLN_QX_MODE=extension"
+set "PLN_QX_HOME=!QWEN_DIR!"
 set "PLN_QX_SRC=!SKILLS_TMP!\qwen-extension"
-set "PLN_QX_DEST=!QWEN_DIR!\extensions\plannotator"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Continue'; $src = $env:PLN_QX_SRC; $dest = $env:PLN_QX_DEST; $q = [char]34; function Same($a, $b) { if (-not (Test-Path -LiteralPath $a -PathType Leaf) -or -not (Test-Path -LiteralPath $b -PathType Leaf)) { return $false }; try { $x = [System.IO.File]::ReadAllBytes($a); $y = [System.IO.File]::ReadAllBytes($b) } catch { return $false }; if ($x.Length -ne $y.Length) { return $false }; for ($i = 0; $i -lt $x.Length; $i++) { if ($x[$i] -ne $y[$i]) { return $false } }; return $true }; function Run($a) { $si = New-Object System.Diagnostics.ProcessStartInfo; $si.FileName = $qw; $si.Arguments = ((@('extensions') + $a) | ForEach-Object { $q + $_ + $q }) -join ' '; $si.WorkingDirectory = $work; $si.UseShellExecute = $false; $si.RedirectStandardInput = $true; $si.RedirectStandardOutput = $true; $si.RedirectStandardError = $true; $si.CreateNoWindow = $true; try { $p = [System.Diagnostics.Process]::Start($si) } catch { return 'could not run qwen: ' + $_.Exception.Message }; try { $p.StandardInput.Close() } catch { }; $to = $p.StandardOutput.ReadToEndAsync(); $te = $p.StandardError.ReadToEndAsync(); if (-not $p.WaitForExit($secs * 1000)) { try { $p.Kill($true) } catch { try { $null = & taskkill /T /F /PID $p.Id 2>$null } catch { }; try { $p.Kill() } catch { } }; return 'timed out after ' + $secs + 's' }; $p.WaitForExit(); if ($p.ExitCode -eq 0) { return '' }; $l = $null; foreach ($t in @($te, $to)) { $v = ''; try { if ($t.Wait(5000)) { $v = [string]$t.Result } } catch { }; $l = @($v -split '\r?\n') | ForEach-Object { ($_ -replace ('[' + [char]94 + '\x20-\x7E]'), '').Trim() } | Where-Object { $_ } | Select-Object -Last 1; if ($l) { break } }; if ($l -and $l.Length -gt 200) { $l = $l.Substring(0, 200) }; if ($l) { return 'qwen exited ' + $p.ExitCode + ': ' + $l }; return 'qwen exited ' + $p.ExitCode }; if (-not (Test-Path -LiteralPath (Join-Path $src 'qwen-extension.json') -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path (Join-Path $src 'hooks') 'hooks.json') -PathType Leaf)) { exit 35 }; $c = Get-Command qwen -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if (-not $c) { Write-Host 'Qwen Code extension: not installed (the qwen command is not on PATH).'; exit 30 }; $qw = $c.Source; if ((Same (Join-Path $src 'qwen-extension.json') (Join-Path $dest 'qwen-extension.json')) -and (Same (Join-Path (Join-Path $src 'hooks') 'hooks.json') (Join-Path (Join-Path $dest 'hooks') 'hooks.json'))) { Write-Host 'Qwen Code extension: already up to date.'; exit 31 }; $secs = 120; if ($env:PLANNOTATOR_QWEN_EXTENSION_TIMEOUT -match '\A[1-9][0-9]*\z') { $secs = [int]$env:PLANNOTATOR_QWEN_EXTENSION_TIMEOUT }; $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('plannotator-qwen-' + [System.Guid]::NewGuid().ToString('N')); $work = Join-Path $tmp 'cwd'; try { New-Item -ItemType Directory -Force -Path $work -ErrorAction Stop | Out-Null } catch { Write-Host 'Qwen Code extension: could not install it (no temporary directory).'; exit 34 }; function M { $had = Test-Path -LiteralPath (Join-Path $dest 'qwen-extension.json') -PathType Leaf; $prev = Join-Path $tmp 'previous'; if ($had) { try { Copy-Item -Recurse -Force -LiteralPath $dest -Destination $prev -ErrorAction Stop; Remove-Item -Force -LiteralPath (Join-Path $prev '.qwen-extension-install.json') -ErrorAction SilentlyContinue } catch { Write-Host 'Qwen Code extension: could not update it (could not copy the installed one). It was left as it was.'; return 34 }; Write-Host 'Updating the Qwen Code extension...'; $w = Run @('uninstall', 'plannotator'); if ($w) { Write-Host ('Qwen Code extension: could not update it (' + $w + '). The installed one was left as it was.'); return 34 } } else { Write-Host 'Installing the Qwen Code extension...' }; $w = Run @('install', $src, '--consent'); if (-not $w) { if ($had) { Write-Host 'Qwen Code extension: updated (restart Qwen Code to load it).'; return 33 } else { Write-Host 'Qwen Code extension: installed (restart Qwen Code to load it).'; return 32 } }; if ($had) { $b = Run @('install', $prev, '--consent'); if (-not $b) { Write-Host ('Qwen Code extension: could not update it (' + $w + '). The previous version was put back.') } else { Write-Host ('Qwen Code extension: could not update it (' + $w + '), and the previous version could not be put back (' + $b + ').'); Write-Host 'Qwen Code shows its normal plan confirmation until you re-run this installer.' } } else { Write-Host ('Qwen Code extension: could not install it (' + $w + ').') }; return 34 }; $rc = 34; try { $rc = M } catch { $rc = 34 }; Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue; exit $rc"
+set "PLN_QX_DATA=!_CONFIG_DIR!"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iex ((Get-ChildItem env: | Where-Object Name -like 'PLN_QX_P*' | Sort-Object Name | ForEach-Object Value) -join [char]10); exit $rc"
 set "PLN_QX_RC=!ERRORLEVEL!"
 set "QWEN_EXTENSION_STATE=failed"
 if "!PLN_QX_RC!"=="30" set "QWEN_EXTENSION_STATE=no-cli"
@@ -2032,11 +2104,111 @@ if "!PLN_QX_RC!"=="31" set "QWEN_EXTENSION_STATE=ok"
 if "!PLN_QX_RC!"=="32" set "QWEN_EXTENSION_STATE=ok"
 if "!PLN_QX_RC!"=="33" set "QWEN_EXTENSION_STATE=ok"
 if "!PLN_QX_RC!"=="35" set "QWEN_EXTENSION_STATE=not-in-tag"
-set "PLN_QX_RC="
-set "PLN_QX_SRC="
-set "PLN_QX_DEST="
+if "!PLN_QX_RC!"=="37" set "QWEN_EXTENSION_STATE=linked"
+if "!PLN_QX_RC!"=="38" set "QWEN_EXTENSION_STATE=foreign"
+if "!PLN_QX_RC!"=="41" set "QWEN_EXTENSION_STATE=ok-off"
+if "!PLN_QX_RC!"=="43" set "QWEN_EXTENSION_STATE=ok-off"
+call :QwenPsClear
 goto :eof
 
+:QwenPsClear
+for /f "delims==" %%V in ('set PLN_QX_ 2^>nul') do set "%%V="
+goto :eof
+
+REM :QwenPsDefs - the PowerShell program, one line per variable.
+:QwenPsDefs
+set "PLN_QX_P001=$ErrorActionPreference = 'Continue'"
+set "PLN_QX_P002=$q = [char]34"
+set "PLN_QX_P003=function QwenPath { $c = Get-Command qwen -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { return $c.Source }; return $null }"
+set "PLN_QX_P004=function Secs { if ($env:PLANNOTATOR_QWEN_EXTENSION_TIMEOUT -match '\A[1-9][0-9]*\z') { return [int]$env:PLANNOTATOR_QWEN_EXTENSION_TIMEOUT }; return 120 }"
+set "PLN_QX_P005=function NewTmp { $t = Join-Path ([System.IO.Path]::GetTempPath()) ('plannotator-qwen-' + [System.Guid]::NewGuid().ToString('N')); try { New-Item -ItemType Directory -Force -Path (Join-Path $t 'cwd') -ErrorAction Stop | Out-Null; return $t } catch { return $null } }"
+set "PLN_QX_P006=function Run($exe, $argv, $work) {"
+set "PLN_QX_P007=    $secs = Secs"
+set "PLN_QX_P008=    $quoted = ($argv | ForEach-Object { $q + $_ + $q }) -join ' '"
+set "PLN_QX_P009=    $si = New-Object System.Diagnostics.ProcessStartInfo"
+set "PLN_QX_P010=    if ($exe -match '\.(cmd|bat)\z') {"
+set "PLN_QX_P011=        if (($exe + ($argv -join '')) -match ('[' + $q + [char]37 + [char]33 + ']')) { return @{ Why = 'could not run ' + (Split-Path $exe -Leaf) + ': a path has a character cmd.exe would change'; Out = ''; Last = '' } }"
+set "PLN_QX_P012=        $si.FileName = $(if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' })"
+set "PLN_QX_P013=        $si.Arguments = '/d /s /c ' + $q + $q + $exe + $q + ' ' + $quoted + $q"
+set "PLN_QX_P014=    } else { $si.FileName = $exe; $si.Arguments = $quoted }"
+set "PLN_QX_P015=    $si.WorkingDirectory = $work; $si.UseShellExecute = $false; $si.RedirectStandardInput = $true; $si.RedirectStandardOutput = $true; $si.RedirectStandardError = $true; $si.CreateNoWindow = $true"
+set "PLN_QX_P016=    try { $p = [System.Diagnostics.Process]::Start($si) } catch { return @{ Why = 'could not run qwen: ' + $_.Exception.Message; Out = ''; Last = '' } }"
+set "PLN_QX_P017=    try { $p.StandardInput.Close() } catch { }"
+set "PLN_QX_P018=    $to = $p.StandardOutput.ReadToEndAsync(); $te = $p.StandardError.ReadToEndAsync()"
+set "PLN_QX_P019=    if (-not $p.WaitForExit($secs * 1000)) { try { $p.Kill($true) } catch { try { $null = & taskkill /T /F /PID $p.Id 2>$null } catch { }; try { $p.Kill() } catch { } }; return @{ Why = 'timed out after ' + $secs + 's'; Out = ''; Last = '' } }"
+set "PLN_QX_P020=    $p.WaitForExit()"
+set "PLN_QX_P021=    $texts = @(); foreach ($t in @($to, $te)) { $v = ''; try { if ($t.Wait(5000)) { $v = [string]$t.Result } } catch { }; $texts += $v }"
+set "PLN_QX_P022=    $l = $null; foreach ($v in @($texts[1], $texts[0])) { $l = @($v -split '\r?\n') | ForEach-Object { ($_ -replace ('[' + [char]94 + '\x20-\x7E]'), '').Trim() } | Where-Object { $_ } | Select-Object -Last 1; if ($l) { break } }"
+set "PLN_QX_P023=    if ($l -and $l.Length -gt 200) { $l = $l.Substring(0, 200) }"
+set "PLN_QX_P024=    $why = ''; if ($p.ExitCode -ne 0) { $why = 'qwen exited ' + $p.ExitCode; if ($l) { $why = $why + ': ' + $l } }"
+set "PLN_QX_P025=    return @{ Why = $why; Out = $texts[0]; Last = $l }"
+set "PLN_QX_P026=}"
+set "PLN_QX_P027=function Ver($path) { try { return [string]((Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json).version) } catch { return '' } }"
+set "PLN_QX_P028=function SamePath($a, $b) {"
+set "PLN_QX_P029=    if (-not $a -or -not $b) { return $false }"
+set "PLN_QX_P030=    try { $x = [System.IO.Path]::GetFullPath($a).TrimEnd('\', '/'); $y = [System.IO.Path]::GetFullPath($b).TrimEnd('\', '/') } catch { return $false }"
+set "PLN_QX_P031=    if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { return $x -ieq $y }; return $x -ceq $y"
+set "PLN_QX_P032=}"
+set "PLN_QX_P033=function Off($qd) {"
+set "PLN_QX_P034=    $off = $false"
+set "PLN_QX_P035=    try { $s = Get-Content -LiteralPath (Join-Path (Join-Path $qd 'extension-store') 'state.json') -Raw -ErrorAction Stop | ConvertFrom-Json; foreach ($p in @($s.extensions.PSObject.Properties)) { $v = $p.Value; if ($v.name -ne 'plannotator') { continue }; if ($v.defaultActivation -eq 'disabled') { $off = $true }; if ($v.workspaceOverrides) { foreach ($o in @($v.workspaceOverrides.PSObject.Properties)) { if ($o.Value -eq 'disabled') { $off = $true } } } } } catch { }"
+set "PLN_QX_P036=    try { $l = Get-Content -LiteralPath (Join-Path (Join-Path $qd 'extensions') 'extension-enablement.json') -Raw -ErrorAction Stop | ConvertFrom-Json; if ($l.plannotator -and $l.plannotator.overrides) { foreach ($r in @($l.plannotator.overrides)) { if (([string]$r).StartsWith([string][char]33)) { $off = $true } } } } catch { }"
+set "PLN_QX_P037=    return $off"
+set "PLN_QX_P038=}"
+set "PLN_QX_P039=function Main {"
+set "PLN_QX_P040=    $qd = $env:PLN_QX_HOME"
+set "PLN_QX_P041=    $qwen = QwenPath"
+set "PLN_QX_P042=    if ($env:PLN_QX_MODE -eq 'version') {"
+set "PLN_QX_P043=        if (-not $qwen) { return 0 }"
+set "PLN_QX_P044=        $tmp = NewTmp; if (-not $tmp) { return 0 }"
+set "PLN_QX_P045=        try {"
+set "PLN_QX_P046=            $r = Run $qwen @('--version') (Join-Path $tmp 'cwd')"
+set "PLN_QX_P047=            $m = [regex]::Match([string]$r.Out, '[0-9]+\.[0-9]+\.[0-9]+')"
+set "PLN_QX_P048=            if ($m.Success -and ([version]$m.Value -lt [version]'0.13.0')) { Write-Host ''; Write-Host ('Qwen Code ' + $m.Value + ' is older than 0.13.0, so nothing was installed for it. Update Qwen Code to use plan review.'); return 36 }"
+set "PLN_QX_P049=        } catch { } finally { Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue }"
+set "PLN_QX_P050=        return 0"
+set "PLN_QX_P051=    }"
+set "PLN_QX_P052=    $src = $env:PLN_QX_SRC"
+set "PLN_QX_P053=    if (-not (Test-Path -LiteralPath (Join-Path $src 'qwen-extension.json') -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path (Join-Path $src 'hooks') 'hooks.json') -PathType Leaf)) { return 35 }"
+set "PLN_QX_P054=    $dest = Join-Path (Join-Path $qd 'extensions') 'plannotator'"
+set "PLN_QX_P055=    $rec = $null; try { $rec = Get-Content -LiteralPath (Join-Path $dest '.qwen-extension-install.json') -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }"
+set "PLN_QX_P056=    if ($rec -and $rec.type -eq 'link') { Write-Host 'Qwen Code extension: linked from a local folder (qwen extensions link), left as it is.'; return 37 }"
+set "PLN_QX_P057=    if (-not $qwen) { Write-Host 'Qwen Code extension: not installed (the qwen command is not on PATH).'; return 30 }"
+set "PLN_QX_P058=    $data = $env:PLN_QX_DATA; if (-not [System.IO.Path]::IsPathRooted($data)) { $data = Join-Path (Get-Location).Path $data }"
+set "PLN_QX_P059=    $stable = Join-Path (Join-Path $data 'qwen-code') 'extension'"
+set "PLN_QX_P060=    $nv = Ver (Join-Path $src 'qwen-extension.json')"
+set "PLN_QX_P061=    $had = Test-Path -LiteralPath (Join-Path $dest 'qwen-extension.json') -PathType Leaf"
+set "PLN_QX_P062=    if ($had) { $from = ''; if ($rec) { $from = [string]$rec.source }; if (-not (SamePath $from $stable)) { if (-not $from) { $from = 'an unknown source' }; Write-Host ('Qwen Code extension: installed from ' + $from + ', not by this installer, so it was left as it is.'); return 38 } }"
+set "PLN_QX_P063=    $staged = $stable + '.new'"
+set "PLN_QX_P064=    try {"
+set "PLN_QX_P065=        if (Test-Path -LiteralPath $staged) { Remove-Item -Recurse -Force -LiteralPath $staged -ErrorAction Stop }"
+set "PLN_QX_P066=        New-Item -ItemType Directory -Force -Path (Split-Path $stable) -ErrorAction Stop | Out-Null"
+set "PLN_QX_P067=        Copy-Item -Recurse -Force -LiteralPath $src -Destination $staged -ErrorAction Stop"
+set "PLN_QX_P068=        if (Test-Path -LiteralPath $stable) { Remove-Item -Recurse -Force -LiteralPath $stable -ErrorAction Stop }"
+set "PLN_QX_P069=        Move-Item -LiteralPath $staged -Destination $stable -ErrorAction Stop"
+set "PLN_QX_P070=    } catch { Remove-Item -Recurse -Force -LiteralPath $staged -ErrorAction SilentlyContinue; Write-Host ('Qwen Code extension: could not write its source to ' + $stable + '. The installed one was left as it was.'); return 34 }"
+set "PLN_QX_P071=    $off = $false; if ($had) { $off = [bool](Off $qd) }"
+set "PLN_QX_P072=    if ($had -and ((Ver (Join-Path $dest 'qwen-extension.json')) -eq $nv)) { Write-Host 'Qwen Code extension: already up to date.'; if ($off) { return 41 }; return 31 }"
+set "PLN_QX_P073=    $tmp = NewTmp; if (-not $tmp) { Write-Host 'Qwen Code extension: could not install it (no temporary directory).'; return 34 }"
+set "PLN_QX_P074=    try {"
+set "PLN_QX_P075=        $work = Join-Path $tmp 'cwd'"
+set "PLN_QX_P076=        if ($had) {"
+set "PLN_QX_P077=            Write-Host 'Updating the Qwen Code extension...'"
+set "PLN_QX_P078=            $r = Run $qwen @('extensions', 'update', 'plannotator') $work"
+set "PLN_QX_P079=            if ((Ver (Join-Path $dest 'qwen-extension.json')) -eq $nv) { Write-Host 'Qwen Code extension: updated (restart Qwen Code to load it).'; if ($off) { Write-Host 'It stays turned off where you turned it off in Qwen Code.'; return 43 }; return 33 }"
+set "PLN_QX_P080=            $w = $r.Why; if (-not $w) { $w = $r.Last }; if (-not $w) { $w = 'qwen did not update it' }"
+set "PLN_QX_P081=            Write-Host ('Qwen Code extension: could not update it (' + $w + '). The installed one was left as it was.'); Write-Host 'To try again by hand: qwen extensions update plannotator'; return 34"
+set "PLN_QX_P082=        }"
+set "PLN_QX_P083=        Write-Host 'Installing the Qwen Code extension...'"
+set "PLN_QX_P084=        $r = Run $qwen @('extensions', 'install', $stable, '--consent') $work"
+set "PLN_QX_P085=        if (-not $r.Why) { Write-Host 'Qwen Code extension: installed (restart Qwen Code to load it).'; return 32 }"
+set "PLN_QX_P086=        Write-Host ('Qwen Code extension: could not install it (' + $r.Why + ').'); Write-Host ('To try again by hand: qwen extensions install ' + $q + $stable + $q); return 34"
+set "PLN_QX_P087=    } finally { Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue }"
+set "PLN_QX_P088=}"
+set "PLN_QX_P089=$rc = $(if ($env:PLN_QX_MODE -eq 'version') { 0 } else { 34 })"
+set "PLN_QX_P090=try { $rc = Main | Select-Object -Last 1 } catch { }"
+goto :eof
+REM END Qwen Code subroutines
 :AddInstallFlag
 if defined IFL (set "IFL=!IFL!,"%~1"") else (set "IFL="%~1"")
 goto :eof

@@ -19,7 +19,9 @@ If the `plannotator` command is missing or fails, Qwen Code shows its normal pla
 
 ## Install
 
-The Plannotator installers (`install.sh`, `install.ps1`, `install.cmd`) install the extension and the skills when they find `~/.qwen` (or `$QWEN_HOME`). `--skip-qwen` turns this off. `plannotator uninstall` removes both.
+The Plannotator installers (`install.sh`, `install.ps1`, `install.cmd`) install the extension and the skills when they find Qwen Code 0.13.0 or newer (`~/.qwen` or `$QWEN_HOME`, plus the `qwen` command or Qwen's own files there). They keep the extension's source at `~/.plannotator/qwen-code/extension` and update it with `qwen extensions update plannotator`, so an extension you turned off stays off. A linked or hand-installed extension is left alone. `--skip-qwen` turns this off. `plannotator uninstall` removes both.
+
+When you change anything under `extension/`, raise `version` in `qwen-extension.json`: installed copies update only when the version changes.
 
 To install by hand, install the `plannotator` command first. Then, from a Plannotator checkout:
 

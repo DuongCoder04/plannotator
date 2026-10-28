@@ -351,12 +351,12 @@ See the [Kiro guide](/docs/guides/kiro-cli/) for the skill list and the Plannota
 
 ## Qwen Code
 
-Qwen Code is auto-detected. When `~/.qwen` exists (or the folder named by `QWEN_HOME`), the installer:
+Qwen Code is auto-detected: `~/.qwen` (or the folder named by `QWEN_HOME`) must exist, with the `qwen` command on your PATH or Qwen's own files in it. Plan review needs Qwen Code 0.13.0 or newer; with an older one the installer installs nothing for it and asks you to update. Otherwise the installer:
 
 - copies the `/plannotator-review`, `/plannotator-annotate` and `/plannotator-last` skills to `~/.qwen/skills`;
 - installs the `plannotator` Qwen extension with `qwen extensions install`. The extension opens the plan in Plannotator when the agent calls `exit_plan_mode`.
 
-Re-running the installer leaves an unchanged extension alone. If the `qwen` command is not on your PATH, the skills still install; re-run the installer once `qwen` is on your PATH to add the extension. A failed Qwen step never fails the install. Restart Qwen Code afterwards.
+Re-running the installer leaves an unchanged extension alone. A new extension version is applied with `qwen extensions update`, which keeps your settings: if you turned the extension off, it stays off. An extension you linked or installed yourself is left as it is. If the `qwen` command is not on your PATH, the skills still install; re-run the installer once `qwen` is on your PATH to add the extension. A failed Qwen step never fails the install. Restart Qwen Code afterwards.
 
 After you approve a plan in Plannotator, Qwen Code asks you to confirm it once more in the terminal. Qwen Code does not let a hook approve a tool that needs the user, and `exit_plan_mode` is one. Feedback you send instead goes to the agent at once.
 
