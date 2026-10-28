@@ -60,7 +60,7 @@ export interface InboxTidyItem {
   thread_id: string | null;
   subject: string;
   project: { id: string; name: string };
-  /** Short reasons for the window's Details ("you wrote last", "2 questions, 6 h", "card idle 2 d"). */
+  /** Why it is listed ("you wrote last", "2 questions, 6 h", "card idle 2 d"); the window does not show them. */
   reasons: string[];
 }
 
@@ -77,7 +77,7 @@ export interface InboxTidyAgent {
   items: InboxTidyItem[];
 }
 
-/** What GET /api/inbox/tidy answers: who Tidy would ask in the list's scope, what it leaves, and the last run. */
+/** What GET /api/inbox/tidy answers: who Tidy would ask in the list's (or the Board's) scope, and the last run. */
 export interface InboxTidyPlan {
   serverSession: string;
   /** Items across `agents` (threads, and cards without a thread). */

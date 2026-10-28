@@ -50,7 +50,7 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
           }
         },
         "idempotency_key": {
-          "description": "Any unique string; sending again with the same key answers the first message instead of posting twice.",
+          "description": "Pass an idempotency_key so a retry never posts twice. Any unique string; sending again with the same key answers the first message.",
           "type": "string"
         },
         "agent_session": {
@@ -328,7 +328,7 @@ export const INBOX_DEFAULT_TOOLS: readonly InboxToolInfo[] = [
           }
         },
         "idempotency_key": {
-          "description": "Any unique string; sending again with the same key answers the first message instead of posting twice.",
+          "description": "Pass an idempotency_key so a retry never posts twice. Any unique string; sending again with the same key answers the first message.",
           "type": "string"
         },
         "agent_session": {

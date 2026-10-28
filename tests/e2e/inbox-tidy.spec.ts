@@ -9,9 +9,11 @@
  * Claude Code owes the person a reply (they wrote last 45 min ago) in a
  * thread whose Board card has not moved in 3 days, and has a question the
  * person picked but did not send (theirs to send: never listed); Pi has a
- * question open 4 h; an ended session has one open 5 h (never offered). The
- * list's ⋮ reads "Tidy 2"; the popover is the agents, their counts and one
- * Tidy button. The Board's ⋮ asks only the card's owner. Tidy wakes each
+ * question open 4 h and, in a second project, a Board card not moved in 3
+ * days; an ended session has a question open 5 h (never offered). The list's
+ * ⋮ reads "Tidy 3"; the popover is the agents, their counts and one Tidy
+ * button. The Board's ⋮ asks only the cards' owners, and follows the Board's
+ * project filter. Tidy wakes each
  * agent once, shows no banner, the rows do not move, the pick is not sent;
  * progress is in the popover: Claude Code answers ("1 thread updated") and
  * Pi, idle after delivery, reads "Nothing to change". The thread note is one
@@ -55,6 +57,8 @@ interface World {
   /** hover: the person wrote last; release: Claude Code's question with an unsent pick; deploy: Pi's question; ended: the ended session's. */
   t: Record<'hover' | 'release' | 'deploy' | 'ended', { thread: string; message: string }>;
   hoverReply: string;
+  /** The projects' ids (the Board's `#board&project=` filter). */
+  ids: { billing: string; docs: string };
   connections: Connection[];
   sim: SimAgent | null;
 }
@@ -149,15 +153,16 @@ async function rows(page: Page): Promise<{ id: string; text: string }[]> {
 }
 
 /** Seeds the store (before the Inbox starts) with the threads, read hours old. */
-function seed(dataDir: string, project: string, now: number): World['t'] & { hoverReply: string } {
+function seed(dataDir: string, project: string, docsProject: string, now: number): World['t'] & { hoverReply: string; ids: World['ids'] } {
   let clock = now;
   const store = InboxStore.open(dataDir, { now: () => new Date(clock) });
   const at = (minutesAgo: number) => {
     clock = now - minutesAgo * 60_000;
   };
   const projectId = store.ensureProject({ root: project, name: 'billing' }).id;
-  const send = (author: typeof CLAUDE, subject: string, body: string) => {
-    const m = store.sendMessage({ project_id: projectId, author, subject, thread: subject, body } as never).message;
+  const docsId = store.ensureProject({ root: docsProject, name: 'docs' }).id;
+  const send = (author: typeof CLAUDE, subject: string, body: string, inProject = projectId) => {
+    const m = store.sendMessage({ project_id: inProject, author, subject, thread: subject, body } as never).message;
     store.markSeen(m.thread_id);
     return { thread: m.thread_id, message: m.id };
   };
@@ -173,11 +178,14 @@ function seed(dataDir: string, project: string, now: number): World['t'] & { hov
   at(3 * 24 * 60);
   const hover = send(CLAUDE, 'Hover cards on review surfaces', 'Hover cards are in on all three review surfaces. I will send pictures of the light, dark and phone passes once the dark pass is done.');
   store.createCard({ project_id: projectId, by: CLAUDE, title: 'Hover cards on review surfaces', column: 'designing', say: 'Sending pictures soon', threads: [hover.thread] });
+  // Pi's card in the other project, not moved in 3 days either: the Board's project filter leaves it out.
+  const nav = send(PI, 'Docs sidebar order', 'Started on the docs sidebar order.', docsId);
+  store.createCard({ project_id: docsId, by: PI, title: 'Docs sidebar order', column: 'building', say: 'Reordering the sidebar', threads: [nav.thread] });
   at(45);
   const reply = store.sendReply(hover.message, { words: 'Still waiting on those pictures. Did the phone pass happen?', idempotency_key: 'e2e-tidy-hover' });
   at(44);
   store.recordDelivery(reply.reply!.id, { host: CLAUDE.host, session: CLAUDE.session });
-  return { hover, release, deploy, ended, hoverReply: reply.reply!.id };
+  return { hover, release, deploy, ended, hoverReply: reply.reply!.id, ids: { billing: projectId, docs: docsId } };
 }
 
 test.describe.configure({ mode: 'serial' });
@@ -191,7 +199,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   mkdirSync(dataDir, { recursive: true });
   const project = scratchProject(join(root, 'src'), 'billing');
   const now = Date.now();
-  const { hoverReply, ...t } = seed(dataDir, project, now);
+  const { hoverReply, ids, ...t } = seed(dataDir, project, scratchProject(join(root, 'src'), 'docs'), now);
   writeFileSync(
     join(dataDir, 'config.json'),
     JSON.stringify({
@@ -211,7 +219,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   const page = await context.newPage();
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  world = { root, dataDir, env, url: started.stdout.trim(), project, context, page, errors, t, hoverReply, connections: [], sim: null };
+  world = { root, dataDir, env, url: started.stdout.trim(), project, context, page, errors, t, hoverReply, ids, connections: [], sim: null };
   // Claude Code and Pi are live (their connections poll); the ended session has none.
   world.connections.push(new Connection(CLAUDE.session, CLAUDE.host), new Connection(PI.session, PI.host));
   // Let both connections register before the window reads who it would ask.
@@ -229,7 +237,7 @@ test.afterAll(async () => {
   }
 });
 
-test('the list: ⋮ holds Tidy 2 and Refresh; the popover asks the live agents, never the ended session', async () => {
+test('the list: ⋮ holds Tidy 3 and Refresh; the popover asks the live agents, never the ended session', async () => {
   const { page } = world;
   await page.goto(world.url);
   const trigger = page.locator('.ib-lhead [data-tidy-menu]');
@@ -238,16 +246,16 @@ test('the list: ⋮ holds Tidy 2 and Refresh; the popover asks the live agents, 
   await shot(page, 'list-menu-closed-1440');
   await trigger.click();
   const item = page.locator('[data-tidy-item]');
-  await expect(item).toHaveText(/^Tidy\s*2$/);
+  await expect(item).toHaveText(/^Tidy\s*3$/);
   await expect(item).not.toHaveAttribute('data-disabled', /.*/);
   await expect(page.locator('[data-tidy-refresh]')).toHaveText('Refresh');
   await shot(page, 'list-menu-open-1440');
   await item.click();
   const pop = page.locator('[data-tidy-popover]');
   await expect(pop).toBeVisible();
-  await expect(pop.locator('.ib-tidy-top')).toHaveText(/Tidy\s*2 threads/);
+  await expect(pop.locator('.ib-tidy-top')).toHaveText(/Tidy\s*3 threads/);
   await expect(pop.locator(`[data-tidy-agent="${CLAUDE.session}"]`)).toContainText('Claude Code1');
-  await expect(pop.locator(`[data-tidy-agent="${PI.session}"]`)).toContainText('Pi1');
+  await expect(pop.locator(`[data-tidy-agent="${PI.session}"]`)).toContainText('Pi2');
   await expect(pop.locator(`[data-tidy-agent="${ENDED.session}"]`)).toHaveCount(0);
   // Nothing else in it: the agents, their counts, one Tidy button.
   await expect(pop.getByRole('button')).toHaveCount(1);
@@ -257,20 +265,31 @@ test('the list: ⋮ holds Tidy 2 and Refresh; the popover asks the live agents, 
   await expect(trigger).toBeFocused();
 });
 
-test('the Board: its ⋮ asks only the agent whose card has not moved', async () => {
+test('the Board: its ⋮ asks only the agents whose cards have not moved, and follows the Board\'s project filter', async () => {
   const { page } = world;
   await page.goto(`${world.url}#board`);
   const trigger = page.locator('.ib-bhead [data-tidy-menu]');
   await expect(trigger).toBeVisible();
   await shot(page, 'board-menu-closed-1440');
   await trigger.click();
-  await expect(page.locator('[data-tidy-item]')).toHaveText(/^Tidy\s*1$/);
+  // Every project: Claude Code's card in billing and Pi's in docs; not Pi's question (no card).
+  await expect(page.locator('[data-tidy-item]')).toHaveText(/^Tidy\s*2$/);
   await shot(page, 'board-menu-open-1440');
   await page.locator('[data-tidy-item]').click();
   const pop = page.locator('[data-tidy-popover]');
   await expect(pop.locator(`[data-tidy-agent="${CLAUDE.session}"]`)).toContainText('Claude Code1');
-  await expect(pop.locator(`[data-tidy-agent="${PI.session}"]`)).toHaveCount(0);
+  await expect(pop.locator(`[data-tidy-agent="${PI.session}"]`)).toContainText('Pi1');
   await shot(page, 'board-popover-1440');
+  await page.keyboard.press('Escape');
+
+  // Filtered to billing: only the card in view, so only Claude Code.
+  await page.goto(`${world.url}#board&project=${world.ids.billing}`);
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  await expect(page.locator('[data-tidy-item]')).toHaveText(/^Tidy\s*1$/);
+  await page.locator('[data-tidy-item]').click();
+  await expect(pop.locator(`[data-tidy-agent="${CLAUDE.session}"]`)).toContainText('Claude Code1');
+  await expect(pop.locator(`[data-tidy-agent="${PI.session}"]`)).toHaveCount(0);
   await page.keyboard.press('Escape');
 });
 
