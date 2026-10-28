@@ -233,8 +233,18 @@ function sweepDeadEntries(dir: string): void {
     const filePath = join(dir, entry);
     try {
       const { pid } = JSON.parse(readFileSync(filePath, "utf-8")) as { pid?: unknown };
-      if (typeof pid === "number" && !isAlive(pid)) removeFile(filePath);
+      if (typeof pid === "number" && isGone(pid)) removeFile(filePath);
     } catch {}
+  }
+}
+
+/** Only a process that does not exist: EPERM is one owned by someone else, alive. */
+function isGone(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "EPERM";
   }
 }
 

@@ -131,12 +131,17 @@ describe("in-process sessions (OpenCode)", () => {
     }
   });
 
-  test("registering removes entries whose process is gone, without waiting for a list", () => {
+  test("registering removes entries whose process is gone, and keeps live ones, without waiting for a list", () => {
     mkdirSync(opencodeDir(), { recursive: true });
-    const dead = deadPid();
-    writeFileSync(join(opencodeDir(), `${dead}-1.json`), JSON.stringify({ ...entry(1), pid: dead, host: "opencode" }));
+    const write = (pid: number, port: number) =>
+      writeFileSync(join(opencodeDir(), `${pid}-${port}.json`), JSON.stringify({ ...entry(port), pid, host: "opencode" }));
+    write(deadPid(), 1);
+    write(process.ppid, 3);
+    // pid 1 belongs to root: kill(1, 0) answers EPERM for anyone else, which is alive.
+    if (process.platform !== "win32") write(1, 4);
     const unlist = registerInProcessSession("opencode", entry(2));
-    expect(readdirSync(opencodeDir())).toEqual([`${process.pid}-2.json`]);
+    const kept = [`${process.pid}-2.json`, `${process.ppid}-3.json`, ...(process.platform !== "win32" ? ["1-4.json"] : [])];
+    expect(readdirSync(opencodeDir()).sort()).toEqual(kept.sort());
     unlist();
   });
 
