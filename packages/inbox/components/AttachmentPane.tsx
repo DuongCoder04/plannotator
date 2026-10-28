@@ -43,6 +43,7 @@ import {
 } from '../attachments';
 import { whenTime, formatBytes } from '../format';
 import { useRefRepo } from '../links';
+import { inboxMarkdownImageBase } from '../images';
 import { ImageAttachmentView } from './ImageAttachmentView';
 import type { WheelHintGate } from '@plannotator/ui/components/ImageZoomStage';
 import { VideoAttachmentView, type VideoAttachmentViewHandle } from './VideoAttachmentView';
@@ -1706,6 +1707,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 ref={viewerRef}
                 blocks={blocks}
                 markdown={view.text}
+                imageBaseDir={inboxMarkdownImageBase(attachment.id, effectiveVersion)}
                 questionDecisionLines={false}
                 annotations={annotations}
                 mentionSource={props.mentionSource}
