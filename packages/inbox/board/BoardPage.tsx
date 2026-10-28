@@ -1,10 +1,10 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
-import { INBOX_CARD_COLUMN_LABELS, INBOX_CARD_LIVE_COLUMNS, inboxCardMarkRef, type InboxCardColumn, type InboxCardMark, type InboxCardHistoryEntry, type InboxCardRef, type InboxCardWire, type InboxListRow } from '@plannotator/core/inbox-types';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
+import { INBOX_CARD_COLUMN_LABELS, INBOX_CARD_LIVE_COLUMNS, inboxCardMarkRef, type InboxCardColumn, type InboxCardMark, type InboxCardHistoryEntry, type InboxCardRef, type InboxCardWire, type InboxListRow, type InboxProjectRepo } from '@plannotator/core/inbox-types';
 import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
 import { inboxApi, type CardsModel, type ComposeSessionsModel, type ProjectFolder } from '../api';
 import { formatCount, fullTime, whenTime } from '../format';
 import { AuthorMark, Icon } from '../icons';
-import { Tip } from '../components/Tip';
+import { Tip, isTextCut } from '../components/Tip';
 import { DeliveryTick } from '../components/DeliveryTick';
 import { SidebarTrigger } from '../shell/sidebar';
 import { pageInFront } from '../sound';
@@ -16,11 +16,16 @@ import { RefMark, markLabel } from './RefMark';
 import { useCardMarks } from './useCardMarks';
 import { NewCardDialog, type NewCardInput } from './NewCardDialog';
 import { BoardIntro, useCopyBoardPrompt } from './BoardIntro';
+import { ProjectFilter } from './ProjectFilter';
+import { projectNames } from '../search/model';
 import {
   agentState,
   askWhereBody,
   boardCounts,
   boardLanes,
+  boardProjects,
+  cardsInProject,
+  BOARD_FILTER_ROW_BELOW,
   cardAge,
   cardLabel,
   cardLine,
@@ -33,6 +38,8 @@ import {
   moveSaid,
   sentTo,
   startBody,
+  youLinkLabel,
+  youThread,
   unseenDrops,
   type BoardView,
 } from './model';
@@ -71,8 +78,16 @@ export interface BoardPageProps {
   onSeeDrops: (ids: readonly string[]) => void;
   /** A thread of the opened card opens in the Inbox view, with a way back to the card. */
   onOpenThread: (card: InboxCardWire, threadId: string) => void;
+  /** Create thread (an opened card with no thread): compose to `session` (the card's agent, else a live session in its project), linked to the card on Send. */
+  onCreateThread: (card: InboxCardWire, session: string | null, opener: HTMLElement) => void;
   /** Read the lane cards' marks (their linked PR's or issue's state). False on a page opened over the tailnet (and in tests that do not serve them). */
   marks?: boolean;
+  /**
+   * The project the Board shows (`#board&project=prj_…`, the list's own key), or null for every card.
+   * Lanes, counts, Shipped, Icebox and the agents' drops all follow it.
+   */
+  project?: string | null;
+  onProject?: (project: string | null) => void;
 }
 
 /**
@@ -87,7 +102,13 @@ export interface BoardPageProps {
  */
 export function BoardPage(props: BoardPageProps) {
   const { model, view, phone } = props;
-  const cards = model?.cards ?? [];
+  const allCards = model?.cards ?? [];
+  const project = props.project ?? null;
+  // Filtered to a project: everything below reads only its cards (the opened card is found among all).
+  const cards = cardsInProject(allCards, project);
+  const names = useMemo(() => projectNames(props.projects), [props.projects]);
+  const offered = boardProjects(allCards, props.projects, project);
+  const projectName = project ? (names.get(project) ?? null) : null;
   const counts = boardCounts(cards);
   const drops = unseenDrops(cards);
   const [creating, setCreating] = useState<null | 'backlog' | 'send'>(null);
@@ -113,7 +134,7 @@ export function BoardPage(props: BoardPageProps) {
   }, []);
   const { model: sessions } = useComposeSessions(true);
   const live = sessions ? sessions.projects.flatMap((g) => g.sessions) : null;
-  const open = props.openCard ? (cards.find((c) => c.id === props.openCard) ?? null) : null;
+  const open = props.openCard ? (allCards.find((c) => c.id === props.openCard) ?? null) : null;
   const projectOf = (card: InboxCardWire) => props.projects.find((p) => p.id === card.project_id) ?? null;
 
   // When the opened card closes, focus that the panel took with it goes back to the card, in whatever
@@ -267,13 +288,15 @@ export function BoardPage(props: BoardPageProps) {
     dialogKey.current = key;
     try {
       const card = await dialogCardFor(input);
+      // Made in another project than the Board shows: the card is not on screen, so the words say where it went.
+      const elsewhere = project && card.project_id !== project ? ` in ${names.get(card.project_id) ?? 'another project'}` : '';
       if (input.mode === 'send' && input.to) {
         const sent = card.sent ? card : await sendCardTo(card, input.to, key);
         props.onChanged(sent);
-        setSaid(`Sent “${input.title}” to ${hostLabel(input.to.host)}.`);
+        setSaid(`Sent “${input.title}” to ${hostLabel(input.to.host)}${elsewhere}.`);
       } else {
         props.onChanged(card);
-        setSaid(`Added “${input.title}” to ${input.mode === 'icebox' ? 'Icebox' : 'Backlog'}.`);
+        setSaid(`Added “${input.title}” to ${input.mode === 'icebox' ? 'Icebox' : 'Backlog'}${elsewhere}.`);
       }
       setCreating(null);
       resetDialog();
@@ -302,6 +325,18 @@ export function BoardPage(props: BoardPageProps) {
 
   // The lane marks: the state of each card's linked PR or issue, for the cards on screen only.
   const pageRef = useRef<HTMLElement | null>(null);
+  // A narrow page (a narrow window, or a wide sidebar): the Project chip takes a row of its own under the
+  // header, as on a phone, so neither it nor the counts are cut to a few letters.
+  const [narrowHead, setNarrowHead] = useState(false);
+  useLayoutEffect(() => {
+    const el = pageRef.current;
+    if (!el || phone) return;
+    const measure = () => setNarrowHead(el.clientWidth > 0 && el.clientWidth < BOARD_FILTER_ROW_BELOW);
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(el);
+    return () => observer?.disconnect();
+  }, [phone, model !== null]);
   const marks = useCardMarks(cards, props.marks === true && model !== null, pageRef, `${view}|${phone}|${phone && open ? 'card' : ''}`);
   const markOf = (card: InboxCardWire): InboxCardMark | null => {
     const ref = inboxCardMarkRef(card);
@@ -319,14 +354,56 @@ export function BoardPage(props: BoardPageProps) {
     rowOf: props.rowOf,
     markOf,
     onOpen: (card) => props.onOpenCard(card.id),
+    onOpenThread: props.onOpenThread,
   };
+
+  // The project filter: the chip in the header, and the way back to every card when it hides them all.
+  // Shown once the cards span two projects (or one is picked): a Board of one project looks as it always did.
+  const showFilter = model !== null && props.onProject !== undefined && (offered.length > 1 || project !== null);
+  const filter = showFilter ? <ProjectFilter projects={offered} names={names} value={project} phone={phone} onChange={(next) => props.onProject?.(next)} /> : null;
+  const inProject = <b dir="auto">{projectName ?? 'this project'}</b>;
+  const showAll = (
+    <button
+      type="button"
+      className="ib-btn ib-sm"
+      onClick={() => {
+        props.onProject?.(null);
+        requestAnimationFrame(() => document.getElementById(titleId)?.focus());
+      }}
+      data-board-show-all=""
+    >
+      Show all projects
+    </button>
+  );
+  // Say a new filter once it lands (not on the first draw).
+  const saidProject = useRef(project);
+  useEffect(() => {
+    if (saidProject.current === project) return;
+    saidProject.current = project;
+    setSaid(project ? `Showing the cards in ${projectName ?? 'one project'}.` : 'Showing the cards in every project.');
+  }, [project, projectName]);
 
   let body: ReactNode;
   if (!model) body = props.error ? <div className="ib-error">{props.error}</div> : <div className="ib-bload" aria-busy="true" />;
+  else if (phone && project && cards.length === 0)
+    body = (
+      <div className="ib-bempty ib-bempty-in" data-board-empty="project">
+        <span>No cards in {inProject}</span>
+        {showAll}
+      </div>
+    );
   else if (phone) body = <PhoneBoard cards={cards} counts={counts} {...common} onRestore={(card) => move(card, { op: 'restore' })} />;
-  else if (view === 'shipped') body = <CardList title="Shipped" empty="Nothing shipped yet. A card goes here when its work is merged or live." cards={cards.filter((c) => c.column === 'shipped')} {...common} />;
+  else if (view === 'shipped')
+    body = (
+      <CardList
+        title="Shipped"
+        empty={project ? <>Nothing shipped in {inProject} yet.</> : 'Nothing shipped yet. A card goes here when its work is merged or live.'}
+        cards={cards.filter((c) => c.column === 'shipped')}
+        {...common}
+      />
+    );
   else if (view === 'icebox')
-    body = <IceboxPage cards={cards} {...common} onRestore={(card) => move(card, { op: 'restore' })} onSeeDrops={props.onSeeDrops} unseen={drops} />;
+    body = <IceboxPage cards={cards} inProject={project ? inProject : null} {...common} onRestore={(card) => move(card, { op: 'restore' })} onSeeDrops={props.onSeeDrops} unseen={drops} />;
   else body = <Lanes cards={cards} {...common} openColumn={open?.column ?? null} onMove={(card, column) => void move(card, { op: 'move', column })} />;
 
   const titleId = useId();
@@ -346,6 +423,7 @@ export function BoardPage(props: BoardPageProps) {
       onSend={() => openSend(open)}
       onChanged={props.onChanged}
       onOpenThread={(threadId) => props.onOpenThread(open, threadId)}
+      onCreateThread={(session, opener) => props.onCreateThread(open, session, opener)}
     />
   ) : null;
 
@@ -372,6 +450,7 @@ export function BoardPage(props: BoardPageProps) {
             <h1 id={titleId} tabIndex={-1}>
               {view === 'shipped' ? 'Shipped' : 'Icebox'}
             </h1>
+            {!narrowHead && filter}
           </>
         ) : (
           <>
@@ -389,6 +468,7 @@ export function BoardPage(props: BoardPageProps) {
                 )}
               </span>
             )}
+            {!phone && !narrowHead && filter}
           </>
         )}
         <span className="ib-bsp" />
@@ -413,6 +493,7 @@ export function BoardPage(props: BoardPageProps) {
         )}
         {(view === 'lanes' || phone) && <NewCardButton disabled={props.projects.length === 0 && !(live && live.length > 0)} phone={phone} onOpen={() => openCreate('backlog')} />}
       </div>
+      {(phone || narrowHead) && filter && <div className="ib-bfbar">{filter}</div>}
       {model && drops.length > 0 && view !== 'icebox' && (
         <DroppedNotice drops={drops} onRestore={(card) => move(card, { op: 'restore' })} onSeen={() => props.onSeeDrops(drops.map((card) => card.id))} onOpenIcebox={phone ? null : () => props.onView('icebox')} />
       )}
@@ -424,7 +505,13 @@ export function BoardPage(props: BoardPageProps) {
       <div className="ib-bmain">
         {body}
         {panel}
-        {model && view === 'lanes' && !phone && liveCount === 0 && !open && (
+        {model && view === 'lanes' && !phone && liveCount === 0 && !open && project !== null && (
+          <div className="ib-bempty" data-board-empty="project">
+            <span>Nothing in flight in {inProject}</span>
+            {showAll}
+          </div>
+        )}
+        {model && view === 'lanes' && !phone && liveCount === 0 && !open && project === null && (
           <div className="ib-bempty" data-board-empty="">
             No cards yet
             <button type="button" className="ib-btn ib-sm" onClick={() => void promptCopy.copy()} data-board-empty-copy="">
@@ -498,6 +585,8 @@ interface CardCommon {
   /** The card's lane mark (its linked PR or issue), null when it links neither. */
   markOf: (card: InboxCardWire) => InboxCardMark | null;
   onOpen: (card: InboxCardWire) => void;
+  /** The "You: …" line's way in: the thread where the person makes the call (`youThread`). */
+  onOpenThread: (card: InboxCardWire, threadId: string) => void;
 }
 
 function NewCardButton({ disabled, phone, onOpen }: { disabled: boolean; phone: boolean; onOpen: () => void }) {
@@ -624,11 +713,21 @@ const LANE_EMPTY: Partial<Record<InboxCardColumn, string>> = {
   your_review: 'Nothing waits on your review.',
 };
 
+/** A lane card's title is cut (clamped at three lines, or a word cut at the edge): its button overflows. */
+const titleCut = (trigger: Element) => isTextCut(trigger.closest('.ib-bc-main'));
+
 /**
- * One card, variant C "Lean": the agent's mark and the title; then "You: …"
- * (the person's columns), "Sent to <agent>" with the delivery tick (a card
- * the person sent, until it moves), or the agent's last word; and how long
- * ago anyone last wrote to it. Bold while unread. A button: it opens the card.
+ * One card, "Title row" (approval board-lane-card, r1, 2026-10-27): the
+ * title, with the linked PR's or issue's mark, the agent's small round mark (a
+ * dashed ring for the person's card) and how long ago anyone last wrote to it
+ * at the right of its first line. A second line only when the person owes
+ * something ("You: …", in the person's columns) or a send is pending ("Sent to
+ * <agent>" with the delivery tick, until it moves). The agent's last word is
+ * not on the lane card: the opened card has it. Bold while unread. The title
+ * is the button that opens the card (a click anywhere else on the card does
+ * too); "You: …" is its own button, to the thread where the person makes the
+ * call (`youThread`); with no thread linked it is plain words, and a click on
+ * it opens the card.
  */
 function BoardCard({
   card,
@@ -640,6 +739,7 @@ function BoardCard({
   rowOf,
   markOf,
   onOpen,
+  onOpenThread,
   draggable = false,
   dragging = false,
   onDragStart,
@@ -652,13 +752,24 @@ function BoardCard({
   const age = cardAge(card.heard_at, now);
   const mark = markOf(card);
   const label = cardLabel(card, unread, now) + (sent ? `. Sent to ${sent}` : '') + (mark ? `. ${markLabel(mark)}` : '');
-  // Nothing to say under the title (a shipped card whose "You:" went with the move, a card nobody spoke
-  // on): one line, the age beside the title, never an empty second line.
-  const oneLine = !sent && !line && !mark;
-  const ageTip = (
-    <Tip content={`Last heard ${fullTime(card.heard_at)}`}>
-      <span className="ib-bc-age">{age.short.replace(' ago', '')}</span>
-    </Tip>
+  const thread = line?.you ? youThread(card, rowOf) : null;
+  // "Title row" (approval board-lane-card, r1): a card is its title row, the marks and the age at its right.
+  // A second line only when the person owes something ("You: …") or a send is pending ("Sent to …"); the
+  // agent's last word is left off the lane card and stays in the opened card. Never an empty second line.
+  const oneLine = !sent && !line?.you;
+  const owner = cardOwnerName(card);
+  const meta = (
+    <span className="ib-bc-meta">
+      {mark && <RefMark mark={mark} />}
+      <Tip content={owner === 'You' ? 'Your card' : owner}>
+        <span className="ib-bc-who" data-host={card.agent?.kind === 'agent' ? card.agent.host : 'you'}>
+          {card.agent ? <AuthorMark author={card.agent} /> : <span className="ib-lane-dot ib-bc-yourdot" data-col="backlog" aria-hidden="true" />}
+        </span>
+      </Tip>
+      <Tip content={`Last heard ${fullTime(card.heard_at)}`}>
+        <span className="ib-bc-age">{age.short.replace(' ago', '')}</span>
+      </Tip>
+    </span>
   );
   return (
     <li
@@ -670,6 +781,11 @@ function BoardCard({
       data-open={openId === card.id ? '' : undefined}
       data-sent={sent ? '' : undefined}
       draggable={draggable && !phone ? true : undefined}
+      onClick={(event) => {
+        // The card's buttons do their own thing; a click anywhere else on it opens the card, as its title does.
+        if ((event.target as Element).closest('button, a')) return;
+        onOpen(card);
+      }}
       onDragStart={(event) => {
         if (!draggable || phone) return;
         event.dataTransfer.effectAllowed = 'move';
@@ -678,45 +794,39 @@ function BoardCard({
       }}
       onDragEnd={onDragEnd}
     >
-      <button type="button" className="ib-bc-main" aria-label={label} aria-current={openId === card.id || undefined} data-card-open="" onClick={() => onOpen(card)}>
-        <span className="ib-bc-top">
-          {card.agent ? (
-            <AuthorMark author={card.agent} />
-          ) : (
-            <span className="ib-mk ib-bc-you" aria-hidden="true">
-              <span className="ib-lane-dot ib-bc-yourdot" data-col="backlog" />
-            </span>
-          )}
-          <Tip content={card.title} cut>
+      <span className="ib-bc-top">
+        <button type="button" className="ib-bc-main" aria-label={label} aria-current={openId === card.id || undefined} data-card-open="" onClick={() => onOpen(card)}>
+          {meta}
+          {/* The clamp (three lines) is on the button, not on the inline title: measure the button. */}
+          <Tip content={card.title} when={titleCut}>
             <span className="ib-bc-t" dir="auto">
               {card.title}
             </span>
           </Tip>
-          {oneLine && <span className="ib-bc-agetop">{ageTip}</span>}
-        </span>
-        {!oneLine && (
-          <span className="ib-bc-bot">
-            <span className="ib-bc-line" dir="auto">
-              {sent ? (
-                <span className="ib-bc-sent">
-                  {delivery ? <DeliveryTick delivery={delivery} /> : <Icon name="clock" size={13} />}
-                  <span className="ib-bc-sentt">Sent to {sent}</span>
-                </span>
-              ) : line ? (
-                line.you ? (
-                  <>
-                    <b className="ib-bc-youw">You:</b> {line.text}
-                  </>
-                ) : (
-                  line.text
-                )
-              ) : null}
-            </span>
-            {mark && <RefMark mark={mark} />}
-            {ageTip}
+        </button>
+      </span>
+      {!oneLine && (
+        <span className="ib-bc-bot">
+          <span className="ib-bc-line" dir="auto">
+            {sent ? (
+              <span className="ib-bc-sent">
+                {delivery ? <DeliveryTick delivery={delivery} /> : <Icon name="clock" size={13} />}
+                <span className="ib-bc-sentt">Sent to {sent}</span>
+              </span>
+            ) : line?.you && thread ? (
+              <button type="button" className="ib-bc-youlink" data-card-you-link={thread} aria-label={youLinkLabel(line.text)} onClick={() => onOpenThread(card, thread)}>
+                <b className="ib-bc-youw">You:</b> <span className="ib-bc-yout">{line.text}</span>
+                <Icon name="arrowUpRight" size={12} />
+              </button>
+            ) : (
+              // No thread to go to: plain words (a click on them opens the card, as anywhere on it), no second tab stop.
+              <>
+                <b className="ib-bc-youw">You:</b> {line?.text}
+              </>
+            )}
           </span>
-        )}
-      </button>
+        </span>
+      )}
     </li>
   );
 }
@@ -771,7 +881,7 @@ function DroppedNotice({
 }
 
 /** A list of cards (Shipped, Icebox), newest move first. */
-function CardList({ title, empty, cards, ...common }: CardCommon & { title: string; empty: string; cards: readonly InboxCardWire[] }) {
+function CardList({ title, empty, cards, ...common }: CardCommon & { title: string; empty: ReactNode; cards: readonly InboxCardWire[] }) {
   const id = useId();
   return (
     <section className="ib-blist" aria-labelledby={id}>
@@ -798,11 +908,19 @@ function CardList({ title, empty, cards, ...common }: CardCommon & { title: stri
  */
 function IceboxPage({
   cards,
+  inProject,
   onRestore,
   onSeeDrops,
   unseen,
   ...common
-}: CardCommon & { cards: readonly InboxCardWire[]; onRestore: (card: InboxCardWire) => unknown; onSeeDrops: (ids: readonly string[]) => void; unseen: readonly InboxCardWire[] }) {
+}: CardCommon & {
+  cards: readonly InboxCardWire[];
+  /** Filtered to a project: its name, for the empty lines. */
+  inProject: ReactNode;
+  onRestore: (card: InboxCardWire) => unknown;
+  onSeeDrops: (ids: readonly string[]) => void;
+  unseen: readonly InboxCardWire[];
+}) {
   // Opening Dropped is looking at it: the drops this page drew are marked seen, but only while the
   // page is in front (a tab in the background, or a window without focus, waits until it is).
   const unseenKey = unseen.map((card) => card.id).join(' ');
@@ -830,13 +948,18 @@ function IceboxPage({
   const dropped = cards.filter((c) => c.column === 'dropped').sort((a, b) => (b.dropped?.at ?? b.moved_at).localeCompare(a.dropped?.at ?? a.moved_at));
   return (
     <div className="ib-blists">
-      <CardList title="Icebox" empty="Nothing on ice. Put a card here to set it aside: no agent is told and nothing moves it." cards={iced} {...common} />
-      <DroppedList cards={dropped} onRestore={onRestore} />
+      <CardList
+        title="Icebox"
+        empty={inProject ? <>Nothing on ice in {inProject}.</> : 'Nothing on ice. Put a card here to set it aside: no agent is told and nothing moves it.'}
+        cards={iced}
+        {...common}
+      />
+      <DroppedList cards={dropped} onRestore={onRestore} inProject={inProject} />
     </div>
   );
 }
 
-function DroppedList({ cards, onRestore }: { cards: readonly InboxCardWire[]; onRestore: (card: InboxCardWire) => unknown }) {
+function DroppedList({ cards, onRestore, inProject = null }: { cards: readonly InboxCardWire[]; onRestore: (card: InboxCardWire) => unknown; inProject?: ReactNode }) {
   const id = useId();
   return (
     <section className="ib-blist" aria-labelledby={id} data-dropped-list="">
@@ -866,7 +989,7 @@ function DroppedList({ cards, onRestore }: { cards: readonly InboxCardWire[]; on
           })}
         </ul>
       ) : (
-        <p className="ib-lane-empty">Nothing dropped. A dropped card is kept here and can be restored.</p>
+        <p className="ib-lane-empty">{inProject ? <>Nothing dropped in {inProject}.</> : 'Nothing dropped. A dropped card is kept here and can be restored.'}</p>
       )}
     </section>
   );
@@ -965,6 +1088,7 @@ function OpenedCard({
   onSend,
   onChanged,
   onOpenThread,
+  onCreateThread,
 }: {
   card: InboxCardWire;
   projectName: string;
@@ -979,14 +1103,21 @@ function OpenedCard({
   onSend: () => void;
   onChanged: (card?: InboxCardWire) => void;
   onOpenThread: (threadId: string) => void;
+  onCreateThread: (session: string | null, opener: HTMLElement) => void;
 }) {
   const [history, setHistory] = useState<InboxCardHistoryEntry[] | null>(null);
+  // The card's own project's repo (not the window's): its text links `#123` there.
+  const [repo, setRepo] = useState<InboxProjectRepo | null>(null);
   const [refs, setRefs] = useState<{ ref: InboxCardRef; result: ForgeRefCardResult }[] | null>(null);
   useEffect(() => {
     let alive = true;
     inboxApi
       .card(card.id)
-      .then((answer) => alive && setHistory(answer.history))
+      .then((answer) => {
+        if (!alive) return;
+        setHistory(answer.history);
+        setRepo(answer.repo ?? null);
+      })
       .catch(() => alive && setHistory([]));
     return () => {
       alive = false;
@@ -1009,7 +1140,7 @@ function OpenedCard({
     };
   }, [card.id, refKey]);
   const agentSession = card.agent?.kind === 'agent' ? card.agent.session : null;
-  // "Ask where this is": the card's agent while it is live, else a live session in the card's project.
+  // "Ask for an update" and "Create thread": the card's agent while it is live, else a live session in the card's project.
   const askTarget = (() => {
     if (!sessions) return null;
     const own = findTarget(sessions.projects, agentSession);
@@ -1045,6 +1176,7 @@ function OpenedCard({
       history={history}
       refs={refs}
       projectName={projectName}
+      repo={repo}
       state={agentState(agentSession, live)}
       canAsk={askTarget !== null}
       askNote={
@@ -1102,6 +1234,7 @@ function OpenedCard({
         }
       }}
       onOpenThread={onOpenThread}
+      onCreateThread={(opener) => onCreateThread(askTarget?.session ?? null, opener)}
     />
   );
 }

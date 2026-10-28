@@ -2511,6 +2511,12 @@ Approval "inbox-decision-mode", agent contract lines (2026-10-24). All optional 
 
 - **`QuestionPictureTiles`** (exported from `components/blocks/QuestionBlock`): the question card's picture-choice tile grid as a component of its own, so a host that draws its own decision surface draws the same tile (the Plannotator Inbox's decision mode does). Props: `choices` (`QuestionPictureTileChoice`: `label`, `description?`, `recommended?`, `image?`), `urls` (each choice's resolved picture URL, null for none), `selected`, `inputType` (`radio` / `checkbox`), `name`, `readOnly?`, `onPick(label, checked)` (the tile's input changed: the picture and the label pick through it), `onZoom?(url, alt)` (the separate zoom button; absent, no button; it never picks), `onPictureError?`, `heldTitle?`, `renderText(text)`, and host seams `labelProps?(label)`, `inputProps?(label)` (the card passes its drag guard; decision mode answers on a click or Enter) `renderBadges?(choice, index)` (default: the Recommended tag) and `pictureBadge?(choice)` (a label over the picture, see above). New hooks for host CSS: `[data-question-tile-recommended]`, `[data-question-tile-picture]`, `[data-question-tile-caption]`, `[data-question-tile-label]`, `[data-question-tile-description]`. The card draws exactly what it drew before (same classes and attributes, plus those hooks).
 
+## Hover cards outside the Inbox: `onlyWithData`, `RefHoverCards`, `refCardRouteTransport` (next ui release; additive, no core change)
+
+- **`useRefHoverCards(rootRef, { onlyWithData })`** (default false, so the Inbox's card is unchanged): true opens a card only once the transport answered `ok`, with no loading skeleton and no failure card; a hover or focus that leaves first shows nothing, and a tap on a touch screen follows the link (no sheet). Plannotator's plan, annotate and review apps pass it, so a person without gh / glab sees links exactly as before.
+- **`RefHoverCards`** (`components/RefHoverCard`): the hook as a component (`rootRef`, `delayMs?`, `onlyWithData?`), for a host whose root element is not mounted at its first render (behind a loading state): rendered inside that root, its listeners attach once the element exists.
+- **`refCardRouteTransport(route)`** (`utils/refCard`): a `RefCardTransport` over a server route answering like Plannotator's `GET /api/ref` (`?url=` → `ForgeRefCardResult`); a `404` turns it off for the life of the page.
+
 ## Rich-text Copy (#1972, #2191; next ui release; additive, off unless a host opts in)
 
 - **`configurePlannotatorUI({ richCopy })`** (default false; `utils/richCopyPolicy`): with it on, the selection toolbar's one Copy button (`Viewer`, `HtmlViewer`; the same copy icon and "Copy" tooltip) copies a text selection as rich text, `text/html` plus `text/plain` in one clipboard write, so a plain field still pastes plain text; Copy then shows also where `hideCopyButton` hid it (the Viewer on desktop). There is no second button. Off, Copy is exactly as before: plain text, nothing built. Plannotator's plan review, annotate, code review and Inbox window turn it on. No keyboard shortcut; Ctrl+C / Cmd+C and Vim `y` are unchanged.
@@ -2518,6 +2524,17 @@ Approval "inbox-decision-mode", agent contract lines (2026-10-24). All optional 
 - **`utils/richClipboard`** (new): `copyRichSelection`, `copyRichTextToClipboard`, `selectionRangeToHtml`, `richCopySourceFromRange`, `sanitizeRichHtml`, `plainTextClipboardHtml`, `isLoopbackHostname`, the caps `MAX_RICH_CLIPBOARD_HTML_LENGTH` (256 KiB, the bridge) and `MAX_RICH_CLIPBOARD_OUTPUT_LENGTH` (512 KiB, the clipboard), and `utils/richClipboardLists`. The copied HTML is rebuilt from an allowlist: structural and inline tags, `href` (http, https, mailto, tel; never one on the page's origin or a loopback host), list `start` / `value`, table spans and scope, `dir`; no `title`, script, style, handler, class or `data-*`.
 - **Bridge** (additive, no `BRIDGE_PROTOCOL_VERSION` bump): the text-selection message gains `richCopy: true` and `textCut`; the parent posts `rich-copy-request` `{ id }` and the bridge answers `rich-copy` `{ id, html, text, truncated, tooLarge }`. An older bridge asset sends no `richCopy`, so its Copy stays plain text.
 - **`BlockRenderer`** list items carry `data-rich-list-level`, `data-rich-list-kind`, `data-rich-list-index` and `data-rich-list-checked` (read by the list rebuild).
+
+## The Inbox thread's rules in core: `./inbox-folding`, `./inbox-delivery-line`, `./inbox-open-questions`, `./inbox-format` (next core release; additive, no ui change)
+
+Slice 1 of the Inbox thread extract (plan record, not in this repo). These pure modules moved from `packages/inbox` into core **unchanged**, so a host of the shared thread parts can use the Inbox's own rules. Only their import specifiers changed: `@plannotator/core/x` became `./x`, and `./format` became `./inbox-format`. Each is browser-safe and imports only core. The old paths (`packages/inbox/folding.ts`, `deliveryLine.ts`, `openQuestions.ts`, `format.ts`) are one-line `export *` shims, so every Inbox import and test runs unedited. No ui export changes yet. **Experimental** until Workspaces ships on them: the names and shapes follow the Inbox and may still change with it.
+
+- **`./inbox-folding`**: what folds when a thread opens and what a folded line says (`lookBoundary`, `planFolds`, `foldSnippet`, `holdingsOf` …).
+- **`./inbox-delivery-line`**: the words under the person's last reply (`deliveryLine`, `deliveryText`, `restartNote`, `RecipientConnection` …). It is not named `inbox-delivery` because `inbox-delivery.ts` already exists.
+- **`./inbox-open-questions`**: the open questions list's rules (`threadOpenQuestions`, `openQuestionsLabel`, `skipSelection` …). It needs `./inbox-format`'s `formatCount`.
+- **`./inbox-format`**: display helpers with fixed `en-US` `Intl` formats (`shortTime`, `whenTime`, `fullTime`, `formatCount`, `agentName` …).
+
+Publish core first, then ui, as always. These subpaths need no ui bump until ui imports them.
 
 ## The law (guardrails for anyone editing `@plannotator/ui`)
 

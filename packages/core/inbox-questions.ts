@@ -56,10 +56,12 @@ import {
   type QuestionKind,
   type ParsedQuestion,
   questionLabelWithoutImage,
+  questionChoiceWithoutRecommendedMarker,
   parseQuestionChoiceText,
 } from "./question-block";
-import { readInboxQuestionKind } from "./inbox-types";
+import { INBOX_ROW_WAITS_MAX, INBOX_ROW_WAIT_ENTRY_MAX, INBOX_ROW_WAIT_HOLDS_MAX, INBOX_ROW_WAIT_TEXT_MAX, readInboxQuestionKind } from "./inbox-types";
 import type {
+  InboxRowWait,
   InboxQuestionContract,
   InboxQuestion,
   InboxQuestionFacts,
@@ -86,17 +88,23 @@ const HOLDS_UP_RE = /^holds up\s*:\s*(.*)$/i;
 const CLOSE_RE = /^\s*:::\s*$/;
 
 /**
- * The question blocks of a message body, in block order. A body is read like
- * a comment: no frontmatter. A body with no block (or none that parses)
- * answers [].
+ * The keys of a body's questions written with a recommended marker in a
+ * choice label or description (`Foo (Recommended)`, `[Recommended] Foo`),
+ * whether or not the block also has a `Recommended:` line: the Inbox nudges
+ * the agent to keep labels plain.
  */
-export function parseInboxQuestionBlocks(markdown: string): ParsedInboxQuestion[] {
+export function inboxQuestionKeysWithRecommendedMarker(markdown: string): string[] {
+  return questionBlocksOf(markdown).flatMap(({ key, parsed }) => (parsed.recommendedMarker ? [key] : []));
+}
+
+/** Each question block of a body, parsed as the Inbox reads it. */
+function questionBlocksOf(markdown: string): { key: string; startLine: number; parsed: ParsedQuestion }[] {
   if (typeof markdown !== "string" || !markdown.includes(":::question")) return [];
   // Each block is read over the markdown with reference links resolved, as
   // the renderer reads it, so a prompt written with a reference link keeps
   // the key the card computes.
   const resolved = resolveReferenceLinks(markdown).split("\n");
-  const out: ParsedInboxQuestion[] = [];
+  const out: { key: string; startLine: number; parsed: ParsedQuestion }[] = [];
   for (const location of findQuestionBlocks(markdown, { frontmatter: false })) {
     const lines = resolved
       .slice(location.startLine - 1, location.endLine)
@@ -106,7 +114,20 @@ export function parseInboxQuestionBlocks(markdown: string): ParsedInboxQuestion[
     const inner = lines.slice(1, CLOSE_RE.test(lines.at(-1) ?? "") && lines.length > 1 ? -1 : undefined);
     // The Inbox records no decisions: a `Decision:` line is context.
     const parsed = parseQuestionBlock(location.directiveKind, inner.join("\n"), { decisionLines: false });
-    if (parsed === null) continue;
+    if (parsed !== null) out.push({ key: location.key, startLine: location.startLine, parsed });
+  }
+  return out;
+}
+
+/**
+ * The question blocks of a message body, in block order. A body is read like
+ * a comment: no frontmatter. A body with no block (or none that parses)
+ * answers [].
+ */
+export function parseInboxQuestionBlocks(markdown: string): ParsedInboxQuestion[] {
+  const out: ParsedInboxQuestion[] = [];
+  for (const { key, startLine, parsed } of questionBlocksOf(markdown)) {
+    const location = { key, startLine };
     const context = parsed.context.trim();
     out.push({
       key: location.key,
@@ -279,6 +300,11 @@ function storedChoices(record: Pick<InboxQuestionRecord, "parsed">): QuestionCho
       const rebuilt = parseQuestionChoiceText(`${choice.label} — ${choice.description}`).label;
       if (rebuilt && rebuilt !== choice.label && !out.includes(rebuilt)) out.push(rebuilt);
     }
+    // A label stored with a recommended marker in it (a record from before
+    // the parser read `Foo (Recommended)` as the recommendation) also
+    // answers to the label without it, which the card reads today.
+    const unmarked = questionChoiceWithoutRecommendedMarker({ label: choice.label })?.label;
+    if (unmarked && unmarked !== choice.label && !out.includes(unmarked)) out.push(unmarked);
     return out;
   });
   const headOwners = new Map<string, Set<number>>();
@@ -415,10 +441,19 @@ export function summarizeInboxQuestions(questions: readonly InboxQuestion[]): In
   let open = 0;
   let picked = 0;
   let actions = 0;
+  let staged = 0;
   let stopped = false;
   const holdsUp: string[] = [];
   let prompt: string | null = null;
   for (const q of questions) {
+    // A Done or Can't do it waiting in the reply draft: the agent is still stopped on it, so it keeps the
+    // row's Stopped / Holds up (approval "inbox-action-items-in-reply", Q2). Not open, not a pick.
+    if (q.kind === "action" && q.state === "picked" && q.action_result?.by === "person" && q.action_result.staged === true && !q.orphaned) {
+      staged += 1;
+      if (q.stopped !== null) stopped = true;
+      for (const name of q.holds_up) if (!holdsUp.includes(name)) holdsUp.push(name);
+      continue;
+    }
     // The list's rule: a kind this build does not know still counts (see inboxQuestionWaitsForList).
     if (!inboxQuestionWaitsForList(q)) continue;
     if (q.state === "picked") picked += 1;
@@ -429,7 +464,32 @@ export function summarizeInboxQuestions(questions: readonly InboxQuestion[]): In
     for (const name of q.holds_up) if (!holdsUp.includes(name)) holdsUp.push(name);
     if (prompt === null) prompt = q.prompt;
   }
-  return { open, picked, stopped, holds_up: holdsUp, prompt, actions };
+  return { open, picked, stopped, holds_up: holdsUp, prompt, actions, ...(staged > 0 ? { staged } : {}) };
+}
+
+/**
+ * What a row's Stopped / Holds up badge holds (approval "inbox-row-badges"):
+ * the open questions and action items that stop the agent or hold something
+ * up, in the order given (thread order), capped. The same open rule as the
+ * badges' summary (`summarizeInboxQuestions`), so the card never lists a
+ * question the badge does not count.
+ */
+export function inboxRowWaits(questions: readonly InboxQuestion[]): InboxRowWait[] {
+  const out: InboxRowWait[] = [];
+  for (const q of questions) {
+    if (out.length >= INBOX_ROW_WAITS_MAX) break;
+    if (!inboxQuestionWaitsForList(q) || q.state !== "open") continue;
+    if (q.stopped === null && q.holds_up.length === 0) continue;
+    out.push({
+      message_id: q.message_id,
+      key: q.key,
+      position: q.position,
+      prompt: cutText(q.prompt, INBOX_ROW_WAIT_TEXT_MAX),
+      stopped: q.stopped === null ? null : cutText(q.stopped, INBOX_ROW_WAIT_TEXT_MAX),
+      holds_up: q.holds_up.slice(0, INBOX_ROW_WAIT_HOLDS_MAX).map((h) => cutText(h, INBOX_ROW_WAIT_ENTRY_MAX)),
+    });
+  }
+  return out;
 }
 
 // ─────────────────────────────── Picks ───────────────────────────────

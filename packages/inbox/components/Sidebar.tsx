@@ -60,15 +60,6 @@ export interface SidebarProps {
   /** Compose (a new message to a connected agent): the icon button beside Search. Absent: no button. */
   onCompose?: (opener: HTMLElement) => void;
   /**
-   * Decision mode (experimental): how many decisions wait across threads. The
-   * "Decide N" row shows under Inbox whenever this is above 0 (with
-   * `onDecide`); the caller applies the minimum, passing 0 below two
-   * decisions (`decideEntryShown`, `DECIDE_ENTRY_MIN` in decisions/entry.tsx).
-   * Absent or 0: no row.
-   */
-  decideCount?: number;
-  onDecide?: () => void;
-  /**
    * The threads pinned to the sidebar (approval "inbox-pinned-threads"), in
    * pin order: the Pinned section above Projects. None (or an older Inbox
    * that keeps no pins): no section at all.
@@ -111,6 +102,8 @@ export interface SidebarProps {
   mcpCommand?: readonly string[] | null;
   /** The foot's Copy prompt pill (default true). The onboarding tour's sidebar leaves it out: it is for the person's own agents. */
   connectPrompt?: boolean;
+  /** Opens the Feedback dialog (components/FeedbackDialog.tsx): the row above Settings. Absent: no row. */
+  onFeedback?: () => void;
 }
 
 /**
@@ -290,13 +283,6 @@ export function Sidebar(props: SidebarProps) {
           Board
         </button>
       )}
-      {(props.decideCount ?? 0) > 0 && props.onDecide && (
-        <button type="button" className="ib-nav" onClick={pick(props.onDecide)} aria-haspopup="dialog" data-decide-nav="">
-          <Icon name="todo" />
-          Decide
-          <span className="ib-n">{formatCount(props.decideCount ?? 0)}</span>
-        </button>
-      )}
       {(props.draftsCount ?? 0) > 0 && props.onDrafts && (
         <button
           type="button"
@@ -393,7 +379,7 @@ export function Sidebar(props: SidebarProps) {
         </div>
       </div>
       <div className="ib-side-foot">
-        {/* Copy prompt first, then the Update button or "What's new in X", then the Settings row. */}
+        {/* Copy prompt first, then the Update button or "What's new in X", then Feedback and the Settings row. */}
         {props.connectPrompt !== false && <CopyConnectPrompt mcpCommand={props.mcpCommand ?? null} />}
         <UpdateButton
           update={props.update}
@@ -406,6 +392,12 @@ export function Sidebar(props: SidebarProps) {
           <CheckFailingRow failing={props.checkFailing} onOpen={pick(props.onCheckFailing)} />
         )}
         {restartAgents.total > 0 && props.onRestartSessions && <RestartSessionsRow agents={restartAgents} onOpen={pick(props.onRestartSessions)} />}
+        {props.onFeedback && (
+          <button type="button" className="ib-nav" aria-haspopup="dialog" data-feedback-nav="" onClick={pick(props.onFeedback)}>
+            <Icon name="comment" />
+            Feedback
+          </button>
+        )}
         {/* Two controls side by side, never one inside the other: the row opens Settings, the icon flips light and dark. */}
         <div className="ib-setrow">
           <button

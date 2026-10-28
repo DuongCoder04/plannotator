@@ -226,6 +226,17 @@ export interface UseLinkedDocReturn {
     filepath: string,
     update: (annotations: Annotation[]) => Annotation[],
   ) => boolean;
+  /**
+   * Put recovered comments back on documents other than the active one, by
+   * path (a restored draft that carried several documents). A cached document
+   * gains the entries whose id (attachments: path) it does not hold yet; a
+   * document not opened in this session gets a cache entry, so its comments
+   * count, list and export at once, and show when it is opened. Returns the
+   * paths not taken: the active document's comments are host state.
+   */
+  restoreStoredDocuments: (
+    documents: ReadonlyArray<{ path: string; annotations: Annotation[]; globalAttachments: ImageAttachment[] }>,
+  ) => string[];
   /** Snapshot the root document plus linked-doc cache for cross-document session swaps */
   snapshotSession: () => LinkedDocSessionState;
   /** Restore a root document plus linked-doc cache, closing any active linked document */
@@ -803,6 +814,50 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
     return true;
   }, [linkedDoc, sourceFilePath]);
 
+  const restoreStoredDocuments = useCallback((
+    documents: ReadonlyArray<{ path: string; annotations: Annotation[]; globalAttachments: ImageAttachment[] }>,
+  ): string[] => {
+    const notTaken: string[] = [];
+    let changed = false;
+    for (const doc of documents) {
+      const wanted = normalizeBrowserPath(doc.path);
+      if (linkedDoc && wanted === normalizeBrowserPath(linkedDoc.filepath)) {
+        notTaken.push(doc.path);
+        continue;
+      }
+      let cacheKey: string | undefined;
+      for (const key of docCache.current.keys()) {
+        if (normalizeBrowserPath(key) === wanted) { cacheKey = key; break; }
+      }
+      const cached = cacheKey === undefined ? undefined : docCache.current.get(cacheKey);
+      const heldIds = new Set((cached?.annotations ?? []).map((a) => a.id));
+      const heldPaths = new Set((cached?.globalAttachments ?? []).map((g) => g.path));
+      const annotations = doc.annotations.filter((a) => !heldIds.has(a.id));
+      const globalAttachments = doc.globalAttachments.filter((g) => !heldPaths.has(g.path));
+      if (annotations.length === 0 && globalAttachments.length === 0) continue;
+      docCache.current.set(cacheKey ?? doc.path, {
+        ...(cached ?? {}),
+        annotations: [...(cached?.annotations ?? []), ...annotations],
+        globalAttachments: [...(cached?.globalAttachments ?? []), ...globalAttachments],
+      });
+      changed = true;
+    }
+    if (changed) {
+      // Same accounting as updateStoredAnnotations.
+      let total = 0;
+      for (const [fp, entry] of docCache.current.entries()) {
+        if (linkedDoc && fp === linkedDoc.filepath) continue;
+        total += entry.annotations.length + entry.globalAttachments.length;
+      }
+      if (linkedDoc && savedPlanState.current) {
+        total += savedPlanState.current.annotations.length + savedPlanState.current.globalAttachments.length;
+      }
+      setDocAnnotationCount(total);
+      setStoreRevision((r) => r + 1);
+    }
+    return notTaken;
+  }, [linkedDoc]);
+
   const getDocAnnotations = useCallback((): Map<string, CachedDocState> => {
     const result = new Map(docCache.current);
     // Include stashed original-file annotations when viewing a linked doc
@@ -871,6 +926,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
     getDocAnnotations,
     getFeedbackDocuments,
     updateStoredAnnotations,
+    restoreStoredDocuments,
     snapshotSession,
     restoreSession,
     docAnnotationCount,

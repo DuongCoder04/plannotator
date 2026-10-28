@@ -50,7 +50,8 @@ export type PromptRuntime =
   | "codex"
   | "gemini-cli"
   | "oh-my-pi"
-  | "mistral-vibe";
+  | "mistral-vibe"
+  | "qwen-code";
 
 interface PromptSectionConfig {
   [key: string]: string | Partial<Record<PromptRuntime, PromptSectionOverrides>> | undefined;
@@ -225,10 +226,11 @@ export interface PlannotatorConfig {
    * previous install already wired. Overridden by the
    * PLANNOTATOR_SKIP_CODEX_INSTALL / PLANNOTATOR_SKIP_GEMINI_INSTALL /
    * PLANNOTATOR_SKIP_KIRO_INSTALL / PLANNOTATOR_SKIP_VIBE_INSTALL /
-   * PLANNOTATOR_SKIP_OPENCODE_INSTALL env vars, which are in turn overridden
-   * by the --skip-codex / --skip-gemini / --skip-kiro / --skip-vibe /
-   * --skip-opencode flags. OpenCode has no detection leg, so its entry is a
-   * plain do-not-write switch. `skills` skips the skills/slash-command
+   * PLANNOTATOR_SKIP_OPENCODE_INSTALL / PLANNOTATOR_SKIP_QWEN_INSTALL env
+   * vars, which are in turn overridden by the --skip-codex / --skip-gemini /
+   * --skip-kiro / --skip-vibe / --skip-opencode / --skip-qwen flags.
+   * OpenCode has no detection leg, so its entry is a plain do-not-write
+   * switch. `skills` skips the skills/slash-command
    * checkout for every scope (PLANNOTATOR_SKIP_SKILLS_INSTALL / --skip-skills).
    * `claudePlugin` stops the installers from updating an already-installed
    * Claude Code plugin (`claude plugin marketplace update plannotator` +
@@ -242,6 +244,7 @@ export interface PlannotatorConfig {
     kiro?: boolean;
     vibe?: boolean;
     opencode?: boolean;
+    qwen?: boolean;
     skills?: boolean;
     claudePlugin?: boolean;
   };
@@ -385,6 +388,13 @@ export interface PlannotatorConfig {
    */
   inboxTextSize?: number;
   /**
+   * Settings → Agents' "Run in the Inbox", per agent the Inbox can run over
+   * ACP (packages/server/inbox-acp-runner.ts): `{ "grok": false }` takes
+   * "New Grok Build session" out of compose. Unset: on (when the
+   * agent is installed).
+   */
+  inboxRun?: Partial<Record<string, boolean>>;
+  /**
    * The Inbox's onboarding tour, per machine (approval "inbox-onboarding-tour"):
    * when it was started, finished or skipped, and whether the first real thread
    * offers notifications once more. Written by the server only, through POST
@@ -396,7 +406,7 @@ export interface PlannotatorConfig {
    * "inbox-decision-mode": experimental features ship off by default behind a
    * flag the person turns on). Read through `resolveExperimental`;
    * PLANNOTATOR_EXPERIMENTAL wins over this key. Written by the Inbox's
-   * Settings → General → Experimental through POST /api/inbox/settings
+   * Settings → Capabilities → Experimental through POST /api/inbox/settings
    * `{ experimental: { decision_mode } }`.
    */
   experimental?: { decisionMode?: boolean };
@@ -410,7 +420,7 @@ export interface PlannotatorConfig {
    * The Board (approval "inbox-board", 2026-10-26 amendment): something the
    * person turns on, off by default. On: the sidebar's Board row and page,
    * and the Inbox serves the agents' `card` tool. Off: neither, every card
-   * kept. Written by the Inbox's Settings → General (`POST
+   * kept. Written by the Inbox's Settings → Capabilities (`POST
    * /api/inbox/settings` `{ board: { on } }`), read on every request.
    */
   inboxBoard?: boolean;
@@ -582,21 +592,6 @@ export interface PlannotatorConfig {
    * 'totman' (production brand mascot) or 'classic' (historical dark-navy P tile).
    */
   favicon?: FaviconStyle;
-  /**
-   * Usage counts for experimental features (packages/shared/usage-counts.ts).
-   * Absent or `true`: on for each counted feature while that feature is on.
-   * `false`: off for every feature. An object turns single features off
-   * (`{ "decisionMode": false }`). `PLANNOTATOR_TELEMETRY=0` and
-   * `DO_NOT_TRACK=1` turn counts off whatever this says; nothing turns them on.
-   * Written by `plannotator telemetry --off` / `--on`.
-   */
-  usageCounts?: boolean | Record<string, boolean>;
-  /**
-   * The usage-counts notice version the person was shown, per feature
-   * (`{ "decisionMode": 1 }`). Written only by the notice UI (phase 2).
-   * Counting needs at least the registry's `notice` for that feature.
-   */
-  usageCountsNotice?: Record<string, number>;
 }
 
 /** Parse the only server-writable call-review analysis flags. */
