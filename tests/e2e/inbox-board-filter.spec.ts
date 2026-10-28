@@ -2,7 +2,7 @@
  * The Board's project filter (option a, the owner's pick 2026-10-28) in a
  * real browser against the compiled binary, agents writing cards through
  * `plannotator inbox mcp` (scripts/inbox-sim.ts), in eight projects (one
- * with a long name), and stub agent CLIs and a scripted `gh` first on PATH:
+ * with a long name), and a scripted `gh` first on PATH:
  *
  *  - no filter: `#board` is today's Board, every card, the button reading
  *    "All projects";
@@ -23,7 +23,7 @@
 
 import { devices, expect, test, webkit, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { SimAgent, scratchProject } from '../../scripts/inbox-sim';
 import { NO_BROWSER } from '../helpers/no-browser';
@@ -85,11 +85,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   mkdirSync(shots, { recursive: true });
   const root = inboxScratch('plannotator-inbox-board-filter-e2e-');
   const forge = fakeForge(join(root, 'bin'));
-  // Stub agent CLIs: nothing here may start a real one.
-  for (const name of ['claude', 'codex', 'opencode', 'pi', 'omp']) {
-    writeFileSync(join(forge.dir, name), '#!/bin/sh\nexit 0\n');
-    chmodSync(join(forge.dir, name), 0o755);
-  }
+  // Agent CLIs: the e2e global setup's stand-ins are on PATH (tests/helpers/agent-cli-guard.ts); a call fails the run.
   const data = join(root, 'data');
   mkdirSync(data, { recursive: true });
   // The Board on, its first-visit dialog already seen (inbox-board.spec.ts proves both).
