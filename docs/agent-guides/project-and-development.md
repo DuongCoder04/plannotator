@@ -35,6 +35,9 @@ plannotator/
 │   ├── vibe/                     # Mistral Vibe integration source (consumed by scripts/install.sh; auto-detected via $VIBE_HOME, default ~/.vibe)
 │   │   ├── hooks/hooks.toml      # Reference copy of the managed pre_tool hook block install.sh writes into $VIBE_HOME/hooks.toml (macOS/Linux only)
 │   │   └── skills/               # Vibe-specific skills (review, annotate, last) with PLANNOTATOR_ORIGIN=mistral-vibe baked in; not installed on Windows
+│   ├── qwen-code/                # Qwen Code integration source (see "Qwen Code plan review" in plan-review.md)
+│   │   ├── extension/            # The `plannotator` Qwen extension: hooks/hooks.json (PermissionRequest on exit_plan_mode, PreToolUse on enter_plan_mode); no skills
+│   │   └── skills/               # Qwen-specific review, annotate, last (run with is_background; copied to $QWEN_HOME/skills, where they win over the ~/.agents/skills copies)
 │   ├── kiro-cli/                 # Kiro CLI integration source (consumed by scripts/install.sh; auto-detected via ~/.kiro)
 │   │   ├── agents/plannotator.json   # Example Kiro custom agent
 │   │   └── skills/               # Kiro-specific skill packages (review, annotate); setup-goal + visual-explainer install from apps/skills/extra
