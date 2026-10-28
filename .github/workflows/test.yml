@@ -146,6 +146,7 @@ jobs:
           packages/inbox/inlineImages.test.tsx
           packages/inbox/refusedImages.test.tsx
           packages/inbox/codeAttachment.test.tsx
+          packages/inbox/copyFile.test.tsx
           packages/inbox/fileViewClean.test.tsx
           packages/inbox/links.test.tsx
           packages/inbox/issueRefs.test.tsx
@@ -249,6 +250,7 @@ jobs:
           packages/inbox/commentSubmitKey.test.tsx
           packages/inbox/skillReferences.test.tsx
           packages/inbox/messageComments.test.tsx
+          packages/inbox/feedbackDialog.test.tsx
           packages/ui/components/HumanOnlySkillNotice.test.tsx
           packages/ui/components/MenuVersionSection.test.tsx
           packages/ui/components/blocks/QuestionBlock.test.tsx
