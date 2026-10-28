@@ -1,9 +1,12 @@
 import type { CodeAnnotation } from '@plannotator/ui/types';
+import type { AskAIParams } from '@plannotator/ui/hooks/useAIChat';
 import { annotationScope } from './annotationDisplay';
 import { extractLinesFromPatch } from './patchParser';
 
-const LEARNING_EXPLANATION_PROMPT =
-  'Independently assess whether this review finding is valid based on the available code and context; do not assume the original finding is correct. Clearly state whether it is valid, invalid, partially valid, or uncertain, and why. Then explain it as a learning-oriented walkthrough: define the concern in plain language, describe what the relevant code is doing, why the review agent flagged it, the underlying concept or behavior involved, the conditions under which the concern matters, and its concrete impact if valid. Use concrete examples where helpful. If the finding is valid or partially valid, conclude with a brief recommended fix when possible. Explain how it addresses the underlying concern and mention any important trade-off or uncertainty.';
+const EXPLAIN_FINDING_PROMPT =
+  'Explain this finding from a review agent. First check it against the code and say whether it holds (valid, partly valid, invalid or unsure) and why. Then explain the concern in plain terms: what the code does, why it was flagged, and when it matters. If it holds, suggest a brief fix.';
+
+const DISPLAY_MAX = 200;
 
 function fenceData(label: string, value: string): string {
   const longestBacktickRun = Math.max(0, ...(value.match(/`+/g) ?? []).map((run) => run.length));
@@ -14,84 +17,64 @@ function fenceData(label: string, value: string): string {
 export function buildExplainFindingPrompt(annotation: CodeAnnotation): string {
   const finding = annotation.text?.trim();
   const reasoning = annotation.reasoning?.trim();
-  const context = [
-    finding ? fenceData('Review finding', finding) : '',
-    reasoning ? fenceData('Review agent context', reasoning) : '',
-  ].filter(Boolean);
-
-  return [LEARNING_EXPLANATION_PROMPT, ...context].join('\n\n');
+  return [
+    EXPLAIN_FINDING_PROMPT,
+    finding ? fenceData('Finding', finding) : '',
+    reasoning ? fenceData('Agent reasoning', reasoning) : '',
+  ].filter(Boolean).join('\n\n');
 }
 
+/** What the chat shows for the question: the finding, not the instructions. */
+export function explainFindingDisplayPrompt(annotation: CodeAnnotation): string {
+  const finding = (annotation.text ?? '').replace(/\s+/g, ' ').trim();
+  if (!finding) return 'Explain this finding';
+  const cut = finding.length > DISPLAY_MAX ? `${finding.slice(0, DISPLAY_MAX - 1).trimEnd()}…` : finding;
+  return `Explain this finding: ${cut}`;
+}
+
+/** Only findings from a review agent this session launched (its job source). */
 export function isAgentGeneratedFinding(
   annotation: Pick<CodeAnnotation, 'source'>,
-  registeredSources: ReadonlySet<string>,
+  registeredSources: ReadonlySet<string> | undefined,
 ): boolean {
-  return annotation.source !== undefined && registeredSources.has(annotation.source);
-}
-
-export interface ExplainFindingRequest {
-  prompt: string;
-  filePath?: string;
-  lineStart?: number;
-  lineEnd?: number;
-  side?: 'old' | 'new';
-  selectedCode?: string;
+  return annotation.source !== undefined && registeredSources?.has(annotation.source) === true;
 }
 
 interface ExplainFindingContext {
   activeCommitSha?: string;
 }
 
-function appendLocationNote(prompt: string, note: string): string {
-  return `${prompt}\n\nFinding location note:\n${note}`;
-}
-
 export function buildExplainFindingRequest(
   annotation: CodeAnnotation,
   patch?: string,
   context: ExplainFindingContext = {},
-): ExplainFindingRequest {
+): AskAIParams {
   const prompt = buildExplainFindingPrompt(annotation);
+  const displayPrompt = explainFindingDisplayPrompt(annotation);
   const scope = annotationScope(annotation);
-  if (scope === 'general') return { prompt };
-  if (scope === 'file') return { prompt, filePath: annotation.filePath };
+  if (scope === 'general') return { prompt, displayPrompt };
+  if (scope === 'file') return { prompt, displayPrompt, filePath: annotation.filePath };
 
-  const commitMismatch = Boolean(annotation.commitSha || context.activeCommitSha)
-    && annotation.commitSha !== context.activeCommitSha;
-  if (commitMismatch) {
-    return {
-      prompt: appendLocationNote(
-        prompt,
-        'This finding was created on a different diff. Its original line coordinates are historical; inspect the current code independently.',
-      ),
-      filePath: annotation.filePath,
-    };
+  const fileOnly = (note: string): AskAIParams => ({
+    prompt: `${prompt}\n\nNote: ${note}`,
+    displayPrompt,
+    filePath: annotation.filePath,
+  });
+
+  if ((annotation.commitSha || context.activeCommitSha) && annotation.commitSha !== context.activeCommitSha) {
+    return fileOnly('the finding was made on a different diff, so its line numbers may not match the code now.');
   }
 
   const lineStart = Math.min(annotation.lineStart, annotation.lineEnd);
   const lineEnd = Math.max(annotation.lineStart, annotation.lineEnd);
-
-  const selectedCode = patch
-    ? extractLinesFromPatch(
-        patch,
-        lineStart,
-        lineEnd,
-        annotation.side,
-      )
-    : '';
-
+  const selectedCode = patch ? extractLinesFromPatch(patch, lineStart, lineEnd, annotation.side) : '';
   if (!selectedCode) {
-    return {
-      prompt: appendLocationNote(
-        prompt,
-        'The original line range is not present in the active diff. Treat the file as context and verify the finding against the current code.',
-      ),
-      filePath: annotation.filePath,
-    };
+    return fileOnly("the finding's lines are not in the diff on screen, so check the file as it is now.");
   }
 
   return {
     prompt,
+    displayPrompt,
     filePath: annotation.filePath,
     lineStart,
     lineEnd,
