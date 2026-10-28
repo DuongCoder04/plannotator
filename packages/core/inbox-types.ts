@@ -26,6 +26,7 @@ export * from "./inbox-attachments";
 export * from "./inbox-open-in";
 export * from "./inbox-delivery";
 export * from "./inbox-codex";
+export * from "./inbox-qwen";
 // The Board's cards (approval "inbox-board"), the same way.
 export * from "./inbox-cards";
 // The surface bridge's messages (the phone, PLAN step S1), the same way.
@@ -264,6 +265,7 @@ export const INBOX_HOST_NAMES: Readonly<Record<string, string>> = {
   codex: "Codex",
   cursor: "Cursor",
   grok: "Grok Build",
+  qwen: "Qwen Code",
 };
 
 /**
@@ -1579,6 +1581,7 @@ export type InboxAgentId =
   | "claude-code"
   | "codex"
   | "gemini"
+  | "qwen"
   | "cursor"
   | "windsurf"
   | "amp"
@@ -1592,6 +1595,7 @@ export const INBOX_AGENT_IDS: readonly InboxAgentId[] = [
   "claude-code",
   "codex",
   "gemini",
+  "qwen",
   "cursor",
   "windsurf",
   "amp",
@@ -1606,6 +1610,7 @@ export const INBOX_AGENT_LABELS: Readonly<Record<InboxAgentId, string>> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   gemini: "Gemini CLI",
+  qwen: "Qwen Code",
   cursor: "Cursor",
   windsurf: "Windsurf / Devin",
   amp: "Amp",
@@ -1621,6 +1626,13 @@ export function inboxAgentList(ids: readonly InboxAgentId[]): string {
   const names = ids.map((id) => INBOX_AGENT_LABELS[id]);
   if (names.length <= 1) return names.join("");
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** An agent connected in another file than this Inbox's environment names (`InboxConnectReport.elsewhere`): where, and how the person moves it. */
+export function inboxElsewhereText(moved: { agent: InboxAgentId; path: string | null; now: string | null }): string {
+  const label = INBOX_AGENT_LABELS[moved.agent];
+  const why = `${moved.agent === "qwen" ? "this Inbox has another QWEN_HOME, so it" : "this Inbox"} looks in ${moved.now ?? "another file"}`;
+  return `${label} is connected in ${moved.path ?? "another file"}, but ${why}. Plannotator left both as they are; Settings → Agents shows it off here, and turning it on moves it.`;
 }
 
 /** What one `plannotator inbox` run did to the agents on this computer. */
@@ -1642,6 +1654,12 @@ export interface InboxConnectReport {
   manual: InboxAgentId[];
   /** Why each manual agent needs a person, said once per reason (the terminal prints these). */
   manual_why?: { agent: InboxAgentId; why: string }[];
+  /**
+   * Connected in another file than this run's environment names (`QWEN_HOME`
+   * differs from when the entry was added): left where it is, said once;
+   * turning the agent on in Settings → Agents moves it.
+   */
+  elsewhere?: { agent: InboxAgentId; path: string | null; now: string | null }[];
   /** Did not finish within the time limits; tried again at the next run. */
   unfinished: InboxAgentId[];
   /** Claude Code's plugin gives it the `plannotator_inbox` tool already. */
@@ -1649,8 +1667,8 @@ export interface InboxConnectReport {
 }
 
 /** The agents whose own instructions file can carry the Inbox note (packages/server/inbox-agent-notes.ts). */
-export type InboxNoteAgentId = "claude-code" | "codex" | "opencode" | "pi" | "gemini" | "cursor";
-export const INBOX_NOTE_AGENT_IDS: readonly InboxNoteAgentId[] = ["claude-code", "codex", "gemini", "pi", "opencode", "cursor"];
+export type InboxNoteAgentId = "claude-code" | "codex" | "opencode" | "pi" | "gemini" | "qwen" | "cursor";
+export const INBOX_NOTE_AGENT_IDS: readonly InboxNoteAgentId[] = ["claude-code", "codex", "gemini", "qwen", "pi", "opencode", "cursor"];
 
 /**
  * Where an agent's note would go and how it stands:
@@ -1687,7 +1705,7 @@ export interface InboxAgentRow {
   reach: {
     kind: "tool" | "mcp" | "manual" | "none";
     on: boolean;
-    state: "connected" | "off" | "removed" | "foreign" | "not_connected" | "manual" | "unreadable";
+    state: "connected" | "off" | "removed" | "foreign" | "not_connected" | "manual" | "unreadable" | "elsewhere";
     path: string | null;
     /** PLANNOTATOR_INBOX_TOOL decides it. */
     locked: boolean;
