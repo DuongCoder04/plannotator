@@ -1900,6 +1900,15 @@ export type InboxToolCostHost = "pi" | "opencode";
  * 9,591 bytes (+175, about +40 tokens, estimated). With the Board on, the
  * card's `say` and `you` add a 36-character pointer each: 11,009 (+249,
  * estimated).
+ * Then the follow-through rule in the lead (INBOX_FOLLOW_THROUGH_RULE, the
+ * owner's sentence, 2026-10-27: 252 bytes in place of "No routine
+ * progress.", 20), paid for in the description by shorter action leads
+ * (send_message, wait_for_reply, resolve_message, read_thread, whose detail
+ * moved to its `thread_id` field, get_guide_brief), the wake note's "A reply
+ * arrives" and the lead's last sentence; "Pass an idempotency_key so a retry
+ * never posts twice." moved from the server instructions into that field's
+ * description. Measured on Pi over the ref-link figure: 9,733 bytes (+142,
+ * 1.5%; about +35 tokens). The stated cost stands.
  * Then the fences that draw in `body` (approval "inbox-inline-html",
  * 2026-10-28: Mermaid and Graphviz diagrams, live HTML pages): one sentence,
  * measured on Pi with the ref rule in, 9,848 bytes (+257, about +65 tokens).
@@ -1908,10 +1917,13 @@ export type InboxToolCostHost = "pi" | "opencode";
  * height: no vh units or height:100% on html or body"): measured on Pi, 9,920
  * bytes (+72, about +18 tokens, so the rounded token figure stands). With the
  * Board on 11,339 (11,267 + 72, estimated).
+ * With the follow-through rule merged in as well: measured on Pi, 10,062
+ * bytes (+142, about +35 tokens; the rounded token figure stands). With the
+ * Board on 11,481 (11,339 + 142, estimated).
  */
-const INBOX_TOOL_COST_NOW = { bytes: 9920, tokens: 2700 };
+const INBOX_TOOL_COST_NOW = { bytes: 10062, tokens: 2700 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
-export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 11339, tokens: 3100 } as const;
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 11481, tokens: 3100 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,
