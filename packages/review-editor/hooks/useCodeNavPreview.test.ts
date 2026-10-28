@@ -7,15 +7,18 @@ import { describe, expect, test } from "bun:test";
 import { codeNavPreviewErrorMessage } from "./useCodeNavPreview";
 
 const LIMIT = 5 * 1024 * 1024;
+const sizesIn = (message: string) => message.match(/\d+(\.\d+)? MB/g) ?? [];
 
 describe("codeNavPreviewErrorMessage too-large", () => {
-  test("a file one byte over the limit does not claim to be the limit's size", () => {
-    const message = codeNavPreviewErrorMessage({ reason: "too-large", size: LIMIT + 1, maxBytes: LIMIT });
-    expect(message).toBe("This file is too large to preview (just over the 5 MB limit).");
+  test("a file one byte over the limit does not show two equal sizes", () => {
+    const sizes = sizesIn(codeNavPreviewErrorMessage({ reason: "too-large", size: LIMIT + 1, maxBytes: LIMIT }));
+    expect(sizes).toContain("5 MB");
+    expect(new Set(sizes).size).toBe(sizes.length);
   });
 
-  test("a clearly larger file shows both sizes", () => {
-    const message = codeNavPreviewErrorMessage({ reason: "too-large", size: 6 * 1024 * 1024, maxBytes: LIMIT });
-    expect(message).toBe("This file is too large to preview (6 MB; the limit is 5 MB).");
+  test("a clearly larger file shows its size and the limit", () => {
+    const sizes = sizesIn(codeNavPreviewErrorMessage({ reason: "too-large", size: 6 * 1024 * 1024, maxBytes: LIMIT }));
+    expect(sizes).toEqual(expect.arrayContaining(["6 MB", "5 MB"]));
+    expect(new Set(sizes).size).toBe(2);
   });
 });

@@ -227,6 +227,14 @@ export interface UpdateState {
    * Inbox writes it; nothing here fetches an image.
    */
   releaseImagesFetch?: Record<string, { attemptedAt: number; failedAt?: number; error?: string }>;
+  /**
+   * Safe updates: installs of `version` whose download did not match the
+   * checksum Plannotator fetched (install.sh exit 113), counted once each.
+   * Background auto-update waits 1, then 3, then 7 days (and 7 after that)
+   * from the last one before trying that version again; a newer release is
+   * tried at once, and Update now / `plannotator update` always try.
+   */
+  mismatchBackoff?: { version: string; attempts: number; lastAttemptAt: number };
 }
 
 export function updateCheckPaths(dataDir: string = getPlannotatorDataDir()) {
@@ -1150,6 +1158,7 @@ export const INSTALL_FLAG_SPELLINGS = {
   "skip-kiro": { posix: "--skip-kiro", powershell: "-SkipKiro" },
   "skip-vibe": { posix: "--skip-vibe", powershell: "-SkipVibe" },
   "skip-opencode": { posix: "--skip-opencode", powershell: "-SkipOpencode" },
+  "skip-qwen": { posix: "--skip-qwen", powershell: "-SkipQwen" },
   "skip-skills": { posix: "--skip-skills", powershell: "-SkipSkills" },
   "skip-claude-plugin": { posix: "--skip-claude-plugin", powershell: "-SkipClaudePlugin" },
 } as const;
