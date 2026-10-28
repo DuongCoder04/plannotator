@@ -9,9 +9,8 @@
  */
 
 import { parsePortSelection } from "@plannotator/shared/port-range";
-import { loadConfig, resolveLocalUrlHostname, resolveUrlHost } from "@plannotator/shared/config";
-import { isAutoUrlHost, resolveAutoHostCached } from "@plannotator/shared/tailscale";
-import { isLocalhostHostname } from "@plannotator/shared/loopback-host";
+import { loadConfig, resolveLocalUrlHostname } from "@plannotator/shared/config";
+import { resolveAdvertisedSessionUrl } from "@plannotator/shared/advertised-url";
 
 const DEFAULT_REMOTE_PORT = 19432;
 const LOOPBACK_HOST = "127.0.0.1";
@@ -194,27 +193,6 @@ export function getServerHostname(): string {
 }
 
 /**
- * The url host this session uses: resolveUrlHost, except that a localhost
- * name (`plannotator.localhost`, the cookie switch, #2184) counts as unset
- * in a remote session. It names this computer's browser only, so a remote
- * session advertises (and offers to open on another device) exactly as if
- * nothing were configured.
- */
-function sessionUrlHost(): string | undefined {
-  const host = resolveUrlHost(loadConfig());
-  if (host !== undefined && isRemoteSession() && isLocalhostHostname(host)) return undefined;
-  return host;
-}
-
-/** True when the advertised-URL host is overridden away from localhost. */
-export function isUrlHostOverridden(): boolean {
-  const host = sessionUrlHost();
-  if (host === undefined) return false;
-  if (isAutoUrlHost(host)) return isRemoteSession() && resolveAutoHostCached() !== undefined;
-  return true;
-}
-
-/**
  * The localhost subdomain sessions are advertised at (`urlHost:
  * "plannotator.localhost"`, #2184), or undefined. Servers read it once at
  * start and hand it to the loopback Host checks of the routes a page calls
@@ -224,32 +202,7 @@ export function getLocalUrlHostname(): string | undefined {
   return resolveLocalUrlHostname(loadConfig());
 }
 
-let warnedLocalUrlHost = false;
-
-/**
- * Compose the URL advertised to the user for a bound port (issue #657).
- * Display-only: the PLANNOTATOR_URL_HOST / urlHost override changes what is
- * printed and opened, never which interface the server listens on
- * (getServerHostname). Local sessions also accept localhost subdomains, so
- * preferences can live on a dedicated hostname without enabling remote mode.
- * Other overrides need remote mode and otherwise warn once per process.
- * The "auto" sentinel resolves the host from Tailscale (resolveAutoHost).
- * Same-machine subprocesses must not use this — they get a loopback URL so a
- * tailnet-only hostname can't break local agent jobs.
- */
+/** Compose the display-only URL advertised for a bound server port. */
 export function buildAdvertisedUrl(port: number): string {
-  const host = sessionUrlHost();
-  if (host === undefined) return `http://localhost:${port}`;
-  if (!isRemoteSession() && !isLocalhostHostname(host)) {
-    if (!warnedLocalUrlHost) {
-      warnedLocalUrlHost = true;
-      process.stderr.write(
-        `[plannotator] Warning: advertised URL host ${JSON.stringify(host)} ignored — this is a local session, so the server binds loopback and only localhost or *.localhost names are supported. Set PLANNOTATOR_REMOTE=1 to use the override.\n`,
-      );
-    }
-    return `http://localhost:${port}`;
-  }
-  const resolved = isAutoUrlHost(host) ? resolveAutoHostCached() : host;
-  if (resolved === undefined) return `http://localhost:${port}`;
-  return `http://${resolved}:${port}`;
+  return resolveAdvertisedSessionUrl(port, isRemoteSession());
 }

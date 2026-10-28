@@ -171,9 +171,13 @@ export function isCheckDue(state: AutoUpdateState, now: number): boolean {
   return now - last >= AUTO_UPDATE_INTERVAL_MS;
 }
 
-/** Live sessions that belong to some other Plannotator process. */
+/**
+ * Live sessions that belong to some other Plannotator process. A server inside
+ * a host's process (`host`, OpenCode) does not run the binary, so it never
+ * holds an update back.
+ */
 export function otherOpenSessions(sessions: SessionInfo[], ownPid: number): SessionInfo[] {
-  return sessions.filter((s) => s.pid !== ownPid);
+  return sessions.filter((s) => s.pid !== ownPid && !s.host);
 }
 
 export function deriveAutoUpdateNotice(
