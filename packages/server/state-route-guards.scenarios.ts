@@ -405,7 +405,10 @@ export function defineStateRouteScenarios(runtime: string, start: StartStateRout
     async function saveToNotionRoute(): Promise<{ result: unknown; calls: number }> {
       const realFetch = globalThis.fetch;
       let calls = 0;
-      globalThis.fetch = (async () => {
+      // Only Notion's API is stubbed and counted; the server's own requests pass through.
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const target = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (!target.startsWith("https://api.notion.com/")) return realFetch(input, init);
         calls++;
         return Response.json({ url: "https://www.notion.so/saved" });
       }) as unknown as typeof fetch;

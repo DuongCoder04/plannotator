@@ -7,7 +7,6 @@
  */
 
 import {
-	extractTitle,
 	stripH1,
 	type IntegrationResult,
 	type NotionConfig,
@@ -15,6 +14,8 @@ import {
 
 export const NOTION_API_VERSION = "2026-03-11";
 const NOTION_PAGES_URL = "https://api.notion.com/v1/pages";
+/** Plan approve waits for this save, so a stalled network must not hold it. */
+const NOTION_TIMEOUT_MS = 15_000;
 
 function notionToken(): string | undefined {
 	return process.env.NOTION_TOKEN?.trim() || undefined;
@@ -29,13 +30,19 @@ export function isNotionAvailable(exposed: boolean): boolean {
 	return !exposed && notionToken() !== undefined;
 }
 
+/** The page title: the plan's H1 as written, without a "Plan:" prefix (Notion caps text at 2000). */
+export function notionPageTitle(plan: string): string {
+	const h1 = plan.match(/^#\s+(?:Implementation\s+Plan:|Plan:)?\s*(.+)$/im)?.[1]?.trim();
+	return h1 ? h1.slice(0, 2000) : "Plan";
+}
+
 /** Create a child page under `parentPageId` with the plan as Markdown. */
 export async function saveToNotion(config: NotionConfig): Promise<IntegrationResult> {
 	const token = notionToken();
 	if (!token) {
 		return { success: false, error: "Notion is not configured. Set NOTION_TOKEN." };
 	}
-	const parentPageId = config.parentPageId.trim();
+	const parentPageId = typeof config.parentPageId === "string" ? config.parentPageId.trim() : "";
 	if (!parentPageId) {
 		return { success: false, error: "Notion parent page is required." };
 	}
@@ -51,11 +58,12 @@ export async function saveToNotion(config: NotionConfig): Promise<IntegrationRes
 			body: JSON.stringify({
 				parent: { page_id: parentPageId },
 				properties: {
-					title: { title: [{ text: { content: extractTitle(config.plan) } }] },
+					title: { title: [{ text: { content: notionPageTitle(config.plan) } }] },
 				},
 				// The H1 is the page title above; keep it out of the body.
 				markdown: stripH1(config.plan),
 			}),
+			signal: AbortSignal.timeout(NOTION_TIMEOUT_MS),
 		});
 
 		const data = (await response.json().catch(() => null)) as { message?: unknown; url?: unknown } | null;

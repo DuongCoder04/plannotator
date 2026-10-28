@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { isNotionAvailable, NOTION_API_VERSION, saveToNotion } from "./notion";
+import { isNotionAvailable, NOTION_API_VERSION, notionPageTitle, saveToNotion } from "./notion";
 
 // Never reaches the real Notion API: fetch is stubbed in every test.
 const originalToken = process.env.NOTION_TOKEN;
@@ -68,5 +68,30 @@ describe("saveToNotion", () => {
 		expect(result.success).toBe(false);
 		expect(result.error).toContain("Share it with your Notion integration");
 		expect(result.error).not.toContain("secret-token");
+	});
+
+	test("gives up on a stalled request instead of holding plan approve", async () => {
+		globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+			new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => reject(new Error("The operation timed out.")));
+			})) as unknown as typeof fetch;
+		const originalTimeout = AbortSignal.timeout;
+		AbortSignal.timeout = () => originalTimeout.call(AbortSignal, 10);
+		try {
+			const result = await saveToNotion({ plan: "# Test Plan", parentPageId: "page-id" });
+			expect(result.success).toBe(false);
+			expect(result.error).toContain("Notion save failed");
+		} finally {
+			AbortSignal.timeout = originalTimeout;
+		}
+	});
+});
+
+describe("notionPageTitle", () => {
+	test("keeps the H1 as written, without the Plan prefix", () => {
+		expect(notionPageTitle("# Implementation Plan: Add `foo()` support: phase 1 / API\n\nBody")).toBe(
+			"Add `foo()` support: phase 1 / API",
+		);
+		expect(notionPageTitle("No heading here")).toBe("Plan");
 	});
 });
