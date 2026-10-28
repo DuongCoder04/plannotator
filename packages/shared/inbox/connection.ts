@@ -267,9 +267,38 @@ export const INBOX_CHANNEL_RULE =
  */
 export const INBOX_SESSION_THREADS_CHANNEL = "Their decisions stay in these threads: when the person writes in the chat, say what waits and link the thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar)."
 
+/** When to use the Inbox. Fixed text: the agent tool's lead and the Inbox's server instructions carry it whole. */
+export const INBOX_USE_RULE =
+  "Use it for a decision only they can make (a :::question block; go on with other work), finished long work (a short summary, files in `attachments`), or when they ask."
+
+/**
+ * Follow through, without pinging (the owner, 2026-10-27: an agent promised
+ * the person pictures "coming" and left them unsent for an hour, held
+ * questions "to batch them" and never sent them, and left the person's last
+ * message in a thread unanswered). It opens with "No routine progress", so
+ * every place that carries it carries the counterweight too: send what was
+ * promised once it is READY (never half-done work), and send what is ready
+ * together, just not held for things that do not exist yet. Fixed text, one
+ * wording everywhere: the agent tool's lead, the Inbox's server
+ * instructions, the reminder, the note, `plannotator inbox --help` and the
+ * skill (tests/inbox-guidance-parity.test.ts).
+ */
+export const INBOX_FOLLOW_THROUGH_RULE =
+  "No routine progress, but send what you said is coming, or a question you mean to ask, once it is ready, not held for a later batch; answer what the person writes, in its thread."
+
+/** A subagent's results go to the agent that started it, not to the person. Fixed text. */
+export const INBOX_SUBAGENT_RULE = "If another agent started you, report to it instead."
+
+/**
+ * The rules every agent gets with the tool or the MCP server, in one string:
+ * the agent tool's lead and the Inbox's server instructions carry it whole,
+ * so the two can never word them differently.
+ */
+export const INBOX_AGENT_RULES = `${INBOX_USE_RULE} ${INBOX_CHANNEL_RULE} ${INBOX_FOLLOW_THROUGH_RULE} ${INBOX_SUBAGENT_RULE}`
+
 /** What the agent tool says, before the per-action lines. Fixed text. */
 export const INBOX_TOOL_LEAD =
-  `The Plannotator Inbox on this machine: message the person and get their answer later, without blocking this session. Use it for a decision only they can make (a :::question block; go on with other work), finished long work (a short summary, files in \`attachments\`), or when they ask. ${INBOX_CHANNEL_RULE} No routine progress. If another agent started you, report to it instead. Set \`action\` to a tool below with its fields; the project and session are filled in.`
+  `The Plannotator Inbox on this machine: message the person and get their answer later, without blocking this session. ${INBOX_AGENT_RULES} Set \`action\` to a tool below, with its fields.`
 
 /**
  * Fixed text: how a reply comes back. The connection delivers the person's
@@ -278,7 +307,7 @@ export const INBOX_TOOL_LEAD =
  * OpenCode 2 as a user message, and all three carry the wake's first line.
  */
 export const INBOX_TOOL_WAKE_NOTE =
-  "A reply to a message you sent arrives in this session by itself once it is idle, headed `Plannotator Inbox: <subject> (<reply id>)`: end your turn or keep working; do not call wait_for_reply. To answer it, send_message with reply_to set to that reply id, never one from memory."
+  "A reply arrives in this session by itself once it is idle, headed `Plannotator Inbox: <subject> (<reply id>)`: end your turn or keep working; do not call wait_for_reply. To answer it, send_message with reply_to set to that reply id, never one from memory."
 
 /**
  * Fixed text, the description's last line: where everything the tool's short
@@ -303,9 +332,12 @@ export const INBOX_TOOL_BOARD_OFF_NOTE = "The Board (cards for work that outlast
  * OpenCode request carries it).
  */
 export const INBOX_AGENT_ACTION_LEADS: Readonly<Record<string, string>> = {
+  send_message: "Message the person (markdown), in your session's open thread (see `thread`).",
+  wait_for_reply: 'Wait for the reply in a thread (thread_id or message_id; neither: any open thread you asked).',
+  resolve_message: "Archive a message's thread, only when nothing in it is left for the person to read or answer.",
   read_thread: 'Read a thread (thread_id): open questions, the newest messages, earlier ones one line each; with no id, list your threads (asked_by "anyone": all).',
   search: 'Find messages by words, older ones too (read-only).',
-  get_guide_brief: "The method, JSON shape and rules for writing a guided review, with a worked submit_guide call.",
+  get_guide_brief: "How to write a guided review: method, JSON shape, rules, a worked submit_guide call.",
   card: "A Board card for work that outlasts this reply: create it, then move it and say where it is as the work moves.",
 }
 
@@ -362,14 +394,14 @@ export const INBOX_AGENT_FIELD_DESCRIPTIONS: Readonly<Record<string, Readonly<Re
  * (the reply comes back as a turn).
  */
 export const INBOX_REMINDER_TEXT =
-  "Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. Their reply comes back here. A decision in the Inbox stays there: when the person writes here, say what waits and link its thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar). Run `plannotator inbox --help` for how it works."
+  `Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. Their reply comes back here. A decision in the Inbox stays there: when the person writes here, say what waits and link its thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar). ${INBOX_FOLLOW_THROUGH_RULE} Run \`plannotator inbox --help\` for how it works.`
 
 /**
  * The same line for a host without the wake (OpenCode 1): the reply does not
  * come back by itself there, so it names wait_for_reply instead.
  */
 export const INBOX_REMINDER_TEXT_NO_WAKE =
-  "Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. Call wait_for_reply when you need their answer. A decision in the Inbox stays there: when the person writes here, say what waits and link its thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar). Run `plannotator inbox --help` for how it works."
+  `Plannotator Inbox is on: when you finish long work, or need a decision only the person can make, send it with plannotator_inbox send_message and keep going. Call wait_for_reply when you need their answer. A decision in the Inbox stays there: when the person writes here, say what waits and link its thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar). ${INBOX_FOLLOW_THROUGH_RULE} Run \`plannotator inbox --help\` for how it works.`
 
 /**
  * The reminder naming the tool as the host registered it. Claude Code defers

@@ -14,6 +14,7 @@ import {
   INBOX_NOTE_BLOCK,
   INBOX_NOTE_END,
   INBOX_NOTE_START,
+  INBOX_NOTE_VERSION,
   inboxNotesDisabled,
   noteStatus,
   noteTarget,
@@ -45,7 +46,7 @@ const read = (path: string) => readFileSync(path, "utf8");
 test("the block: markers on their own lines around the note", () => {
   expect(INBOX_NOTE_BLOCK.startsWith(`${INBOX_NOTE_START}\n## Plannotator Inbox\n`)).toBe(true);
   expect(INBOX_NOTE_BLOCK.endsWith(`\n${INBOX_NOTE_END}`)).toBe(true);
-  expect(INBOX_NOTE_START).toBe("<!-- plannotator-inbox:start v3 · added by Plannotator. Remove it in the Inbox's Settings or with `plannotator uninstall` -->");
+  expect(INBOX_NOTE_START).toBe("<!-- plannotator-inbox:start v4 · added by Plannotator. Remove it in the Inbox's Settings or with `plannotator uninstall` -->");
 });
 
 describe("where each agent's note goes", () => {
@@ -271,14 +272,14 @@ describe("the marked section", () => {
     writeFileSync(join(dataDir, "inbox", "agent-notes.json"), JSON.stringify({ v: 1, notes: { [agent]: record } }));
   };
 
-  test("updating from v1: an untouched v1 note (with its record) is still on, and re-adding it writes v3 in place, every other byte kept", () => {
+  test("updating from v1: an untouched v1 note (with its record) is still on, and re-adding it writes this version in place, every other byte kept", () => {
     const path = file(".claude", "rules", "plannotator-inbox.md");
     write(path, `${V1_BLOCK}\n`);
     v1Record("claude-code", path);
     expect(noteStatus("claude-code", dataDir, e).state).toBe("added");
     expect(addInboxNote("claude-code", dataDir, e)).toMatchObject({ ok: true, action: "updated" });
     expect(read(path)).toBe(`${INBOX_NOTE_BLOCK}\n`);
-    expect(readInboxAgentNotes(dataDir).notes["claude-code"]).toMatchObject({ version: 3, block_sha256: sha(INBOX_NOTE_BLOCK), created: true });
+    expect(readInboxAgentNotes(dataDir).notes["claude-code"]).toMatchObject({ version: INBOX_NOTE_VERSION, block_sha256: sha(INBOX_NOTE_BLOCK), created: true });
     // Switching it off afterwards still deletes the file the note was all of.
     expect(removeInboxNote("claude-code", dataDir, e)).toMatchObject({ ok: true, action: "deleted" });
     expect(existsSync(path)).toBe(false);
@@ -305,7 +306,7 @@ describe("the marked section", () => {
     expect(addInboxNote("codex", dataDir, e)).toMatchObject({ ok: true, action: "updated" });
     expect(read(path)).toBe(`Shared.\n\n${INBOX_NOTE_BLOCK}\n`);
     expect(noteStatus("pi", dataDir, e).state).toBe("added");
-    expect(readInboxAgentNotes(dataDir).notes.pi).toMatchObject({ version: 3, block_sha256: sha(INBOX_NOTE_BLOCK) });
+    expect(readInboxAgentNotes(dataDir).notes.pi).toMatchObject({ version: INBOX_NOTE_VERSION, block_sha256: sha(INBOX_NOTE_BLOCK) });
     // And Off for both gives the file back as the person had it.
     expect(removeInboxNote("codex", dataDir, e)).toMatchObject({ ok: true, action: "kept-shared" });
     expect(removeInboxNote("pi", dataDir, e)).toMatchObject({ ok: true, action: "removed" });

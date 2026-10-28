@@ -31,7 +31,7 @@ import { INBOX_CONTRACT_EXAMPLE, INBOX_DEFAULT_SERVED_TOOLS, INBOX_MCP_TOOLS, IN
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, sizeText } from "@plannotator/server/inbox-mcp-read";
 import { INBOX_AGENT_SEARCH_LIMIT } from "@plannotator/server/inbox-mcp-search";
 import { INBOX_TOOL_DEFAULTS, INBOX_TOOL_HOSTS } from "@plannotator/shared/config";
-import { INBOX_FILLED_ARGUMENTS, INBOX_REPLY_TO_CHECK, INBOX_TAGGED_INSTRUCTION, INBOX_TOOL_NAME, inboxReaskInstruction } from "@plannotator/shared/inbox/connection";
+import { INBOX_FILLED_ARGUMENTS, INBOX_FOLLOW_THROUGH_RULE, INBOX_REPLY_TO_CHECK, INBOX_SUBAGENT_RULE, INBOX_TAGGED_INSTRUCTION, INBOX_TOOL_NAME, inboxReaskInstruction } from "@plannotator/shared/inbox/connection";
 import { INBOX_COMMAND_USAGE } from "./cli";
 import { createAgentEnvironment, displayPath, type AgentEnvironment } from "@plannotator/server/inbox-agents";
 import { noteTarget } from "@plannotator/server/inbox-agent-notes";
@@ -296,6 +296,10 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     "- Routine progress or each small step: send one message per real need.",
     "- A checklist, a status update or a decision written as `:::action` blocks: an action item is only for something the person must go and do before you can go on.",
     "- A sign-off on this plan, document or diff before you go on: use a Plannotator review (plan review, `plannotator annotate`, `plannotator review`).",
+    "",
+    INBOX_FOLLOW_THROUGH_RULE,
+    "",
+    INBOX_SUBAGENT_RULE,
     "",
     "## Chat or Inbox",
     "",

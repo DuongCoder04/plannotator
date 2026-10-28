@@ -19,7 +19,7 @@ import { QUESTION_AUTHORING_GUIDE } from "@plannotator/core/question-block";
 import { inboxQuestionKeysWithRecommendedMarker } from "@plannotator/core/inbox-questions";
 import { INBOX_ACTION_EXAMPLE, INBOX_ACTION_GUIDE, INBOX_DONE_DESCRIPTION } from "@plannotator/core/inbox-actions";
 import { checkInboxSubject, INBOX_CARD_ACTION_ON, inboxAgentName, INBOX_NAME_THIS_THREAD_HINT, INBOX_SECTIONS, isInboxNote, INBOX_THREAD_NAME_MAX, type InboxGuideRef, type InboxSectionId, type InboxLine, type InboxMessage, type InboxProject } from "@plannotator/core/inbox-types";
-import { INBOX_CHANNEL_RULE, INBOX_PEEK_META_KEY, INBOX_REPLY_TO_CHECK, INBOX_WAKES_META_KEY, inboxTaggedLine } from "@plannotator/shared/inbox/connection";
+import { INBOX_AGENT_RULES, INBOX_PEEK_META_KEY, INBOX_REPLY_TO_CHECK, INBOX_WAKES_META_KEY, inboxTaggedLine } from "@plannotator/shared/inbox/connection";
 import { inboxBodyForAgent } from "@plannotator/shared/inbox/uploads";
 import { inboxSectionOf } from "@plannotator/shared/inbox/list";
 import { bodyShowsLocalImages, captureInboxInlineImages, type InlineImageFailure } from "@plannotator/shared/inbox/inline-images";
@@ -64,12 +64,12 @@ export const INBOX_DEFAULT_SERVED_TOOLS: readonly (typeof INBOX_MCP_TOOLS)[numbe
 export const INBOX_MCP_INSTRUCTIONS = [
   "Plannotator Inbox: a local window where the person reads what you send and answers later, without blocking your session.",
   "",
-  `Use it for a decision only they can make (a :::question block; go on with other work), finished long work (a short summary, files in \`attachments\`), or when they ask. ${INBOX_CHANNEL_RULE} No routine progress.`,
+  INBOX_AGENT_RULES,
   "",
-  "- send_message posts markdown. Messages join your session's thread until the person resolves it; pass `thread` (a short name) to keep separate work apart, or reply_to (an id from the Inbox, never from memory) to answer a message. Pass an idempotency_key so a retry never posts twice. Question syntax: send_message's description.",
-  "- attachments: files to show the person (a plan, a screenshot, an HTML mock), absolute or relative to project_path; link one from the body (`[the mock](mock.html)`) to open it beside the thread. Their annotations come back in the reply.",
+  "- send_message posts markdown. Messages join your session's thread until the person resolves it; pass `thread` (a short name) to keep separate work apart, or reply_to (an id from the Inbox, never from memory) to answer a message. Question syntax: send_message's description.",
+  "- attachments: files to show the person (a plan, a screenshot, an HTML mock); link one from the body (`[the mock](mock.html)`) to open it beside the thread.",
   "- wait_for_reply (thread_id) returns the reply when it lands, or { status: \"waiting\", cursor } after about 50 s: call it again with that cursor. Call it only after the work that does not need the answer.",
-  "- read_thread reads one thread (thread_id): open questions, the newest messages in full, earlier ones one line each; without an id it lists yours (asked_by \"anyone\": all). search finds older messages by words. To replace an open question of yours that no longer fits, send with reply_to into its thread and `supersedes`. resolve_message archives the thread, only when nothing in it is left for the person to read or answer.",
+  "- read_thread reads one thread (thread_id); without an id it lists yours (asked_by \"anyone\": all). search finds older messages by words. To replace a question of yours that no longer fits: reply_to into its thread with `supersedes`. resolve_message archives the thread, only when nothing in it is left for the person to read or answer.",
   "- A guided review of a code change: get_guide_brief, write the guide, then submit_guide with the exact patch.",
   "",
   "A reply is the person's own: their words, then \"Answers to your questions\"; no tool answers or approves for them.",

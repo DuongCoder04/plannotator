@@ -1847,6 +1847,11 @@ export type InboxToolCostHost = "pi" | "opencode";
  * `plannotator card --help`): measured on Pi, 9,416 bytes (+118; about +25
  * tokens, so the rounded, high token figure stands). With the Board on the
  * line is left out: 10,760 stands.
+ * Then the follow-through rule in the lead (INBOX_FOLLOW_THROUGH_RULE, the
+ * owner, 2026-10-27: +162 bytes over "No routine progress."), paid for by
+ * shorter action leads (send_message, wait_for_reply, resolve_message,
+ * get_guide_brief), the wake note's "A reply arrives" and the lead's last
+ * sentence: measured on Pi, 9,421 bytes (+5). The stated cost stands.
  */
 const INBOX_TOOL_COST_NOW = { bytes: 9416, tokens: 2600 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
