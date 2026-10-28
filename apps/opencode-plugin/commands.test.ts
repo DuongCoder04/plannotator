@@ -149,29 +149,6 @@ describe("handleReviewCommand open state (--base / --diff-type)", () => {
     expect(logged).toContain("Base ref not found: nope-missing");
   });
 
-  test("a forced provider that is not detected still checks its own flags", async () => {
-    // Failure caught: `--git` outside a repository dropping the Git rules and
-    // failing with "no VCS provider was selected" instead of naming the bad
-    // diff type.
-    process.env.PLANNOTATOR_DATA_DIR = makeTempDir();
-    const deps: any = makeDeps();
-    deps.directory = makeTempDir();
-    const startReviewServerMock = mock(async (_options: any) => {
-      throw new Error("must not be reached");
-    });
-    deps.startReviewServer = startReviewServerMock;
-
-    await handleReviewCommand(
-      { properties: { arguments: "--git --diff-type jj-current", sessionID: "session-123" } },
-      deps,
-    );
-
-    expect(startReviewServerMock).not.toHaveBeenCalled();
-    const logged = deps.client.app.log.mock.calls.map((c: any[]) => c[0]?.message ?? "").join("\n");
-    expect(logged).toContain("Unknown diff type: jj-current");
-    expect(logged).not.toContain("no VCS provider was selected");
-  });
-
   test("a directory selects another repo while feedback stays in the invoking session", async () => {
     // Catch cwd leakage on the embedded path and delivery into the wrong session.
     process.env.PLANNOTATOR_DATA_DIR = makeTempDir();

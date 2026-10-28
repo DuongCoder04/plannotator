@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # Plannotator Review
 
-Arguments pass through to `plannotator review`: one directory or PR/MR URL, `--git` / `--gitbutler`, and the session-only open-state flags `--base <ref>` / `--diff-type <type>` (Git and jj; for a stacked branch, `--base <the branch below yours>` reviews just that layer).
+Arguments pass through to `plannotator review`: one directory or PR/MR URL, `--git` / `--gitbutler`, and the session-only open-state flags `--base <ref>` / `--diff-type <type>` (git-only; for a stacked branch, `--base <the branch below yours>` reviews just that layer).
 
 For another repository or worktree, pass its path relative to this session or an absolute path, e.g. `/plannotator-review ../feature-worktree`. Quote paths containing spaces. Supply a target, not prose; feedback names the directory where changes belong.
 

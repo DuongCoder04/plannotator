@@ -424,6 +424,12 @@ function savedDefaultDiffTypeFor(gitContext: GitContext | null): string | undefi
     : configStore.get('defaultDiffType');
 }
 
+/** Evolution diff compares against the change's previous state, never the
+ *  line base: the same base handleDiffSwitch picks when switching to it. */
+function evologBaseFor(diffType: string, gitContext: GitContext | null): string | undefined {
+  return diffType === 'jj-evolog' ? gitContext?.jjEvologs?.[1]?.commitId : undefined;
+}
+
 const ReviewApp: React.FC = () => {
   useViewportEnvironment();
   // A plain-text paste into our text fields is inserted by the page: Chrome 155-156 on macOS drops
@@ -3530,7 +3536,9 @@ const ReviewApp: React.FC = () => {
         diffOptions: gitContext?.diffOptions ?? [],
         activeWorktreePath,
       });
-      void fetchDiffSwitch(target.diffType, target.base ?? undefined);
+      const evologBase = target.base ? undefined : evologBaseFor(target.diffType, gitContext);
+      if (evologBase) setSelectedBase(evologBase);
+      void fetchDiffSwitch(target.diffType, target.base ?? evologBase);
     }
     selectPanelView(view);
   }, [handleSwitchToSections, selectPanelView, searchQuery, isSearchOpen, clearSearch, closeSearch, panelView, diffType, isLoadingDiff, gitContext, activeWorktreePath, fetchDiffSwitch]);
@@ -3609,7 +3617,9 @@ const ReviewApp: React.FC = () => {
       diffOptions: gitContext?.diffOptions ?? [],
       activeWorktreePath,
     });
-    void fetchDiffSwitch(target.diffType);
+    const evologBase = evologBaseFor(target.diffType, gitContext);
+    if (evologBase) setSelectedBase(evologBase);
+    void fetchDiffSwitch(target.diffType, evologBase);
   }, [isLoading, diffData, diffType, panelView, gitContext, activeWorktreePath, fetchDiffSwitch]);
 
   // Self-heal a conflicted persisted pair: reviewPanelView=sections with a

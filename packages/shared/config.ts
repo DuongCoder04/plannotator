@@ -23,12 +23,12 @@ import {
 } from "fs";
 import { execSync } from "child_process";
 
-import type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, ReviewDefaults, ThemeConfig } from '@plannotator/core/config-types';
+import type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, JjDefaultDiffType, ReviewDefaults, ThemeConfig } from '@plannotator/core/config-types';
 import { isFaviconStyle, type FaviconStyle } from './favicon';
 import { isAnnotateAgentTerminalSide, type AnnotateAgentTerminalSide } from './agent-terminal';
 import { parseAgentSwitchConfig, agentSwitchConfigValue, type AgentSwitchConfigValue } from './agent-switch';
 import { INBOX_TOOL_NAME, inboxReminderCustomText, inboxReminderFor } from './inbox/connection';
-export type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, ReviewDefaults, ThemeConfig, FaviconStyle };
+export type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, JjDefaultDiffType, ReviewDefaults, ThemeConfig, FaviconStyle };
 
 /** Single conventional comment label entry stored in config.json */
 export interface CCLabelConfig {
@@ -164,7 +164,7 @@ function mergeInboxPromptConfig(current: unknown, partial: unknown): PromptConfi
 export interface PlannotatorConfig {
   displayName?: string;
   diffOptions?: DiffOptions;
-  /** Provider-scoped review defaults. Unknown provider keys are preserved. */
+  /** Saved review defaults for a VCS other than Git (today: `jj`). Unknown keys are kept. */
   reviewDefaults?: ReviewDefaults;
   /** Optional analysis layers used by code review. */
   reviewAnalysis?: {
@@ -1082,6 +1082,31 @@ export function isAgentTerminalSide(
   value: unknown,
 ): value is NonNullable<PlannotatorConfig["agentTerminalSide"]> {
   return isAnnotateAgentTerminalSide(value);
+}
+
+/**
+ * Read the user's preferred default diff type from config, falling back to
+ * 'since-base' (the composite "what would GitHub show" view). Users with an
+ * explicit defaultDiffType keep their choice.
+ */
+export function resolveDefaultDiffType(cfg?: PlannotatorConfig): DefaultDiffType {
+  const v = cfg?.diffOptions?.defaultDiffType as string | undefined;
+  if (v === 'branch') return 'merge-base';
+  return v === 'since-base' || v === 'local-vs-remote' || v === 'uncommitted' || v === 'unstaged' || v === 'staged' || v === 'merge-base' || v === 'all' ? v : 'since-base';
+}
+
+/**
+ * The saved default diff a local review opens on for one VCS. Jujutsu reads
+ * its own `reviewDefaults.jj` value (unset or invalid: `jj-current`, as
+ * before it could be saved); every other VCS reads the Git default above.
+ */
+export function resolveDefaultDiffTypeFor(
+  cfg: PlannotatorConfig | undefined,
+  vcsId: string | undefined,
+): DefaultDiffType | JjDefaultDiffType {
+  if (vcsId !== 'jj') return resolveDefaultDiffType(cfg);
+  const v = cfg?.reviewDefaults?.jj?.defaultDiffType;
+  return v === 'jj-current' || v === 'jj-last' || v === 'jj-line' || v === 'jj-evolog' || v === 'jj-all' ? v : 'jj-current';
 }
 
 /**

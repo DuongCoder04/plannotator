@@ -100,8 +100,8 @@ import {
   startGoalSetupServer as startGoalSetupServerUnguarded,
   handleGoalSetupServerReady,
 } from "@plannotator/server/goal-setup";
-import { type DiffType, type VcsProvider, detectManagedVcs, getVcsReviewPolicy, prepareLocalReviewDiff, resolveConfiguredVcsReviewDefault, gitRuntime } from "@plannotator/server/vcs";
-import { loadConfig, resolveAIEnabled, resolveSharingEnabled, resolveUpdateCheck } from "@plannotator/shared/config";
+import { type DiffType, detectManagedVcs, prepareLocalReviewDiff, gitRuntime } from "@plannotator/server/vcs";
+import { loadConfig, resolveAIEnabled, resolveDefaultDiffType, resolveDefaultDiffTypeFor, resolveSharingEnabled, resolveUpdateCheck } from "@plannotator/shared/config";
 import { formatIgnoredReviewWords, parseReviewArgs, resolveReviewTarget, withReviewDirectory, type ParsedReviewArgs } from "@plannotator/shared/review-args";
 import { resolveReviewOpenState, type ReviewOpenState } from "@plannotator/shared/review-open-state";
 import { listBranches, type AvailableBranches } from "@plannotator/shared/review-core";
@@ -560,7 +560,6 @@ async function resolveCliReviewOpenState(
     isPRMode: boolean;
     isWorkspace: boolean;
     providerId?: "git" | "gitbutler" | "jj" | "p4";
-    reviewPolicy?: VcsProvider["reviewPolicy"];
     resolvedDefaultDiffType: DiffType;
     cwd?: string;
   },
@@ -595,9 +594,7 @@ async function resolveCliReviewOpenState(
     parsed: reviewArgs,
     isPRMode: options.isPRMode,
     isWorkspace: options.isWorkspace,
-    provider: options.reviewPolicy
-      ? { resolve: options.reviewPolicy.resolveOpenState }
-      : undefined,
+    providerId: options.providerId,
     resolvedDefaultDiffType: options.resolvedDefaultDiffType,
     baseResolves,
     availableBranches,
@@ -1172,7 +1169,7 @@ if (args[0] === "sessions") {
     await resolveCliReviewOpenState(reviewArgs, {
       isPRMode: true,
       isWorkspace: false,
-      resolvedDefaultDiffType: resolveConfiguredVcsReviewDefault(loadConfig()),
+      resolvedDefaultDiffType: resolveDefaultDiffType(loadConfig()),
     });
     const prRef = parsePRUrl(urlArg);
     if (!prRef) {
@@ -1433,18 +1430,15 @@ if (args[0] === "sessions") {
         isPRMode: false,
         isWorkspace: false,
         providerId,
-        // A forced provider that is not detected still validates its own
-        // flags; prepareLocalReviewDiff then reports it missing.
-        reviewPolicy: managedVcs?.reviewPolicy ?? getVcsReviewPolicy(reviewArgs.vcsType),
-        resolvedDefaultDiffType: resolveConfiguredVcsReviewDefault(config, providerId),
+        resolvedDefaultDiffType: resolveDefaultDiffType(config),
         cwd: reviewCwd,
       });
       const diffResult = await prepareLocalReviewDiff({
         cwd: reviewCwd,
         vcsType: reviewArgs.vcsType,
-        requestedDiffType: openState.requestedDiffType as DiffType | undefined,
+        requestedDiffType: openState.requestedDiffType,
         requestedBase: openState.requestedBase,
-        configuredDiffType: resolveConfiguredVcsReviewDefault(config, providerId),
+        configuredDiffType: resolveDefaultDiffTypeFor(config, managedVcs?.id),
         hideWhitespace: config.diffOptions?.hideWhitespace ?? false,
       });
       gitContext = diffResult.gitContext;
@@ -1456,7 +1450,8 @@ if (args[0] === "sessions") {
       // Forward the base the patch was actually computed against — without it
       // the server would serve this patch under the detected default: a
       // mixed-base review (wrong file-content fetches, wrong agent prompts).
-      if (openState.requestedBase !== undefined) initialBaseFromFlags = diffResult.base;
+      // Evolution diff opens on the change's previous state, not the line base.
+      if (openState.requestedBase !== undefined || diffResult.diffType === "jj-evolog") initialBaseFromFlags = diffResult.base;
       initialFileIdentities = diffResult.fileIdentities;
     } else {
       // Multi-repo workspace review has no base parameter — the open-state
@@ -1464,10 +1459,10 @@ if (args[0] === "sessions") {
       await resolveCliReviewOpenState(reviewArgs, {
         isPRMode: false,
         isWorkspace: true,
-        resolvedDefaultDiffType: resolveConfiguredVcsReviewDefault(config),
+        resolvedDefaultDiffType: resolveDefaultDiffType(config),
       });
       workspace = await buildLocalWorkspaceReview(reviewCwd, {
-        configuredDiffType: resolveConfiguredVcsReviewDefault(config),
+        configuredDiffType: resolveDefaultDiffType(config),
         hideWhitespace: config.diffOptions?.hideWhitespace ?? false,
       });
       if (workspace.repos.length === 0) {
@@ -2339,7 +2334,7 @@ if (args[0] === "sessions") {
     await resolveCliReviewOpenState(reviewArgs, {
       isPRMode: true,
       isWorkspace: false,
-      resolvedDefaultDiffType: resolveConfiguredVcsReviewDefault(loadConfig()),
+      resolvedDefaultDiffType: resolveDefaultDiffType(loadConfig()),
     });
     const prRef = parsePRUrl(urlArg);
     if (!prRef) {
@@ -2387,18 +2382,15 @@ if (args[0] === "sessions") {
         isPRMode: false,
         isWorkspace: false,
         providerId,
-        // A forced provider that is not detected still validates its own
-        // flags; prepareLocalReviewDiff then reports it missing.
-        reviewPolicy: managedVcs?.reviewPolicy ?? getVcsReviewPolicy(reviewArgs.vcsType),
-        resolvedDefaultDiffType: resolveConfiguredVcsReviewDefault(config, providerId),
+        resolvedDefaultDiffType: resolveDefaultDiffType(config),
         cwd,
       });
       const diffResult = await prepareLocalReviewDiff({
         cwd,
         vcsType: reviewArgs.vcsType,
-        requestedDiffType: openState.requestedDiffType as DiffType | undefined,
+        requestedDiffType: openState.requestedDiffType,
         requestedBase: openState.requestedBase,
-        configuredDiffType: resolveConfiguredVcsReviewDefault(config, providerId),
+        configuredDiffType: resolveDefaultDiffTypeFor(config, managedVcs?.id),
         hideWhitespace: config.diffOptions?.hideWhitespace ?? false,
       });
       gitContext = diffResult.gitContext;
@@ -2407,17 +2399,18 @@ if (args[0] === "sessions") {
       gitRef = diffResult.gitRef;
       diffError = diffResult.error;
       initialFingerprint = diffResult.fingerprint;
-      if (openState.requestedBase !== undefined) initialBaseFromFlags = diffResult.base;
+      // Evolution diff opens on the change's previous state, not the line base.
+      if (openState.requestedBase !== undefined || diffResult.diffType === "jj-evolog") initialBaseFromFlags = diffResult.base;
       initialFileIdentities = diffResult.fileIdentities;
     } else {
       await resolveCliReviewOpenState(reviewArgs, {
         isPRMode: false,
         isWorkspace: true,
-        resolvedDefaultDiffType: resolveConfiguredVcsReviewDefault(config),
+        resolvedDefaultDiffType: resolveDefaultDiffType(config),
         cwd,
       });
       workspace = await buildLocalWorkspaceReview(cwd, {
-        configuredDiffType: resolveConfiguredVcsReviewDefault(config),
+        configuredDiffType: resolveDefaultDiffType(config),
         hideWhitespace: config.diffOptions?.hideWhitespace ?? false,
       });
       if (workspace.repos.length === 0) {

@@ -655,7 +655,7 @@ const ReviewTab: React.FC<{ sinceBaseUnavailable?: boolean }> = ({ sinceBaseUnav
         <div className="space-y-2">
           <div>
             <div className="text-sm font-medium">Default diff view</div>
-            <div className="text-xs text-muted-foreground">Which changes to show when you open a code review</div>
+            <div className="text-xs text-muted-foreground">Which changes to show when you open a review in a Jujutsu repository</div>
           </div>
           {/* Its own saved value: Git modes mean nothing in a jj repo, and jj has
               no Git status view, so nothing here is coupled to the Git half. */}

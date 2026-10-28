@@ -1,5 +1,3 @@
-import { gitReviewPolicy } from "./git-review-policy";
-import { jjReviewPolicy } from "./jj-review-policy";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -77,7 +75,7 @@ const reviewRuntime: ReviewGitRuntime = {
   async readLink() { return null; },
 };
 
-const gitVcs = createVcsApi([createGitProvider(reviewRuntime, gitReviewPolicy)]);
+const gitVcs = createVcsApi([createGitProvider(reviewRuntime)]);
 
 function input(snapshotId = "snapshot"): CallFlowAnalysisInput {
   return {
@@ -202,7 +200,7 @@ describe("VCS snapshot materialization", () => {
         };
       },
     };
-    const jjVcs = createVcsApi([createJjProvider(jjRuntime, reviewRuntime, jjReviewPolicy)]);
+    const jjVcs = createVcsApi([createJjProvider(jjRuntime, reviewRuntime)]);
     expect(jjVcs.vcsSupportsSnapshot("jj", "jj-current")).toBe(true);
     expect(jjVcs.vcsSupportsSnapshot("jj", "jj-all")).toBe(false);
     const plan = await jjVcs.materializeVcsSnapshot("jj", {
@@ -257,7 +255,7 @@ describe("VCS snapshot materialization", () => {
         return { stdout: "diff --git a/main.ts b/main.ts\n", stderr: "", exitCode: 0, truncated: true };
       },
     };
-    const jjVcs = createVcsApi([createJjProvider(jjRuntime, reviewRuntime, jjReviewPolicy)]);
+    const jjVcs = createVcsApi([createJjProvider(jjRuntime, reviewRuntime)]);
     expect(jjVcs.materializeVcsSnapshot("jj", {
       cwd: repo,
       diffType: "jj-current",

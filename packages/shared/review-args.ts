@@ -1,6 +1,29 @@
 import type { VcsSelection } from "./vcs-core";
+import type { DiffType } from "./review-core";
 import { statSync } from "node:fs";
 import { resolveUserPath, stripWrappingQuotes } from "./resolve-file";
+
+/**
+ * The flat git diff ids `review --diff-type` accepts — exactly GIT_DIFF_TYPES
+ * in vcs-core, pinned by test (a git diff type added to one list and not the
+ * other would make a valid mode unreachable from the CLI). Kept as a literal
+ * list here (type-only imports elsewhere) so review-args stays light for
+ * plugin hosts. Session-navigation states (`commit:<sha>`, `worktree:*`,
+ * `gitbutler:*`, jj/p4 modes) are deliberately not open states.
+ */
+export const REVIEW_OPEN_DIFF_TYPES = [
+  "since-base",
+  "local-vs-remote",
+  "uncommitted",
+  "staged",
+  "unstaged",
+  "last-commit",
+  "branch",
+  "merge-base",
+  "all",
+] as const;
+
+export type ReviewOpenDiffType = (typeof REVIEW_OPEN_DIFF_TYPES)[number];
 
 export interface ParsedReviewArgs {
   prUrl?: string;
@@ -16,7 +39,7 @@ export interface ParsedReviewArgs {
   /** Compare target the session opens against (`--base <ref>`). */
   base?: string;
   /** Diff mode the session opens in (`--diff-type <id>`). */
-  diffType?: string;
+  diffType?: DiffType;
   /**
    * `false` when the invocation carried `--no-git-remote-check` (issue #1553):
    * this session must make no `git ls-remote` call at all. Undefined means
@@ -51,7 +74,7 @@ export function parseReviewArgs(input: string | string[]): ParsedReviewArgs {
   let vcsType: VcsSelection | undefined;
   let useLocal = true;
   let base: string | undefined;
-  let diffType: string | undefined;
+  let diffType: DiffType | undefined;
   let gitRemoteCheck: boolean | undefined;
   let gate = false;
   const errors: string[] = [];
@@ -135,7 +158,13 @@ export function parseReviewArgs(input: string | string[]): ParsedReviewArgs {
           errors.push("--diff-type may only be specified once");
           break;
         }
-        diffType = value;
+        if (!(REVIEW_OPEN_DIFF_TYPES as readonly string[]).includes(value)) {
+          errors.push(
+            `Unknown diff type: ${value}. Expected one of: ${REVIEW_OPEN_DIFF_TYPES.join(", ")}`,
+          );
+          break;
+        }
+        diffType = value as DiffType;
         break;
       }
       default:

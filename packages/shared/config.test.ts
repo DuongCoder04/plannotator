@@ -38,11 +38,76 @@ import {
   getServerConfig,
   resolveGuideShareUrl,
   resolveSharingEnabled,
+  resolveDefaultDiffType,
+  resolveDefaultDiffTypeFor,
   DEFAULT_GUIDE_SHARE_URL,
   __setConfigLockTimingsForTest,
   __setConfigSaveMergeWindowHookForTest,
 } from "./config";
 import type { PlannotatorConfig } from "./config";
+
+describe("resolveDefaultDiffType", () => {
+  test("accepts local-vs-remote as a persisted review default", () => {
+    expect(resolveDefaultDiffType({
+      diffOptions: { defaultDiffType: "local-vs-remote" },
+    })).toBe("local-vs-remote");
+  });
+});
+
+describe("resolveDefaultDiffTypeFor", () => {
+  test("Git and Jujutsu each open on their own saved default", () => {
+    const config: PlannotatorConfig = {
+      diffOptions: { defaultDiffType: "merge-base" },
+      reviewDefaults: { jj: { defaultDiffType: "jj-line" } },
+    };
+    expect(resolveDefaultDiffTypeFor(config, "git")).toBe("merge-base");
+    expect(resolveDefaultDiffTypeFor(config, "jj")).toBe("jj-line");
+    // No detected VCS (and GitButler) read the Git default.
+    expect(resolveDefaultDiffTypeFor(config, undefined)).toBe("merge-base");
+    expect(resolveDefaultDiffTypeFor(config, "gitbutler")).toBe("merge-base");
+  });
+
+  test("a config saved before jj defaults opens jj on jj-current and keeps Git's value", () => {
+    const legacy = { diffOptions: { defaultDiffType: "branch" } } as unknown as PlannotatorConfig;
+    expect(resolveDefaultDiffTypeFor(legacy, "git")).toBe("merge-base");
+    expect(resolveDefaultDiffTypeFor(legacy, "jj")).toBe("jj-current");
+    expect(resolveDefaultDiffTypeFor(undefined, "jj")).toBe("jj-current");
+  });
+
+  test("a Git mode or unknown id saved for jj opens on jj-current", () => {
+    for (const bad of ["since-base", "merge-base", "jj-commit:abc", "nope"]) {
+      expect(resolveDefaultDiffTypeFor({ reviewDefaults: { jj: { defaultDiffType: bad } } }, "jj")).toBe("jj-current");
+    }
+  });
+});
+
+describe("reviewDefaults persistence", () => {
+  const originalDataDir = process.env.PLANNOTATOR_DATA_DIR;
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "plannotator-config-test-"));
+    process.env.PLANNOTATOR_DATA_DIR = tempDir;
+  });
+
+  afterEach(() => {
+    if (originalDataDir !== undefined) {
+      process.env.PLANNOTATOR_DATA_DIR = originalDataDir;
+    } else {
+      delete process.env.PLANNOTATOR_DATA_DIR;
+    }
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test("saving the jj default keeps Git's default and other VCS keys, and the server sends it", () => {
+    saveConfig({ diffOptions: { defaultDiffType: "uncommitted" }, reviewDefaults: { other: { defaultDiffType: "x" } } });
+    saveConfig({ reviewDefaults: { jj: { defaultDiffType: "jj-evolog" } } });
+    const cfg = loadConfig();
+    expect(cfg.diffOptions?.defaultDiffType).toBe("uncommitted");
+    expect(cfg.reviewDefaults).toEqual({ other: { defaultDiffType: "x" }, jj: { defaultDiffType: "jj-evolog" } });
+    expect(getServerConfig(null).reviewDefaults?.jj).toEqual({ defaultDiffType: "jj-evolog" });
+  });
+});
 
 describe("parseReviewAnalysisConfig", () => {
   test("accepts independent boolean analysis flags", () => {
@@ -568,16 +633,6 @@ describe("favicon config persistence", () => {
     saveConfig({ favicon: unknownFavicon });
     expect(loadConfig().favicon).toBe(unknownFavicon);
     expect(getServerConfig(null).favicon).toBeUndefined();
-  });
-
-  test("merges provider review defaults without dropping another provider", () => {
-    saveConfig({ reviewDefaults: { git: { defaultDiffType: "merge-base" } } });
-    saveConfig({ reviewDefaults: { jj: { defaultDiffType: "jj-line" } } });
-
-    expect(getServerConfig(null).reviewDefaults).toEqual({
-      git: { defaultDiffType: "merge-base" },
-      jj: { defaultDiffType: "jj-line" },
-    });
   });
 });
 

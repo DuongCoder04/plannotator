@@ -130,7 +130,7 @@ export function setProviderReviewDefaultDiffType(
  * meaningful revision can re-show it.
  *
  * It lives beside the setting rather than in the review app because BOTH
- * writers of the setting (Settings > Git here, and the file-list gear in the
+ * writers of the setting (Settings → Review here, and the file-list gear in the
  * review app) must consume the gate: someone who found the switch has
  * demonstrably discovered the feature and must never be told about it.
  */

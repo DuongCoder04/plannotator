@@ -16,8 +16,6 @@ import { tmpdir } from "node:os";
 import type { GitCommandResult, ReviewGitRuntime } from "./review-core";
 import type { ReviewJjRuntime } from "./jj-core";
 import { createGitProvider, createJjProvider, createVcsApi } from "./vcs-core";
-import { gitReviewPolicy } from "./git-review-policy";
-import { jjReviewPolicy } from "./jj-review-policy";
 import { getJjCommitDiffInfo, listJjCommitHistory, resolveJjCommitRailBase } from "./commit-history";
 import { canonicalizeJjCommitDiffType } from "./jj-core";
 
@@ -45,7 +43,7 @@ const unusedGitRuntime: ReviewGitRuntime = {
   async readLink() { return null; },
 };
 
-const vcs = createVcsApi([createJjProvider(jjRuntime, unusedGitRuntime, jjReviewPolicy), createGitProvider(unusedGitRuntime, gitReviewPolicy)]);
+const vcs = createVcsApi([createJjProvider(jjRuntime, unusedGitRuntime), createGitProvider(unusedGitRuntime)]);
 
 let workspace = "";
 

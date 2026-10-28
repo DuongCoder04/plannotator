@@ -1,16 +1,12 @@
-export interface ProviderReviewDefaults {
-  defaultDiffType?: string;
-}
+export type DefaultDiffType = 'since-base' | 'local-vs-remote' | 'uncommitted' | 'unstaged' | 'staged' | 'merge-base' | 'all';
+/** The diff types a Jujutsu review can open on by default. */
+export type JjDefaultDiffType = 'jj-current' | 'jj-last' | 'jj-line' | 'jj-evolog' | 'jj-all';
 
 /**
- * Saved review defaults per VCS, keyed by provider id (`jj`). Git keeps its
- * original `diffOptions.defaultDiffType`, which wins over a `git` entry here.
+ * Saved review defaults for a VCS other than Git, keyed by VCS id (today:
+ * `jj`). Git keeps its original `diffOptions.defaultDiffType`.
  */
-export type ReviewDefaults = Record<string, ProviderReviewDefaults>;
-
-/** Git's saved default diff (`diffOptions.defaultDiffType`). */
-export type DefaultDiffType = 'since-base' | 'local-vs-remote' | 'uncommitted' | 'unstaged' | 'staged' | 'merge-base' | 'all';
-
+export type ReviewDefaults = Record<string, { defaultDiffType?: string }>;
 export type DiffLineBgIntensity = 'subtle' | 'normal' | 'strong';
 
 /**

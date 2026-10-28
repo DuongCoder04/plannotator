@@ -5,10 +5,6 @@ import type {
   GitContext,
   ReviewGitRuntime,
 } from "./review-core";
-import { gitReviewPolicy } from "./git-review-policy";
-import { gitButlerReviewPolicy } from "./gitbutler-review-policy";
-import { jjReviewPolicy } from "./jj-review-policy";
-import { p4ReviewPolicy } from "./p4-review-policy";
 import {
   type VcsProvider,
   createGitProvider,
@@ -41,14 +37,6 @@ function provider(
   const isDetected = () => typeof detected === "function" ? detected() : detected;
   return {
     id,
-    label: id === "git" ? "Git" : id,
-    reviewPolicy: id === "jj"
-      ? jjReviewPolicy
-      : id === "gitbutler"
-        ? gitButlerReviewPolicy
-        : id === "p4"
-          ? p4ReviewPolicy
-          : gitReviewPolicy,
     async detect() {
       return isDetected();
     },
@@ -214,7 +202,7 @@ describe("createVcsApi", () => {
   });
 
   test("limits Git staging to working-tree diff modes", async () => {
-    const git = createVcsApi([createGitProvider(gitRuntime, gitReviewPolicy)]);
+    const git = createVcsApi([createGitProvider(gitRuntime)]);
 
     await expect(git.canStageFiles("uncommitted", "/repo")).resolves.toBe(true);
     await expect(git.canStageFiles("unstaged", "/repo")).resolves.toBe(true);
@@ -228,7 +216,7 @@ describe("createVcsApi", () => {
   });
 
   test("the git provider owns commit:<sha> diff types", () => {
-    const git = createGitProvider(gitRuntime, gitReviewPolicy);
+    const git = createGitProvider(gitRuntime);
     expect(git.ownsDiffType("commit:abc1234")).toBe(true);
     expect(git.ownsDiffType("worktree:/repo:commit:abc1234")).toBe(true);
   });
@@ -274,6 +262,33 @@ describe("createVcsApi", () => {
       diffType: "jj-current",
       base: "trunk()",
       rawPatch: "jj:jj-current:trunk()",
+    });
+  });
+
+  test("a saved Evolution diff default opens against the change's previous state, not the line base", async () => {
+    // Failure caught: opening on jj-evolog with the line base, which diffs
+    // the whole line of work under an "Evolution diff from trunk()" label.
+    const jj = provider("jj", true, ["jj-current", "jj-evolog"], {
+      defaultBranch: "trunk()",
+      diffOptions: [
+        { id: "jj-current", label: "Current change" },
+        { id: "jj-evolog", label: "Evolution diff" },
+      ],
+      jjEvologs: [
+        { commitId: "now0", description: "" },
+        { commitId: "prev1", description: "" },
+      ],
+      vcsType: "jj",
+    });
+    const api = createVcsApi([jj]);
+
+    await expect(api.prepareLocalReviewDiff({
+      cwd: "/repo",
+      configuredDiffType: "jj-evolog",
+    })).resolves.toMatchObject({
+      diffType: "jj-evolog",
+      base: "prev1",
+      rawPatch: "jj:jj-evolog:prev1",
     });
   });
 
@@ -474,8 +489,11 @@ describe("resolveInitialDiffType", () => {
     expect(resolveInitialDiffType(context({}), "merge-base")).toBe("merge-base");
   });
 
+  test("uses p4-default for P4 contexts", () => {
+    expect(resolveInitialDiffType(context({ vcsType: "p4" }), "merge-base")).toBe("p4-default");
+  });
 
-  test("uses JJ defaults and ignores saved Git defaults for jj contexts", () => {
+  test("ignores saved Git defaults for jj contexts", () => {
     const jjContext = context({
       defaultBranch: "trunk()",
       diffOptions: [
@@ -486,10 +504,24 @@ describe("resolveInitialDiffType", () => {
       vcsType: "jj",
     });
 
-    expect(resolveInitialDiffType(jjContext, "jj-line")).toBe("jj-line");
     expect(resolveInitialDiffType(jjContext, "all")).toBe("jj-current");
     expect(resolveInitialDiffType(jjContext, "merge-base")).toBe("jj-current");
     expect(resolveInitialDiffType(jjContext, "unstaged")).toBe("jj-current");
+  });
+
+  test("opens a jj review on its saved jj default when the change offers it", () => {
+    const jjContext = context({
+      defaultBranch: "trunk()",
+      diffOptions: [
+        { id: "jj-current", label: "Current change" },
+        { id: "jj-line", label: "Line of work" },
+      ],
+      vcsType: "jj",
+    });
+
+    expect(resolveInitialDiffType(jjContext, "jj-line")).toBe("jj-line");
+    // Evolution diff is only offered with evolog history.
+    expect(resolveInitialDiffType(jjContext, "jj-evolog")).toBe("jj-current");
   });
 
   test("falls back to the first available option for unknown non-jj modes", () => {

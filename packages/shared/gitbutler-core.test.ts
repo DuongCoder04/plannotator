@@ -1,5 +1,3 @@
-import { gitReviewPolicy } from "./git-review-policy";
-import { gitButlerReviewPolicy } from "./gitbutler-review-policy";
 import { describe, expect, test } from "bun:test";
 
 import type { GitCommandOptions, GitCommandResult } from "./review-core";
@@ -333,8 +331,8 @@ describe("GitButler detection and context", () => {
   test("ordinary Git selection never invokes the GitButler CLI", async () => {
     const fixture = createRuntime({ activeRef: "refs/heads/main" });
     const api = createVcsApi([
-      createGitButlerProvider(fixture.runtime, gitButlerReviewPolicy),
-      createGitProvider(fixture.runtime, gitReviewPolicy),
+      createGitButlerProvider(fixture.runtime),
+      createGitProvider(fixture.runtime),
     ]);
 
     await expect(api.detectManagedVcs(ROOT)).resolves.toMatchObject({ id: "git" });
@@ -344,8 +342,8 @@ describe("GitButler detection and context", () => {
   test("an ordinary Git branch named gitbutler/workspace stays on the Git provider", async () => {
     const fixture = createRuntime({ configured: false });
     const api = createVcsApi([
-      createGitButlerProvider(fixture.runtime, gitButlerReviewPolicy),
-      createGitProvider(fixture.runtime, gitReviewPolicy),
+      createGitButlerProvider(fixture.runtime),
+      createGitProvider(fixture.runtime),
     ]);
 
     await expect(api.detectManagedVcs(ROOT)).resolves.toMatchObject({ id: "git" });
@@ -448,8 +446,8 @@ describe("GitButler detection and context", () => {
   test("an active workspace with a missing CLI does not silently fall back to Git", async () => {
     const fixture = createRuntime({ version: commandResult("", "but not found", 1) });
     const api = createVcsApi([
-      createGitButlerProvider(fixture.runtime, gitButlerReviewPolicy),
-      createGitProvider(fixture.runtime, gitReviewPolicy),
+      createGitButlerProvider(fixture.runtime),
+      createGitProvider(fixture.runtime),
     ]);
 
     await expect(api.prepareLocalReviewDiff({

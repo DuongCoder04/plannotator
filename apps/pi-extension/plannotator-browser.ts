@@ -6,11 +6,9 @@ import { createWorktreePool, type WorktreePool } from "./generated/worktree-pool
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	prepareLocalReviewDiff,
-	resolveConfiguredVcsReviewDefault,
 	reviewRuntime,
 	detectManagedVcs,
 	getVcsContext,
-	getVcsReviewPolicy,
 	getVcsDiffFingerprint,
 	getVcsFileContentsForDiff,
 	getVcsFileBytesForDiff,
@@ -46,7 +44,7 @@ import {
 } from "./generated/pr-provider.ts";
 import { parseRemoteUrl } from "./generated/repo.ts";
 import { fetchRef, createWorktree, removeWorktree, ensureObjectAvailable } from "./generated/worktree.ts";
-import { loadConfig, resolveSharingEnabled } from "./generated/config.ts";
+import { loadConfig, resolveDefaultDiffType, resolveDefaultDiffTypeFor, resolveSharingEnabled } from "./generated/config.ts";
 import {
 	WorkspaceReviewSession,
 	type WorkspaceDiffType,
@@ -119,7 +117,7 @@ type CodeReviewOptions = {
 	cwd?: string;
 	includeReviewDirectory?: boolean;
 	defaultBranch?: string;
-	diffType?: string;
+	diffType?: DiffType;
 	prUrl?: string;
 	vcsType?: VcsSelection;
 	useLocal?: boolean;
@@ -518,7 +516,7 @@ async function createCodeReviewBrowserSession(
 				parsed: { base: options.defaultBranch, diffType: options.diffType },
 				isPRMode: true,
 				isWorkspace: false,
-				resolvedDefaultDiffType: resolveConfiguredVcsReviewDefault(loadConfig()),
+				resolvedDefaultDiffType: resolveDefaultDiffType(loadConfig()),
 			});
 			if (openState.error) throw new Error(openState.error);
 		}
@@ -737,7 +735,7 @@ async function createCodeReviewBrowserSession(
 		// resolve the effective requested base/diff type (promotion included).
 		// Programmatic callers keep the verbatim pass-through below.
 		let requestedBase = options.defaultBranch;
-		let requestedDiffType = options.diffType as DiffType | undefined;
+		let requestedDiffType = options.diffType;
 		if (openStateFromFlags) {
 			const { resolveReviewOpenState } = await import("./generated/review-open-state.ts");
 			if (managedVcs || forcedVcs) {
@@ -762,10 +760,8 @@ async function createCodeReviewBrowserSession(
 					parsed: { base: requestedBase, diffType: requestedDiffType },
 					isPRMode: false,
 					isWorkspace: false,
-					// A forced provider that is not detected still validates its
-					// own flags; prepareLocalReviewDiff then says it is missing.
-					provider: { resolve: (managedVcs?.reviewPolicy ?? getVcsReviewPolicy(options.vcsType)).resolveOpenState },
-					resolvedDefaultDiffType: resolveConfiguredVcsReviewDefault(config, providerId),
+					providerId,
+					resolvedDefaultDiffType: resolveDefaultDiffType(config),
 					baseResolves,
 				});
 				if (openState.error) throw new Error(openState.error);
@@ -777,7 +773,7 @@ async function createCodeReviewBrowserSession(
 					parsed: { base: requestedBase, diffType: requestedDiffType },
 					isPRMode: false,
 					isWorkspace: true,
-					resolvedDefaultDiffType: resolveConfiguredVcsReviewDefault(config),
+					resolvedDefaultDiffType: resolveDefaultDiffType(config),
 				});
 				if (openState.error) throw new Error(openState.error);
 			}
@@ -788,7 +784,7 @@ async function createCodeReviewBrowserSession(
 				vcsType: options.vcsType,
 				requestedDiffType,
 				requestedBase,
-				configuredDiffType: resolveConfiguredVcsReviewDefault(config, (managedVcs?.id as VcsSelection | undefined) ?? options.vcsType),
+				configuredDiffType: resolveDefaultDiffTypeFor(config, managedVcs?.id),
 				hideWhitespace: config.diffOptions?.hideWhitespace ?? false,
 			});
 			gitCtx = result.gitContext;
@@ -807,8 +803,8 @@ async function createCodeReviewBrowserSession(
 			initialBaseExplicit = openStateFromFlags && requestedBase !== undefined;
 		} else {
 			workspace = await buildLocalWorkspaceReview(cwd, {
-				requestedDiffType: options.diffType as DiffType | WorkspaceDiffType | undefined,
-				configuredDiffType: resolveConfiguredVcsReviewDefault(config),
+				requestedDiffType: options.diffType,
+				configuredDiffType: resolveDefaultDiffType(config),
 				hideWhitespace: config.diffOptions?.hideWhitespace ?? false,
 			});
 			if (workspace.repos.length === 0) {

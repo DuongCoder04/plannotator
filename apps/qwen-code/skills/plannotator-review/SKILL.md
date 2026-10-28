@@ -16,7 +16,7 @@ plannotator review [--base <ref>] [--diff-type <type>] [directory-or-pr-url]
 
 Run it with the shell tool's `is_background: true`, and no trailing `&`. The command waits until the person finishes the review in the browser, which often takes longer than the shell tool's foreground limit (2 minutes by default, 10 at most); a foreground run would be stopped and the review lost. Then end your turn without stopping the task. When the task finishes, read its output (the tool result names the output file) and act on it.
 
-Reviewing one layer of a stacked branch? Pass `--base <the branch immediately below yours>` so the review shows only what this layer adds, instead of everything since `main`. Both flags are session-only (the reviewer can change either in the UI; nothing is persisted) and work in Git and jj.
+Reviewing one layer of a stacked branch? Pass `--base <the branch immediately below yours>` so the review shows only what this layer adds, instead of everything since `main`. Both flags are session-only (the reviewer can change either in the UI; nothing is persisted) and git-only.
 
 To review another repository or worktree, pass its directory (relative to the current session or absolute), e.g. `plannotator review ../feature-worktree`. Quote paths containing spaces. Feedback names the selected directory; apply changes there.
 

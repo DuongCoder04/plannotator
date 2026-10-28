@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { formatIgnoredReviewWords, parseReviewArgs, resolveReviewTarget, withReviewDirectory } from "./review-args";
+import { REVIEW_OPEN_DIFF_TYPES, formatIgnoredReviewWords, parseReviewArgs, resolveReviewTarget, withReviewDirectory } from "./review-args";
 import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
+import { GIT_DIFF_TYPES } from "./vcs-core";
 
 describe("parseReviewArgs", () => {
   test("defaults to auto VCS and local PR checkout", () => {
@@ -172,10 +173,16 @@ describe("parseReviewArgs", () => {
     expect(parsed.base).toBe("a");
   });
 
-  test("--diff-type preserves provider-owned ids for validation after detection", () => {
-    const parsed = parseReviewArgs("--diff-type provider-mode");
-    expect(parsed.errors).toEqual([]);
-    expect(parsed.diffType).toBe("provider-mode");
+  test("--diff-type rejects unknown ids, listing the valid set", () => {
+    // Failure caught: an unowned diff type reaching resolveRequestedDiffType,
+    // which silently falls back to the configured default.
+    const parsed = parseReviewArgs("--diff-type nonsense");
+    expect(parsed.errors).toHaveLength(1);
+    expect(parsed.errors[0]).toContain("Unknown diff type: nonsense");
+    for (const id of REVIEW_OPEN_DIFF_TYPES) {
+      expect(parsed.errors[0]).toContain(id);
+    }
+    expect(parsed.diffType).toBeUndefined();
   });
 
   test("rejects base refs carrying range syntax", () => {
@@ -184,6 +191,12 @@ describe("parseReviewArgs", () => {
     expect(parseReviewArgs("--base main..feature").errors).toEqual([
       "Invalid base ref: main..feature",
     ]);
+  });
+
+  test("REVIEW_OPEN_DIFF_TYPES is exactly GIT_DIFF_TYPES", () => {
+    // Failure caught: a git diff type added to one set and not the other,
+    // making a valid mode unreachable from (or falsely advertised by) the CLI.
+    expect(new Set(REVIEW_OPEN_DIFF_TYPES)).toEqual(GIT_DIFF_TYPES);
   });
 
   test("an unknown dashed token cannot shadow a PR URL", () => {

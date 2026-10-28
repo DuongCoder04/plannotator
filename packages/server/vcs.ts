@@ -2,7 +2,6 @@ import {
   type DiffType,
   type GitDiffOptions,
   type VcsProvider,
-  type VcsSelection,
   createGitButlerProvider,
   createGitProvider,
   createJjProvider,
@@ -19,22 +18,17 @@ import {
 import { runtime as gitRuntime } from "./git";
 import { runtime as gitButlerRuntime } from "./gitbutler";
 import { runtime as jjRuntime } from "./jj";
-import { gitReviewPolicy } from "@plannotator/shared/git-review-policy";
-import { gitButlerReviewPolicy } from "@plannotator/shared/gitbutler-review-policy";
-import { jjReviewPolicy } from "@plannotator/shared/jj-review-policy";
-import { p4ReviewPolicy } from "@plannotator/shared/p4-review-policy";
-import type { PlannotatorConfig } from "@plannotator/shared/config";
 
 const p4Provider: VcsProvider = {
   id: "p4",
-  label: "P4",
-  reviewPolicy: p4ReviewPolicy,
 
   async detect(cwd?: string): Promise<boolean> {
     return (await detectP4Workspace(cwd)) !== null;
   },
 
-  ownsDiffType: p4ReviewPolicy.ownsDiffType,
+  ownsDiffType(diffType: string): boolean {
+    return diffType === "p4-default" || diffType.startsWith("p4-changelist:");
+  },
 
   getContext: getP4Context,
 
@@ -48,15 +42,13 @@ const p4Provider: VcsProvider = {
 };
 
 const api = createVcsApi([
-  createJjProvider(jjRuntime, gitRuntime, jjReviewPolicy),
-  createGitButlerProvider(gitButlerRuntime, gitButlerReviewPolicy),
-  createGitProvider(gitRuntime, gitReviewPolicy),
+  createJjProvider(jjRuntime, gitRuntime),
+  createGitButlerProvider(gitButlerRuntime),
+  createGitProvider(gitRuntime),
   p4Provider,
-], "git");
+]);
 
 export const {
-  getReviewPolicy: getVcsReviewPolicy,
-  resolveReviewDefault: resolveVcsReviewDefault,
   detectVcs,
   detectManagedVcs,
   vcsOwnsDiffType,
@@ -74,17 +66,6 @@ export const {
   vcsSupportsSnapshot,
   materializeVcsSnapshot,
 } = api;
-
-export function resolveConfiguredVcsReviewDefault(
-  config: PlannotatorConfig | undefined,
-  vcsType?: VcsSelection,
-): DiffType {
-  return resolveVcsReviewDefault(
-    vcsType,
-    config?.reviewDefaults,
-    config?.diffOptions?.defaultDiffType,
-  );
-}
 
 export { resolveAvailableDiffType, resolveInitialDiffType, gitRuntime };
 
