@@ -2,6 +2,10 @@ export interface ProviderReviewDefaults {
   defaultDiffType?: string;
 }
 
+/**
+ * Saved review defaults per VCS, keyed by provider id (`jj`). Git keeps its
+ * original `diffOptions.defaultDiffType`, which wins over a `git` entry here.
+ */
 export type ReviewDefaults = Record<string, ProviderReviewDefaults>;
 
 export interface ReviewSettingsDiffOption {
@@ -10,18 +14,12 @@ export interface ReviewSettingsDiffOption {
   description: string;
 }
 
+/** The default-diff choices Settings offers for one VCS. */
 export interface VcsReviewSettingsDescriptor {
   id: string;
   label: string;
   defaultDiffType: string;
   diffOptions: ReviewSettingsDiffOption[];
-  capabilities: {
-    statusSections: boolean;
-    staging: boolean;
-    compareTarget: boolean;
-  };
-  /** Legacy setting registry key, interpreted generically by the UI. */
-  legacyDefaultSetting?: string;
 }
 
 export type DiffLineBgIntensity = 'subtle' | 'normal' | 'strong';

@@ -1,4 +1,3 @@
-import type { VcsReviewSettingsDescriptor } from "@plannotator/core/config-types";
 import type { DiffType } from "./review-core";
 import type {
   ProviderReviewOpenStateInput,
@@ -11,7 +10,6 @@ export interface LegacyReviewDefaultAdapter {
 
 export interface VcsReviewPolicy {
   readonly defaultDiffType: DiffType;
-  readonly settings?: VcsReviewSettingsDescriptor;
   ownsDiffType(diffType: string): diffType is DiffType;
   readonly legacyDefault?: LegacyReviewDefaultAdapter;
   resolveDefault(value: unknown): DiffType | undefined;
@@ -29,7 +27,10 @@ export function resolveProviderReviewDefault(
   configuredValue: unknown,
   legacyValue: unknown,
 ): DiffType {
-  return policy.resolveDefault(configuredValue)
-    ?? policy.legacyDefault?.resolve(legacyValue)
+  // A provider with a legacy key (Git: `diffOptions.defaultDiffType`) keeps
+  // that key as its saved value: every Plannotator version reads and writes
+  // it, so it cannot go stale behind a newer per-provider copy.
+  return policy.legacyDefault?.resolve(legacyValue)
+    ?? policy.resolveDefault(configuredValue)
     ?? policy.defaultDiffType;
 }

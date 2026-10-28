@@ -14,8 +14,18 @@ describe("provider-owned review defaults", () => {
     expect(resolveProviderReviewDefault(jjReviewPolicy, undefined, "merge-base")).toBe("jj-current");
   });
 
-  test("a provider-scoped value wins over the legacy source", () => {
-    expect(resolveProviderReviewDefault(gitReviewPolicy, "unstaged", "merge-base")).toBe("unstaged");
+  test("Git's original key wins over a per-provider copy, which only fills in when it is unset", () => {
+    // An older Plannotator (or another host on an older version) only ever
+    // writes diffOptions.defaultDiffType; a stale reviewDefaults.git must not
+    // shadow it.
+    expect(resolveProviderReviewDefault(gitReviewPolicy, "unstaged", "merge-base")).toBe("merge-base");
+    expect(resolveProviderReviewDefault(gitReviewPolicy, "unstaged", undefined)).toBe("unstaged");
+  });
+
+  test("Jujutsu reads only its own saved value, and an invalid one falls back to jj-current", () => {
+    expect(resolveProviderReviewDefault(jjReviewPolicy, "jj-line", "merge-base")).toBe("jj-line");
+    expect(resolveProviderReviewDefault(jjReviewPolicy, "since-base", "since-base")).toBe("jj-current");
+    expect(resolveProviderReviewDefault(jjReviewPolicy, "jj-nope", undefined)).toBe("jj-current");
   });
 });
 

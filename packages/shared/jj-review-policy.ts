@@ -12,19 +12,6 @@ export const JJ_DIFF_TYPES = new Set([
 
 export const jjReviewPolicy: VcsReviewPolicy = {
   defaultDiffType: "jj-current",
-  settings: {
-    id: "jj",
-    label: "Jujutsu",
-    defaultDiffType: "jj-current",
-    diffOptions: [
-      { id: "jj-current", label: "Current change", description: "Only the changes in the working-copy change" },
-      { id: "jj-line", label: "Line of work", description: "The complete mutable line of work leading to the working copy" },
-      { id: "jj-last", label: "Last change", description: "The change immediately before the working copy" },
-      { id: "jj-evolog", label: "Evolution diff", description: "How the current change differs from its previous state" },
-      { id: "jj-all", label: "All files", description: "Every file at the working-copy revision, shown as additions" },
-    ],
-    capabilities: { statusSections: false, staging: false, compareTarget: true },
-  },
   ownsDiffType(diffType: string): diffType is DiffType {
     return JJ_DIFF_TYPES.has(diffType) || parseJjCommitDiffType(diffType) !== null;
   },

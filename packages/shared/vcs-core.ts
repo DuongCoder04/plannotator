@@ -1,4 +1,3 @@
-import type { VcsReviewSettingsDescriptor } from "@plannotator/core/config-types";
 import {
   type DiffResult,
   type DiffSide,
@@ -132,7 +131,6 @@ export interface VcsSnapshot {
 export type VcsSelection = "auto" | "git" | "gitbutler" | "jj" | "p4";
 
 export interface VcsApi {
-  getReviewSettings(): VcsReviewSettingsDescriptor[];
   getReviewPolicy(vcsType?: VcsSelection): VcsReviewPolicy;
   resolveReviewDefault(
     vcsType: VcsSelection | undefined,
@@ -506,15 +504,7 @@ export function createVcsApi(
     vcsType?: VcsSelection,
   ): Promise<{ provider: VcsProvider; gitContext: GitContext }> {
     const provider = await getProviderForSelection(vcsType, cwd);
-    return {
-      provider,
-      gitContext: {
-        ...await provider.getContext(cwd),
-        reviewSettings: providerList.flatMap((candidate) =>
-          candidate.reviewPolicy.settings ? [candidate.reviewPolicy.settings] : []
-        ),
-      },
-    };
+    return { provider, gitContext: await provider.getContext(cwd) };
   }
 
   function resolveRequestedDiffType(
@@ -531,12 +521,6 @@ export function createVcsApi(
 
 
   return {
-    getReviewSettings(): VcsReviewSettingsDescriptor[] {
-      return providerList.flatMap((provider) =>
-        provider.reviewPolicy.settings ? [provider.reviewPolicy.settings] : []
-      );
-    },
-
     getReviewPolicy(vcsType): VcsReviewPolicy {
       if (!vcsType || vcsType === "auto") return defaultProvider.reviewPolicy;
       return getProviderById(vcsType)?.reviewPolicy ?? defaultProvider.reviewPolicy;
