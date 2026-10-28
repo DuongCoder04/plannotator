@@ -446,4 +446,46 @@ describe('parseAsciidocToBlocks — real-world structure', () => {
     expect(out).toContain('(lines 10–13)');
     expect(out).toContain('(lines 18–22)');
   });
+
+  test('one-letter table cells stay cells; a bare cols number is the column count', () => {
+    expect(parse('|===\n|Name|a|b\n|===')[0].content).toBe('|  |  |  |\n| --- | --- | --- |\n| Name | a | b |');
+    expect(parse('[cols="2"]\n|===\n|second\n|s\n|meter\n|m\n|===')[0].content).toBe(
+      '|  |  |\n| --- | --- |\n| second | s |\n| meter | m |',
+    );
+  });
+
+  test('a huge cell repeat is capped instead of crashing the page', () => {
+    expect(() => parse('|===\n|9999999*|x\n|===')).not.toThrow();
+  });
+
+  test('a description term stops before a list, an attached block or an attribute line', () => {
+    const blocks = parse('Bug Fixes::\n  * one\n  * two\n\nCPU:: chip\n[source,bash]\n----\nlscpu\n----');
+    expect(types(blocks)).toEqual(['list-item', 'list-item', 'list-item', 'list-item', 'code']);
+    expect(blocks[0].content).toBe('**Bug Fixes**');
+    expect(blocks[3].content).toBe('**CPU** — chip');
+    expect(blocks[4]).toMatchObject({ language: 'bash', startLine: 6, sourceLineCount: 4 });
+  });
+
+  test('an indented // line is literal text, not a comment', () => {
+    expect(parse('  int x = 0;\n  // increment\n  x++;')[0].content).toBe('int x = 0;\n// increment\nx++;');
+  });
+
+  test('a comment inside a paragraph stays inside its line span', () => {
+    expect(parse('line a\n// c\nline b')[0]).toMatchObject({ startLine: 1, sourceLineCount: 3 });
+  });
+
+  test('numbering continues past a block attached with +', () => {
+    const blocks = parse('. one\n. two\n+\n----\ncode\n----\n. three\n\nBreak.\n\n. again');
+    const items = blocks.filter((b) => b.type === 'list-item');
+    expect(items.map((b) => b.orderedStart)).toEqual([undefined, undefined, 3, undefined]);
+  });
+
+  test('[,ruby] is a source block in ruby', () => {
+    expect(parse('[,ruby]\n----\nputs 1\n----')[0]).toMatchObject({ type: 'code', language: 'ruby' });
+  });
+
+  test('attributes above a block title belong to the block below it', () => {
+    const blocks = parse('[source,java]\n.Example\n----\nint x;\n----');
+    expect(blocks.map((b) => [b.type, b.startLine])).toEqual([['paragraph', 2], ['code', 3]]);
+  });
 });

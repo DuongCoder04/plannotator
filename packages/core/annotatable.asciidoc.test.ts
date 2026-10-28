@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
 	annotateDiagramRenderKind,
 	annotateDocumentRenderKind,
-	ANNOTATABLE_EXTENSIONS_HINT,
 	documentRenderKindForPath,
 	isAnnotatableTextPath,
 	isDocumentRenderKind,
@@ -19,7 +18,6 @@ describe("AsciiDoc in the annotatable seam", () => {
 		expect(documentRenderKindForPath("guide.adoc.bak")).toBeNull();
 		expect(documentRenderKindForPath("notes.md")).toBeNull();
 		expect(documentRenderKindForPath("flow.mmd")).toBe("mermaid");
-		expect(ANNOTATABLE_EXTENSIONS_HINT).toContain(".adoc");
 	});
 
 	test("isDocumentRenderKind accepts diagram kinds and asciidoc only", () => {

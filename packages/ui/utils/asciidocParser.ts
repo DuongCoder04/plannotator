@@ -14,8 +14,8 @@ import type { AlertKind, Block } from '../types';
  * Deliberately not supported (see docs/agent-guides/annotate.md): includes and
  * conditionals are shown as plain text, not resolved; nested blocks inside
  * admonitions, examples and table cells flatten to text; row spans; callout
- * lists are ordinary paragraphs. Anything unrecognized stays visible as text,
- * never dropped.
+ * lists are ordinary paragraphs; the author and revision lines under the
+ * title are not shown. Anything unrecognized stays visible as text.
  */
 
 const ADMONITION_KINDS = new Set(['note', 'tip', 'important', 'warning', 'caution']);
@@ -88,7 +88,7 @@ const transpileSegment = (text: string, attrs: Map<string, string>): string => {
     return text ? `[${text}](${url})` : url;
   });
   out = out.replace(/xref:([^\s[]+)\[([^\]]*)\]/g, (_, target: string, label: string) => crossReference(target, label));
-  out = out.replace(/<<([^,>]+)(?:,\s*([^>]+))?>>/g, (_, target: string, label?: string) => crossReference(target.trim(), label ?? ''));
+  out = out.replace(/<<([^,<>\n]+)(?:,\s*([^<>\n]+))?>>/g, (_, target: string, label?: string) => crossReference(target.trim(), label ?? ''));
   out = out.replace(/footnote:[\w-]*\[([^\]]*)\]/g, (_, note: string) => (note ? ` (${note})` : ''));
   // A trailing ` +` is a hard line break; the line break itself is kept.
   out = out.replace(/ \+$/gm, '');
@@ -113,7 +113,9 @@ export const transpileInline = (text: string, attrs: Map<string, string> = new M
 const parseAttributeList = (body: string): { positional: string[]; named: Map<string, string> } => {
   const positional: string[] = [];
   const named = new Map<string, string>();
-  const parts = body.match(/(?:[^,"']|"[^"]*"|'[^']*')+/g) ?? [];
+  const parts: string[] = body.match(/(?:[^,"']|"[^"]*"|'[^']*')+/g) ?? [];
+  // `[,ruby]` keeps its empty first position (the style).
+  if (body.trimStart().startsWith(',')) parts.unshift('');
   for (const raw of parts) {
     const part = raw.trim();
     const eq = part.match(/^([\w-]+)\s*=\s*(.*)$/);
@@ -123,8 +125,9 @@ const parseAttributeList = (body: string): { positional: string[]; named: Map<st
   return { positional, named };
 };
 
-/** Column count from a `cols` value: `1,2,3` → 3, `3*` → 3, `2*,1` → 3. */
+/** Column count from a `cols` value: `1,2,3` → 3, `3*` → 3, `2*,1` → 3, `3` → 3. */
 const columnCountFromSpec = (cols: string): number | null => {
+  if (/^\d+$/.test(cols.trim())) return Number(cols.trim()) || null;
   const items = cols.split(/[,;]/).map((s) => s.trim()).filter(Boolean);
   if (items.length === 0) return null;
   return items.reduce((sum, item) => sum + Number(item.match(/^(\d+)\*/)?.[1] ?? 1), 0);
@@ -135,9 +138,14 @@ interface TableCell {
   colspan: number;
 }
 
-// A cell spec sits right before a `|`, preceded by whitespace or line start:
-// `2*` (duplicate), `2+` (colspan), `.2+` (rowspan), `^.^` (align), `a` (style).
-const CELL_SPEC_RE = /(^|\s)(?:(\d+)\*)?(?:(\d+)(?:\.\d+)?\+|\.\d+\+)?(?:[<^>])?(?:\.[<^>])?[adehlmsv]?$/;
+// A cell spec sits right before a `|`: `2*` (duplicate), `2+` (colspan),
+// `.2+` (rowspan), `^.^` (align), `a` (style). Mid-line it needs whitespace
+// before it, so a one-letter cell (`|a|b`) stays a cell.
+const CELL_SPEC = String.raw`(?:(\d+)\*)?(?:(\d+)(?:\.\d+)?\+|\.\d+\+)?(?:[<^>])?(?:\.[<^>])?[adehlmsv]?$`;
+const LEADING_SPEC_RE = new RegExp(`^()${CELL_SPEC}`);
+const CELL_END_SPEC_RE = new RegExp(`(\\s)${CELL_SPEC}`);
+// Highest `N*` repeat honored; a larger one is a typo, not a table.
+const MAX_CELL_REPEAT = 100;
 
 /** Split one table line into cells. Text before the first `|` continues the
  *  previous cell. Escaped `\|` stays inside a cell. */
@@ -146,19 +154,19 @@ const tableLineCells = (line: string): { leading: string; cells: TableCell[] } =
   const cells: TableCell[] = [];
   let leading = parts[0];
   let pendingSpec = { dup: 1, colspan: 1 };
-  const takeSpec = (segment: string): string => {
-    const spec = segment.match(CELL_SPEC_RE);
+  const takeSpec = (segment: string, re: RegExp): string => {
+    const spec = segment.match(re);
     if (!spec || spec[0].trim() === '') {
       pendingSpec = { dup: 1, colspan: 1 };
       return segment;
     }
-    pendingSpec = { dup: Number(spec[2] ?? 1), colspan: Number(spec[3] ?? 1) };
+    pendingSpec = { dup: Math.min(Number(spec[2] ?? 1), MAX_CELL_REPEAT), colspan: Math.min(Number(spec[3] ?? 1), MAX_CELL_REPEAT) };
     return segment.slice(0, segment.length - spec[0].length + spec[1].length);
   };
-  if (parts.length > 1) leading = takeSpec(parts[0]);
+  if (parts.length > 1) leading = takeSpec(parts[0], LEADING_SPEC_RE);
   for (let i = 1; i < parts.length; i++) {
     const { dup, colspan } = pendingSpec;
-    const text = (i < parts.length - 1 ? takeSpec(parts[i]) : parts[i]).trim().replace(/\\\|/g, '|');
+    const text = (i < parts.length - 1 ? takeSpec(parts[i], CELL_END_SPEC_RE) : parts[i]).trim().replace(/\\\|/g, '|');
     for (let d = 0; d < dup; d++) cells.push({ text, colspan });
   }
   return { leading: leading.trim(), cells };
@@ -177,15 +185,16 @@ const asciidocTableToPipeMarkdown = (bodyLines: string[], meta: PendingMeta | nu
     if (line.trim() === '') return;
     const { leading, cells: lineCells } = tableLineCells(line);
     if (leading && cells.length > 0) cells[cells.length - 1].text += ` ${leading}`;
+    else if (leading) cells.push({ text: leading, colspan: 1 });
     if (firstLineIndex === -1 && lineCells.length > 0) {
       firstLineIndex = index;
       firstLineCells = lineCells.reduce((n, c) => n + c.colspan, 0);
     }
-    cells.push(...lineCells);
+    for (const cell of lineCells) cells.push(cell);
   });
   if (cells.length === 0) return '';
 
-  const columnCount = (meta?.cols ? columnCountFromSpec(meta.cols) : null) ?? firstLineCells;
+  const columnCount = Math.max(1, (meta?.cols ? columnCountFromSpec(meta.cols) : null) ?? firstLineCells);
   const rows: string[][] = [];
   let row: string[] = [];
   for (const cell of cells) {
@@ -219,6 +228,7 @@ export const parseAsciidocToBlocks = (source: string): Block[] => {
 
   let buffer: string[] = [];
   let bufferStartLine = 1;
+  let bufferEndLine = 1;
   let pendingMeta: PendingMeta | null = null;
   // Lines directly under the document title are its author and revision.
   let headerLinesLeft = 0;
@@ -226,6 +236,9 @@ export const parseAsciidocToBlocks = (source: string): Block[] => {
   let listContinuation = false;
   // Plain lines right after a list item (no blank line) continue its text.
   let listItemOpen = false;
+  // `.` items seen per nesting level, so numbering continues past a block
+  // attached with `+`. Reset by any block that is not attached to the list.
+  let orderedCount: number[] = [];
 
   const meta = (line: number): PendingMeta => (pendingMeta ??= { startLine: line, options: new Set() });
   const takeMeta = (): PendingMeta | null => {
@@ -235,6 +248,7 @@ export const parseAsciidocToBlocks = (source: string): Block[] => {
   };
 
   const push = (block: Omit<Block, 'id' | 'order'>) => {
+    if (block.type !== 'list-item' && !listContinuation) orderedCount = [];
     listContinuation = false;
     listItemOpen = false;
     blocks.push({ ...block, id: `block-${currentId++}`, order: currentId });
@@ -248,7 +262,7 @@ export const parseAsciidocToBlocks = (source: string): Block[] => {
     if (buffer.length === 0) return;
     const m = takeMeta();
     const startLine = m?.startLine ?? bufferStartLine;
-    const endLine = bufferStartLine + buffer.length - 1;
+    const endLine = bufferEndLine;
     const literal = /^\s/.test(buffer[0]);
     const raw = buffer.join('\n');
     buffer = [];
@@ -311,7 +325,8 @@ export const parseAsciidocToBlocks = (source: string): Block[] => {
       i = collectDelimited(i, trimmed)[1];
       continue;
     }
-    if (trimmed.startsWith('//')) continue;
+    // Only a `//` at column 0 is a comment; indented, it is literal text.
+    if (line.startsWith('//')) continue;
 
     // Attribute entry `:name: value` / `:!name:` — recorded, not rendered.
     const attrEntry = trimmed.match(/^:(!?)([a-zA-Z0-9_][a-zA-Z0-9_-]*)(!?):(?:\s+(.*))?$/);
@@ -410,8 +425,9 @@ export const parseAsciidocToBlocks = (source: string): Block[] => {
       if (named.has('cols')) m.cols = named.get('cols');
       if (ADMONITION_KINDS.has(style.toLowerCase()) && style === style.toUpperCase()) {
         m.admonition = style.toLowerCase() as AlertKind;
-      } else if (style) {
-        m.style = style.toLowerCase();
+      } else if (style || rest.length > 0) {
+        // `[,ruby]` is the shorthand for `[source,ruby]`.
+        m.style = style ? style.toLowerCase() : 'source';
         if (m.style === 'source') m.language = rest[0] || named.get('language') || undefined;
         if (m.style === 'quote' || m.style === 'verse') m.attribution = rest.filter(Boolean).join(', ') || undefined;
       }
@@ -462,12 +478,22 @@ export const parseAsciidocToBlocks = (source: string): Block[] => {
         content = content.slice(checkbox[0].length);
       }
       const numbered = /^\d/.test(marker);
+      const level = marker === '-' || numbered ? 0 : marker.length - 1;
+      orderedCount.length = level + 1;
+      let orderedStart: number | undefined;
+      if (ordered) {
+        orderedCount[level] = numbered ? Number.parseInt(marker, 10) : (orderedCount[level] ?? 0) + 1;
+        // A new list group (after an attached block) carries on the count.
+        if (numbered || (blocks[blocks.length - 1]?.type !== 'list-item' && orderedCount[level] > 1)) orderedStart = orderedCount[level];
+      } else {
+        orderedCount[level] = 0;
+      }
       push({
         type: 'list-item',
         content: transpileInline(content, attrs),
-        level: marker === '-' || numbered ? 0 : marker.length - 1,
+        level,
         ordered: ordered ? true : undefined,
-        orderedStart: numbered ? Number.parseInt(marker, 10) : undefined,
+        orderedStart,
         checked,
         startLine: lineNum,
       });
@@ -488,7 +514,14 @@ export const parseAsciidocToBlocks = (source: string): Block[] => {
       takeMeta();
       const startLine = lineNum;
       const definition = term[2] ? [term[2]] : [];
-      while (i + 1 < lines.length && lines[i + 1].trim() !== '' && !/^(\S.*?)(?::{2,4}|;;)(?:\s|$)/.test(lines[i + 1].trim())) {
+      // The definition runs to a blank line, the next term, or a line that
+      // starts its own block (list marker, `+`, delimiter, attribute list).
+      while (
+        i + 1 < lines.length &&
+        lines[i + 1].trim() !== '' &&
+        !/^(\S.*?)(?::{2,4}|;;)(?:\s|$)/.test(lines[i + 1].trim()) &&
+        !/^(?:[*.+[|=_`/-]|\d+\.\s|[a-z][\w-]*::)/.test(lines[i + 1].trim())
+      ) {
         definition.push(lines[++i].trim());
       }
       const text = transpileInline(definition.join('\n'), attrs);
@@ -499,6 +532,8 @@ export const parseAsciidocToBlocks = (source: string): Block[] => {
     // Block title `.Title` → bold caption paragraph.
     const title = trimmed.match(/^\.([^\s.].*)$/);
     if (title && buffer.length === 0) {
+      // Attributes above the title still belong to the block below it.
+      if (pendingMeta) pendingMeta.startLine = lineNum + 1;
       push({ type: 'paragraph', content: `**${transpileInline(title[1].trim(), attrs)}**`, startLine: lineNum });
       continue;
     }
@@ -518,6 +553,7 @@ export const parseAsciidocToBlocks = (source: string): Block[] => {
     }
 
     if (buffer.length === 0) bufferStartLine = lineNum;
+    bufferEndLine = lineNum;
     buffer.push(line);
   }
 
