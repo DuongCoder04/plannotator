@@ -108,6 +108,7 @@ describe("matchCrossRepoRef", () => {
   test("links on the project's forge host: GitHub Enterprise keeps its host", () => {
     expect(matchCrossRepoRef("team/app#9 done", "", { host: "github.acme.com" })).toEqual({
       label: "team/app#9",
+      path: "team/app",
       href: "https://github.acme.com/team/app/issues/9",
     });
   });

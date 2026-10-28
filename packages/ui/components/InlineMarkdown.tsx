@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { isCodeFilePath, isCodeFilePathStrict, CODE_PATH_BARE_REGEX, parseCodePath } from "@plannotator/core/code-file";
-import { findCrossRepoRef, forgeRefLinks, matchCrossRepoRef } from "@plannotator/core/forge-refs";
+import { findCrossRepoRef, forgeRefLinks, matchCrossRepoRef, type CrossRepoRef } from "@plannotator/core/forge-refs";
 import { ensureHighlight, highlightToHtml } from "../utils/codeHighlight";
 import { useFenceTheme } from "../hooks/useFenceTheme";
 import { transformPlainText } from "../utils/inlineTransforms";
@@ -609,6 +609,13 @@ export const InlineMarkdown: React.FC<{
   const resolveLocalLink = useLocalLinkResolver();
   const resolveImage = useImageResolver();
   const refLinks = forgeRefLinks({ display: githubRepo, host: repoHost });
+  // Cross-repo `owner/repo#123` refs: only for a caller that names its
+  // project's repo (it knows the forge); otherwise they stay plain text, never
+  // a guessed github.com link. With a code-file handler, an `owner/repo` that
+  // is a code path not known to be missing stays the file (`src/app.js#12`).
+  const crossRepoProject = githubRepo ? { host: repoHost } : null;
+  const crossRepoAccept = (ref: CrossRepoRef): boolean =>
+    !(onOpenCodeFile && isCodeFilePathStrict(ref.path) && gateCodePath(ref.path, validation ?? null).render !== 'plain');
   const parts: React.ReactNode[] = [];
   let remaining = text;
   let key = 0;
@@ -718,9 +725,10 @@ export const InlineMarkdown: React.FC<{
 
     // Cross-repo ref: owner/repo#123, shown as written, linked on the
     // project's forge host. Read before file-path detection, so
-    // `vercel/next.js#1` is a ref, not a path; `docs/guide.md#2` stays a path.
-    const crossRepoRef = matchCrossRepoRef(remaining, previousChar, { host: repoHost });
-    if (crossRepoRef) {
+    // `vercel/next.js#1` is a ref, not a path (unless the viewer knows that
+    // file, see crossRepoAccept); `docs/guide.md#2` stays a path.
+    const crossRepoRef = crossRepoProject ? matchCrossRepoRef(remaining, previousChar, crossRepoProject) : null;
+    if (crossRepoRef && crossRepoAccept(crossRepoRef)) {
       parts.push(
         crossRepoRef.href ? (
           <a
@@ -1383,7 +1391,7 @@ export const InlineMarkdown: React.FC<{
     // stop before the ref and let the cross-repo branch above take it whole.
     // A ref inside a URL never splits it: the URL starts first and wins.
     const urlAt = bareUrlRunningPast(remaining, chunkEnd);
-    const refAt = findCrossRepoRef(remaining, urlAt === -1 ? chunkEnd : urlAt, { host: repoHost });
+    const refAt = crossRepoProject ? findCrossRepoRef(remaining, urlAt === -1 ? chunkEnd : urlAt, crossRepoProject, crossRepoAccept) : -1;
     const splitAt = refAt !== -1 ? refAt : urlAt;
     if (splitAt !== -1) {
       const before = remaining.slice(0, splitAt);

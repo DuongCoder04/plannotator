@@ -86,8 +86,13 @@ export const INBOX_REPLY_TO_CHECK = 'Before reply_to into a thread you have not 
  * How an issue or PR ref in a message links (a bare `#104` meant for another
  * repo once linked into the thread's project). In send_message's `body`, the
  * agent tool's `body`, and `plannotator inbox --help` / `card --help`.
+ * `owner/repo#123` links on the project's own forge, so a GitHub ref from a
+ * GitLab project needs its URL.
  */
-export const INBOX_REF_LINK_RULE = "A bare #123 links to this project's repository. For an issue or PR in another repo, write owner/repo#123 or its full URL."
+export const INBOX_REF_LINK_RULE = "A bare #123 links to this project's repository. For an issue or PR in another repo, write owner/repo#123 or its full URL (in a GitLab project, a GitHub one needs its URL)."
+
+/** The card's `say` and `you`: a pointer to the rule on `body`, not the rule again (every request carries both). */
+export const INBOX_REF_LINK_POINTER = "Refs link as in send_message's body."
 
 /**
  * The `_meta` key a connection sets to `true` on the read_thread list it reads

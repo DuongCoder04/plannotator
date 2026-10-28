@@ -2353,7 +2353,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (!isSameOriginOrNoOrigin(origin, req.headers.get("host") ?? "", req.headers.get("sec-fetch-site"))) {
           return json({ error: "Cross-origin requests are not accepted.", code: "cross_origin" }, 403);
         }
-        return json({ serverSession, cursor: store.cursor(), decisions: store.openDecisions({ projectId: projectFilterOf(url) }) });
+        // Each decision's project carries its repo (as a thread does), so refs on its card link there.
+        const decisions = store.openDecisions({ projectId: projectFilterOf(url) }).map((decision) => {
+          const root = store.project(decision.thread.project.id)?.root;
+          return { ...decision, thread: { ...decision.thread, project: { ...decision.thread.project, repo: root ? repos.get(root) : null } } };
+        });
+        return json({ serverSession, cursor: store.cursor(), decisions });
       }
       if (path === "/api/inbox/projects" && req.method === "GET") return json({ serverSession, cursor: store.cursor(), projects: projectFolders() });
       // A hover card's data for an issue, PR or MR link (ref-cards.ts). Read only, the window's own
