@@ -661,8 +661,10 @@ const ReviewApp: React.FC = () => {
   // A fresh id per mount: a reloaded page no longer holds other targets' comments.
   const [localDraftClientId] = useState(() => `${Date.now()}-${generateId()}`);
   const localDraftTransport = useMemo(() => localDraftTarget ? localReviewDraftTransport(localDraftTarget, localDraftClientId) : undefined, [localDraftTarget, localDraftClientId]);
-  const feedbackUrl = localDraftTarget ? `/api/feedback?client=${localDraftClientId}` : '/api/feedback';
-  const exitUrl = localDraftTarget ? `/api/exit?client=${localDraftClientId}&` : '/api/exit?';
+  // Always sent: a page whose last switch landed on no target must still let
+  // its decision clear the targets it saved. PR drafts ignore it.
+  const feedbackUrl = `/api/feedback?client=${localDraftClientId}`;
+  const exitUrl = `/api/exit?client=${localDraftClientId}&`;
   const semanticDiffUsable = semanticDiffEnabled && semanticDiffAvailable;
   const callFlowAvailable = callFlowEnabled && callFlowAdvert.available;
   const { state: callFlowAnalysis, retry: retryCallFlowAnalysis } = useCallFlowAnalysis(snapshotId, callFlowAvailable);

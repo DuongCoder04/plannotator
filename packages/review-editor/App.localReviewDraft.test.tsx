@@ -163,7 +163,7 @@ for (const lateResponse of ['superseded', 'failure', 'success'] as const) {
   });
 }
 
-test.skipIf(!hasDom)('a refresh that lands on no draft target clears the paused notice and resumes saving', async () => {
+test.skipIf(!hasDom)('a refresh that lands on no draft target resumes saving, and its decision still names the page', async () => {
   const memory = new Map<string, string>([
     ['plannotator-plan-look-choice-resolved', 'true'],
     ['plannotator-announce-tui-herdr-seen', '1'],
@@ -180,13 +180,20 @@ test.skipIf(!hasDom)('a refresh that lands on no draft target clears the paused 
   });
   configStore.loadFromBackend();
   const writes: Array<string | null> = [];
+  const draftClients = new Set<string | null>();
+  let decisionClient: string | null | undefined;
   globalThis.fetch = (async (input, init) => {
     const url = new URL(String(input), 'http://localhost');
     if (url.pathname === '/api/diff') return Response.json(view('local-a'));
+    if (url.pathname === '/api/feedback') {
+      decisionClient = url.searchParams.get('client');
+      return Response.json({ ok: true });
+    }
     // The git identity could not be read this time: no target, no draftState.
     if (url.pathname === '/api/diff/switch') return Response.json({ ...view('local-a'), localDraftTarget: null, draftState: undefined });
     if (url.pathname === '/api/draft') {
       const target = url.searchParams.get('target');
+      if (target) draftClients.add(url.searchParams.get('client'));
       if (init?.method === 'POST') {
         writes.push(target);
         if (target) return Response.json({ code: 'draft_target_changed' }, { status: 409 });
@@ -211,4 +218,8 @@ test.skipIf(!hasDom)('a refresh that lands on no draft target clears the paused 
   await tick(650);
   expect(button('Refresh review')).toBeUndefined();
   expect(writes.at(-1)).toBeNull();
+  // Its decision still names the page, so the server clears local-a too.
+  await act(async () => document.querySelector<HTMLButtonElement>('[data-decision-primary]')!.click());
+  await waitFor(() => decisionClient !== undefined);
+  expect(decisionClient).toBe([...draftClients][0]);
 });
