@@ -603,17 +603,20 @@ async function removeInboxAgentConnections(
     else state.warnings.push(`Could not remove the note in ${note.path}: ${result.reason}.`);
   }
   const removed: InboxAgentId[] = [];
+  const kept = new Set<InboxAgentId>();
   for (const item of plan.items) {
     const problem = await item.apply();
     if (problem) {
       state.warnings.push(`Could not remove ${item.describe}: ${problem}.`);
+      kept.add(item.agent);
       continue;
     }
     state.removed.push(item.describe);
     removed.push(item.agent);
   }
-  // A plain uninstall keeps the data: forget these records so a reinstall connects them again.
-  if (!request.purge) forgetInboxAgents(state.dataDir, removed);
+  // A plain uninstall keeps the data: forget these records so a reinstall connects them again. An agent with an
+  // entry left (one of two a move left could not go) keeps its whole record, so the next uninstall tries again.
+  if (!request.purge) forgetInboxAgents(state.dataDir, removed.filter((id) => !kept.has(id)));
 }
 
 function formatUninstallRetryCommand(request: UninstallRequest): string {

@@ -7,7 +7,8 @@
  * ~/.qwen never read.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFakeAgents, type FakeAgents } from "../../tests/helpers/fake-agents";
 import { connectInboxAgents, createAgentEnvironmentFor, formatConnectReport, planInboxAgentRemoval, readInboxAgents, setInboxAgentReach, type AgentEnvironment } from "./inbox-agents";
@@ -25,6 +26,17 @@ import {
 } from "./inbox-qwen-trust";
 
 const SELF = ["/opt/plannotator/bin/plannotator"];
+
+/** Whether the scratch volume ignores case (macOS and Windows by default; Linux never), looked at, never assumed. */
+const IGNORES_CASE = (() => {
+  const probe = mkdtempSync(join(tmpdir(), "plannotator-case-"));
+  try {
+    mkdirSync(join(probe, "q"));
+    return existsSync(join(probe, "Q"));
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
 const OURS = [...SELF, "inbox", "mcp"];
 
 let fake: FakeAgents;
@@ -424,6 +436,38 @@ describe("Qwen Code's trusted sender", () => {
     }
     expect(controllerCalls("add")).toHaveLength(1);
     expect(controllerCalls("remove")).toEqual([]);
+  });
+
+  test("the revoke command names QWEN_HOME only for another home, never for this one spelled another way", async () => {
+    fake.install("qwen");
+    const real = join(fake.root, "real-qwen");
+    mkdirSync(real, { recursive: true });
+    symlinkSync(real, qwenHome());
+    await connectInboxAgents(options());
+    const { id, home } = readQwenTrust(dataDir)!;
+    for (const spelled of [`${qwenHome()}/`, real, `${real}/`]) {
+      expect(qwenTrustRemoval(dataDir, environment({ QWEN_HOME: spelled }))!.manual).toBe(`qwen sessions controllers remove ${id}`);
+    }
+    expect(qwenTrustRemoval(dataDir, environment({ QWEN_HOME: join(fake.root, "other-qwen") }))!.manual).toBe(`QWEN_HOME=${home} qwen sessions controllers remove ${id}`);
+  });
+
+  test.if(!IGNORES_CASE)("on a case-sensitive volume (Linux), a home that differs only by case is another home: its grant is never taken for removed, and stays where it is", async () => {
+    fake.install("qwen");
+    const lower = join(fake.root, "qwen");
+    const upper = join(fake.root, "Qwen");
+    mkdirSync(lower);
+    mkdirSync(upper);
+    await connectInboxAgents(options({ QWEN_HOME: lower }));
+    const before = readQwenTrust(dataDir)!;
+    for (const platform of ["darwin", "linux"] as const) {
+      const run = await connectInboxAgents({ dataDir, selfCommand: SELF, environment: environment({ QWEN_HOME: upper }, platform) });
+      expect(run.trust_failed ?? []).toEqual([]);
+      expect(formatConnectReport(run).join("\n")).not.toContain("removed");
+    }
+    expect(readQwenTrust(dataDir)).toEqual(before);
+    expect(qwenWakeToken(dataDir, lower)).toBe(before.token!);
+    expect(qwenWakeToken(dataDir, upper)).toBeNull();
+    expect(grants(lower).map((grant) => grant.id)).toEqual([before.id!]);
   });
 
   test("PLANNOTATOR_INBOX_CONNECT=0 mints nothing", async () => {

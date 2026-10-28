@@ -2267,6 +2267,34 @@ describe("the Inbox's agent connections (inbox-agents.ts)", () => {
     }
   });
 
+  test.skipIf(process.getuid?.() === 0)("an agent with one entry left (of two a move left) keeps its whole record, so the next uninstall tries again", async () => {
+    const fixture = createFixture();
+    const stray = join(fixture.homeDir, "elsewhere", "mcp.json");
+    writeJson(stray, { mcpServers: { "plannotator-inbox": ours } });
+    writeJson(cursorFile(fixture), { mcpServers: { "plannotator-inbox": ours } });
+    // Its own entry cannot go (its folder is read-only); the other one can.
+    chmodSync(dirname(cursorFile(fixture)), 0o555);
+    const record = {
+      state: "added",
+      reach: "mcp",
+      path: cursorFile(fixture),
+      command: ["/old/bin/plannotator", "inbox", "mcp"],
+      strays: [{ path: stray, command: ["/old/bin/plannotator", "inbox", "mcp"] }],
+      at: "2026-10-12T00:00:00.000Z",
+    };
+    writeJson(join(fixture.dataDir, "inbox", "agents.json"), { v: 1, agents: { cursor: record } });
+    let result: Awaited<ReturnType<typeof runPlannotatorUninstall>>;
+    try {
+      result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    } finally {
+      chmodSync(dirname(cursorFile(fixture)), 0o755);
+    }
+    expect(readJson(stray).mcpServers).toEqual({});
+    expect((readJson(cursorFile(fixture)).mcpServers as Record<string, unknown>)["plannotator-inbox"]).toEqual(ours);
+    expect(result.warnings.some((warning) => warning.startsWith("Could not remove MCP server plannotator-inbox from Cursor"))).toBe(true);
+    expect((readJson(join(fixture.dataDir, "inbox", "agents.json")).agents as Record<string, unknown>).cursor).toEqual(record);
+  });
+
   test("the notes: only the marked section, from a file the record no longer names too", async () => {
     const fixture = createFixture();
     const note = [
