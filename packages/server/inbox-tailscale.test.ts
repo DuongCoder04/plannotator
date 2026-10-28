@@ -458,7 +458,7 @@ describe("Inbox over your tailnet", () => {
     const state = inbox.tailscale.state();
     expect(state.on).toBe(true);
     expect(state.url).toBeNull();
-    expect(state.error).toContain("Tailscale is stopped.");
+    expect(state.error).toContain("Tailscale is turned off on this computer");
     expect(inbox.tailscale.listenerPort()).toBeNull();
     expect(registryOf(dataDir).tailscale).toMatchObject({ url: null, error: state.error });
     const settings = (await (await fetch(`http://127.0.0.1:${inbox.port}/api/inbox/settings`)).json()) as Json;

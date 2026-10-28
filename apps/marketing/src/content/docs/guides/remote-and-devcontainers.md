@@ -49,6 +49,8 @@ Plannotator then advertises `http://my-machine.tailnet.ts.net:<port>` (the port 
 
 Note that the session is served over plain `http`, so some in-app features that require a secure context (such as creating short share links from the UI) are unavailable from other devices unless you put the session behind HTTPS (e.g. `tailscale serve`). The core review, annotate, and approve flows work over plain `http`.
 
+`plannotator review --tailscale` (also `annotate` and `last`) does that for you: it publishes the session over your tailnet with `tailscale serve`, over HTTPS and never publicly. It needs Tailscale Serve and HTTPS certificates turned on for your tailnet, a setting in Tailscale's admin console. If it is off, Plannotator says so and prints Tailscale's link to turn it on. The same command without `--tailscale` still works on this computer.
+
 ## VS Code Remote / devcontainers
 
 VS Code sets the `BROWSER` environment variable in devcontainers to a helper script that opens URLs on your local machine. Plannotator respects this — in most cases, the browser opens automatically with no extra configuration.
