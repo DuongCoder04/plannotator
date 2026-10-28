@@ -27,9 +27,11 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InboxListRow, InboxListSection, InboxMessageWire, InboxQuestion } from '@plannotator/core/inbox-types';
 import { parseInboxActionBlocks } from '@plannotator/core/inbox-actions';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { InlineMarkdown } from '@plannotator/ui/components/InlineMarkdown';
 
 const hasDom = typeof document !== 'undefined';
-const { ActionChecklist } = (hasDom ? await import('./components/ActionChecklist') : {}) as typeof import('./components/ActionChecklist');
+const { ActionChecklist, taskMarkdown } = (hasDom ? await import('./components/ActionChecklist') : {}) as typeof import('./components/ActionChecklist');
 const { MessageBody } = (hasDom ? await import('./components/Thread') : {}) as typeof import('./components/Thread');
 const { InboxList } = (hasDom ? await import('./components/InboxList') : {}) as typeof import('./components/InboxList');
 const { SidebarProvider } = (hasDom ? await import('./shell/sidebar') : {}) as typeof import('./shell/sidebar');
@@ -196,6 +198,20 @@ test.skipIf(!hasDom)('adjacent `:::action` blocks are one card; blocks separated
   // The block's own lines are never drawn as a callout beside the card.
   expect(text).not.toContain('Where: https://github.com');
   expect(text).not.toContain('Run: ');
+});
+
+test.skipIf(!hasDom)('refs in a task stay plain text in its toggle (a button); its why links them into the thread repo', () => {
+  const action = record(0, { prompt: 'Merge acme/web#12 and #3, not `acme/web#13`', context: 'Then team/app#4 can ship.' });
+  const el = mount(<ActionChecklist actions={[action]} agent="Claude Code" refRepo={{ display: 'group/web', host: 'gitlab.example.com' }} onMark={async () => true} />);
+  const toggle = el.querySelector('[data-action-toggle]')!;
+  expect(toggle.querySelector('a')).toBeNull();
+  expect(toggle.textContent).toContain('Merge acme/web#12 and #3, not acme/web#13');
+  const why = el.querySelector('[data-action-why]')!;
+  expect([...why.querySelectorAll('a[href]')].map((a) => a.getAttribute('href'))).toContain('https://gitlab.example.com/team/app/-/issues/4');
+  // The task's text holds no link even where refs would link (a renderer given a repo).
+  const html = renderToStaticMarkup(<InlineMarkdown text={taskMarkdown(action.prompt)} githubRepo="group/web" repoHost="gitlab.example.com" />);
+  expect(html).not.toContain('acme/web/-/issues/12');
+  expect(html).not.toContain('`');
 });
 
 test.skipIf(!hasDom)('the header: how many, how many done, one badge (Holds up sums; Stopped wins); the watching line once, no timer words', () => {
