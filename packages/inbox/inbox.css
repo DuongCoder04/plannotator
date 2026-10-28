@@ -1059,7 +1059,9 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 /* ui's card gives each footer button an invisible 44 px touch box (its ::before) and, on a touch screen, a 20 px
    gap between wrapped rows so the boxes never cover a neighbour. The Inbox keeps its own footer: rows 4 px apart
    (above), and on a phone 44 px buttons (the phone rules below). So the boxes go: on a tablet a wrapped
-   Accept recommended's box covered Add note and Skip, and a tap on Skip answered the question. */
+   Accept recommended's box covered Add note and Skip, and a tap on Skip answered the question. The buttons stay
+   unpositioned too, as on main (the box's `relative` repainted their text a shade differently). */
+.pn-inbox .question-block > div.border-t button { position: static; }
 .pn-inbox .question-block > div.border-t button::before { content: none; }
 /* The card's radios and checkboxes, drawn by the page: WebKit's native dark-scheme control is a solid near-black
    disc whether picked or not (the owner's iPhone), so picked and unpicked read alike. Unpicked: a hollow ring
