@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ContextMenu } from '@base-ui/react/context-menu';
 import { Menu } from '@base-ui/react/menu';
-import type { InboxListRow } from '@plannotator/core/inbox-types';
+import type { InboxListRow, InboxSectionId } from '@plannotator/core/inbox-types';
 import { Icon, type IconName } from '../icons';
 import { rowMenuActions, type RowMenuAction } from '../rowMenu';
 import { rowInSlot } from '../settle';
@@ -10,6 +10,8 @@ export interface ThreadRowMenuProps {
   className: string;
   /** Finds a listed row by its thread id (the menu is one for the whole list). */
   rowOf: (threadId: string) => InboxListRow | null;
+  /** The group a listed row sits in on screen (a held list can draw a row where its state no longer puts it). */
+  sectionOf?: (threadId: string) => InboxSectionId | null;
   /** Mark read and Move back are offered (the list has the row's hover action). */
   canMarkRead: boolean;
   /**
@@ -164,7 +166,7 @@ export const ThreadRowMenu = forwardRef<HTMLDivElement, ThreadRowMenuProps>(func
     window.addEventListener('pointerdown', done, true);
     keyGuard.current = done;
   };
-  const actions = target ? rowMenuActions(target, props.canMarkRead, props.pinnedOf ? props.pinnedOf(target.thread_id) : null) : [];
+  const actions = target ? rowMenuActions(target, props.canMarkRead, props.pinnedOf ? props.pinnedOf(target.thread_id) : null, props.sectionOf?.(target.thread_id) ?? null) : [];
   const pinning = actions.filter((a) => a === 'pin' || a === 'unpin');
   const copies = actions.filter((a) => a === 'copy-link' || a === 'copy-id');
   const writes = actions.filter((a) => a === 'read' || a === 'unread' || a === 'archive');
