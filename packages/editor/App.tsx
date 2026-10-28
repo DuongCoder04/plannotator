@@ -7311,17 +7311,13 @@ const App: React.FC = () => {
   const navigateToAnchor = useCallback((hash: string) => {
     linkedDocHook.cancelScrollRestore();
     const go = () => { viewerRef.current?.scrollToAnchor?.(hash); };
-    if (isCompactAnnotationsOpen) {
-      closeCompactPlanSurface(false);
-      requestAnimationFrame(go);
+    if (!isCompactAnnotationsOpen && !isPlanDiffActive) {
+      go();
       return;
     }
-    if (isPlanDiffActive) {
-      setIsPlanDiffActive(false);
-      requestAnimationFrame(go);
-      return;
-    }
-    go();
+    if (isCompactAnnotationsOpen) closeCompactPlanSurface(false);
+    if (isPlanDiffActive) setIsPlanDiffActive(false);
+    requestAnimationFrame(go);
   }, [closeCompactPlanSurface, isCompactAnnotationsOpen, isPlanDiffActive, linkedDocHook.cancelScrollRestore]);
 
   const renderAnnotationPanel = (presentation: 'panel' | 'embedded', isOpen = true) => (
