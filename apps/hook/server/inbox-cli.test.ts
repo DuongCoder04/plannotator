@@ -346,11 +346,16 @@ describe("plannotator inbox mcp inside an agent session", () => {
     expect(piHost).toBe("pi");
     expect(piName).toBeDefined();
     expect(INBOX_SESSION_HOST_NAMES[piHost!]).toBe(piName!);
-    // Codex has no plannotator_inbox tool: the Inbox wakes it itself (`codex queue`), and the shim sends as its thread.
+    // Codex and Qwen Code have no plannotator_inbox tool: the Inbox wakes them itself (`codex queue`, Qwen's
+    // cross-session messaging), and the shim sends as their session.
     // Grok Build: a session the Inbox runs itself (inbox-acp-runner.ts), named as its messages are (core INBOX_HOST_NAMES).
-    expect(Object.keys(INBOX_SESSION_HOST_NAMES).sort()).toEqual(["claude-code", "codex", "grok", "opencode", "pi"]);
+    expect(Object.keys(INBOX_SESSION_HOST_NAMES).sort()).toEqual(["claude-code", "codex", "grok", "opencode", "pi", "qwen"]);
     expect(INBOX_SESSION_HOST_NAMES.codex).toBe("Codex");
     expect(INBOX_SESSION_HOST_NAMES.grok).toBe(INBOX_HOST_NAMES.grok);
+    expect(INBOX_SESSION_HOST_NAMES.qwen).toBe("Qwen Code");
+    // A Qwen session in the tag is a Qwen session id, never anything else.
+    expect(inboxHostSessionFromEnv({ PLANNOTATOR_SESSION_TAG: "qwen:8e016be8-5b48-4c13-ad22-1f5326ae64ac" })).toEqual({ host: "qwen", session: "8e016be8-5b48-4c13-ad22-1f5326ae64ac", name: "Qwen Code" });
+    expect(inboxHostSessionFromEnv({ PLANNOTATOR_SESSION_TAG: "qwen:ses_01ABC" })).toBeNull();
   });
 
   test("the session tag is read strictly; anything malformed is ignored", () => {

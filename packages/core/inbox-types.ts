@@ -19,6 +19,8 @@ import type { InboxAnnotationRecord, InboxAttachment, InboxAttachmentKind, Inbox
 import type { InboxDeliverNowBy, InboxRowDelivery } from "./inbox-delivery";
 import type { InboxRowRun } from "./inbox-acp";
 import type { InboxCard } from "./inbox-cards";
+import { INBOX_CODEX_QUEUE_MIN_VERSION } from "./inbox-codex";
+import { INBOX_QWEN_WAKE_MIN_VERSION } from "./inbox-qwen";
 
 // The attachment shapes and file rules (step 2) live in their own module and
 // reach the Inbox through this published entry, so core's export map is unchanged.
@@ -273,13 +275,20 @@ export const INBOX_HOST_NAMES: Readonly<Record<string, string>> = {
  * Pi and OpenCode 2 through Plannotator's own connection (OpenCode 1 has the
  * tool but no wake), and Codex through MCP alone, where the Inbox puts the
  * reply into the Codex thread with `codex queue` (Codex CLI
- * INBOX_CODEX_QUEUE_MIN_VERSION or later; packages/server/inbox-codex-wake.ts).
+ * INBOX_CODEX_QUEUE_MIN_VERSION or later; packages/server/inbox-codex-wake.ts),
+ * and Qwen Code through MCP alone, where the Inbox sends the reply into the
+ * running session over Qwen's cross-session messaging (Qwen Code
+ * INBOX_QWEN_WAKE_MIN_VERSION or later, macOS and Linux;
+ * packages/server/inbox-qwen-wake.ts).
  * The one list: wording that names which agents a reply wakes reads it.
  */
-export const INBOX_WAKING_HOSTS = ["claude-code", "pi", "opencode", "codex"] as const;
+export const INBOX_WAKING_HOSTS = ["claude-code", "pi", "opencode", "codex", "qwen"] as const;
 
-/** Of INBOX_WAKING_HOSTS, the ones an MCP connection alone wakes (no Plannotator plugin): Codex. */
-export const INBOX_MCP_WAKING_HOSTS: readonly string[] = ["codex"];
+/** Of INBOX_WAKING_HOSTS, the ones an MCP connection alone wakes (no Plannotator plugin): Codex and Qwen Code. */
+export const INBOX_MCP_WAKING_HOSTS: readonly string[] = ["codex", "qwen"];
+
+/** The first version of each agent MCP alone wakes that can be woken. */
+export const INBOX_MCP_WAKE_MIN_VERSIONS: Readonly<Record<string, string>> = { codex: INBOX_CODEX_QUEUE_MIN_VERSION, qwen: INBOX_QWEN_WAKE_MIN_VERSION };
 
 /** How the person sees an agent: the name it gave, else its host's name, else "An agent". */
 export function inboxAgentName(author: { kind: string; host?: string | null; name?: string | null } | null | undefined): string {
@@ -1627,6 +1636,14 @@ export interface InboxConnectReport {
   unfinished: InboxAgentId[];
   /** Claude Code's plugin gives it the `plannotator_inbox` tool already. */
   claude_code: boolean;
+  /**
+   * Agents this run registered Plannotator with as a trusted sender, so the
+   * person's replies go into their running sessions (Qwen Code:
+   * packages/server/inbox-qwen-trust.ts). Absent from older Inboxes.
+   */
+  trusted?: InboxAgentId[];
+  /** Why registering as a trusted sender failed this run, said once per reason. */
+  trust_failed?: { agent: InboxAgentId; reason: string }[];
 }
 
 /** The agents whose own instructions file can carry the Inbox note (packages/server/inbox-agent-notes.ts). */
@@ -1695,9 +1712,10 @@ export interface InboxAgentRow {
    */
   plugin?: { installed: boolean; disabled?: boolean; managed?: boolean; generation?: "1" | "2" } | null;
   /**
-   * An agent its MCP connection alone wakes (INBOX_MCP_WAKING_HOSTS: Codex),
-   * connected through MCP: whether this Inbox can wake it now (Codex: a Codex
-   * CLI INBOX_CODEX_QUEUE_MIN_VERSION or later it can run). Absent for every
+   * An agent its MCP connection alone wakes (INBOX_MCP_WAKING_HOSTS: Codex,
+   * Qwen Code), connected through MCP: whether this Inbox can wake it now
+   * (Codex: a Codex CLI INBOX_CODEX_QUEUE_MIN_VERSION or later it can run;
+   * Qwen Code: a trusted-sender token, not on Windows). Absent for every
    * other row and from an older Inbox.
    */
   wakes?: boolean;

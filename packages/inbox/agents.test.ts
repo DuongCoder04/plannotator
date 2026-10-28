@@ -64,6 +64,28 @@ test('the band reads only unseen news, and never a skipped run', () => {
   expect(cardReport(model({ last_report: { ...report, added: [] } }))).toBeNull();
 });
 
+test('a run that made Plannotator a trusted sender in Qwen Code says so in the band, alone or with what it connected', () => {
+  const report = { at: '', first: true, added: ['qwen' as const], already: [], failed: [], foreign: [], manual: [], unfinished: [], claude_code: false, trusted: ['qwen' as const] };
+  const lines = bandLines(report);
+  expect(lines.connected).toBe('Connected Qwen Code to the Inbox.');
+  // How far it reaches (any running session, no asking) and how to undo it.
+  expect(lines.trusted).toContain('any running Qwen Code session');
+  expect(lines.trusted).toContain('without it asking you first');
+  expect(lines.trusted).toContain('Settings → Agents');
+  // Already connected before: the token alone is news.
+  expect(cardReport(model({ last_report: { ...report, added: [] } }))).not.toBeNull();
+  expect(bandLines({ ...report, trusted: [] }).trusted).toBeNull();
+});
+
+test('a trusted sender that failed, or was removed in Qwen, is news in the band, said as a warning with the reason', () => {
+  const report = { at: '', first: false, added: [], already: ['qwen' as const], failed: [], foreign: [], manual: [], unfinished: [], claude_code: false, trust_failed: [{ agent: 'qwen' as const, reason: 'removed in Qwen' }] };
+  expect(cardReport(model({ last_report: report }))).not.toBeNull();
+  const [line] = bandLines(report).trustFailed;
+  expect(line?.agent).toBe('qwen');
+  expect(line?.text).toContain('Qwen Code');
+  expect(line?.text).toContain('removed in Qwen');
+});
+
 test('an agent connected in another QWEN_HOME is news for the band: where it is, and that Settings moves it', () => {
   const report = { at: '', first: false, added: [], already: [], failed: [], foreign: [], manual: [], unfinished: [], claude_code: false };
   const elsewhere = [{ agent: 'qwen' as const, path: '~/.qwen/settings.json', now: '/srv/q/settings.json' }];

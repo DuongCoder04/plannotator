@@ -2226,6 +2226,47 @@ describe("the Inbox's agent connections (inbox-agents.ts)", () => {
     expect((readJson(join(fixture.dataDir, "inbox", "agents.json")).agents as Record<string, unknown>).cursor).toBeUndefined();
   });
 
+  test("Plannotator's trusted-sender token in Qwen Code is revoked through qwen before the data goes (also with --purge); --dry-run only lists it", async () => {
+    const fixture = createFixture();
+    const trust = join(fixture.dataDir, "inbox", "qwen-trust.json");
+    writeJson(trust, { v: 1, home: join(fixture.homeDir, ".qwen"), id: "c_0a1b2c3d", token: `qpc_${"ab".repeat(32)}`, created_at: "2026-10-27T00:00:00.000Z" });
+    const describe = "Plannotator's trusted-sender token in Qwen Code (qwen sessions controllers remove c_0a1b2c3d)";
+    const environment = { ...fixture.environment, which: (command: string) => (command === "qwen" ? "/fake/qwen" : null) };
+
+    const dry = await runPlannotatorUninstall({ purge: false, dryRun: true }, environment);
+    expect(dry.planned).toContain(describe);
+    expect(fixture.commandCalls.filter((call) => call.command === "/fake/qwen")).toEqual([]);
+    expect(existsSync(trust)).toBe(true);
+
+    const result = await runPlannotatorUninstall({ purge: true, dryRun: false }, environment);
+    expect(result.removed).toContain(describe);
+    expect(fixture.commandCalls.filter((call) => call.command === "/fake/qwen").map((call) => call.args)).toEqual([["sessions", "controllers", "remove", "c_0a1b2c3d"]]);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("a grant Qwen will not revoke while the data folder can't be written: the uninstall still removes the binary, and says so", async () => {
+    const fixture = createFixture();
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    writeText(binary);
+    const inbox = join(fixture.dataDir, "inbox");
+    writeJson(join(inbox, "qwen-trust.json"), { v: 1, home: join(fixture.homeDir, ".qwen"), id: "c_0a1b2c3d", token: `qpc_${"ab".repeat(32)}`, created_at: "2026-10-27T00:00:00.000Z" });
+    const environment = {
+      ...fixture.environment,
+      which: (command: string) => (command === "qwen" ? "/fake/qwen" : null),
+      runCommand: async (command: string, args: string[], env?: Record<string, string>) => {
+        fixture.commandCalls.push({ command, args, env });
+        return command === "/fake/qwen" ? { exitCode: 1, timedOut: false, stdout: "", stderr: "Error: could not write" } : { exitCode: 0, timedOut: false, stdout: "" };
+      },
+    };
+    chmodSync(inbox, 0o500);
+    try {
+      const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, environment);
+      expect(result.warnings.join("\n")).toContain("qwen sessions controllers remove c_0a1b2c3d");
+      expect(existsSync(binary)).toBe(false);
+    } finally {
+      chmodSync(inbox, 0o700);
+    }
+  });
+
   test("an agent with one entry left (of two a move left) keeps its whole record, so the next uninstall tries again", async () => {
     const fixture = createFixture();
     const stray = join(fixture.homeDir, "elsewhere", "mcp.json");

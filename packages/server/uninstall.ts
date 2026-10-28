@@ -34,7 +34,8 @@ import { runningT3Workers, stopT3Workers } from "@plannotator/shared/t3-workers"
 import { inboxStatus, readInboxRegistry, stopInbox } from "@plannotator/shared/inbox/registry";
 import { INBOX_TAILNET_HTTPS_PORT, takeDownInboxTailnet } from "./inbox-devices";
 import { takeDownInboxTailscale } from "./inbox-tailscale";
-import { forgetInboxAgents, planInboxAgentRemoval, type AgentEnvironment } from "./inbox-agents";
+import { agentHomeAllowed, forgetInboxAgents, planInboxAgentRemoval, type AgentEnvironment } from "./inbox-agents";
+import { qwenTrustRemoval, type QwenRevokeResult } from "./inbox-qwen-trust";
 import { planInboxNoteRemoval } from "./inbox-agent-notes";
 import { INBOX_AGENT_LABELS, type InboxAgentId } from "@plannotator/core/inbox-types";
 import {
@@ -588,11 +589,22 @@ async function removeInboxAgentConnections(
   const plan = planInboxAgentRemoval(state.dataDir, agents, [environment.execPath, "inbox", "mcp"]);
   // The notes (inbox-agent-notes.ts): only the marked section, as the person left it.
   const notes = planInboxNoteRemoval(state.dataDir, agents, INBOX_AGENT_LABELS);
+  // Plannotator's trusted-sender token in Qwen Code (inbox-qwen-trust.ts): revoked in Qwen, whoever added the MCP entry.
+  const trust = agentHomeAllowed(agents) ? qwenTrustRemoval(state.dataDir, agents) : null;
   for (const skipped of [...plan.skipped, ...notes.skipped]) state.warnings.push(`Skipped: ${skipped}.`);
   if (request.dryRun) {
     for (const item of plan.items) state.planned.push(item.describe);
     for (const note of notes.items) state.planned.push(note.describe);
+    if (trust?.runnable) state.planned.push(trust.describe);
+    else if (trust) state.warnings.push(`Skipped: ${trust.describe}: qwen is not on PATH; run \`${trust.manual}\`.`);
     return;
+  }
+  if (trust) {
+    // Never stops the uninstall: the entries and the binary go whatever happens to the grant.
+    const result = await trust.apply().catch((error: unknown): QwenRevokeResult => ({ kind: "failed", reason: error instanceof Error ? error.message : String(error), manual: trust.manual, held: true }));
+    if (result.kind === "revoked") state.removed.push(trust.describe);
+    else if (result.kind === "forgotten") state.warnings.push(`Plannotator forgot ${trust.describe}, but qwen is not on PATH, so the grant may still be in Qwen Code; run \`${result.manual}\`.`);
+    else state.warnings.push(`Could not remove ${trust.describe}: ${result.reason}.${result.held ? " Run" : " Plannotator no longer uses it; run"} \`${result.manual}\` to remove it.`);
   }
   for (const note of notes.items) {
     const result = note.apply();
