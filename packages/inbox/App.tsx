@@ -11,6 +11,7 @@
  */
 
 import type { ActionMark } from './components/ActionChecklist';
+import { isMootNoteRefusal } from './actionSaves';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
 import { TooltipProvider, TOOLTIP_SKIP_DELAY_MS } from '@plannotator/ui/components/Tooltip';
@@ -96,8 +97,9 @@ import { isPhone, trackKeyboard, usePhone } from './phone';
 import { installPasteFollowsField } from './pasteTarget';
 import { installPlainTextPaste } from '@plannotator/ui/utils/pasteInsert';
 import { LIST_MIN_WIDTH, THREAD_BESIDE_FILE_WIDTH, paneGutters, useStack } from './stack';
-import { backTo, pushScreen } from './history';
+import { backBy, backTo, pushScreen, settleLanding, whileWritingRoute } from './history';
 import { parseFileView, sameScreenAnyView } from './fileView';
+import { fileEntryOp, fullExitFile, fullFromSide, pageBackPastSwitch, withFullMark, type FrameMove, type FullMark } from './fullScreenOrigin';
 import { adoptSavedTheme, inboxServerSync } from './theme';
 import { adoptSavedDiffStyle } from './diffStyle';
 import { adoptSavedTextSize, applyRememberedTextSize } from './textSize';
@@ -309,7 +311,7 @@ function currentHash(): string {
  * its state (the screen it was opened from, history.ts), so that Back is still
  * the browser's Back on a phone.
  */
-function writeRoute(route: Route, options: { replace?: boolean } = {}): void {
+function writeRoute(route: Route, options: { replace?: boolean; fullMark?: FullMark | null } = {}): void {
   // The Artifacts view belongs to the thread it was opened in: another thread, or a message to land on, opens on the messages.
   if (route.artifacts && (route.thread !== readRoute().thread || route.msg)) route = { ...route, artifacts: false };
   const hash = hashOf(route);
@@ -317,13 +319,17 @@ function writeRoute(route: Route, options: { replace?: boolean } = {}): void {
   // Leaving the tour takes the tour's own entry, whatever leads out of it (a sidebar row, a search result, a link),
   // so the browser's Back never reopens #tour=N.
   const leavingTour = readRoute().page === 'tour' && route.page !== 'tour';
+  // `fullMark`: the entry's full-screen mark (fullScreenOrigin.ts). Absent: a replace keeps the one on screen, a push sets none.
+  const mark = options.fullMark;
   if (options.replace || leavingTour) {
-    if (hash !== currentHash()) window.history.replaceState(window.history.state, '', next);
+    const state = mark === undefined ? window.history.state : withFullMark(window.history.state, mark);
+    if (hash !== currentHash() || state !== window.history.state) window.history.replaceState(state, '', next);
   } else {
     // Each entry remembers the one it was opened from, so a phone's way back can be the browser's own Back (closeTo).
-    pushScreen(hash, currentHash(), next);
+    pushScreen(hash, currentHash(), next, window.history, mark ? withFullMark(null, mark) : undefined);
   }
-  window.dispatchEvent(new HashChangeEvent('hashchange'));
+  // Its own hashchange: a Back still on its way does not land in it (history.ts settleLanding).
+  whileWritingRoute(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
 }
 
 /** The history-entry mark an ended tour leaves on its own entry: the hash it went back to (approval "inbox-onboarding-tour"). */
@@ -720,6 +726,8 @@ function Inbox() {
 
   useEffect(() => {
     const onHash = () => {
+      // A Back this window started: its rewrite of the entry it landed on comes first (history.ts settleLanding).
+      settleLanding();
       stripStrayMsg();
       settleTourEntry();
       const oldExperimental = settleOldExperimental();
@@ -1915,32 +1923,26 @@ function Inbox() {
   };
 
   /**
-   * An action item's Done or Can't do it (approval "inbox-next-actions"): written at
-   * once, sent to the agent once the 10 s Undo window passes, as 👍 Looks
-   * good. `null` is the Undo. Resolves false when it was refused.
+   * An action item's Done or Can't do it (approval "inbox-action-items-in-reply"):
+   * into the reply draft, like a pick, sent only with the person's Send. No
+   * toast and no timer; `null` takes it back out of the draft. A note typed
+   * under the marked row saves quietly. Resolves the message's action items as
+   * saved, or null when it was refused.
    */
-  const markAction = async (threadId: string, messageId: string, key: string, mark: ActionMark | null, info: { agent: string; prompt: string }): Promise<boolean> => {
+  const markAction = async (messageId: string, key: string, mark: ActionMark | null): Promise<InboxQuestion[] | null> => {
+    let actions: InboxQuestion[];
     try {
-      await inboxApi.markAction(messageId, key, mark);
+      ({ actions } = await inboxApi.markAction(messageId, key, mark, true));
     } catch (cause) {
-      showError(cause);
+      // A note typed while the item was sent elsewhere or replaced: the thread redraws it as it is now.
+      if (!isMootNoteRefusal(mark, cause)) showError(cause);
       await afterWrite();
-      return false;
+      return null;
     }
     await afterWrite();
-    if (!mark) {
-      dismissToast();
-      say('Action item moved back. Nothing was sent.');
-      return true;
-    }
-    showToast({
-      icon: mark.outcome === 'done' ? 'check' : 'warn',
-      lead: mark.outcome === 'done' ? 'Done' : "Can't do it",
-      // Short enough for one line at 520 px with Undo and its Z (a toast's words always show whole).
-      detail: `Goes to ${info.agent} in 10 s`,
-      onUndo: () => void markAction(threadId, messageId, key, null, info),
-    });
-    return true;
+    if (!mark) say('Taken out of your draft.');
+    else if (!mark.quiet) say(mark.outcome === 'done' ? 'Done. It goes with your reply.' : "Can't do it. It goes with your reply.");
+    return actions;
   };
 
   /** Archive (the MCP's resolve) or Unarchive, with Undo. */
@@ -3440,7 +3442,7 @@ function Inbox() {
             row={openThreadRow}
             onMarkRead={(read) => void markRead(thread.thread_id, read)}
             onAck={(messageId, on, agent) => void acknowledge(thread.thread_id, messageId, on, agent)}
-            onAction={(messageId, key, mark, info) => markAction(thread.thread_id, messageId, key, mark, info)}
+            onAction={(messageId, key, mark) => markAction(messageId, key, mark)}
             onArchive={(next) => void archive(thread.thread_id, thread.messages[0]!.id, next)}
             pinned={pinnedIds.has(thread.thread_id)}
             onPin={pinsOn ? (next) => setPin(thread, next) : undefined}
@@ -3456,31 +3458,51 @@ function Inbox() {
               // A call that names no view keeps the one in the address (the pane names it for a step, a version, a linked page).
               const keepView = file.view === undefined ? (routeRef.current.file?.view ?? null) : file.view;
               const next = { ...routeRef.current, file: { ...file, view: keepView } };
-              // Back through a linked page's stack: the browser's Back when this entry was opened from there,
-              // whatever view that entry names (the switch replaced only the entry on screen); once it lands,
-              // the view the person is in now replaces the one it named.
-              if (options?.back && backTo(hashOf(next), window.history, sameScreenAnyView)) {
-                const view = next.file.view;
-                if (view) {
-                  // Where the traversal lands (popstate, or only hashchange in some engines), once; a Back that never lands drops it.
-                  const landed = () => {
-                    stop();
-                    const now = readRoute();
-                    if (now.file && now.file.view !== view) writeRoute({ ...now, file: { ...now.file, view } }, { replace: true });
-                  };
-                  const stop = () => {
-                    clearTimeout(timer);
-                    window.removeEventListener('popstate', landed);
-                    window.removeEventListener('hashchange', landed);
-                  };
-                  const timer = setTimeout(stop, 1000);
-                  window.addEventListener('popstate', landed);
-                  window.addEventListener('hashchange', landed);
+              /** Show `next` the way fullScreenOrigin.ts names (the history is the stack of frames). */
+              const show = (request: { move?: FrameMove; replace?: boolean }) => {
+                const op = fileEntryOp({ hash: currentHash(), state: window.history.state }, hashOf(next), request);
+                if (op.kind === 'back') {
+                  // Back onto the entry beside the thread; where asked, it then shows the file on screen now (a step inside full screen kept).
+                  const land = op.land;
+                  const landThere =
+                    land === null
+                      ? undefined
+                      : () => {
+                          if (currentHash() !== land && readRoute().thread === next.thread) writeRoute(next, { replace: true });
+                        };
+                  if (backBy(op.steps, window.history, landThere)) return;
+                  return writeRoute(next, { replace: true, fullMark: null });
                 }
-                return;
+                if (op.kind === 'replace') writeRoute(next, op.keep ? { replace: true } : { replace: true, fullMark: op.mark });
+                else writeRoute(next, { fullMark: op.mark });
+              };
+              if (options?.back) {
+                // A linked page's Back in a full screen the switch entered on that page: back past the switch's entry and the
+                // page beside the thread, then full screen again with the switch, so × and Back still come back beside the thread.
+                if (
+                  pageBackPastSwitch({ hash: currentHash(), state: window.history.state }, hashOf(next), sameScreenAnyView) &&
+                  backBy(2, window.history, () => {
+                    if (readRoute().thread === next.thread) show({ move: 'switch-full' });
+                  })
+                ) {
+                  return;
+                }
+                // Back through a linked page's stack: the browser's Back when this entry was opened from there,
+                // whatever view that entry names (a pick swapped only the entry on screen); once it lands,
+                // the view the person is in now replaces the one it named.
+                const view = next.file.view;
+                const viewThere = view
+                  ? () => {
+                      const now = readRoute();
+                      if (now.file && now.file.view !== view) writeRoute({ ...now, file: { ...now.file, view } }, { replace: true });
+                    }
+                  : undefined;
+                if (backTo(hashOf(next), window.history, sameScreenAnyView, viewThere)) return;
               }
-              writeRoute(next, options);
+              show({ move: options?.move, replace: options?.replace });
             }}
+            fullFromSide={fullFromSide(window.history.state)}
+            fullExitFile={fullExitFile(window.history.state)}
             onOpenGuide={(messageId) => go({ ...route, guide: messageId })}
             artifacts={route.artifacts === true}
             onArtifacts={(open) => (open ? go({ ...routeRef.current, artifacts: true, msg: null }) : close({ ...routeRef.current, artifacts: false }))}
@@ -3790,6 +3812,7 @@ function Inbox() {
           current={composeCurrent}
           lastSent={lastSent}
           home={settings?.home ?? null}
+          board={boardEnabled === true}
           onSent={(sent) => {
             rememberSent(sent.session);
             composeSent(sent);

@@ -2811,6 +2811,7 @@ label.ib-anote-r:hover { background: color-mix(in oklch, var(--muted) 40%, trans
 .pn-inbox .ib-anote-res svg.ib-ic { width: 15px; height: 15px; }
 .ib-anote-res.ib-anote-good { color: var(--success); }
 .ib-anote-res.ib-anote-bad { color: var(--warning); }
+.ib-anote-res.ib-anote-hand { color: var(--muted-foreground); }
 .ib-anote-fold { display: inline-flex; align-items: center; gap: 5px; margin-top: 14px; font-size: var(--ib-fs-12-5, 12.5px); font-weight: 550; color: var(--muted-foreground); background: none; border: 0; padding: 0; cursor: pointer; }
 .ib-anote-fold:hover { color: var(--foreground); }
 .pn-inbox .ib-anote-fold svg.ib-ic { width: 13px; height: 13px; }
@@ -3301,6 +3302,17 @@ dialog.ib-cp::backdrop { background: oklch(0 0 0 / 0.45); }
 .pn-inbox .ib-rattach:has(input:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
 .pn-inbox .ib-cp-clip { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 7px; color: var(--muted-foreground); cursor: pointer; position: relative; }
 .pn-inbox .ib-cp-clip:hover, .pn-inbox .ib-cp-clip:focus-within { background: var(--muted); color: var(--foreground); }
+/* The Board chip (approval "inbox-compose-board-chip", v3): at the right of the Thread row; on = the primary colour, never a caption. */
+.pn-inbox .ib-cp-board { position: relative; display: inline-flex; align-items: center; gap: 6px; flex: none; align-self: flex-start; margin: 0 0 0 auto; height: 26px; padding: 0 10px 0 7px; border: 0; border-radius: 999px; background: none; color: var(--muted-foreground); font: inherit; font-size: var(--ib-fs-13, 13px); cursor: pointer; box-shadow: inset 0 0 0 1px var(--ib-line); }
+.pn-inbox .ib-cp-board:hover { color: var(--foreground); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--foreground) 22%, transparent); }
+.pn-inbox .ib-cp-board:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.pn-inbox .ib-cp-board[aria-pressed="true"] { color: var(--primary); background: color-mix(in oklch, var(--primary) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--primary) 45%, transparent); }
+.ib-cp-board-box { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 4px; box-shadow: inset 0 0 0 1.5px currentColor; }
+.ib-cp-board[aria-pressed="true"] .ib-cp-board-box { background: var(--primary); color: var(--primary-foreground); box-shadow: none; }
+@media (pointer: coarse) { .pn-inbox .ib-cp-board::after { content: ''; position: absolute; inset: -9px -4px; } }
+/* The person's message sent with the Board chip on: a quiet mark after whom it went to. */
+.ib-m-board { display: inline-flex; align-items: center; gap: 4px; margin-left: 4px; color: var(--muted-foreground); }
+.ib-m-board svg { width: 12px; height: 12px; }
 .ib-cp-savedline { display: inline-flex; align-items: center; gap: 6px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
 .ib-cp-savedline svg { color: var(--success, oklch(0.72 0.17 150)); }
 .pn-inbox .ib-cp-del { border: 0; background: none; color: var(--muted-foreground); font-size: var(--ib-fs-12-5, 12.5px); padding: 4px 6px; border-radius: 6px; }
@@ -3365,6 +3377,7 @@ dialog.ib-cp::backdrop { background: oklch(0 0 0 / 0.45); }
   /* The thread row: 44 px to touch, 16 px so iOS does not zoom into the name. */
   .ib-cp-thread { min-height: 52px; padding-top: 9px; padding-bottom: 9px; }
   .ib-cp-thread .ib-cp-tol { line-height: 34px; }
+  .pn-inbox .ib-cp-board { margin-top: 4px; }
   .ib-cp-tname-err, .ib-cp-tname-note { padding-top: 0; flex-basis: 100%; }
   .ib-cp-tname-auto { font-size: var(--ib-fs-11, 11px); line-height: 17px; }
   .ib-key.ib-cp-tname { position: relative; height: 34px; padding: 0 9px; }
@@ -4152,6 +4165,12 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .pn-inbox .ib-chk-compose label { font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
 .pn-inbox .ib-chk-note { width: 100%; min-height: 56px; resize: vertical; border: 1px solid var(--border); border-radius: 8px; background: var(--card); padding: 8px 10px; font: inherit; color: inherit; }
 .pn-inbox .ib-chk-compose .ib-chk-acts { margin-top: 4px; }
+/* A Done or Can't do it waiting in the reply draft (approval "inbox-action-items-in-reply"): its note under the row, then "Done 3:12 PM · in your draft". */
+.pn-inbox .ib-chk-draft { margin: -2px 10px 8px 38px; display: flex; flex-direction: column; gap: 3px; }
+.pn-inbox .ib-chk-dnote { width: 100%; min-height: 32px; resize: none; overflow: hidden; border: 1px solid color-mix(in oklch, var(--border) 80%, transparent); border-radius: 8px; background: var(--card); padding: 6px 10px; font: inherit; font-size: var(--ib-fs-13-5, 13.5px); line-height: 1.45; color: inherit; }
+.pn-inbox .ib-chk-dnote::placeholder { color: color-mix(in oklch, var(--muted-foreground) 80%, transparent); }
+.pn-inbox .ib-chk-dnote:focus { outline: none; border-color: color-mix(in oklch, var(--primary) 55%, var(--border)); box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 14%, transparent); }
+.pn-inbox .ib-chk-dline { margin: 0; padding-left: 2px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
 .pn-inbox .ib-chk-foot { display: flex; align-items: flex-start; gap: 7px; margin: 8px 10px 0; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); line-height: 1.45; }
 .pn-inbox .ib-chk-foot .ib-ic { width: 14px; height: 14px; margin-top: 1px; flex: none; }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
@@ -4171,6 +4190,8 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
   .pn-inbox .ib-act-undo { position: relative; }
   .pn-inbox .ib-act-undo::after { content: ""; position: absolute; inset: -13px -10px; }
   .pn-inbox .ib-chk-note { font-size: var(--ib-fs-16-in, 16px); }
+  .pn-inbox .ib-chk-draft { margin-left: 48px; }
+  .pn-inbox .ib-chk-dnote { font-size: var(--ib-fs-16-in, 16px); min-height: 44px; }
 }
 /*
  * A reply waiting on a busy agent (owner approval "inbox-busy-agent-reply", 2026-10-21; mock.html in

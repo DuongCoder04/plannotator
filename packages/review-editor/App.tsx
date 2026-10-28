@@ -33,6 +33,8 @@ import { adoptPackageChangesConfig, usePackageChangesSetting } from '@plannotato
 import { parseUpdateAdvert, parseUpdateCheckFailing, type UpdateAdvert, type UpdateCheckFailingAdvert } from '@plannotator/ui/utils/updateNotice';
 import { claimAutoUpdateNotice, describeAutoUpdateNotice, parseAutoUpdateNotice, type AutoUpdateNotice } from '@plannotator/ui/utils/autoUpdateNotice';
 import { storage } from '@plannotator/ui/utils/storage';
+import { RefHoverCards } from '@plannotator/ui/components/RefHoverCard';
+import { refCardRouteTransport, setRefCardTransport } from '@plannotator/ui/utils/refCard';
 import { CompletionOverlay } from '@plannotator/ui/components/CompletionOverlay';
 import {
   closePendingTab,
@@ -67,6 +69,13 @@ import {
   needsTerminalToolsAnnouncement,
   terminalToolsAnnouncementCanShow,
 } from '@plannotator/ui/utils/terminalToolsAnnouncement';
+import { InboxAnnouncementDialog } from '@plannotator/ui/components/InboxAnnouncementDialog';
+import {
+  inboxAnnouncementEligible,
+  isVSCodeWebview,
+  markInboxAnnouncementSeen,
+  needsInboxAnnouncement,
+} from '@plannotator/ui/utils/inboxAnnouncement';
 import { AskSessionAnnouncementDialog } from '@plannotator/ui/components/AskSessionAnnouncementDialog';
 import {
   askSessionAnnouncementEligible,
@@ -729,6 +738,8 @@ const ReviewApp: React.FC = () => {
   const [sourceKind, setSourceKind] = useState<ReviewSourceKind>('vcs');
   const isStaticPatch = sourceKind === 'patch';
   const [repoInfo, setRepoInfo] = useState<{ display: string; branch?: string } | null>(null);
+  /** The region the issue / PR / MR hover cards listen on (the whole app). */
+  const refCardRootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     document.title = repoInfo ? `${repoInfo.display} · Code Review` : "Code Review";
@@ -1298,6 +1309,13 @@ const ReviewApp: React.FC = () => {
     markTerminalToolsAnnouncementSeen();
     setTerminalToolsIntroPending(false);
   }, []);
+  // One-time Plannotator Inbox announcement, after the terminal-tools one
+  // (never on the same load). Latched at mount for the same reason.
+  const [inboxIntroPending, setInboxIntroPending] = useState(needsInboxAnnouncement);
+  const dismissInboxIntro = useCallback(() => {
+    markInboxAnnouncementSeen();
+    setInboxIntroPending(false);
+  }, []);
   // One-time "Ask this session" announcement, after the terminal-tools one
   // (never on the same load). Latched at mount for the same reason.
   const [askSessionIntroPending, setAskSessionIntroPending] = useState(
@@ -1805,6 +1823,33 @@ const ReviewApp: React.FC = () => {
       || editModeIntroVisible
       || tokenHoverIntroVisible,
   });
+  const terminalToolsShownThisLoad = useLatchedTrue(terminalToolsIntroVisible);
+  // The Plannotator Inbox announcement: after the terminal-tools one (never on
+  // the same load: that one takes the load while it is pending and can show
+  // here, i.e. not on the compact shell), before "Ask this session" and the
+  // agent-tool offer, which wait while this one takes the load. Shown on the
+  // compact shell too; never in the VS Code webview. Same first-run window.
+  const inboxEligibleNow = inboxAnnouncementEligible({
+    announcementPending: inboxIntroPending,
+    isLoading,
+    readOnlySession: false,
+    vscodeWebview: isVSCodeWebview(),
+    otherFirstRunDialogVisible:
+      guideIntroVisible
+      || showLookAndFeel
+      || editModeIntroVisible
+      || tokenHoverIntroVisible
+      || terminalToolsIntroVisible,
+    earlierAnnouncementTakesThisLoad:
+      terminalToolsShownThisLoad || (terminalToolsIntroPending && !isCompactTouchLayout),
+  });
+  const inboxIntroVisible = useFirstRunAnnouncementWindow({
+    pending: inboxIntroPending,
+    armed: !isLoading,
+    eligible: inboxEligibleNow,
+  });
+  const inboxShownThisLoad = useLatchedTrue(inboxIntroVisible);
+  const inboxTakesThisLoad = inboxShownThisLoad || inboxEligibleNow;
   // After the terminal-tools announcement, and only while this review is
   // actually connected to its agent (Claude Code, Pi, OpenCode) and the Ask AI
   // button is there. It may only open before the reviewer starts working
@@ -1822,7 +1867,8 @@ const ReviewApp: React.FC = () => {
       || showLookAndFeel
       || editModeIntroVisible
       || tokenHoverIntroVisible
-      || terminalToolsIntroVisible,
+      || terminalToolsIntroVisible
+      || inboxTakesThisLoad,
   });
   const askSessionIntroVisible = useFirstRunAnnouncementWindow({
     pending: askSessionIntroPending,
@@ -1850,9 +1896,11 @@ const ReviewApp: React.FC = () => {
         || editModeIntroVisible
         || tokenHoverIntroVisible
         || terminalToolsIntroVisible
+        || inboxIntroVisible
         || askSessionIntroVisible,
       earlierAnnouncementMayShow:
-        askSessionShownThisLoad
+        inboxTakesThisLoad
+        || askSessionShownThisLoad
         || (askSessionIntroPending && (!aiCapabilitiesSettled || askSessionEligibleNow)),
     }),
   });
@@ -2431,6 +2479,10 @@ const ReviewApp: React.FC = () => {
         // Session-constant: a static patch session has no diff-type switch to
         // re-advertise it on, so `/api/diff` is the only place it can arrive.
         setSourceKind(data.sourceKind === 'patch' ? 'patch' : 'vcs');
+        // Hover cards for issue, PR and MR links (ui RefHoverCard): the server reads them with this
+        // computer's gh / glab (GET /api/ref, ref-cards.ts). Only once a server answered; never in
+        // the demo. A card shows only when the forge answered (`onlyWithData` below).
+        setRefCardTransport(refCardRouteTransport('/api/ref'));
         if (data.repoInfo) setRepoInfo(data.repoInfo);
         updatePRSession({
           ...(data.prMetadata && { prMetadata: data.prMetadata }),
@@ -2911,7 +2963,7 @@ const ReviewApp: React.FC = () => {
     // (not lost) behind the guide takeover or a first-run dialog — the file
     // still marks and the next auto-view retries the toast.
     if (!needsAutoViewedNotice()) return;
-    if (guideOpen || guideIntroVisible || showLookAndFeel || editModeIntroVisible || tokenHoverIntroVisible || terminalToolsIntroVisible || askSessionIntroVisible || agentToolIntroVisible) return;
+    if (guideOpen || guideIntroVisible || showLookAndFeel || editModeIntroVisible || tokenHoverIntroVisible || terminalToolsIntroVisible || inboxIntroVisible || askSessionIntroVisible || agentToolIntroVisible) return;
     markAutoViewedNoticeSeen();
     toast('Files are marked viewed as you scroll', {
       description: "Scroll past a file or move on to the next and it's checked off. Turn this off in Settings → Git, or from the gear above the file list.",
@@ -2931,7 +2983,7 @@ const ReviewApp: React.FC = () => {
         },
       },
     });
-  }, [guideOpen, guideIntroVisible, showLookAndFeel, editModeIntroVisible, tokenHoverIntroVisible, terminalToolsIntroVisible, askSessionIntroVisible, agentToolIntroVisible]);
+  }, [guideOpen, guideIntroVisible, showLookAndFeel, editModeIntroVisible, tokenHoverIntroVisible, terminalToolsIntroVisible, inboxIntroVisible, askSessionIntroVisible, agentToolIntroVisible]);
   // The update toast waits behind the guide takeover and every first-run
   // dialog of this load (useUpdateToast).
   useUpdateToast({
@@ -2944,6 +2996,7 @@ const ReviewApp: React.FC = () => {
       || editModeIntroVisible
       || tokenHoverIntroVisible
       || terminalToolsIntroVisible
+      || inboxIntroVisible
       || askSessionIntroVisible
       || agentToolIntroVisible,
     autoUpdateActive,
@@ -4769,7 +4822,7 @@ const ReviewApp: React.FC = () => {
     if (event.defaultPrevented || isNativeHistoryOwner(event)) return false;
     if (submitted || isSendingFeedback || isApproving || isExiting || isPlatformActioning || isLoadingDiff) return false;
     if (guideOpen || openSettingsMenu || showDestinationMenu || platformCommentDialog || showExportModal || showWorktreeDialog || showNoAnnotationsDialog || showExitWarning) return false;
-    if (showLookAndFeel || showGuideIntro || editModeIntroVisible || tokenHoverIntroVisible || terminalToolsIntroVisible || askSessionIntroVisible || agentToolIntroVisible || tourDialogJobId) return false;
+    if (showLookAndFeel || showGuideIntro || editModeIntroVisible || tokenHoverIntroVisible || terminalToolsIntroVisible || inboxIntroVisible || askSessionIntroVisible || agentToolIntroVisible || tourDialogJobId) return false;
     return !hasActiveHistoryOverlay(document);
   }, [
     guideOpen,
@@ -4781,6 +4834,7 @@ const ReviewApp: React.FC = () => {
     editModeIntroVisible,
     tokenHoverIntroVisible,
     terminalToolsIntroVisible,
+    inboxIntroVisible,
     askSessionIntroVisible,
     agentToolIntroVisible,
     openSettingsMenu,
@@ -5035,11 +5089,13 @@ const ReviewApp: React.FC = () => {
       <JobLogsProvider value={jobLogsValue}>
       {isSwitchingPRScope && <PRSwitchOverlay />}
       <div
+        ref={refCardRootRef}
         className="pn-app-viewport flex flex-col bg-background overflow-hidden"
         data-pn-compact-touch-layout={isCompactTouchLayout ? 'true' : undefined}
         data-pn-compact-review-shell={isCompactTouchLayout || undefined}
         data-pn-browser-canvas="background"
       >
+        <RefHoverCards rootRef={refCardRootRef} onlyWithData />
         {/* Header */}
         <header className={isCompactTouchLayout
           ? 'min-h-[52px] grid grid-cols-[44px_minmax(0,1fr)_44px] items-center border-b border-border/50 bg-card/50 backdrop-blur-xl z-50'
@@ -6201,6 +6257,13 @@ const ReviewApp: React.FC = () => {
           <TerminalToolsAnnouncementDialog isOpen onDismiss={dismissTerminalToolsIntro} />
         )}
 
+        {/* One-time Plannotator Inbox announcement, shared with the plan and
+            annotate editor; after terminal tools (never on the same load),
+            before "Ask this session". */}
+        {inboxIntroVisible && (
+          <InboxAnnouncementDialog isOpen onDismiss={dismissInboxIntro} />
+        )}
+
         {/* One-time "Ask this session" announcement. LAST in the dialog chain,
             and never on the same load as the terminal-tools one
             (askSessionAnnouncementPendingThisLoad). */}
@@ -6225,10 +6288,10 @@ const ReviewApp: React.FC = () => {
 
         {/* One-time PR feedback-destination spotlight. Strictly AFTER the
             first-run dialog chain (guide intro → look-and-feel → edit mode →
-            token hover → terminal tools → Ask this session → agent tool offer): it
-            only mounts once none of the seven is showing, so it never stacks with them. PR mode only — the
+            token hover → terminal tools → Inbox → Ask this session → agent tool
+            offer): it only mounts once none of the eight is showing, so it never stacks with them. PR mode only — the
             switcher it points at doesn't render otherwise. */}
-        {showDestSpotlight && !isCompactTouchLayout && !!prMetadata && !isLoading && !showLookAndFeel && !guideIntroVisible && !editModeIntroVisible && !tokenHoverIntroVisible && !terminalToolsIntroVisible && !askSessionIntroVisible && !agentToolIntroVisible && (
+        {showDestSpotlight && !isCompactTouchLayout && !!prMetadata && !isLoading && !showLookAndFeel && !guideIntroVisible && !editModeIntroVisible && !tokenHoverIntroVisible && !terminalToolsIntroVisible && !inboxIntroVisible && !askSessionIntroVisible && !agentToolIntroVisible && (
           <DestinationSpotlight
             targetRef={destToggleRef}
             platformLabel={platformLabel}

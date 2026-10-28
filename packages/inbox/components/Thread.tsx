@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { capturePlace, holdPlace, openerOf, opensFile, parsePlaceLayout, placeInView, placeLayoutKey, placeSelector, placeShown, restorePlace, type ThreadPlace } from '../threadPlace';
 import { Viewer, type ViewerHandle } from '@plannotator/ui/components/Viewer';
@@ -9,7 +9,8 @@ import { ImageLightbox } from '@plannotator/ui/components/ImageLightbox';
 import { ImageResolverContext, type ImageResolver } from '@plannotator/ui/components/ImageResolverContext';
 import { getImageSrc } from '@plannotator/ui/components/ImageThumbnail';
 import { parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
-import type { InboxListRow, InboxMessageWire, InboxProjectRepo, InboxQuestion, InboxSentRecipient, InboxThread, InboxUpload } from '@plannotator/core/inbox-types';
+import { inboxActionInDraft, inboxActionPersonMark, type InboxListRow, type InboxMessageWire, type InboxProjectRepo, type InboxQuestion, type InboxSentRecipient, type InboxThread, type InboxUpload } from '@plannotator/core/inbox-types';
+import { withoutInboxActionsSection } from '@plannotator/core/inbox-actions';
 import { capQuestionPrompt, emptyQuestionAnswer, indexQuestionBlocks, isQuestionAnswerEmpty, type IndexedQuestion, type QuestionAnswer, type QuestionStatus } from '@plannotator/core/question-block';
 import { INBOX_AUTO_SEND_ACK_NOTES, inboxAskingMessage, wholeMinutes, isInboxNote, isInboxTextKind, readInboxAttachmentKind, type InboxAnnotationRecord, type InboxAttachment, type InboxAttachmentState, type InboxInlineImage, type InboxQuestionState } from '@plannotator/core/inbox-types';
 import type { LocalLinkResolver } from '@plannotator/ui/components/LocalLinkContext';
@@ -23,6 +24,7 @@ import { stepsOf } from '../stepping';
 import { artifactKey, artifactOfFile, threadArtifacts } from '../artifacts';
 import { ArtifactsView } from './ArtifactsView';
 import { fileViewFor, openingView, parseFileView, readFileViewChoice, writeFileViewChoice, type FileView } from '../fileView';
+import { fullScreenExit, type FrameMove } from '../fullScreenOrigin';
 import type { InboxToastModel } from './Toast';
 import { AnnotationsChip } from './AnnotationsChip';
 import { agentName, clockTime, dayWords, formatCount, fullTime, plural, whenTime } from '../format';
@@ -62,7 +64,8 @@ import { ReaskNote } from './ReaskNote';
 import { reaskedIn, reaskNoteAgent, reaskOffered, reaskTargets, reaskTooltip } from '../reask';
 import { ChangedNotice, ReplacedQuestionCard, ReplacesLine, StaleGuard, replacedBy, replacementOf, type JumpTarget } from './ReplacedQuestion';
 import { InboxComposerField } from './ComposerField';
-import { ReplyAnswers, SentAnswers, draftAnswerWords, type DraftAnswer } from './ReplyAnswers';
+import { ReplyAnswers, SentAnswers, draftAnswerWords, ReplyActions, type ActionRow, type DraftAnswer } from './ReplyAnswers';
+import { actionSavesSettled } from '../actionSaves';
 import { sentAnswersOf, sentReplyParts, type SentAnswerGroup } from '../sentReply';
 import { SkillsLine } from './SkillsLine';
 import { paintSkillReferences } from '../skillHighlight';
@@ -261,12 +264,20 @@ export function MessageBody({
   renderActions,
   comments,
   sentAnswers,
+  sentActions,
   onJumpQuestion,
   imageBase,
   onImage,
   pictureBadge,
   inlineRefOf,
 }: {
+  /**
+   * The action items this person's message carried (approval
+   * "inbox-action-items-in-reply"): listed as "You did 1 action item", and the
+   * agent-facing action sentence and "Action items you asked for" section are
+   * left out of the text. Display only.
+   */
+  sentActions?: readonly ActionRow[];
   message: InboxMessageWire;
   /** The thread's project root: relative links start there or at the message's own folder. */
   projectRoot: string;
@@ -344,7 +355,11 @@ export function MessageBody({
   // was sent: folded behind one quiet line (SkillsLine). An agent's message
   // is shown whole, whatever it says.
   const skills = useMemo(() => (message.author.kind === 'person' ? splitInboxSkillsBlock(message.body) : null), [message.author.kind, message.body]);
-  const sent = skills ? skills.before : message.body;
+  const actionsSent = (sentActions?.length ?? 0) > 0;
+  const sent = useMemo(() => {
+    const raw = skills ? skills.before : message.body;
+    return actionsSent ? withoutInboxActionsSection(raw) : raw;
+  }, [skills, message.body, actionsSent]);
   const replyParts = useMemo(() => sentReplyParts(message, sent, sentAnswers ?? []), [message, sent, sentAnswers]);
   const shown = replyParts ? replyParts.words : sent;
   const restShown = replyParts ? replyParts.rest : '';
@@ -637,7 +652,7 @@ export function MessageBody({
     <ImageResolverContext.Provider value={resolveImage}>
     <div className="ib-body" data-message-id={message.id} data-text-comments={comments ? '' : undefined} data-sent-reply={replyParts ? '' : undefined} ref={bodyRef}>
       {refCard}
-      {(!replyParts || shown !== '') && (
+      {(!(replyParts || actionsSent) || shown !== '') && (
       <Viewer
         ref={viewerRef}
         blocks={blocks}
@@ -678,6 +693,7 @@ export function MessageBody({
       />
       )}
       {replyParts && sentAnswers && sentAnswers.length > 0 && <SentAnswers groups={sentAnswers} onJump={onJumpQuestion} />}
+      {actionsSent && <ReplyActions actions={sentActions!} sent onJump={onJumpQuestion} />}
       {replyParts && restShown && (
         <div data-sent-rest="">
         <Viewer
@@ -741,7 +757,15 @@ export interface ThreadPaneProps {
   file: { id: string; version: 'current' | 'sent'; focus: string | null; linked?: string | null; view?: 'full' | 'side' | null } | null;
   /** `replace`: swap the history entry (stepping between files), so Back returns to the thread in one press. */
   /** `back`: the browser's Back when the entry on screen was opened from `file` (a linked page's Back), else a new entry. */
-  onOpenFile: (file: { id: string; version: 'current' | 'sent'; focus: string | null; linked?: string | null; view?: 'full' | 'side' | null } | null, options?: { replace?: boolean; back?: boolean }) => void;
+  /** `move`: into full screen from beside the thread, or back out to it (fullScreenOrigin.ts): the window keeps the history a stack of frames. */
+  onOpenFile: (file: { id: string; version: 'current' | 'sent'; focus: string | null; linked?: string | null; view?: 'full' | 'side' | null } | null, options?: { replace?: boolean; back?: boolean; move?: FrameMove }) => void;
+  /**
+   * The full screen on screen was entered from the file beside the thread (the history entry's mark,
+   * fullScreenOrigin.ts): × and Escape go back beside the thread. Else they close the file, back to the thread.
+   */
+  fullFromSide?: boolean;
+  /** The file × and Escape go back to when it is not the one on screen (fullScreenOrigin.ts `fullExitFile`), or null. */
+  fullExitFile?: string | null;
   /** Open the guided review a message carries (the record's 4.2). */
   onOpenGuide: (messageId: string) => void;
   /**
@@ -782,12 +806,13 @@ export interface ThreadPaneProps {
    */
   onAck?: (messageId: string, on: boolean, agent: string) => void;
   /**
-   * An action item's Done or Can't do it (`mark`), or its Undo (`null`), approval
-   * "inbox-next-actions": the window writes it and shows the toast with
-   * Undo. Resolves false when it was refused. Absent: the pane writes it
-   * itself and reads the thread again.
+   * An action item's Done or Can't do it (`mark`) into the reply draft, or
+   * taking it back (`null`), approval "inbox-action-items-in-reply": the window
+   * writes it and reads the thread again. Resolves the message's action items
+   * as saved, or null when it was refused. Absent: the pane writes it itself
+   * and reads the thread again.
    */
-  onAction?: (messageId: string, key: string, mark: ActionMark | null, info: { agent: string; prompt: string }) => Promise<boolean>;
+  onAction?: (messageId: string, key: string, mark: ActionMark | null) => Promise<InboxQuestion[] | null>;
   /** Archive (`true`) or Unarchive. Absent: the pane calls the resolve route itself. */
   onArchive?: (archived: boolean) => void;
   /**
@@ -894,6 +919,35 @@ const SHOW_NEW_MESSAGE_BUTTON = false;
 
 /** Where a 👍 Looks good is on its way to the agent (amended 2026-10-16: it is sent through). */
 export type AckPillState = 'pending' | 'queued' | 'sending' | 'saved' | 'delivered' | 'not-sent';
+
+/**
+ * What in the reply box keeps its own click: its controls (the chips'
+ * buttons, a file tile's ×), the annotations list, the skill picker, and the
+ * human-only notice (its text stays selectable).
+ */
+const REPLY_BOX_CONTROLS =
+  'button, a[href], input, select, textarea, label, summary, [role="button"], [role="dialog"], [role="menu"], [role="listbox"], [role="option"], [data-skill-menu], [data-skill-human-only-notice], [data-compose-file]';
+
+/**
+ * A press anywhere else in the reply box puts the caret in its text, as a
+ * press anywhere in an input does. The box is drawn as one field with a focus
+ * ring that is always on, but the textarea is only its upper part: a press on
+ * the row of chips under it, or beside them, used to move focus to the page
+ * while the box still looked focused. Typing then went nowhere, and so did a
+ * dictation app's ⌘V (the owner: "focused on the input … it doesn't work").
+ * The default is prevented so the press neither blurs the textarea nor starts
+ * a selection; a textarea that already has focus keeps its caret.
+ */
+function focusReplyFromBox(event: ReactMouseEvent<HTMLElement>, field: HTMLTextAreaElement | null): void {
+  if (event.button !== 0 || !field || field.disabled) return;
+  const target = event.target;
+  if (!(target instanceof Element) || target === field || target.closest(REPLY_BOX_CONTROLS)) return;
+  event.preventDefault();
+  if (field.ownerDocument.activeElement === field) return;
+  field.focus({ preventScroll: true });
+  const end = field.value.length;
+  field.setSelectionRange(end, end);
+}
 
 /**
  * The line under a 👍: the toast's Undo window still runs (`pending`), the
@@ -1011,7 +1065,7 @@ async function replyLanded(threadId: string, key: string): Promise<'yes' | 'no' 
 
 const THREAD_GONE_TEXT = 'This thread was deleted, so nothing was sent.';
 
-export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', cardChip, phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts, decide = null }: ThreadPaneProps) {
+export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', cardChip, phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, fullFromSide = false, fullExitFile = null, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts, decide = null }: ThreadPaneProps) {
   // "Open in" (OpenIn.tsx): apps on this computer; a new tab only through the tailnet or on a phone.
   const openIn: OpenInSurface | undefined = phone || remote === true ? 'tab' : remote === null ? undefined : 'apps';
   const root = thread.messages[0]!;
@@ -1041,17 +1095,24 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const ackOffered = onAck !== undefined && ackTarget !== null && !archived && !questionWaits && !personWroteLast;
   const ackOn = ackTarget?.ack != null;
 
-  // Action items: Done / Can't do it / Undo, through the window (its toast and Undo) or, without it, straight to the server.
-  const markAction = async (messageId: string, key: string, mark: ActionMark | null, agent: string, prompt: string): Promise<boolean> => {
-    if (onAction) return onAction(messageId, key, mark, { agent, prompt });
-    try {
-      await inboxApi.markAction(messageId, key, mark);
+  // Action items: Done / Can't do it into the reply draft, or taken back, through the window or, without it, straight to the server.
+  const markAction = async (messageId: string, key: string, mark: ActionMark | null): Promise<boolean> => {
+    let actions: InboxQuestion[] | null = null;
+    if (onAction) actions = await onAction(messageId, key, mark);
+    else {
+      try {
+        ({ actions } = await inboxApi.markAction(messageId, key, mark, true));
+      } catch {
+        // Refused: reading the thread again shows it as it is.
+      }
       await onChanged();
-      return true;
-    } catch {
-      await onChanged();
-      return false;
     }
+    if (!actions) return false;
+    // A Send waiting on this save reads the thread right after it, before React draws it: give it the saved items now.
+    const saved = actions;
+    const latest = threadRef.current;
+    threadRef.current = { ...latest, messages: latest.messages.map((m) => (m.id === messageId ? { ...m, actions: saved } : m)) };
+    return true;
   };
 
   // Picks saved at once; shown before the server answers, then from the server.
@@ -1583,10 +1644,19 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const currentView: FileView = full ? 'full' : 'side';
   const fileRef = useRef(file);
   fileRef.current = file;
-  /** Switch the open file's view in place (the same history entry). Escape's last rung, a Send: never saved. */
-  const setFull = (next: boolean) => {
+  const fullRef = useRef(full);
+  fullRef.current = full;
+  /**
+   * Switch the open file's view (Escape's last rung, ×, Write the reply: never saved). Into full screen from beside
+   * the thread is a new history entry and back out of it the browser's Back (fullScreenOrigin.ts), so Back and ×
+   * agree; the view already shown, or `in-place` (Undo of a swap in place), only writes it into the address.
+   */
+  const setFull = (next: boolean, how: 'pick' | 'exit' | 'in-place' = 'pick') => {
     const current = fileRef.current;
-    if (current) onOpenFile({ ...current, view: next ? 'full' : 'side' }, { replace: true });
+    if (!current) return;
+    const view: FileView = next ? 'full' : 'side';
+    if (how === 'in-place' || next === fullRef.current) onOpenFile({ ...current, view }, { replace: true });
+    else onOpenFile({ ...current, view }, { move: next ? 'switch-full' : how === 'exit' ? 'exit-full' : 'show-side' });
   };
   /**
    * The person picked a view with a button: it applies now and to every
@@ -1600,6 +1670,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const pickView = (next: FileView) => {
     const pickedOn = fileRef.current?.id ?? null;
     const viewBefore = currentView;
+    // Side by side picked in a full screen opened from the thread swaps it in place: so does its Undo, and × then closes the file again.
+    const undoInPlace = viewBefore === 'full' && !fullFromSide;
     setFull(next === 'full');
     if (phone || fileStacked) return;
     const before = readFileViewChoice();
@@ -1614,7 +1686,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       speech: `${lead}, ${detail}.`,
       onUndo: () => {
         writeFileViewChoice(before);
-        if (viewBefore !== next && pickedOn !== null && fileRef.current?.id === pickedOn) setFull(viewBefore === 'full');
+        if (viewBefore !== next && pickedOn !== null && fileRef.current?.id === pickedOn) setFull(viewBefore === 'full', undoInPlace ? 'in-place' : 'pick');
       },
     });
   };
@@ -1643,7 +1715,10 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     // card in the reply box, its tile again: a one-off view from the ⋯ stays). Else the remembered choice,
     // else today's rule (fileView.ts).
     const kept = file && file.id === attachment.id ? currentView : null;
-    onOpenFile({ id: attachment.id, version, focus, view: view ?? kept ?? openingView(attachment) });
+    const opening = view ?? kept ?? openingView(attachment);
+    // Full screen over a file beside the thread: its × and Escape come back beside the thread (fullScreenOrigin.ts).
+    const overSide = file !== null && !shownFull && opening === 'full';
+    onOpenFile({ id: attachment.id, version, focus, view: opening }, overSide ? { move: 'open-full' } : undefined);
   };
   /** A tile, or a link in a message: the file as it is now, focus in its pane (a typed comment in the open file asks first). */
   /** `opening`: called only when the file does open (not after "Keep writing" on a typed comment). */
@@ -2295,8 +2370,20 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     setStale([]);
     setGuard(false);
   };
-  /** Picks or annotations wait for a Send. */
-  const waiting = picksCount > 0 || records.length > 0;
+  // The action items whose Done or Can't do it waits in the draft (approval "inbox-action-items-in-reply"):
+  // listed in the reply box, counted beside Send ("Draft · 1 done"), carried by the Send.
+  const draftActions: ActionRow[] = thread.messages.flatMap((m) =>
+    m.author.kind !== 'agent'
+      ? []
+      : (m.actions ?? []).flatMap((a) => {
+          const mine = inboxActionInDraft(a) ? inboxActionPersonMark(a.action_result) : null;
+          if (!mine) return [];
+          return [{ id: `${m.id}/${a.key}`, messageId: m.id, number: a.position + 1, prompt: a.prompt, outcome: mine.outcome, note: mine.note, seen: a.action_result?.by === 'agent' }];
+        }),
+  );
+  const draftCant = draftActions.filter((a) => a.outcome === 'cant' && !a.seen).length;
+  /** Picks, annotations or action items wait for a Send. */
+  const waiting = picksCount > 0 || records.length > 0 || draftActions.length > 0;
   /** The box is closed and its words are kept as a draft (Cancel or Escape kept them): Edit draft brings them back. */
   const draftKept = !box.open && (replyDraft.draft !== null || replyDraft.conflict !== null);
 
@@ -2315,6 +2402,24 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           return [{ id, messageId: m.id, key: q.key, number: q.position + 1, prompt: q.prompt, answer: draftAnswerWords(answer), messageName: `${agentName(m.author)}'s message, ${whenTime(m.created_at)}` }];
         }),
   );
+
+  // The action items each of the person's messages carried (its reply, or the report the timed path sent):
+  // listed under its words as "You did 1 action item" (approval "inbox-action-items-in-reply").
+  const sentActionsByReply = useMemo(() => {
+    const out = new Map<string, ActionRow[]>();
+    for (const m of thread.messages) {
+      for (const a of m.actions ?? []) {
+        const result = a.action_result;
+        const mine = inboxActionPersonMark(result);
+        if (!result || !mine || !a.sent_reply_id || a.revision === 0 || a.sent_revision !== a.revision) continue;
+        out.set(a.sent_reply_id, [
+          ...(out.get(a.sent_reply_id) ?? []),
+          { id: `${m.id}/${a.key}`, messageId: m.id, number: a.position + 1, prompt: a.prompt, outcome: mine.outcome, note: mine.note, seen: result.by === 'agent' },
+        ]);
+      }
+    }
+    return out;
+  }, [thread.messages]);
 
   // The person's own sent replies are drawn in their words, with the answers they carried as a
   // short list read from the questions (sentReply.ts): never the agent-facing answers section.
@@ -2504,6 +2609,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     const requests: { messageId: string; input: Parameters<typeof inboxApi.reply>[1] }[] = [];
     let sentUploads: string[] = [];
     try {
+      // A Done or a note under an action item still on its way (a note saves on leaving its field): answered first.
+      await actionSavesSettled();
       await pickChain.current;
       const current = threadRef.current;
       // The box's words, or (the box closed) the words kept as its draft: the foot's Send carries them too.
@@ -2558,9 +2665,12 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       const pendingAnnotations = records;
       const uploads = box.open ? replyUploads : [];
       const carries = words !== '' || pendingAnnotations.length > 0 || uploads.length > 0;
-      // One reply per session. The latest agent message rides last only to carry the words, the
-      // annotations and the pasted files; with none, a target with nothing to send is left out.
-      const plain = sendTargetsOf(current, skip).filter((t, index, all) => t.questions.length > 0 || t.skip.length > 0 || (carries && index === all.length - 1));
+      // One reply per session, its picks, skips and action items in the draft. The latest agent message rides
+      // last only to carry the words, the annotations and the pasted files; with none, a target with nothing to
+      // send is left out.
+      const plain = sendTargetsOf(current, skip).filter(
+        (t, index, all) => t.questions.length > 0 || t.skip.length > 0 || t.actions.length > 0 || (carries && index === all.length - 1),
+      );
       // A comment on another session's message rides a reply to that message (routeSendAnnotations).
       const { targets, carried } = routeSendAnnotations(current, plain, pendingAnnotations);
       if (targets.length === 0) {
@@ -2613,6 +2723,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           words: last ? words : '',
           questions: target.questions,
           ...(target.skip.length > 0 ? { skip: target.skip } : {}),
+          ...(target.actions.length > 0 ? { actions: target.actions } : {}),
           ...(feedback ? { feedback } : {}),
           ...(own.length > 0 ? { annotation_ids: own.map((r) => r.id) } : {}),
           // The pasted files ride the reply that carries the words, as attachments.
@@ -3514,6 +3625,15 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                   {sentTags.map((t) => tagName(t, ownerOfSent && 'host' in ownerOfSent ? ownerOfSent.host : null, ownerOfSent && 'session' in ownerOfSent ? ownerOfSent.session : null)).join(', ')}
                 </span>
               )}
+              {/* Sent with compose's Board chip on (approval "inbox-compose-board-chip"): a quiet mark, never the agent's block. */}
+              {!isAgent && message.board_request === true && (
+                <span className="ib-m-board" data-board-request="">
+                  <span className="ib-to-sep">·</span>
+                  <Icon name="board" />
+                  <span aria-hidden="true">Board</span>
+                  <span className="ib-sr">Board tracking asked</span>
+                </span>
+              )}
             </>
           );
           const foldLabel = `${name}, ${time}${isNew ? ', new' : ''}. Fold this message`;
@@ -3610,6 +3730,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 <MessageBody
                   message={message}
                   sentAnswers={message.author.kind === 'person' ? (sentAnswersByReply.get(message.id) ?? NO_SENT_ANSWERS) : undefined}
+                  sentActions={message.author.kind === 'person' ? sentActionsByReply.get(message.id) : undefined}
                   onJumpQuestion={jumpTo}
                   projectRoot={thread.project.root}
                   repo={thread.project.repo ?? null}
@@ -3630,7 +3751,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                               actions={records}
                               agent={name}
                               readOnly={!liveMessage(message)}
-                              onMark={(action, mark) => markAction(message.id, action.key, mark, name, action.prompt)}
+                              onMark={(action, mark) => markAction(message.id, action.key, mark)}
                             />
                           ),
                         }
@@ -3886,6 +4007,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             {staleQuestions.length > 0 && <ChangedNotice questions={staleQuestions} thread={thread} onJump={jumpTo} />}
             <div
               className="ib-rbox"
+              // A press beside the text (the row of chips under it) puts the caret in the reply.
+              onMouseDown={(event) => focusReplyFromBox(event, textRef.current)}
               // A paste that carries files (a screenshot, a copied image) attaches them; text pastes as text.
               onPaste={(event) => {
                 if (replyFiles.paste(event)) setError(null);
@@ -3935,6 +4058,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 </div>
               )}
               {draftAnswers.length > 0 && <ReplyAnswers answers={draftAnswers} onJump={jumpTo} />}
+              {draftActions.length > 0 && <ReplyActions actions={draftActions} onJump={jumpTo} />}
               {(draftAnswers.length > 0 || dropped.length > 0 || takesAnnotations || unanswered.length > 0) && (
                 <div className={`ib-rfoot${keepOpen ? ' ib-keep' : ''}`}>
                   {/* The answers the list above shows, a pick still being saved included, so the two numbers agree. */}
@@ -4089,7 +4213,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             </div>
             {(waiting || draftKept) && (
               <div className="ib-footstatus" data-foot-status="">
-                <DraftFootNote id={draftNoteId} unsent={{ reply: draftKept, picks: picksCount, comments: records.length }} />
+                <DraftFootNote id={draftNoteId} unsent={{ reply: draftKept, picks: picksCount, comments: records.length, done: draftActions.length - draftCant, cant: draftCant }} />
                 {waiting && unanswered.length > 0 && (
                   <span className={keepOpen ? 'ib-keep' : undefined}>
                     <SkipChip id={skipNoteId} count={keepOpen ? unanswered.length : skipIds.size} keepOpen={keepOpen} onToggle={toggleKeepOpen} />
@@ -4136,6 +4260,10 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         onVersion={(version) => onOpenFile({ id: openAttachment.id, version, focus: null, view: currentView })}
         full={shownFull}
         fullLocked={phone || fileStacked}
+        // Full screen opened from the thread alone: × and Escape close the file, back to the thread as it was.
+        exitCloses={fullScreenExit(fullFromSide, phone || fileStacked) === 'close'}
+        // A full screen opened over another file beside the thread goes back to that file: the pane asks first about a comment not saved yet.
+        exitLeavesFor={fullExitFile && fullExitFile !== openAttachment.id ? (allFiles.find((a) => a.id === fullExitFile)?.name ?? 'that file') : null}
         phone={phone}
         openIn={openIn}
         steps={steps}
@@ -4148,7 +4276,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         onLinked={(linked, options) => onOpenFile({ id: openAttachment.id, version: file!.version, focus: null, linked, view: currentView }, options)}
         onToggleFull={(pick) => {
           if (pick) pickView(full ? 'side' : 'full');
-          else setFull(!full);
+          // × and Escape's last rung, where they go back beside the thread: back to the view full screen was opened from.
+          else setFull(!full, 'exit');
         }}
         // The switch's pressed half: the view on screen becomes the choice; the frame stays.
         onKeepView={() => pickView(currentView)}
