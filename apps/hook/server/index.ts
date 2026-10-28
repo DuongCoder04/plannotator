@@ -415,11 +415,12 @@ if (tailscaleFlag) {
     );
   }
   process.env.PLANNOTATOR_REMOTE = "0";
-  // urlHost is irrelevant here — the advertised URL comes from tailscale
-  // serve, and the session is local-bound. An empty-but-set env var also
-  // suppresses a config-file urlHost, avoiding the misleading
+  // urlHost and publicUrl are irrelevant here — the advertised URL comes from
+  // tailscale serve, and the session is local-bound. An empty-but-set env var
+  // also suppresses the config-file key, avoiding the misleading
   // "set PLANNOTATOR_REMOTE=1" local-session warning mid --tailscale run.
   process.env.PLANNOTATOR_URL_HOST = "";
+  process.env.PLANNOTATOR_PUBLIC_URL = "";
   // "Ask this session" stays ON (#2166): the host's bridge config is kept
   // (taken at the top of this file), and the servers answer it only for a tab
   // on this machine and for the Tailscale login that owns it
