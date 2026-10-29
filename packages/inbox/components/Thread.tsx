@@ -2722,9 +2722,15 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const focusSent = useRef(false);
   const writeReplyFromFile = () => {
     setFull(false);
-    // The box open already (the full-screen composer opens it): its words stay as they are, focus at their end.
-    if (boxRef.current.open) focusReplyEnd();
-    else openBox();
+    // The box open already (the full-screen composer opens it): its words stay as they are, and focus goes
+    // back to it where the caret was (as R did with the box open before the composer).
+    // openBox's other resets still apply (a New message, the route choice and an error go).
+    if (boxRef.current.open) {
+      setNewMessage(null);
+      setRoute((current) => ({ ...current, open: false, error: null }));
+      setError(null);
+      requestAnimationFrame(() => textRef.current?.focus());
+    } else openBox();
   };
   const focusReplyEnd = () =>
     requestAnimationFrame(() => {
@@ -2766,6 +2772,22 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     if (behind && !boxRef.current.open) restoringRef.current = true;
     setBox({ open: true, text });
     replyDraft.save(text);
+  };
+
+  /** The reply box opens behind full screen, without taking focus (full screen's composer writes into it). */
+  const openBehind = () => {
+    if (boxRef.current.open) return;
+    restoringRef.current = true;
+    openBox();
+  };
+  /**
+   * Files from full screen's composer (its paperclip, or a drop on the card) are the reply box's files, as
+   * the box's own paperclip and drop take them: the box opens behind full screen and the Send carries them.
+   */
+  const attachFromComposer = (list: FileList, picked: boolean) => {
+    openBehind();
+    (picked && phone ? replyFiles.attach : replyFiles.add)(list);
+    setError(null);
   };
 
   /** Back from the choice to the reply: the draft and its choice kept, focus at the end of the text. */
@@ -3185,7 +3207,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           sendingFromComposer.current = false;
           const active = document.activeElement;
           if (active && active !== document.body && active.isConnected && !active.closest('[data-fcomp]')) return;
-          document.querySelector<HTMLElement>('[data-fcomp] .ib-fcomp-row textarea, [data-fcomp-pill]')?.focus({ preventScroll: true });
+          document.querySelector<HTMLElement>('[data-fcomp] .ib-fcomp-row > :not([hidden]) textarea, [data-fcomp-pill]')?.focus({ preventScroll: true });
         });
       }
     }
@@ -3532,7 +3554,15 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             canSend: boxWords !== '' || picksCount > 0 || records.length > 0 || draftActions.length > 0 || (box.open && replyUploads.length > 0),
             picks: picksCount,
             annotations: records.length,
-            files: box.open ? replyFiles.files.length : 0,
+            files: box.open ? replyFiles.files : [],
+            onFiles: (list) => attachFromComposer(list, true),
+            onDropFiles: (list) => attachFromComposer(list, false),
+            onPaste: (event) => {
+              if (!replyFiles.paste(event)) return;
+              openBehind();
+              setError(null);
+            },
+            onRemoveFile: (key) => replyFiles.remove(key),
             actions: draftActions.length,
             openQuestions: unanswered.length,
             conflict: replyDraft.conflict !== null,

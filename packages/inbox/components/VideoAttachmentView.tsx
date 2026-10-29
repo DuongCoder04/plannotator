@@ -363,12 +363,19 @@ export const VideoAttachmentView = forwardRef<VideoAttachmentViewHandle, {
         onChange={(event) => {
           const value = event.target.value;
           setText(value);
-          // Typing pauses the film and pins the moment; clearing the words lets the moment follow the film again.
+          // Typing pauses the film and pins the moment; clearing the words lets the moment follow the film again
+          // (a phone's row opened from "Comment at" keeps its moment until Cancel; full screen's composer has no
+          // Cancel, so there clearing the words lets go of it, and the next moment is pinned as before).
           if (value.trim() !== '' && pinned === null) void pin();
-          else if (value.trim() === '' && !markup && !kept && !phone) {
+          else if (value.trim() === '' && !markup && !kept && (!phone || fullComposer)) {
             setPinned(null);
             replaceFrame(null);
           }
+        }}
+        onFocus={() => {
+          // A phone in full screen's composer: a tap in the comment field is "Comment at" (that button is gone
+          // there), so the film pauses and the moment pins as the field takes focus, not at the first keystroke.
+          if (phone && fullComposer && pinned === null && !kept && !markup) void pin();
         }}
         onKeyDown={(event) => {
           if (isCommentSubmitKey(event, enterSavesComment)) {

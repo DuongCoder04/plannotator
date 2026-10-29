@@ -57,6 +57,7 @@ import { FileName } from './FileName';
 import { useNarrowerThan } from '../narrower';
 import { FullViewBar, type FullViewBarHandle, type ToolbarState } from './FullViewBar';
 import { FullScreenComposer, FullScreenComposerContext, type FullScreenComposerValue } from './FullScreenComposer';
+import { pickComposerMode, setComposerMinimized } from '../fullScreenComposer';
 import { FilePeek, peekSheetHost } from './AttachmentStepper';
 import { FullScreenMore } from './OpenIn';
 import { fileSwipeMode, prefersReducedMotion, useFileSwipe } from '../fileSwipe';
@@ -766,10 +767,24 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   }, [guard]);
   const focusComposer = () => {
     const area = unsavedComposer(sectionRef.current, savedTextRef.current);
-    if (area) {
-      area.focus();
-      area.setSelectionRange(area.value.length, area.value.length);
+    if (!area) return;
+    const focusAt = (field: HTMLTextAreaElement) => {
+      field.focus();
+      field.setSelectionRange(field.value.length, field.value.length);
+    };
+    // The comment row kept hidden in full screen's composer (the card on Reply, or minimized): the card
+    // comes back on its Comment tab, and focus goes to the words once it is drawn.
+    const threadId = props.composer?.threadId;
+    if (threadId && area.closest('[data-fcomp-comment-slot][hidden]')) {
+      pickComposerMode(threadId, 'comment');
+      setComposerMinimized(threadId, false);
+      requestAnimationFrame(() => {
+        const shown = unsavedComposer(sectionRef.current, savedTextRef.current);
+        if (shown) focusAt(shown);
+      });
+      return;
     }
+    focusAt(area);
   };
   const keepWriting = () => {
     steppedFromSheet.current = false;

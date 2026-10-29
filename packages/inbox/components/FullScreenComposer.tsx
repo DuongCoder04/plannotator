@@ -19,13 +19,17 @@
  * - Hide (») in the toolbar hides the card and the pill with everything else
  *   that floats (`tucked`: inert, faded out in inbox.css).
  * - No dots, no "Draft saved" line: the words say what waits.
+ * - Files: the Reply tab's toolbar starts with the reply box's paperclip, and a
+ *   paste or a drop on the card attaches as in the box. They are the box's
+ *   files (one reply), shown here with the box's tiles.
  *
  * The card is the file's foot (`data-file-foot`, AttachmentPane measures it):
  * the toolbar on a phone, the chip and the notes sit above it. A phone's pill
  * shares the toolbar's row instead (left of it), so it is no foot.
  */
-import { createContext, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { createContext, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { InboxComposerField, type InboxComposerTags } from './ComposerField';
+import { AttachFilesButton, ComposeFileTiles, useFileDrop, type ComposeFile } from '../compose/ComposeFiles';
 import { Icon } from '../icons';
 import { Tip } from './Tip';
 import { useComposerState, type ComposerMode } from '../fullScreenComposer';
@@ -46,8 +50,17 @@ export interface FullScreenReply {
   /** What rides the Send besides the words. */
   picks: number;
   annotations: number;
-  files: number;
   actions: number;
+  /** The reply box's files (pasted, dropped, picked), shown in the card as the box shows them. */
+  files: readonly ComposeFile[];
+  /** The paperclip's files: the reply box's own attach (a phone names them as a paste). */
+  onFiles: (list: FileList) => void;
+  /** Files dropped on the card: as a drop on the reply box. */
+  onDropFiles: (list: FileList) => void;
+  /** A paste in the reply field: files in it attach, as in the reply box (text pastes as text). */
+  onPaste: (event: ClipboardEvent<HTMLElement>) => void;
+  /** A file tile's ×. */
+  onRemoveFile: (key: string) => void;
   /** Questions in the thread still open (no pick). */
   openQuestions: number;
   /** Another window changed the draft while this one held words (the thread's box offers Keep mine / Discard). */
@@ -59,11 +72,6 @@ export interface FullScreenReply {
   /** The thread's reply box, on the device's own route back to the thread. */
   onOpenThread: () => void;
   tags?: InboxComposerTags;
-  /**
-   * Seam for attaching files to the reply (#2335, the paperclip): drawn left
-   * of Send when given. Nothing passes it until that lands.
-   */
-  attach?: ReactNode;
 }
 
 export interface FullScreenComposerValue {
@@ -115,12 +123,6 @@ function Rides({ reply }: { reply: FullScreenReply }) {
           {plural(reply.annotations, 'comment')}
         </span>
       )}
-      {reply.files > 0 && (
-        <span className="ib-fcomp-chip">
-          <Icon name="clip" size={12} />
-          {plural(reply.files, 'file')}
-        </span>
-      )}
       {reply.openQuestions > 0 && (
         <button type="button" className="ib-fcomp-q" onClick={reply.onOpenThread} data-fcomp-questions="">
           <Icon name="question" size={12} />
@@ -154,6 +156,8 @@ export function FullScreenComposer({
   /** Where focus goes once the next state is drawn: the card's field (restored, a tab picked) or the pill (minimized). */
   const focusNext = useRef<'field' | 'pill' | null>(null);
   const sent = useSentFlash(reply.sentAt);
+  // Files dropped on the card attach to the reply, as on the reply box (a comment takes no files: Reply only).
+  const drop = useFileDrop((list) => reply.onDropFiles(list), !state.minimized && mode === 'reply' && !value.tucked);
   const errorId = `ib-fcomp-err-${threadId}`;
 
   useLayoutEffect(() => {
@@ -162,7 +166,7 @@ export function FullScreenComposer({
     focusNext.current = null;
     if (target === 'pill') pillRef.current?.focus({ preventScroll: true });
     else {
-      const field = cardRef.current?.querySelector<HTMLTextAreaElement>('.ib-fcomp-row textarea');
+      const field = cardRef.current?.querySelector<HTMLTextAreaElement>('.ib-fcomp-row > :not([hidden]) textarea');
       if (!field) return;
       field.focus({ preventScroll: true });
       field.setSelectionRange(field.value.length, field.value.length);
@@ -179,14 +183,30 @@ export function FullScreenComposer({
   const replyLabel = `Reply to ${reply.to}`;
   const label = mode === 'comment' ? commentLabel : replyLabel;
 
+  /**
+   * The file's comment row stays drawn (hidden) on the Reply tab and while minimized: words typed in it are
+   * never dropped, and the pane's unsaved-comment question (`unsavedComposer`) still finds them before a
+   * step or a close (its Keep writing brings the Comment tab back: `revealComposerComment`).
+   */
+  const keptComment = (shown: boolean) =>
+    takesComments ? (
+      <div className="ib-fcomp-slot" hidden={!shown || undefined} data-fcomp-comment-slot="">
+        {comment}
+      </div>
+    ) : null;
+
   if (state.minimized) {
-    const pillText = hasDraft ? 'Reply draft' : label;
+    // Words or files wait in the reply: the pill says so (a phone's, "Draft").
+    const waiting = hasDraft || reply.files.length > 0;
+    const pillText = waiting ? 'Reply draft' : label;
     return (
+      <>
+      {keptComment(false)}
       <div className={`ib-fcomp-pillwrap${phone ? ' ib-phone' : ''}`} data-fcomp-pillwrap="" inert={value.tucked || undefined} {...(phone ? {} : { 'data-file-foot': '' })}>
         <button
           type="button"
           ref={pillRef}
-          className={`ib-fcomp-pill ib-mode-${hasDraft ? 'reply' : mode}`}
+          className={`ib-fcomp-pill ib-mode-${waiting ? 'reply' : mode}`}
           onClick={() => {
             focusNext.current = 'field';
             state.setMinimized(false);
@@ -195,12 +215,13 @@ export function FullScreenComposer({
           aria-label={`Show the composer: ${pillText}`}
           data-fcomp-pill=""
         >
-          <Icon name={hasDraft || mode === 'reply' ? 'reply' : 'comment'} size={phone ? 18 : 13} />
+          <Icon name={waiting || mode === 'reply' ? 'reply' : 'comment'} size={phone ? 18 : 13} />
           {/* A phone names only a waiting draft: the toolbar takes the rest of the row. */}
-          {(!phone || hasDraft) && <span className="ib-fcomp-pilll">{phone ? 'Draft' : pillText}</span>}
+          {(!phone || waiting) && <span className="ib-fcomp-pilll">{phone ? 'Draft' : pillText}</span>}
           {!phone && <Icon name="chevsU" size={12} />}
         </button>
       </div>
+      </>
     );
   }
 
@@ -234,10 +255,17 @@ export function FullScreenComposer({
   );
 
   const showSent = sent && mode === 'reply' && !hasDraft;
-  const rides = reply.picks > 0 || reply.annotations > 0 || reply.files > 0 || reply.actions > 0 || reply.openQuestions > 0;
+  // The reply's toolbar, as the reply box's: the paperclip first, then what rides the Send, Open in thread at the end.
   const foot =
-    mode === 'reply' && (rides || showSent || reply.conflict) ? (
+    mode === 'reply' ? (
       <div className="ib-fcomp-foot" data-fcomp-foot="">
+        <AttachFilesButton
+          className="ib-fvb ib-fcomp-clip"
+          iconSize={phone ? 18 : 15}
+          phone={phone}
+          inputData="data-fcomp-attach"
+          onFiles={reply.onFiles}
+        />
         {showSent ? (
           <span className="ib-fcomp-sent" data-fcomp-sent="">
             <Icon name="checkCircle" size={13} />
@@ -264,6 +292,8 @@ export function FullScreenComposer({
       data-fcomp=""
       data-fcomp-mode-on={mode}
       data-file-foot=""
+      data-drop-over={drop.over ? '' : undefined}
+      {...drop.handlers}
     >
       <div className="ib-fcomp-top">
         {takesComments ? (
@@ -294,11 +324,10 @@ export function FullScreenComposer({
         </Tip>
       </div>
       <div className="ib-fcomp-row">
-        {mode === 'comment' ? (
-          comment
-        ) : (
+        {keptComment(mode === 'comment')}
+        {mode === 'comment' ? null : (
           <>
-            <div className="ib-fcomp-field" data-fcomp-field="">
+            <div className="ib-fcomp-field" data-fcomp-field="" onPaste={reply.onPaste}>
               <InboxComposerField
                 textareaRef={replyRef}
                 ariaLabel={replyLabel}
@@ -322,7 +351,6 @@ export function FullScreenComposer({
                 }}
               />
             </div>
-            {reply.attach}
             <button
               type="button"
               className="ib-btn ib-pri ib-fcomp-send"
@@ -344,7 +372,25 @@ export function FullScreenComposer({
           {reply.error}
         </p>
       )}
+      {mode === 'reply' && reply.files.length > 0 && (
+        <div className="ib-rfiles ib-fcomp-files" data-fcomp-files="">
+          <ComposeFileTiles
+            files={reply.files}
+            onRemove={(key) => {
+              reply.onRemoveFile(key);
+              // The × goes with its tile: focus stays in the reply, as in the reply box.
+              replyRef.current?.focus({ preventScroll: true });
+            }}
+          />
+        </div>
+      )}
       {foot}
+      {drop.over && (
+        <div className="ib-rdrop ib-fcomp-drop" aria-hidden="true" data-fcomp-drop="">
+          <Icon name="clip" size={18} />
+          Drop to attach
+        </div>
+      )}
     </div>
   );
 }

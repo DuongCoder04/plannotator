@@ -274,8 +274,23 @@ test('Hide (») hides the card and the size chip with the toolbar', async () => 
   await expect(card()).toBeVisible();
 });
 
-test('Send goes from full screen: it stays, the card says it went, the reply is in the thread and the draft is gone', async () => {
+test('the paperclip attaches to the reply; Send goes from full screen with the file: it stays, the card says it went, the reply is in the thread and the draft is gone', async () => {
   const page = world.page;
+  // The reply box's paperclip, first in the card's toolbar (the card's 30 px button).
+  const clip = card().locator('[data-fcomp-foot] > :first-child');
+  await expect(clip).toHaveAccessibleName('Attach files');
+  const clipBox = (await clip.boundingBox())!;
+  expect(Math.round(clipBox.width)).toBe(30);
+  expect(Math.round(clipBox.height)).toBe(30);
+  const crop = await page.screenshot({ clip: { x: 60, y: 600, width: 400, height: 240 } });
+  await card().locator('input[type="file"][data-fcomp-attach]').setInputFiles({ name: 'footer-over-cvc.png', mimeType: 'image/png', buffer: crop });
+  await expect(card().locator('[data-fcomp-files] [data-compose-file="done"]')).toHaveCount(1);
+  // One reply: the thread's box behind full screen holds the same file.
+  await expect(page.locator('.ib-rbox [data-reply-files] [data-compose-file-name="footer-over-cvc.png"]')).toHaveCount(1);
+  await replyField().focus();
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.mouse.move(200, 400);
+  await shot(page, '2A-reply-attached');
   await replyField().focus();
   await card().locator('[data-fcomp-send]').click();
   await expect(card().locator('[data-fcomp-sent]')).toHaveText('Sent to Claude Code');
@@ -284,6 +299,10 @@ test('Send goes from full screen: it stays, the card says it went, the reply is 
   await expect.poll(draftOnServer).toBeNull();
   const thread = (await world.claude.readThread(world.threadId)) as { messages: { author: { kind: string }; body: string }[] };
   expect(thread.messages.some((m) => m.author.kind === 'person' && m.body.includes('96 px of bottom padding'))).toBe(true);
+  // The file went with the words, and left the card and the box.
+  const mine = thread.messages.filter((m) => m.author.kind === 'person').at(-1) as { attachments?: { name: string }[] };
+  expect(mine.attachments?.map((a) => a.name)).toEqual(['footer-over-cvc.png']);
+  await expect(card().locator('[data-fcomp-files]')).toHaveCount(0);
   // Empty again: Send is dimmed, and minimized the pill says what the card is for.
   await expect(card().locator('[data-fcomp-send]')).toBeDisabled();
   await card().getByRole('radio', { name: 'Comment on this image' }).click();
@@ -339,6 +358,17 @@ test('a phone (390 px): the card spans the width under the toolbar, Comment and 
     expect(barBox.y + barBox.height).toBeLessThanOrEqual(cardBox.y + 1);
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await shot(page, '2A-phone-open');
+    // The phone's paperclip: the card's 36 px button, first in its toolbar; a chosen picture is a tile in the card.
+    const clip = card(page).locator('[data-fcomp-foot] > :first-child');
+    await expect(clip).toHaveAccessibleName('Attach files');
+    expect(Math.round((await clip.boundingBox())!.width)).toBe(36);
+    const crop = await page.screenshot({ clip: { x: 0, y: 120, width: 390, height: 260 } });
+    await card(page).locator('input[type="file"][data-fcomp-attach]').setInputFiles({ name: 'IMG_0412.png', mimeType: 'image/png', buffer: crop });
+    await expect(card(page).locator('[data-fcomp-files] [data-compose-file="done"]')).toHaveCount(1);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await shot(page, '2A-phone-attached');
+    await card(page).locator('[data-fcomp-files] [data-compose-file] button').first().tap();
+    await expect(card(page).locator('[data-fcomp-files]')).toHaveCount(0);
 
     await card(page).locator('[data-fcomp-minimize]').click();
     await expect(pill(page)).toHaveText('Draft');
