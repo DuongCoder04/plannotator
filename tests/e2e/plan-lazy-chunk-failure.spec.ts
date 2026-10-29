@@ -9,7 +9,7 @@
  *    mounted: the diagram's source shows under "Couldn't load this view" with
  *    a Reload action, and a comment added before it is still there;
  *  - the chunk answered with 404 (an old tab after an upgrade on the same
- *    port) says "Plannotator was updated" instead.
+ *    port) says "This page was updated" instead.
  *
  * Every CLI runs under a temp PLANNOTATOR_DATA_DIR and HOME, opens no browser,
  * and is closed by this test. Build the binary first (see inbox.spec.ts), then
@@ -130,7 +130,10 @@ async function expectAppKeptWithFallback(page: Page, pageErrors: string[], messa
   const block = page.locator('[data-diagram-block="mermaid"]');
   const notice = block.locator('[data-lazy-load-failed]');
   await expect(notice).toContainText(message);
-  await expect(notice.getByRole('button', { name: action, exact: true })).toBeVisible();
+  const reload = notice.getByRole('button', { name: action, exact: true });
+  await expect(reload).toBeVisible();
+  // A tap target, not just the word: at least 24px tall (44px on touch screens).
+  expect((await reload.boundingBox())!.height).toBeGreaterThanOrEqual(24);
   // The fence's source stands in for the diagram.
   await expect(block.locator('pre')).toHaveText(/flowchart LR\s+Kept-->Source/);
   // The rest of the app is still there, comment included.
@@ -158,14 +161,14 @@ test('plan review: an aborted diagram chunk shows the source with Reload and kee
   }
 });
 
-test('plan review: a diagram chunk the server no longer has (404) says Plannotator was updated', async ({ browser }) => {
+test('plan review: a diagram chunk the server no longer has (404) says the page was updated', async ({ browser }) => {
   const session = await startPlanReview();
   try {
     const { page, pageErrors } = await openReview(browser, session.url, (route) =>
       route.fulfill({ status: 404, contentType: 'text/plain; charset=utf-8', body: 'Not found' }),
     );
     await commentThenAddDiagram(page);
-    await expectAppKeptWithFallback(page, pageErrors, 'Plannotator was updated.', 'Reload to see this');
+    await expectAppKeptWithFallback(page, pageErrors, 'This page was updated.', 'Reload to see this');
   } finally {
     await session.close();
   }

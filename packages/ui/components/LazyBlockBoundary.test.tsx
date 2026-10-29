@@ -141,7 +141,7 @@ describe('LazyBlockBoundary', () => {
     expect(calls).toEqual([{ url: chunkUrl(), method: 'HEAD' }]);
     const notice = el.querySelector('[data-lazy-load-failed]');
     expect(notice?.getAttribute('data-lazy-load-failed')).toBe('updated');
-    expect(notice?.textContent).toContain('Plannotator was updated.');
+    expect(notice?.textContent).toContain('This page was updated.');
     expect(notice?.querySelector('button')?.textContent).toBe('Reload to see this');
   });
 
