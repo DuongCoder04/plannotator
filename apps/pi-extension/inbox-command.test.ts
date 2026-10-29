@@ -9,7 +9,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import plannotator from "./index.ts";
-import { INBOX_COMMAND_BRIEFING } from "../../packages/shared/inbox/connection";
+import { INBOX_COMMAND_BRIEFING } from "./generated/inbox/connection.ts";
 
 const ENV_KEYS = ["PLANNOTATOR_BIN", "PLANNOTATOR_DATA_DIR"] as const;
 const saved: Record<string, string | undefined> = {};
@@ -43,18 +43,18 @@ function fakePlannotator(body: string): { calls: string } {
 /** What the command sent the session: Pi's `sendMessage` calls, message and options. */
 const sent: Array<[unknown, unknown]> = [];
 
-/** The extension's `before_agent_start` handlers: Pi runs them as the next prompt starts. */
-const beforeAgentStart: Array<() => unknown> = [];
+/** The extension's `message_start` handlers: Pi's agent loop runs them for each message the next prompt carries. */
+const messageStart: Array<(event: unknown) => unknown> = [];
 
 /** A Pi session with the extension loaded; `run` runs /plannotator-inbox in it. */
 function piSession() {
 	sent.length = 0;
-	beforeAgentStart.length = 0;
+	messageStart.length = 0;
 	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
 	const pi = {
 		events: { on: () => undefined, emit: () => undefined },
-		on: (event: string, handler: () => unknown) => {
-			if (event === "before_agent_start") beforeAgentStart.push(handler);
+		on: (event: string, handler: (event: unknown) => unknown) => {
+			if (event === "message_start") messageStart.push(handler);
 		},
 		registerFlag: () => undefined,
 		registerShortcut: () => undefined,
@@ -76,12 +76,14 @@ function piSession() {
 	return {
 		notices,
 		run: () => commands.get("plannotator-inbox")!.handler("", ctx),
-		/** The person's next prompt starts: Pi hands it the pending messages and runs the handlers (others' may need more than this stand-in has). */
+		/** The person's next prompt starts: Pi emits `message_start` for each pending message it carries (others' handlers may need more than this stand-in has). */
 		nextPrompt: async () => {
-			for (const handler of beforeAgentStart) {
-				try {
-					await handler();
-				} catch {}
+			for (const [message] of sent.splice(0)) {
+				for (const handler of messageStart) {
+					try {
+						await handler({ type: "message_start", message: { role: "custom", ...(message as object) } });
+					} catch {}
+				}
 			}
 		},
 	};
@@ -117,7 +119,7 @@ describe.skipIf(process.platform === "win32")("/plannotator-inbox", () => {
 		expect(sent).toHaveLength(1);
 		await session.nextPrompt();
 		await session.run();
-		expect(sent).toHaveLength(2);
+		expect(sent).toHaveLength(1);
 	});
 
 	test("an older plannotator without --open is told to update", async () => {

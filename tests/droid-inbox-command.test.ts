@@ -5,8 +5,8 @@
  * success. Runs the real script against a stand-in `plannotator`.
  */
 import { describe, expect, test } from "bun:test";
-import { INBOX_BRIEFING_FROM_NOW_ON, INBOX_FOLLOW_THROUGH_RULE } from "../../../packages/shared/inbox/connection";
-import { runDroidInboxCommand } from "../../../tests/helpers/droid-inbox-command";
+import { INBOX_BRIEFING_FROM_NOW_ON, INBOX_FOLLOW_THROUGH_RULE } from "../packages/shared/inbox/connection";
+import { runDroidInboxCommand } from "./helpers/droid-inbox-command";
 
 describe.skipIf(process.platform === "win32")("Droid /plannotator-inbox", () => {
   test("opened: prints the address, the CLI's note, then the briefing", () => {
