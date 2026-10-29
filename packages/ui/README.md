@@ -239,7 +239,7 @@ exactly. The standalone `StickyHeaderLane` remains supported for Plannotator's
 hidden-at-rest ghost lane, but its always-visible mode is an overlay and is not
 the in-flow host integration.
 
-#### Content under the title (`Viewer.belowTitle`; unreleased)
+#### Content under the title (`Viewer.belowTitle`; ui 0.54.0)
 
 `belowTitle?: ReactNode` draws a host's node right under the document's
 title, e.g. a references block (pull requests, depends on, links, referenced
@@ -268,7 +268,7 @@ by). Use it instead of inserting into the Viewer's DOM.
 - **Absent is absent.** `undefined`, `null` and booleans draw no wrapper; the
   DOM is exactly the one without the prop.
 
-See HANDOFF.md § "Viewer `belowTitle` (unreleased)".
+See HANDOFF.md § "Viewer `belowTitle` (published in ui 0.54.0)".
 
 ### Diagram engine (`components/diagram`; 0.41.0)
 
@@ -402,7 +402,7 @@ slot and mentions on the edit box (0.45.0)".
   Ties keep creation order; replies still thread under their parent. Omit it
   and the panel sorts by creation exactly as before.
 - **`title?`, `titleNote?`, `cardParts?: (annotation) => { quote?, images?, text? }`**
-  (ui 0.53.0; `text` unreleased) — the header's title (default "Annotations")
+  (ui 0.53.0; `text` ui 0.54.0) — the header's title (default "Annotations")
   and a quiet note at its right, and per card whether the built-in quote,
   image row and comment text are drawn (the Inbox's video comments draw the
   moment and the frame in `renderCardHeader` instead). `text: false` treats
@@ -410,7 +410,7 @@ slot and mentions on the edit box (0.45.0)".
   drawn and the card's edit box starts empty (the Inbox's drawing with no
   words, whose text "See the marked-up image." is for the agent). Omit them
   and the panel is as before.
-- **`renderCardBody?: (annotation) => ReactNode`** (unreleased) — the host's
+- **`renderCardBody?: (annotation) => ReactNode`** (ui 0.54.0) — the host's
   own body for a plan-annotation card, drawn where the comment text goes,
   inside the card (a click on it selects the card). The Inbox draws a
   drawing with no words as its picture. Omit it and nothing extra is drawn.
@@ -420,7 +420,7 @@ slot and mentions on the edit box (0.45.0)".
   (the Inbox's `At 1:42 (102.4 s of 7:41)`). Never stored; an annotation
   without it exports byte-identically.
 
-### Image annotator seams (`components/ImageAnnotator`; unreleased)
+### Image annotator seams (`components/ImageAnnotator`; ui 0.54.0)
 
 - **`escapeCancels?: boolean`** — Escape closes the drawing screen and accepts
   nothing; Enter and the ✓ accept; a click outside closes only an empty
@@ -539,7 +539,7 @@ npm install @plannotator/ui @plannotator/core
 - `@plannotator/core` — pure utils + types, zero deps, browser-safe (CI enforces no `node:` imports). Published.
 - `@plannotator/ui` — React components/hooks + theme + `configure()`. Depends on an exact published `@plannotator/core` version. Published.
 - `@plannotator/shared`, `@plannotator/ai` — stay private to the monorepo; `shared` re-exports `core`'s modules via shims so Plannotator's internals are untouched.
-- Currently `@plannotator/ui` 0.48.0 depends exactly on `@plannotator/core` 0.25.8. `core` is bumped only when something under `packages/core` changes, so `ui` can advance alone. Keep the published core version exact in `packages/ui/package.json`; do not use a `workspace:` protocol there, because a directly published manifest must remain installable outside this monorepo. Bun still links the matching local workspace during development. When both packages change, publish `core` first, then build and publish the UI tarball. `bun run check:sibling-deps @plannotator/ui` (from the repo root; it reads npm) fails while the pinned core isn't on npm. See HANDOFF.md "Publishing & versioning" for the verification command.
+- Currently `@plannotator/ui` 0.54.0 depends exactly on `@plannotator/core` 0.25.14. `core` is bumped only when something under `packages/core` changes, so `ui` can advance alone. Keep the published core version exact in `packages/ui/package.json`; do not use a `workspace:` protocol there, because a directly published manifest must remain installable outside this monorepo. Bun still links the matching local workspace during development. When both packages change, publish `core` first, then build and publish the UI tarball. `bun run check:sibling-deps @plannotator/ui` (from the repo root; it reads npm) fails while the pinned core isn't on npm. See HANDOFF.md "Publishing & versioning" for the verification command.
 
 ## The one rule
 
