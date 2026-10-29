@@ -62,7 +62,7 @@ afterEach(async () => {
   root = null;
   host?.remove();
   host = null;
-  document.body.innerHTML = '';
+  if (hasDom) document.body.innerHTML = '';
 });
 
 describe('Semantic Changes source preview', () => {
