@@ -96,7 +96,7 @@ import { checklistWindow } from "./checklist-window.ts";
 import { isBrowserSessionStoppedError } from "./browser-session-error.ts";
 import { classifyAnnotateOutcome } from "./annotate-outcome.ts";
 import { classifyReviewOutcome } from "./review-outcome.ts";
-import { createPiSessionBridgeHub } from "./pi-session-bridge.ts";
+import { createPiSessionBridgeHub, PI_INBOX_BRIEFING_CUSTOM_TYPE } from "./pi-session-bridge.ts";
 import { setupPiInbox } from "./inbox.ts";
 import type { BrowserDecisionSession, PlanReviewBrowserSession, PlanReviewDecision } from "./plannotator-browser.ts";
 import type { AnnotateBundleFile } from "./generated/annotate-bundle.ts";
@@ -1637,17 +1637,36 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 	// The person closed the Inbox's tab, or asks where it is: open it again
 	// (`plannotator inbox --open` starts a stopped one detached, so the session
 	// never waits on it) and show its address. The Inbox is the CLI's, never
-	// this extension's: Pi is its client.
+	// this extension's: Pi is its client. Opened, the model also gets the
+	// Inbox briefing (INBOX_COMMAND_BRIEFING) as a hidden message with the
+	// next prompt (`nextTurn`, no turn of its own): people type the command
+	// to teach their agent the Inbox. One copy waits at a time: the command
+	// run twice before the next prompt queues it once. Pi hands every pending
+	// `nextTurn` message to that prompt, and its agent loop emits
+	// `message_start` for each: that is when the copy was delivered. (Not a
+	// `before_agent_start` handler: that event's results are the phase
+	// framing's, and an extra handler there only adds an empty result.)
+	let inboxBriefingQueued = false;
+	pi.on("message_start", (event: { message?: { role?: string; customType?: string } }) => {
+		if (event?.message?.role === "custom" && event.message.customType === PI_INBOX_BRIEFING_CUSTOM_TYPE) inboxBriefingQueued = false;
+	});
 	pi.registerCommand("plannotator-inbox", {
-		description: "Open the Plannotator Inbox in the browser and show its address",
+		description: "Open the Plannotator Inbox in the browser, show its address, and brief the agent on it",
 		handler: async (_args, ctx) => {
 			try {
-				const [{ inboxOpenedText, openInboxInBrowser }, { getPlannotatorDataDir }] = await importFresh(() =>
-					Promise.all([import("./generated/inbox/agent-link.ts"), import("./generated/data-dir.ts")]),
+				const [{ inboxOpenedText, openInboxInBrowser }, { getPlannotatorDataDir }, { inboxCommandBriefing }] = await importFresh(() =>
+					Promise.all([import("./generated/inbox/agent-link.ts"), import("./generated/data-dir.ts"), import("./generated/inbox/connection.ts")]),
 				);
 				const opened = await openInboxInBrowser({ dataDir: getPlannotatorDataDir() });
-				if ("url" in opened) ctx.ui.notify(inboxOpenedText(opened.url), "info");
-				else ctx.ui.notify(opened.error, "error");
+				if ("url" in opened) {
+					ctx.ui.notify(inboxOpenedText(opened.url), "info");
+					if (inboxBriefingQueued) return;
+					inboxBriefingQueued = true;
+					pi.sendMessage(
+						{ customType: PI_INBOX_BRIEFING_CUSTOM_TYPE, content: inboxCommandBriefing(), display: false },
+						{ deliverAs: "nextTurn" },
+					);
+				} else ctx.ui.notify(opened.error, "error");
 			} catch (err) {
 				if (!isPlannotatorUpdatedError(err)) throw err;
 				ctx.ui.notify(err.message, "error");

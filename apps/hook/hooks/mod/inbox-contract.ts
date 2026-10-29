@@ -410,6 +410,50 @@ export function inboxReminderText(toolName: string = INBOX_TOOL_NAME, options: {
 }
 
 /**
+ * The Inbox's guide line on the briefing, the command copies' bullet word for
+ * word: never run the window's command to send (the `plannotator` skill's
+ * wording). Fixed text.
+ */
+export const INBOX_BRIEFING_NEVER_RUN =
+  "Never run `plannotator inbox` just to send: send_message starts a stopped Inbox itself, and bare `plannotator inbox` opens the window for the person."
+
+/** The briefing's last line, and every `/plannotator-inbox` copy's: what the agent does with the Inbox from now on. Fixed text. */
+export const INBOX_BRIEFING_FROM_NOW_ON =
+  'For the rest of this session, use the Inbox as above: for a decision the person is not here to make, and to hand over long work you finished.'
+
+/**
+ * What `/plannotator-inbox` gives the model where the host answers the
+ * command itself and starts no turn (the Claude Code mod, Pi, OpenCode 2;
+ * OpenCode 1 puts it in the command's own turn): people type the command to
+ * teach their agent the Inbox (the owner, 2026-10-28), so the agent reads
+ * this from then on, unseen by the person, beside the address they see. The
+ * same guide as the command copies an agent reads itself (apps/skills/*,
+ * Gemini, Droid; tests/inbox-guidance-parity.test.ts), without their "tell
+ * the person the address" step. Host-neutral: it names the tool only where
+ * one may be registered, and lets send_message's result say whether a reply
+ * comes back by itself.
+ */
+export const INBOX_COMMAND_BRIEFING = [
+  'The person opened their Plannotator Inbox with /plannotator-inbox and has its address. The Plannotator Inbox is one window on this computer where you leave the person messages, `:::question` blocks they answer with a click, and files. They answer when they can. Nothing blocks: you send, then keep working or end your turn.',
+  '',
+  `- ${INBOX_USE_RULE}`,
+  '- Send with a `plannotator_inbox` tool when you have one (it can be listed with a prefix and may need loading through tool search first): `action` `send_message`, with a markdown `body`. Otherwise call `send_message` on the Inbox\'s MCP server, `plannotator inbox mcp`.',
+  "- send_message's result says whether the person's reply arrives in this session by itself. When it does, do not wait or poll for it: end your turn or go on with other work. When it does not, call wait_for_reply when you need the answer.",
+  `- ${INBOX_CHANNEL_RULE}`,
+  `- ${INBOX_FOLLOW_THROUGH_RULE}`,
+  `- ${INBOX_BRIEFING_NEVER_RUN}`,
+  '- Before your first send, run `plannotator inbox --help` and read it: every field, the full question syntax, and how to connect the MCP server.',
+  '- The `plannotator` skill, where you have it, has more.',
+  '',
+  `Opening the Inbox asks for no work by itself. ${INBOX_BRIEFING_FROM_NOW_ON}`,
+].join('\n')
+
+/** The briefing naming the tool as the host registered it (Claude Code: `mcp__plannotator__plannotator_inbox`), like the reminder. */
+export function inboxCommandBriefing(toolName: string = INBOX_TOOL_NAME): string {
+  return INBOX_COMMAND_BRIEFING.replace(INBOX_TOOL_NAME, toolName)
+}
+
+/**
  * The most characters (UTF-16 code units, a string's `length`) a custom Inbox
  * reminder may hold. Longer text is refused when saved and ignored when read,
  * so the host falls back to the next text in line (the shared one, then the
