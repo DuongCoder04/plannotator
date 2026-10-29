@@ -4,7 +4,8 @@
  * itself.
  *
  * - An agent's message is its Markdown as written, with each question block
- *   and action item as readable lines: "**Q1. prompt**", its context, the
+ *   and action item as readable lines: "**Q1.** prompt" (only the label in
+ *   bold, so a prompt's own Markdown renders as written), its context, the
  *   choices as a list ("(recommended)" on the recommended one), then
  *   "Answer: …" once the answer was sent.
  * - The person's reply leaves out what the Inbox wrote for the agent ("Answered
@@ -72,7 +73,7 @@ function answerLine(question: InboxQuestion): string | null {
 }
 
 function questionLines(number: number, shape: QuestionShape, record: InboxQuestion | null): string[] {
-  const out = [`**Q${number}. ${oneLine(shape.prompt)}**`];
+  const out = [`**Q${number}.** ${oneLine(shape.prompt)}`];
   if (shape.context) out.push(shape.context.trim());
   for (const choice of shape.choices) {
     const recommended = choice.recommended || (shape.recommendation !== null && shape.recommendation === choice.label);
@@ -85,12 +86,12 @@ function questionLines(number: number, shape: QuestionShape, record: InboxQuesti
 }
 
 function actionLines(number: number, parsed: ReturnType<typeof parseInboxActionBlocks>[number], record: InboxQuestion | null): string[] {
-  const out = [`**A${number}. ${oneLine(parsed.prompt)}**`];
+  const out = [`**A${number}.** ${oneLine(parsed.prompt)}`];
   if (parsed.why) out.push(parsed.why);
   const { where, where_url: url, run } = parsed.action;
   if (where) out.push(`Where: ${url ? `[${where}](${url})` : where}`);
   else if (url) out.push(`Where: ${url}`);
-  if (run) out.push(`Run: \`${run.replace(/`/g, '\\`')}\``);
+  if (run) out.push(`Run: ${codeSpan(run)}`);
   const result = record?.action_result;
   if (result && !result.staged) {
     const note = result.note?.trim();
@@ -102,6 +103,18 @@ function actionLines(number: number, parsed: ReturnType<typeof parseInboxActionB
 }
 
 const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim();
+
+/**
+ * Text as one Markdown code span, CommonMark's way: a backslash does not
+ * escape inside one, so the fence is a run of backticks longer than any run
+ * in the text, padded with a space when the text starts or ends with one.
+ */
+export function codeSpan(text: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(longest + 1);
+  const pad = text.startsWith('`') || text.endsWith('`') ? ' ' : '';
+  return `${fence}${pad}${text}${pad}${fence}`;
+}
 
 /**
  * An agent's message: its body with each question block and action item

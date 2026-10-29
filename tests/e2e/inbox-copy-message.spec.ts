@@ -226,7 +226,7 @@ test("the header's ⋯: Copy thread copies every message, the answer on its ques
   await expect(toast(page)).toContainText('4 messages');
   const text = await clipboardText(page);
   expect(text.startsWith('# Retry worker for Stripe 409s\n\nbilling-svc · 4 messages\n\n---\n\n**Claude Code** · '), text).toBe(true);
-  expect(text).toContain(['**Q1. Which way should the worker go on a Stripe 409?**', 'Stopped: the retry worker cannot ship without this.', `- ${PICK} (recommended)`, '- Fail the job and send it to the dead-letter queue', '', `Answer: ${PICK}`].join('\n'));
+  expect(text).toContain(['**Q1.** Which way should the worker go on a Stripe 409?', 'Stopped: the retry worker cannot ship without this.', `- ${PICK} (recommended)`, '- Fail the job and send it to the dead-letter queue', '', `Answer: ${PICK}`].join('\n'));
   expect(text).toMatch(new RegExp(`\\n\\*\\*You\\*\\* · [^\\n]+\\n\\n${WORDS.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n\\n---\\n`));
   expect(text).not.toContain('Answers to your questions');
   expect(text).not.toContain('Answered 1 question');

@@ -7,7 +7,9 @@
  * block inside a code fence stays text; the person's reply keeps their words
  * and drops what the Inbox wrote for the agent; a thread is the subject, the
  * project and count, then each message under its author and time between
- * `---` (the approved sample, word for word).
+ * `---` (the approved sample, word for word). Drawn, a Run command with
+ * backticks stays one code span, and a prompt's own bold renders beside the
+ * bold Q1./A1. label instead of nesting in it.
  *
  * The menus (DOM-gated: DOM_TESTS=1, from the test.yml DOM list), on the real
  * ThreadPane: each open message's ⋯ after Reply and its items, Copy message
@@ -21,6 +23,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { composeInboxReplyBody, parseInboxQuestionBlocks } from '@plannotator/core/inbox-questions';
 import type { InboxAuthor, InboxMessageWire, InboxProject, InboxQuestion, InboxQuestionRecord, InboxThread } from '@plannotator/core/inbox-types';
+import { parseInboxActionBlocks } from '@plannotator/core/inbox-actions';
+import { chatMarkdownToHtml } from '@plannotator/ui/utils/aiChatFormat';
 import { copyTime, messageMarkdown, threadMarkdown } from './copyMarkdown';
 import { threadLink } from './rowMenu';
 import type { InboxToastModel } from './components/Toast';
@@ -153,7 +157,7 @@ test('an answered question block reads as lines: the prompt, its context, the ch
   const out = messageMarkdown(sample().messages[0]!);
   expect(out).toContain(
     [
-      '**Q1. Which way should the worker go on a Stripe 409?**',
+      '**Q1.** Which way should the worker go on a Stripe 409?',
       'Stopped: the retry worker cannot ship without this.',
       `- ${PICK} (recommended)`,
       '- Fail the job and send it to the dead-letter queue',
@@ -176,6 +180,38 @@ test('a pick not sent yet is no answer: the copy shows the choices only', () => 
 test('a question block inside a code fence is text, copied as written', () => {
   const body = ['How to ask:', '', '```md', ':::question', 'Ship it?', '', '- [ ] Yes', ':::', '```'].join('\n');
   expect(messageMarkdown(message(M3, CLAUDE, body, 32))).toBe(body);
+});
+
+test('a Run command with backticks renders as one code span, the command whole', () => {
+  // A backslash does not escape inside a code span: the fence must outrun the command's backticks.
+  const body = (run: string) => [':::action', 'Restart the worker on the box', 'It holds the old key in memory.', `Run: ${run}`, ':::'].join('\n');
+  for (const run of ['echo `date` && make ``x``', '`pwd`/bin/start']) {
+    const html = chatMarkdownToHtml(messageMarkdown(message(M3, CLAUDE, body(run), 32)));
+    expect(parseInboxActionBlocks(body(run))[0]!.action.run).toBe(run);
+    expect(html).toContain(`<br>Run: <code>${run.replace(/&/g, '&amp;')}</code></p>`);
+  }
+});
+
+test('Markdown inside a question or action prompt renders as written, the label in bold beside it', () => {
+  const body = [
+    ':::question',
+    'Ship **only** the retry fix, or **both**?',
+    '',
+    '- [ ] Only the retry fix',
+    '- [ ] Both',
+    ':::',
+    '',
+    ':::action',
+    'Merge the PR, then **tag** it',
+    'The release waits on the tag.',
+    ':::',
+  ].join('\n');
+  const html = chatMarkdownToHtml(messageMarkdown(message(M3, CLAUDE, body, 32)));
+  expect(html).toContain('<strong>Q1.</strong> Ship <strong>only</strong> the retry fix, or <strong>both</strong>?');
+  expect(html).toContain('<strong>A1.</strong> Merge the PR, then <strong>tag</strong> it');
+  // No delimiter is left over as text and no bold nests inside another.
+  expect(html).not.toContain('**');
+  expect(html).not.toMatch(/<strong>[^<]*<strong>/);
 });
 
 test("the person's reply keeps their words and drops what the Inbox wrote for the agent", () => {

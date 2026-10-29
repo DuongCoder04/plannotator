@@ -274,7 +274,7 @@ test.skipIf(!hasDom)('Copy thread on a row whose thread is not open reads it and
   expect(clipboard).toHaveLength(1);
   // The subject heading, then the agent's question as readable lines (copyMarkdown.ts).
   expect(clipboard[0]).toStartWith('# ');
-  expect(clipboard[0]).toContain('**Q1. Which search index should the docs use?**');
+  expect(clipboard[0]).toContain('**Q1.** Which search index should the docs use?');
   expect(clipboard[0]).toContain('- Pagefind');
   expect(toast()!.textContent).toContain('1 message');
   // Reading the thread to copy it opens nothing and changes nothing.
