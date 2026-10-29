@@ -5,6 +5,7 @@ import {
   KEY_BRIDGE_SOURCE,
   PANEL_SEED_COOKIE,
   PANEL_SEED_VERSION,
+  upstreamConnectOptions,
 } from "./cookie-proxy";
 import type { CookieProxy } from "./cookie-proxy";
 
@@ -221,6 +222,42 @@ describe("createCookieProxy", () => {
       upstream.close();
     }
   });
+});
+
+describe("the upstream connection for a localhost subdomain (#2184)", () => {
+  let proxy: CookieProxy | undefined;
+  afterEach(() => {
+    proxy?.server.close();
+    proxy = undefined;
+  });
+
+  it("connects a *.localhost upstream to 127.0.0.1 and keeps its Host", async () => {
+    const { createServer } = await import("http");
+    let seenHost: string | undefined;
+    const upstream = createServer((req, res) => {
+      seenHost = req.headers.host;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end('{"ok":true}');
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const upstreamPort = (upstream.address() as { port: number }).port;
+    try {
+      proxy = await createCookieProxy({ loadCookies: () => "", onSaveCookies: () => {} });
+      // A name no resolver needs to know: the pinned address reaches the upstream.
+      const res = await fetch(proxy.rewriteUrl(`http://pn-proxy-test-2184.localhost:${upstreamPort}/api/plan`));
+      expect(await res.json()).toEqual({ ok: true });
+      expect(seenHost).toBe(`pn-proxy-test-2184.localhost:${upstreamPort}`);
+    } finally {
+      upstream.close();
+    }
+  });
+
+  it("pins only a localhost subdomain; plain localhost and other names resolve as before", () => {
+    expect(upstreamConnectOptions("plannotator.localhost")).toEqual({ hostname: "127.0.0.1" });
+    for (const name of ["localhost", "127.0.0.1", ".localhost", "example.com", "localhost.example.com"]) {
+      expect(upstreamConnectOptions(name)).toEqual({});
+    }
+    });
 });
 
 /**

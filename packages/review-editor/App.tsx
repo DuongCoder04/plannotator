@@ -29,6 +29,7 @@ import {
 import { useUpdateCheck } from '@plannotator/ui/hooks/useUpdateCheck';
 import { useUpdateToast } from '@plannotator/ui/hooks/useUpdateToast';
 import { useUpdateCheckSetting } from '@plannotator/ui/hooks/useUpdateCheckSetting';
+import { useCookieHostSetting } from '@plannotator/ui/hooks/useCookieHostSetting';
 import { adoptPackageChangesConfig, usePackageChangesSetting } from '@plannotator/ui/hooks/usePackageChangesSetting';
 import { parseUpdateAdvert, parseUpdateCheckFailing, type UpdateAdvert, type UpdateCheckFailingAdvert } from '@plannotator/ui/utils/updateNotice';
 import { claimAutoUpdateNotice, describeAutoUpdateNotice, parseAutoUpdateNotice, type AutoUpdateNotice } from '@plannotator/ui/utils/autoUpdateNotice';
@@ -901,6 +902,7 @@ const ReviewApp: React.FC = () => {
   const [autoUpdateActive, setAutoUpdateActive] = useState(false);
   // The update-notice switch for Settings: present when the server reports it.
   const updateCheckSetting = useUpdateCheckSetting();
+  const cookieHostSetting = useCookieHostSetting();
   const packageChangesSetting = usePackageChangesSetting();
   // One-time notice after a background auto-update (#1634); the compiled
   // CLI's server attaches it to the initial payload.
@@ -2446,6 +2448,7 @@ const ReviewApp: React.FC = () => {
         setUpdateAdvert(parseUpdateAdvert(data.updateAvailable));
         setUpdateCheckFailing(parseUpdateCheckFailing(data.updateCheckFailing));
         updateCheckSetting.adopt(data.serverConfig as Record<string, unknown> | undefined);
+        cookieHostSetting.adopt(data.serverConfig as Record<string, unknown> | undefined);
         adoptPackageChangesConfig(data.serverConfig as Record<string, unknown> | undefined);
         setSnapshotId(data.snapshotId);
         setLocalDraftTarget(data.localDraftTarget ?? null);
@@ -6141,6 +6144,7 @@ const ReviewApp: React.FC = () => {
             gitUser={gitUser}
             autoUpdateSetting={autoUpdateSetting}
             updateCheckSetting={updateCheckSetting.setting}
+            cookieHostSetting={cookieHostSetting.setting}
             packageChangesSetting={packageChangesSetting}
             agentToolSetting={agentTool.setting}
             onAgentToolChange={agentTool.save}

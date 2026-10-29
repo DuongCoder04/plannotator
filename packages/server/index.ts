@@ -18,7 +18,7 @@ import { appHtmlResponse, likelyAppHtmlEncoding, prewarmAppHtml } from "@plannot
 import type { Origin } from "@plannotator/shared/agents";
 import { isAbsolute, resolve } from "path";
 import { statSync } from "node:fs";
-import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl } from "./remote";
+import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl, getLocalUrlHostname } from "./remote";
 import { createRequestHostGuard } from "./request-host-guard";
 import { withPlannotatorServerHeader } from "./plannotator-server-marker";
 import { isSameOriginRequest, refuseCrossOriginWrite } from "./request-origin-guard";
@@ -54,7 +54,7 @@ import {
 import { getRepoInfo } from "./repo";
 import { createRefCards, refCardRouteResponse, type RefRunner } from "./ref-cards";
 import { detectProjectName } from "./project";
-import { agentSwitchConfigToSave, agentToolSaveFailed, loadConfig, saveConfig, detectGitUser, getServerConfig, resolveAIEnabled, resolveFeedbackHistory } from "./config";
+import { agentSwitchConfigToSave, agentToolSaveFailed, cookieHostConfigWrite, loadConfig, saveConfig, detectGitUser, getServerConfig, resolveAIEnabled, resolveFeedbackHistory } from "./config";
 import { getAutoUpdateAdvert, getUpdateAdvert, handleUpdateRoute } from "./auto-update";
 import { appendFeedbackRecord, type FeedbackDecision } from "@plannotator/shared/feedback-archive";
 import { isFaviconStyle, type FaviconStyle } from "@plannotator/shared/favicon";
@@ -272,6 +272,9 @@ export async function startPlannotatorServer(
   };
 
   const isRemote = isRemoteSession();
+  // The localhost subdomain this session is advertised at (#2184), read once:
+  // the one extra name the loopback Host checks accept.
+  const localHostname = getLocalUrlHostname();
   // Save to Notion uses the server's NOTION_TOKEN, so it is offered only on this computer.
   const notionAvailable = isNotionAvailable(isRemote);
   // Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for,
@@ -312,7 +315,7 @@ export async function startPlannotatorServer(
   const externalAnnotations = mode !== "archive" ? createExternalAnnotationHandler("plan") : null;
   // Set once bound: "Ask this session" answers only a loopback Host with this port.
   let boundPort: number | undefined;
-  const aiRuntime = mode !== "archive" && resolveAIEnabled() ? await createAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort }) : null;
+  const aiRuntime = mode !== "archive" && resolveAIEnabled() ? await createAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort, localHostname }) : null;
   // `slug` dates the archive files under ~/.plannotator/plans/, which is where
   // listArchivedPlans reads the date back out of the filename. `historySlug`
   // keys history/{project}/ and deliberately stays on the chain this plan
@@ -527,12 +530,12 @@ export async function startPlannotatorServer(
                 sharingEnabled,
                 shareBaseUrl,
                 isWSL: wslFlag,
-                serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge, options.opencodeToolCapable)),
+                serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge, options.opencodeToolCapable), { cookieHost: !isRemote }),
                 ...getAutoUpdateAdvert(),
                 ...getUpdateAdvert(origin, { exposed: isRemote }),
               });
             }
-            return Response.json({ plan, origin, permissionMode, approvalNotesSupported, sharingEnabled, shareBaseUrl, pasteApiUrl, repoInfo, previousPlan, versionInfo, serverSession, ...(planDocumentDrafts ? { documentDrafts: true } : {}),...(options.planRevisions ? { planRevision } : {}), ...(currentPlanPath ? { planPath: currentPlanPath } : {}), projectRoot: process.cwd(), planDir: planFile?.dir, ...(planFile ? { planFilePath: planFile.path } : {}), isWSL: wslFlag, ...(notionAvailable ? { notion: true } : {}), serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge, options.opencodeToolCapable)), ...getAutoUpdateAdvert(), ...getUpdateAdvert(origin, { exposed: isRemote }) });
+            return Response.json({ plan, origin, permissionMode, approvalNotesSupported, sharingEnabled, shareBaseUrl, pasteApiUrl, repoInfo, previousPlan, versionInfo, serverSession, ...(planDocumentDrafts ? { documentDrafts: true } : {}),...(options.planRevisions ? { planRevision } : {}), ...(currentPlanPath ? { planPath: currentPlanPath } : {}), projectRoot: process.cwd(), planDir: planFile?.dir, ...(planFile ? { planFilePath: planFile.path } : {}), isWSL: wslFlag, ...(notionAvailable ? { notion: true } : {}), serverConfig: getServerConfig(gitUser, agentToolHostForServer(options.sessionBridge, options.opencodeToolCapable), { cookieHost: !isRemote }), ...getAutoUpdateAdvert(), ...getUpdateAdvert(origin, { exposed: isRemote }) });
           }
 
           // API: The live plan revision (open reviews that receive revised plans)
@@ -573,7 +576,7 @@ export async function startPlannotatorServer(
 
           // API: Update now (the update toast and the Options menu): the install script, once.
 
-          const updateRoute = handleUpdateRoute(req, url, { port: boundPort, exposed: isRemote, serverSession });
+          const updateRoute = handleUpdateRoute(req, url, { port: boundPort, exposed: isRemote, serverSession, localHostname });
 
           if (updateRoute) return updateRoute;
 
@@ -604,9 +607,13 @@ export async function startPlannotatorServer(
               if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
               if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
               if (body.pfmReminder !== undefined) toSave.pfmReminder = body.pfmReminder;
+              // The cookie switch (#2184): its own write, which never replaces another urlHost;
+              // refused in remote mode and --tailscale sessions.
+              const cookieHostWrite = cookieHostConfigWrite((body as { cookieHost?: unknown }).cookieHost, isRemote);
+              if (cookieHostWrite && cookieHostWrite.status !== 200) return Response.json(cookieHostWrite.body, { status: cookieHostWrite.status });
               if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return Response.json({ error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, { status: 500 });
               if (agentToolSaveFailed(toSave)) return Response.json({ error: "Could not save the setting to config.json." }, { status: 500 });
-              return Response.json({ ok: true });
+              return Response.json(cookieHostWrite ? cookieHostWrite.body : { ok: true });
             } catch {
               return Response.json({ error: "Invalid request" }, { status: 400 });
             }

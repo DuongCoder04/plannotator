@@ -30,7 +30,7 @@ import { getPlanVersion, getVersionCount, listVersions } from "../generated/stor
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "../generated/annotate-history.ts";
 import { ANNOTATE_LIVE_VERSION_PATH, annotateLiveVersionFilePath, saveAnnotateLiveVersion } from "../generated/annotate-live-version.ts";
 import { htmlDiff } from "../generated/html-diff.ts";
-import { agentSwitchConfigToSave, agentToolSaveFailed, saveConfig, detectGitUser, getServerConfig, isAgentTerminalSide, loadConfig, resolveAIEnabled, resolveSharingEnabled, resolveAnnotateHistory, resolveFeedbackHistory, type PromptRuntime } from "../generated/config.ts";
+import { agentSwitchConfigToSave, agentToolSaveFailed, cookieHostConfigWrite, saveConfig, detectGitUser, getServerConfig, isAgentTerminalSide, loadConfig, resolveAIEnabled, resolveSharingEnabled, resolveAnnotateHistory, resolveFeedbackHistory, type PromptRuntime } from "../generated/config.ts";
 import { currentPiHost } from "../pi-host.ts";
 import { appendFeedbackRecord, type FeedbackDecision, type FeedbackSurface } from "../generated/feedback-archive.ts";
 import { isFaviconStyle, type FaviconStyle } from "../generated/favicon.ts";
@@ -670,7 +670,7 @@ export async function startAnnotateServer(options: {
 	const externalAnnotations = createExternalAnnotationHandler("plan");
 	// Set once bound: "Ask this session" answers only a loopback Host with this port.
 	let boundPort: number | undefined;
-	const aiRuntime = resolveAIEnabled() ? await createPiAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort }) : null;
+	const aiRuntime = resolveAIEnabled() ? await createPiAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort, ...(options.liveApp ? { localHostname: null } : {}) }) : null;
 	const htmlAssets = createHtmlAssetRegistry(options.mode === "annotate-folder" ? options.folderPath : undefined);
 	let agentTerminalCapability: AgentTerminalCapability = {
 		enabled: false,
@@ -946,7 +946,7 @@ export async function startAnnotateServer(options: {
 				convertHtml: false,
 				repoInfo,
 				projectRoot: process.cwd(),
-				serverConfig: getServerConfig(gitUser, currentPiHost()),
+				serverConfig: getServerConfig(gitUser, currentPiHost(), { cookieHost: !isRemoteSession() }),
 				...piUpdateAdvert(options.origin),
 				agentTerminal: agentTerminalCapability,
 				feedbackTemplates: {
@@ -1026,7 +1026,7 @@ export async function startAnnotateServer(options: {
 				// sibling docs the same way it linkifies .md ones.
 				markdownExtensions: getExtraMarkdownExtensions(),
 				...(annotateDrafts.documentsEnabled ? { documentDrafts: true } : {}),
-				serverConfig: getServerConfig(gitUser, currentPiHost()),
+				serverConfig: getServerConfig(gitUser, currentPiHost(), { cookieHost: !isRemoteSession() }),
 				...piUpdateAdvert(options.origin),
 				agentTerminal: agentTerminalCapability,
 				...(options.recentMessages ? { recentMessages: options.recentMessages } : {}),
@@ -1153,9 +1153,13 @@ export async function startAnnotateServer(options: {
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
 				if (isAgentTerminalSide(body.agentTerminalSide)) toSave.agentTerminalSide = body.agentTerminalSide;
 				if (typeof body.agentTerminalDefaultAgent === "string") toSave.agentTerminalDefaultAgent = body.agentTerminalDefaultAgent;
+				// The cookie switch (#2184): its own write, which never replaces another urlHost;
+				// refused in remote mode.
+				const cookieHostWrite = cookieHostConfigWrite((body as { cookieHost?: unknown }).cookieHost, isRemoteSession());
+				if (cookieHostWrite && cookieHostWrite.status !== 200) return json(res, cookieHostWrite.body, cookieHostWrite.status);
 				if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return json(res, { error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, 500);
 				if (agentToolSaveFailed(toSave)) return json(res, { error: "Could not save the setting to config.json." }, 500);
-				json(res, { ok: true });
+				json(res, cookieHostWrite ? cookieHostWrite.body : { ok: true });
 			} catch {
 				json(res, { error: "Invalid request" }, 400);
 			}
@@ -1556,7 +1560,8 @@ export async function startAnnotateServer(options: {
 		port,
 		liveProxyPort: liveProxy?.port,
 		portSource,
-		url: buildAdvertisedUrl(port),
+		// Keep live annotation same-site with the localhost app proxy.
+		url: options.liveApp ? `http://localhost:${port}` : buildAdvertisedUrl(port),
 		waitForDecision: () => decisionPromise,
 		hostControl,
 		stop: () => {
