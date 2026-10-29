@@ -177,6 +177,11 @@ const PierreDiffContent = React.memo(({
 ));
 
 interface DiffViewerProps {
+  /** A control drawn in the file header (the Changes | Whole file switch). */
+  headerAccessory?: React.ReactNode;
+  /** Replaces the diff below the header (the Whole file view): the header,
+   *  its viewed and staging controls stay as they are. */
+  bodyOverride?: React.ReactNode;
   patch: string;
   filePath: string;
   oldPath?: string;
@@ -228,6 +233,8 @@ interface DiffViewerProps {
   onEditAnnotation: (id: string, text?: string, suggestedCode?: string, originalCode?: string, conventionalLabel?: ConventionalLabel | null, decorations?: ConventionalDecoration[]) => void;
   onSelectAnnotation: (id: string | null) => void;
   onDeleteAnnotation: (id: string) => void;
+  onExplainAnnotation?: (id: string) => void;
+  agentFindingSources?: ReadonlySet<string>;
   isViewed?: boolean;
   onToggleViewed?: () => void;
   /** Chrome preference (#1277): false hides the header Viewed button; the `V`
@@ -302,6 +309,8 @@ const MarkdownPreviewPending: React.FC = () => (
 );
 
 export const DiffViewer: React.FC<DiffViewerProps> = ({
+  headerAccessory,
+  bodyOverride,
   patch,
   filePath,
   oldPath,
@@ -336,6 +345,8 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   onEditAnnotation,
   onSelectAnnotation,
   onDeleteAnnotation,
+  onExplainAnnotation,
+  agentFindingSources,
   isViewed = false,
   onToggleViewed,
   showViewedControls = true,
@@ -822,9 +833,12 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         onSelect={onSelectAnnotation}
         onEdit={handleEdit}
         onDelete={onDeleteAnnotation}
+        onExplain={onExplainAnnotation}
+        agentFindingSources={agentFindingSources}
+        explainDisabled={isAILoading}
       />
     );
-  }, [filePath, selectedAnnotationId, onSelectAnnotation, handleEdit, onDeleteAnnotation, onClickAIMarker]);
+  }, [filePath, selectedAnnotationId, onSelectAnnotation, handleEdit, onDeleteAnnotation, onExplainAnnotation, agentFindingSources, isAILoading, onClickAIMarker]);
 
   const handleLineSelectionInteraction = useCallback((
     source: LineSelectionSource,
@@ -1079,6 +1093,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         showStageControl={showStageControls}
         stageError={stageError}
         onFileComment={setFileCommentAnchor}
+        accessory={headerAccessory}
         renderMarkdownView={canPreviewMarkdown
           ? ({ iconOnly, touch }) => (
             <MarkdownViewMenu
@@ -1099,7 +1114,9 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
       )}
       </div>
 
-      {!collapsed && (
+      {!collapsed && bodyOverride ? (
+        <div className="flex-1 min-h-0 relative flex flex-col" data-diff-body-override>{bodyOverride}</div>
+      ) : !collapsed && (
         <OverlayScrollArea
           className={`flex-1 min-h-0 relative ${isDraggingSplit ? 'select-none' : ''}`}
           overflowX="scroll"
@@ -1116,6 +1133,9 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                 onSelect={onSelectAnnotation}
                 onEdit={onEditAnnotation}
                 onDelete={onDeleteAnnotation}
+                onExplain={onExplainAnnotation}
+                agentFindingSources={agentFindingSources}
+                explainDisabled={isAILoading}
               />
               <React.Suspense fallback={<MarkdownPreviewPending />}>
               <MarkdownFilePreview
@@ -1169,6 +1189,9 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                 onSelect={onSelectAnnotation}
                 onEdit={onEditAnnotation}
                 onDelete={onDeleteAnnotation}
+                onExplain={onExplainAnnotation}
+                agentFindingSources={agentFindingSources}
+                explainDisabled={isAILoading}
               />
               <div className="p-4" ref={diffContentRef}>
                 <div ref={splitSurfaceRef} className="relative min-w-0" style={splitGridStyle}>

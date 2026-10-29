@@ -100,6 +100,7 @@ packages/inbox/listColumn.test.tsx
 packages/inbox/endedSession.test.tsx
 packages/inbox/compose.test.tsx
 packages/inbox/listHeaderCompose.test.tsx
+packages/inbox/tidyMenu.test.tsx
 packages/inbox/composeThread.test.tsx
 packages/inbox/sendNow.test.tsx
 packages/inbox/undelivered.test.tsx
@@ -124,6 +125,7 @@ packages/inbox/skipNote.test.tsx
 packages/inbox/picksWhileComposing.test.tsx
 packages/inbox/projectMenu.test.tsx
 packages/inbox/rowMenu.test.tsx
+packages/inbox/copyMessage.test.tsx
 packages/inbox/pinnedThreads.test.tsx
 packages/inbox/fileBack.test.tsx
 packages/inbox/archived.test.tsx
@@ -193,6 +195,7 @@ packages/ui/components/CommentPopover.mentionChips.test.tsx
 packages/ui/components/SkillReferenceMenu.placement.test.tsx
 packages/ui/components/sidebar/FileBrowser.test.ts
 packages/editor/editableDocumentsHook.test.tsx
+packages/review-editor/components/InlineAnnotation.explain.test.tsx
 packages/review-editor/components/ReviewSubmissionDialog.ui.test.tsx
 packages/review-editor/App.panelView.test.tsx
 packages/review-editor/App.agentTool.test.tsx
@@ -360,6 +363,7 @@ packages/ui/components/Settings.compactDisplay.test.tsx
 packages/ui/components/Settings.customFont.test.tsx
 packages/ui/components/Settings.documentTextSize.test.tsx
 packages/ui/components/Settings.experimental.test.tsx
+packages/ui/components/Settings.reviewDefaults.test.tsx
 packages/ui/components/Settings.gridChoice.test.tsx
 packages/editor/App.planLookNotice.test.tsx
 packages/ui/config/documentTextSizeSetting.test.ts
@@ -412,3 +416,4 @@ packages/inbox/cookieHostSettings.test.tsx
 packages/ui/components/Settings.cookieHost.test.tsx
 packages/review-editor/components/FileTree.allFiles.test.tsx
 packages/review-editor/hooks/useRepoFiles.test.tsx
+packages/review-editor/components/RepoFileView.test.tsx
