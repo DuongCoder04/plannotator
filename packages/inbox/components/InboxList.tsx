@@ -322,13 +322,18 @@ function ClipText({ className, text }: { className: string; text: string }) {
   );
 }
 
-/** The thread's name as a soft pill, cut with "…" (its tooltip shows it whole), or nothing. */
-function ThreadChip({ row }: { row: InboxListRow }) {
-  const chip = chipName(row);
-  if (!chip) return null;
+/**
+ * The thread's name as a soft pill, cut with "…" (its tooltip shows it whole), or nothing.
+ * `name` is what `threadChipName` gave. The open thread (Thread.tsx) draws the same pill
+ * first in its meta line, with `lead` (for a screen reader only) saying what the word is;
+ * a row needs none, its name already holds the whole text.
+ */
+export function ThreadChip({ name, lead }: { name: string | null; lead?: string }) {
+  if (!name) return null;
   return (
     <span className="ib-key">
-      <ClipText className="ib-keyt" text={chip} />
+      {lead && <span className="ib-sr">{lead}</span>}
+      <ClipText className="ib-keyt" text={name} />
     </span>
   );
 }
@@ -354,7 +359,7 @@ function GuideMark({ row }: { row: InboxListRow }) {
 function SubjectLine({ row, pinned = false }: { row: InboxListRow; pinned?: boolean }) {
   return (
     <>
-      <ThreadChip row={row} />
+      <ThreadChip name={chipName(row)} />
       <span className="ib-s">
         <ClipText className="ib-st" text={subjectOf(row)} />
       </span>
@@ -561,7 +566,7 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
         <span className="ib-pw">
           <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
         </span>
-        <ThreadChip row={row} />
+        <ThreadChip name={chipName(row)} />
         <span className="ib-t">
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
         </span>
