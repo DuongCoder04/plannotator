@@ -200,6 +200,7 @@ If anything is missing, fix it before proceeding to Phase 4. Common fixes:
    - Downloads pinned, checksum-verified Syft and Grype binaries; generates and schema-validates the release-wide CycloneDX SBOM after all shipped subjects exist
    - Forces the repository-owned, suppression-free Grype configuration, retries the official database update up to three times, requires a valid/active schema-v6 database no more than 120 hours old with no pending update, and preserves the machine-readable scan/database/policy evidence as a workflow artifact
    - Rejects every scanner-side ignored match, then blocks before any attestation or publication on CISA KEV or fixable Critical findings classified as shipped/runtime or unknown-applicability. High, development-only, and no-fix Critical findings are report-only but remain in the evidence
+   - `viewer-pin-live`: requires guides.show (deployed for the same tag by `guides-show-deploy.yml`) to serve the guide viewer JS and CSS that the `build` and `npm-package` jobs pinned, retrying for about 5 minutes; `attest`, `release` and `npm-publish` wait for it, so a failure attests, releases and publishes nothing. Recovery: deploy guides.show on the tag (`gh workflow run guides-show-deploy.yml --ref vX.Y.Z`), then "Re-run failed jobs" on the release run
    - Generates SLSA build provenance attestations for all 12 binaries via `actions/attest-build-provenance` (signed through Sigstore, recorded in Rekor)
    - Uses the separate official `actions/attest` SBOM path to bind the CycloneDX predicate to all 12 binaries and the `@plannotator/opencode`, `@plannotator/pi-extension` and `@plannotator/dsh` tarballs through the same GitHub OIDC/Sigstore service. This is an inventory attestation, not a replacement for SLSA or npm provenance
    - Creates the GitHub Release with all binaries, SHA256 sidecars, the versioned CycloneDX SBOM, and its SHA256 sidecar attached
@@ -218,7 +219,7 @@ If anything is missing, fix it before proceeding to Phase 4. Common fixes:
    gh run view <run-id> --log
    ```
    Verify:
-   - All jobs pass, including `release-security`, `attest`, `release`, and `npm-publish`
+   - All jobs pass, including `release-security`, `viewer-pin-live`, `attest`, `release`, and `npm-publish`
    - `release-security-evidence` records the Syft/Grype versions, active database schema/build/checksum/update status, all Grype matches, and an `ACCEPT` policy decision
    - The GitHub Release was created with all binary artifacts, SHA256 sidecars, the versioned `plannotator-X.Y.Z-release-sbom.cdx.json`, and its `.sha256` sidecar
    - npm packages published successfully (check with `npm view @plannotator/opencode version`, `npm view @plannotator/dsh version` and `npm view @plannotator/pi-extension version`)
@@ -283,7 +284,7 @@ Before tagging, verify:
 - [ ] The release publishes `plannotator-darwin-arm64.sha256`, `plannotator-darwin-x64.sha256`, `plannotator-linux-arm64.sha256` and `plannotator-linux-x64.sha256` under exactly these names, with the binaries. Never rename, merge (for example into one `checksums.txt`), drop or delay them: every binary from 0.28.33 on downloads these names before it updates, and fails to update without its own (`packages/server/update-prepare.ts` `candidateAssets`; guarded by `update-prepare.test.ts`).
 
 After tagging, verify:
-- [ ] Release workflow completed with `release-security`, `attest`, `release`, and `npm-publish` green
+- [ ] Release workflow completed with `release-security`, `viewer-pin-live`, `attest`, `release`, and `npm-publish` green (if `viewer-pin-live` failed: deploy guides.show on the tag, then "Re-run failed jobs")
 - [ ] GitHub Release created with all binaries, sidecars, SBOM, and SBOM sidecar
 - [ ] One native binary passes both the explicit SLSA and CycloneDX predicate checks pinned to the tag and signer workflow
 - [ ] Downloaded SBOM checksum passes and canonical JSON matches the attested predicate
