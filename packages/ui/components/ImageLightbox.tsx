@@ -407,6 +407,15 @@ export const ImageLightbox: React.FC<{
   // strip over it. A box being drawn, Region, or the peek keep the touch. One image alone: a drag down still closes.
   const swipeAreaRef = useRef<HTMLDivElement>(null);
   const swipeTrackRef = useRef<HTMLDivElement>(null);
+  /** The zoom stage, inside the track that follows the finger with `swipe`; without it, as before (no wrapper). */
+  const tracked = (stage: React.ReactNode) =>
+    swipe ? (
+      <div ref={swipeTrackRef} className="absolute inset-0" data-lightbox-track="">
+        {stage}
+      </div>
+    ) : (
+      stage
+    );
   const dimsRef = useRef(dims);
   dimsRef.current = dims;
   const zoomModeRef = useRef(zoomMode);
@@ -576,7 +585,7 @@ export const ImageLightbox: React.FC<{
         data-image-lightbox=""
         className="fixed inset-0 z-[200] bg-black/80 text-white backdrop-blur-sm outline-none"
       >
-        <div ref={swipeTrackRef} className="absolute inset-0" data-lightbox-track="">
+        {tracked(
           <ImageZoomStage
             ref={stageRef}
             key={src}
@@ -593,7 +602,7 @@ export const ImageLightbox: React.FC<{
             stageAttributes={{ 'data-lightbox-stage': zoomMode }}
             wheelHint={wheelHint}
           />
-        </div>
+        )}
         {alt && (
           <div className="pointer-events-none absolute inset-x-0 bottom-[2.5vh] mx-auto max-w-[90vw] truncate text-center text-sm text-white/70">{alt}</div>
         )}
@@ -759,7 +768,7 @@ export const ImageLightbox: React.FC<{
               </button>
             )}
             <div ref={swipeAreaRef} className="relative min-h-0 min-w-0 flex-1 self-stretch" data-lightbox-swipe={swipe ? '' : undefined}>
-              <div ref={swipeTrackRef} className="absolute inset-0" data-lightbox-track="">
+              {tracked(
                 <ImageZoomStage
                   ref={stageRef}
                   key={`${index}:${current.src}`}
@@ -801,7 +810,7 @@ export const ImageLightbox: React.FC<{
                     />
                   )}
                 </ImageZoomStage>
-              </div>
+              )}
               {strip && (
                 <div className={`pointer-events-none absolute inset-x-0 z-[3] flex justify-center ${phone ? 'bottom-2.5' : 'top-2.5'}`}>{strip}</div>
               )}

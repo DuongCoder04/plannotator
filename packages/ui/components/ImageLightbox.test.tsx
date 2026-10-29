@@ -262,6 +262,19 @@ describe.if(hasDom)('ImageLightbox: names and the swipe', () => {
     expect(closed).toBe(1);
   });
 
+  test('without `swipe` the viewer draws as before: no track around the zoom stage, stepping or single', async () => {
+    for (const images of [NAMED, [NAMED[0]!]]) {
+      const { host } = await mountNamed(() => {}, false, images);
+      const stage = host.querySelector('[data-lightbox-stage]')!;
+      expect(host.querySelector('[data-lightbox-track]')).toBeNull();
+      // The stage sits where it always did: straight in the image area, or straight in the one-image overlay.
+      expect(stage.parentElement!.matches(images.length > 1 ? '[data-lightbox-swipe], .relative.flex-1' : '[data-image-lightbox]')).toBe(true);
+    }
+    // With `swipe`, the track is there for the finger to move.
+    const { host } = await mountNamed(() => {});
+    expect(host.querySelector('[data-lightbox-track] [data-lightbox-stage]')).not.toBeNull();
+  });
+
   test('without `swipe` a finger does nothing (plan review and annotate keep their viewer)', async () => {
     let closed = 0;
     const { host, area } = await mountNamed(() => closed++, false);
