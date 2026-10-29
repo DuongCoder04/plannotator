@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { inboxListShortcuts } from '../shortcuts/list.shortcuts';
-import { shortcutAria, withShortcut } from '../shortcuts/hint';
+import { shortcutAria, useShortcutAria, withShortcut } from '../shortcuts/hint';
+import { inboxSearchShortcuts } from '../search/searchShortcut';
 import { inboxThreadShortcuts } from '../shortcuts/thread.shortcuts';
 import type { InboxListRow, InboxListSection } from '@plannotator/core/inbox-types';
 import { threadChipName } from '../threadChip';
@@ -579,6 +580,7 @@ export function InboxList(props: InboxListProps) {
   // New message in the header: a phone always has it (its CSS draws it); a wider window only while the
   // main sidebar, which holds its own New message, is closed (the peek does not count as open).
   const headerCompose = isMobile || !sidebarDocked;
+  const searchKeys = useShortcutAria({ scope: inboxSearchShortcuts, action: 'openSearch' });
   const columnId = useId();
   const refreshHintId = useId();
   const resizable = props.narrow && !isMobile;
@@ -652,10 +654,22 @@ export function InboxList(props: InboxListProps) {
             <span className="ib-path">{props.path}</span>
           </Tip>
         )}
-        {props.onSearch && (
-          <button type="button" className="ib-lhead-search" data-open-search="" aria-label="Search" aria-haspopup="dialog" onClick={(event) => props.onSearch?.(event.currentTarget)}>
-            <Icon name="search" size={20} />
-          </button>
+        {/* Search shows where New message does: a phone always, a wider window only while the main sidebar (which holds its own Search) is closed. */}
+        {props.onSearch && headerCompose && (
+          <Tip content={withShortcut('Search', { scope: inboxSearchShortcuts, action: 'openSearch' })}>
+            <button
+              type="button"
+              className="ib-lhead-search"
+              data-open-search=""
+              data-sidebar-closed={isMobile ? undefined : ''}
+              aria-label="Search"
+              aria-haspopup="dialog"
+              aria-keyshortcuts={searchKeys}
+              onClick={(event) => props.onSearch?.(event.currentTarget)}
+            >
+              <Icon name="search" size={isMobile ? 20 : 16} />
+            </button>
+          </Tip>
         )}
         {props.onCompose && headerCompose && (
           <Tip content="New message">
