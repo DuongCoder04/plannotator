@@ -24,9 +24,11 @@
  * description; `bun test --todo` runs them (a todo that passes fails, saying
  * the bug is fixed).
  *
- * F1 (the 0.28.37 bug) is fixed by PR #2337, so its tests are ordinary
- * tests. The model reads which rules the code under test has
- * (RELEASE_NOTES_PENDING_RETRY_MS) and follows them.
+ * F1 (the 0.28.37 bug) is fixed by PR #2337, and F2-F4 by the PR after it
+ * (the spec's WHATS_NEW_FIX), so their tests are ordinary tests. The model
+ * reads which #2337 rules the code under test has
+ * (RELEASE_NOTES_PENDING_RETRY_MS) and follows them; the F2-F4 rules it
+ * always follows.
  *
  * Runs: PLANNOTATOR_MODEL_RUNS (default 100 per property).
  */
@@ -80,6 +82,8 @@ interface Model {
   oursAt: Record<number, number>;
   netUp: boolean;
   netEverDown: boolean;
+  netDowns: number;
+  netBackAt: number;
   checksOn: boolean;
   checksOnSince: number;
   latest: number;
@@ -87,8 +91,11 @@ interface Model {
   rcAt: number;
   rcFailed: boolean;
   notes: Record<number, "none" | "empty" | "content">;
-  nf: Record<number, { at: number; failed: boolean; pub: number }>;
+  /** notesFetch; `quick`: a failure's retryOnline (15 minutes once a release check answered after it). */
+  nf: Record<number, { at: number; failed: boolean; pub: number; quick?: boolean }>;
   inboxVer: number;
+  /** whatsNewPending (0: none). */
+  wnPending: number;
   pendingV: number;
   pendingPerson: boolean;
   resultV: number;
@@ -112,6 +119,8 @@ function initialModel(): Model {
     oursAt: { 1: 0 },
     netUp: true,
     netEverDown: false,
+    netDowns: 0,
+    netBackAt: 0,
     checksOn: true,
     checksOnSince: 0,
     latest: 0,
@@ -121,6 +130,7 @@ function initialModel(): Model {
     notes: {},
     nf: {},
     inboxVer: 1,
+    wnPending: 0,
     pendingV: 0,
     pendingPerson: false,
     resultV: 0,
@@ -177,7 +187,8 @@ const young = (r: { pub: number }, now: number) => r.pub >= 0 && Math.abs(now - 
 function notesDue(m: Model, v: number): boolean {
   const r = m.nf[v];
   if (!r || r.at > m.now) return true;
-  return m.now - r.at >= (r.failed ? 360 : NOTES_FIX && young(r, m.now) ? NOTES_PENDING_RETRY : 1440);
+  if (r.failed) return m.now - r.at >= (r.quick && m.latestAt > r.at ? NOTES_PENDING_RETRY : 360);
+  return m.now - r.at >= (NOTES_FIX && young(r, m.now) ? NOTES_PENDING_RETRY : 1440);
 }
 
 const fetchable = (m: Model, v: number) => v === m.ib.runs || v === m.latest || v === m.ib.onDisk || v === m.pendingV;
@@ -190,12 +201,14 @@ function ensureNotes(m: Model, v: number): void {
   m.nf[v] = { at: m.now, failed: false, pub: keep ? prev!.pub : -1 };
   if (!m.netUp || v > m.published) {
     if (m.netUp) m.tagRequests[v] = (m.tagRequests[v] ?? 0) + 1;
-    m.nf[v] = { at: m.now, failed: true, pub: -1 };
+    // A failure retries 15 minutes after it once a release check answered, unless one answered between it and the failure before.
+    m.nf[v] = { at: m.now, failed: true, pub: -1, quick: !(prev?.failed && m.latestAt > prev.at) };
     return;
   }
   m.tagRequests[v] = (m.tagRequests[v] ?? 0) + 1;
   if (m.body[v] === "ours") {
     m.notes[v] = "content";
+    m.nf[v] = { at: m.now, failed: false, pub: -1 };
   } else {
     m.notes[v] = "empty";
     if (NOTES_FIX) m.nf[v] = { at: m.now, failed: false, pub: m.pubAt[v]! };
@@ -226,12 +239,16 @@ function tick(m: Model, fresh: number): void {
   if (m.latest > m.ib.runs && m.notes[m.latest] !== "content") ensureNotes(m, m.latest);
   if (m.ib.updated && m.notes[m.ib.updated] !== "content") ensureNotes(m, m.ib.updated);
   m.ib.lastTick = m.now;
+  // The link offered with readable notes: a later start on this version no longer shows it.
+  if (m.ib.updated && m.notes[m.ib.updated] === "content" && m.wnPending === m.ib.updated) m.wnPending = 0;
 }
 
 function startInbox(m: Model): void {
   const runs = m.binV;
   const newer = m.inboxVer > 0 && runs > m.inboxVer;
-  m.ib = { alive: true, runs, updated: newer ? runs : 0, onDisk: runs, startedAt: m.now, lastTick: m.now };
+  const owed = newer || (m.inboxVer === runs && m.wnPending === runs);
+  if (newer) m.wnPending = runs;
+  m.ib = { alive: true, runs, updated: owed ? runs : 0, onDisk: runs, startedAt: m.now, lastTick: m.now };
   m.inboxVer = runs;
   tick(m, 1);
 }
@@ -525,6 +542,8 @@ class NetToggle implements Cmd {
   async run(m: Model, r: Real) {
     m.netUp = !m.netUp;
     if (!m.netUp) m.netEverDown = true;
+    if (!m.netUp) m.netDowns++;
+    else m.netBackAt = m.now;
     r.github.netUp = m.netUp;
   }
   toString = () => "NetToggle";
@@ -796,6 +815,21 @@ function whatsNewWithinRun(m: Model, r: Real): void {
   expect(r.updates!.updated()).toBe(ver(v));
 }
 
+/**
+ * F3: the same after one network outage of any length, counted from the
+ * network's return. Every run on v counts, not only the first (F4: a
+ * restart before the notes were readable keeps the link).
+ */
+function whatsNewAfterOutage(m: Model, r: Real): void {
+  conforms(m, r);
+  const v = m.ib.updated;
+  if (!m.ib.alive || !v || !m.checksOn || !m.netUp || m.netDowns > 1 || m.body[v] !== "ours") return;
+  if (m.oursAt[v]! - m.pubAt[v]! > 60) return;
+  const since = Math.max(m.oursAt[v]!, m.ib.startedAt, m.checksOnSince, m.netBackAt);
+  if (m.ib.lastTick - since < 30) return;
+  expect(r.updates!.updated()).toBe(ver(v));
+}
+
 /** F5 and F6: never two installers; "Updating…" only while an install runs; a failed install the person started shows. */
 function installsAndLocks(m: Model, r: Real): void {
   conforms(m, r);
@@ -880,6 +914,42 @@ describe("update lifecycle: properties the code breaks today (findings: the PR #
     300_000,
   );
 
+  // F3 and F4 in any order: a network outage before, during or after the update, Inbox quits and starts.
+  // Not pinned to a seed: the minimal traces below guard F3 and F4 on any seed; this explores around them
+  // (with F3's rule removed it fails within about 100 runs, with F4's in most seeds).
+  test(
+    "[FINDINGS F3, F4] after an update, the What's new link shows within 30 minutes of the network's return, in any run on that version",
+    async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.commands(
+            [
+              fc.constant(new Publish()),
+              fc.integer({ min: 2, max: 3 }).map((v) => new WriteNotes(v)),
+              fc.constantFrom(1, 10, 15, 30, 60, 360).map((d) => new Advance(d)),
+              fc.constantFrom(1, 10, 15, 30, 60, 360).map((d) => new Advance(d)),
+              fc.constant(new CliCheck()),
+              fc.constant(new UpdateNowFromCli()),
+              fc.constant(new InstallerStep(true)),
+              fc.constant(new InstallerStep(true)),
+              fc.constant(new InstallerStep(true)),
+              fc.constant(new InstallerStep(true)),
+              fc.constant(new NetToggle()),
+              fc.constant(new NetToggle()),
+              fc.constant(new QuitInbox()),
+              fc.constant(new StartInbox()),
+            ],
+            { maxCommands: 40, size: "xlarge" },
+          ),
+          // Release 2 is known before any Inbox runs, so the update is reachable from the first command.
+          (cmds) => runModel([new Publish(), new CliCheck(), ...cmds], whatsNewAfterOutage),
+        ),
+        { numRuns: RUNS * 4 },
+      );
+    },
+    300_000,
+  );
+
   // F5 and F6: fixed by PR #2342.
   test(
     "[FINDINGS F5, F6] never two installers (within a day), and Updating… only while an install runs",
@@ -935,8 +1005,9 @@ describe("the minimal traces (findings: the PR #2338 description)", () => {
     );
   });
 
-  // F2: a request for the notes that never answered (its process quit) blocks them 24 h, on #2337 too.
-  test.todo("[FINDINGS F2] a notes request abandoned by a process that quit is asked again within 15 minutes", async () => {
+  // F2: a request for the notes that never answered (its process quit) blocked them 24 h. Fixed: the
+  // claim is marked in flight, and a claim still marked is asked again after 15 minutes.
+  test("[FINDINGS F2] a notes request abandoned by a process that quit is asked again within 15 minutes", async () => {
     const world = newWorld();
     world.r.github.published = 2;
     world.r.github.pubAt[2] = 0;
@@ -959,8 +1030,9 @@ describe("the minimal traces (findings: the PR #2338 description)", () => {
     expect(next.outcome).toBe("fetched");
   });
 
-  // F3: one failed request at the start (offline for a moment) hides the link 6 h, on #2337 too.
-  test.todo("[FINDINGS F3] after a network blip at the first fetch, the link shows within 30 minutes of the network's return", async () => {
+  // F3: one failed request at the start (offline for a moment) hid the link 6 h. Fixed: a failure that
+  // may have been the network is asked again 15 minutes after it once a release check answers.
+  test("[FINDINGS F3] after a network blip at the first fetch, the link shows within 30 minutes of the network's return", async () => {
     await runModel(
       [new Publish(), new WriteNotes(2), new CliCheck(), new UpdateNowFromCli(), new InstallerStep(true), new InstallerStep(true), new InstallerStep(true), new InstallerStep(true), new NetToggle(), new StartInbox(), new NetToggle(), new Advance(30), new Advance(30)],
       (m, r) => {
@@ -970,9 +1042,9 @@ describe("the minimal traces (findings: the PR #2338 description)", () => {
     );
   });
 
-  // F4: the link is for the run that started on the new version only; a restart before the notes
-  // were readable loses it for good, on #2337 too.
-  test.todo("[FINDINGS F4] What's new survives an Inbox restart before the notes were readable", async () => {
+  // F4: the link was for the run that started on the new version only; a restart before the notes
+  // were readable lost it for good. Fixed: whatsNewPending keeps it until offered with readable notes.
+  test("[FINDINGS F4] What's new survives an Inbox restart before the notes were readable", async () => {
     await runModel(
       [new Publish(), new CliCheck(), new UpdateNowFromCli(), new InstallerStep(true), new InstallerStep(true), new InstallerStep(true), new InstallerStep(true), new StartInbox(), new QuitInbox(), new StartInbox(), new WriteNotes(2), new Advance(30), new Advance(30)],
       (m, r) => {

@@ -21,6 +21,7 @@ The model is tied to the code in two ways:
 # The scripted traces (each instance module separately)
 quint test --main onMain      spec/update-lifecycle.qnt
 quint test --main onFix       spec/update-lifecycle.qnt
+quint test --main onWhatsNewFix spec/update-lifecycle.qnt
 quint test --main onFixDraft  spec/update-lifecycle.qnt
 quint test --main onWindows   spec/update-lifecycle.qnt
 quint test --main onLocks     spec/update-lifecycle.qnt
@@ -50,6 +51,7 @@ work did not download.
 |---|---|
 | `onMain` | main as of `35f9ad90d` |
 | `onFix` | PR #2337: an empty "What's New" answer for a release under 2 days old is asked again after 15 min instead of 24 h |
+| `onWhatsNewFix` | #2337 plus the F2-F4 fix (`WHATS_NEW_FIX`): a notes claim nobody answered is asked again after 15 min; a failure that may have been the network (no release check answered since the failure before) is asked again 15 min after it once a release check answers, once; `whatsNewPending` keeps "What's new" across Inbox starts until it was offered with readable notes |
 | `onFixDraft` | #2337 plus its release.yml change: the draft is published with the written notes already in it |
 | `onWindows` | main, with install.ps1's replace (move aside, then move in) and the Windows lock (the wrapper's pid, no past-the-hour hold) |
 | `onLocks` | main (scripted lock traces only: F5 and F6 fixed) |
@@ -73,7 +75,7 @@ precondition began, the outcome must hold.
 | `PersonCanUpdate` | "Updating…" hides Update now and Try again, so it may show only while an install really runs. |
 | `WhatsNewWithinRun` | **The 0.28.37 bug.** After an update, in the Inbox run that started on the new version, the "What's new" link shows within 30 minutes of the written notes. The precondition excludes the two other causes found: the network never failed, and no request for the notes was abandoned. |
 | `WhatsNewAfterAbandonedRequest` | The same, when an Inbox quit while its request for the notes was in flight. |
-| `WhatsNewAfterBlip` | The same, after the network was down and came back. |
+| `WhatsNewAfterBlip` | The same, after the network was down and came back. On `onWhatsNewFix` this holds after one outage of any length. A network that drops again before the quick retry runs (it returned, a release check answered, then it went down again) still waits 6 h, today's back-off: trace `flappingNetworkWaitsTest`. |
 | `WhatsNewAfterUpdate` | After an update, the link shows at least once, even when the Inbox restarts before the notes were readable. |
 | `NewReleaseOffered` | A newer release is offered within 10 minutes plus one tick. |
 | `NewReleaseOfferedAfterAbandonedCheck` | The same, counted from a release check that a process abandoned mid-request. |
@@ -95,7 +97,9 @@ ends with one tick.
 | `rcAt`, `rcFailed`, `checkDue`, `releaseCheck` | `releaseCheck` (`:158`), `isReleaseCheckDue` (`:455`), `runReleaseCheck` (`:825`) |
 | `notes` | `update-notes/<v>.json`, `writeReleaseNotes` (`:542`), "empty" = `!hasReleaseNotesContent` (`:573`) |
 | `nf`, `notesDue`, `notesClaim`, `notesAnswered` | `notesFetch` (`:223`), `isNotesFetchDue` (`:1053`), `fetchReleaseNotesFor` (`:1082`, claim `:1101`, failure `:1113`, save `:1121`) |
+| `nf[v].inFlight`, `nf[v].quick` | `notesFetch[v].inFlight`, `notesFetch[v].retryOnline` (`WHATS_NEW_FIX`) |
 | `inboxVer` | `inboxVersion` (`:211`) |
+| `wnPending` | `whatsNewPending` (`WHATS_NEW_FIX`) |
 | `pendingV`, `pendingPerson` | `pending` (`:199`) |
 | `resultV`, `resultCode` | `update-result.json`, `readAutoUpdateResult` (`packages/server/auto-update.ts:309`) |
 | `lockHeld`, `lockKind`, `lockAt`, `lockOwner` | `update.lock`: the holder line `launchInstaller` writes at the spawn, then the POSIX wrapper's own (`POSIX_WRAPPER`) |

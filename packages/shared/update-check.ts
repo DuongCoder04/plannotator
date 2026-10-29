@@ -164,6 +164,21 @@ export interface NotesFetchRecord {
    * try waits RELEASE_NOTES_PENDING_RETRY_MS instead of a day.
    */
   publishedAt?: number;
+  /**
+   * Set on the claim, gone once GitHub answers: a claim still marked was
+   * abandoned (its process quit mid-request), and is asked again after
+   * RELEASE_NOTES_PENDING_RETRY_MS, not read as an empty answer (24 h).
+   */
+  inFlight?: boolean;
+  /**
+   * Set on a failure that may have been the network (not a rate limit, and
+   * no release check answered between the failure before it and this one):
+   * asked again RELEASE_NOTES_PENDING_RETRY_MS after it once a release check
+   * has answered since (the network is back), not after 6 h. One quick retry,
+   * then 6 h: a source that keeps failing while the network is up (or a
+   * network that drops again before the quick retry) waits 6 h.
+   */
+  retryOnline?: boolean;
 }
 
 export interface UpdateState {
@@ -238,6 +253,13 @@ export interface UpdateState {
    * skipped from it, so "Also in the releases since X" survives the update.
    */
   inboxPreviousVersion?: string;
+  /**
+   * The version an Inbox start found newer than `inboxVersion`, kept until its
+   * "What's new" link was offered with readable notes: a start on that same
+   * version shows the link too, so a restart before the notes were readable
+   * does not lose it.
+   */
+  whatsNewPending?: string;
   /**
    * One release's notes fetched by its tag (fetchReleaseNotesFor), per
    * version: claimed before the request, so concurrent processes ask once.
@@ -1073,18 +1095,31 @@ function isYoungRelease(record: NotesFetchRecord, now: number): boolean {
 }
 
 /**
+ * A release check answered after `at` (the network is up again since then).
+ * An answer dated after `now` (the clock moved back) does not count.
+ */
+function releaseCheckAnsweredAfter(state: UpdateState, at: number, now: number): boolean {
+  const answered = state.latestRelease?.fetchedAt;
+  return typeof answered === "number" && answered > at && answered <= now;
+}
+
+/**
  * Whether one version's notes may be asked for now: once, then after a
- * failure no sooner than 6 h, and after an answer that carried no "What's
- * New" part no sooner than 15 minutes while the release is under 2 days old
- * (the release body is edited after publishing), else 24 h. Never in a loop.
+ * failure no sooner than 6 h (15 minutes once the network is back, see
+ * `retryOnline`), after an answer that carried no "What's New" part no
+ * sooner than 15 minutes while the release is under 2 days old (the release
+ * body is edited after publishing), else 24 h. A claim nobody answered (its
+ * process quit) waits 15 minutes. Never sooner than 15 minutes, never in a loop.
  */
 export function isNotesFetchDue(state: UpdateState, version: string, now: number): boolean {
   const record = state.notesFetch?.[version];
   const at = record?.attemptedAt;
   if (!record || typeof at !== "number" || !Number.isFinite(at) || at > now) return true;
   const wait = record.failedAt
-    ? RELEASE_ASSETS_FETCH_RETRY_MS
-    : isYoungRelease(record, now)
+    ? record.retryOnline && releaseCheckAnsweredAfter(state, record.failedAt, now)
+      ? RELEASE_NOTES_PENDING_RETRY_MS
+      : RELEASE_ASSETS_FETCH_RETRY_MS
+    : record.inFlight || isYoungRelease(record, now)
       ? RELEASE_NOTES_PENDING_RETRY_MS
       : RELEASE_ASSETS_FETCH_INTERVAL_MS;
   return now - at >= wait;
@@ -1129,15 +1164,17 @@ export async function fetchReleaseNotesFor(deps: ReleaseNotesFetchDeps): Promise
       return { ...s, notesFetch: Object.fromEntries(entries) };
     }, dataDir);
   let pendingBefore = false;
+  let previous: NotesFetchRecord | undefined;
+  let state: UpdateState;
   try {
-    const state = readUpdateState(dataDir);
+    state = readUpdateState(dataDir);
     if (!isNotesFetchDue(state, version, now)) return { outcome: "not-due" };
     // Claim the attempt before the network call so concurrent processes ask
-    // once. A young release's date is kept, so an attempt that never finished
-    // (the process quit) is tried again on the quick cadence, not in a day.
-    const previous = state.notesFetch?.[version];
+    // once. Marked in flight, so an attempt that never finished (the process
+    // quit) is tried again on the quick cadence, not in a day.
+    previous = state.notesFetch?.[version];
     pendingBefore = !!previous && !previous.failedAt && isYoungRelease(previous, now);
-    record({ attemptedAt: now, ...(pendingBefore && { publishedAt: previous!.publishedAt }) });
+    record({ attemptedAt: now, inFlight: true, ...(pendingBefore && { publishedAt: previous!.publishedAt }) });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     updateLog(`could not write update-state.json: ${error}`, dataDir);
@@ -1147,9 +1184,14 @@ export async function fetchReleaseNotesFor(deps: ReleaseNotesFetchDeps): Promise
   const tag = result.ok ? normalizeStableVersion(result.release.tag) : null;
   if (!result.ok || tag !== version) {
     const error = result.ok ? `the release answered for ${JSON.stringify(result.release.tag).slice(0, 80)}` : result.error;
-    updateLog(`could not read the release notes for ${version} (${error}); next try in 6h`, dataDir);
+    // Maybe the network (a laptop waking, a VPN): asked again 15 minutes after,
+    // once a release check answers. Not after a rate limit, and not when this
+    // source failed before with a release check answering since (it keeps
+    // failing while the network is up: 6 h).
+    const retryOnline = !(!result.ok && result.rateLimited) && !(previous?.failedAt && releaseCheckAnsweredAfter(state, previous.failedAt, now));
+    updateLog(`could not read the release notes for ${version} (${error}); next try in ${retryOnline ? "15m once online, else 6h" : "6h"}`, dataDir);
     try {
-      record({ attemptedAt: now, failedAt: now, error: error.slice(0, 200) });
+      record({ attemptedAt: now, failedAt: now, error: error.slice(0, 200), ...(retryOnline && { retryOnline }) });
     } catch {}
     return { outcome: "failed", error };
   }
@@ -1173,6 +1215,11 @@ export async function fetchReleaseNotesFor(deps: ReleaseNotesFetchDeps): Promise
     if (isYoungRelease(pending, now) && !pendingBefore) {
       updateLog(`the release notes for ${version} have no "What's New" part yet; next try in ${formatWait(RELEASE_NOTES_PENDING_RETRY_MS)}`, dataDir);
     }
+  } else {
+    // Answered: no longer in flight (it matters only when the notes could not be saved).
+    try {
+      record({ attemptedAt: now });
+    } catch {}
   }
   // The release page names no publish date: take this answer's for the latest release.
   if (release.publishedAt) {
