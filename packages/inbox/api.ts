@@ -809,7 +809,8 @@ export const inboxApi = {
       tags?: { host?: string | null; session: string; label?: string; mode?: TagMode }[];
       /**
        * This reply carries the reply box's words: their draft goes (approval "inbox-reply-drafts"),
-       * named by the `updated_at` they were saved as, so a newer draft from another window stays.
+       * named by the `updated_at` they were saved as ('' when not known), or holding exactly these
+       * words; a newer, different draft from another window stays.
        */
       clear_draft?: string;
     },
