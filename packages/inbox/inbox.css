@@ -2240,6 +2240,9 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
    its own, cut with "…", and the count and time wrap below it. */
 .ib-tmeta > .ib-key { max-width: 100%; margin-right: 2px; }
 .ib-tmeta > .ib-key > .ib-keyt { max-width: none; }
+/* The count, the time and "N new" (and who is in the thread): one item of the line, so they move to the next line
+   together; only a line too narrow for them all wraps inside it, as before. */
+.ib-tmeta-rest { display: inline-flex; flex-wrap: wrap; align-items: center; gap: inherit; min-width: 0; max-width: 100%; }
 /* every message an article, a hairline between them; an open message's head row sits where its folded line was */
 .ib-pbody.ib-folding .ib-message { margin: 0; padding: 0 0 20px; border-top: 1px solid var(--ib-hair); scroll-margin-top: 12px; }
 .ib-pbody.ib-folding .ib-message.ib-folded { padding: 0; }

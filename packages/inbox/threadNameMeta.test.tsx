@@ -99,11 +99,16 @@ const pillName = () => pill()?.querySelector('.ib-keyt')?.textContent ?? null;
 test.skipIf(!hasDom)('a named thread shows its name first in the line under the subject, read with what it is', async () => {
   await render(thread('session-refresh', 3));
   expect(pillName()).toBe('session-refresh');
-  // First in the line, before the count and the time.
-  expect(meta()!.firstElementChild).toBe(pill());
-  expect(meta()!.textContent).toMatch(/^Thread name: session-refresh3 messages/);
-  // The words a screen reader hears before the name; the pill itself shows only the name.
-  expect(pill()!.querySelector('.ib-sr')?.textContent).toBe('Thread name: ');
+  // First in the line; after it, the rest of the line as ONE item (count, dot, time), so a name that leaves too
+  // little room moves them to the next line together rather than one at a time with a dot left behind.
+  const rest = meta()!.querySelector<HTMLElement>('[data-thread-meta-rest]')!;
+  expect([...meta()!.children]).toEqual([pill()!, rest]);
+  expect(rest.textContent).toMatch(/^3 messages.*\d{1,2}:\d{2} [AP]M/);
+  expect(rest.querySelectorAll('.ib-tdot').length).toBeGreaterThan(0);
+  // A screen reader hears a label before the name (not a stray word); the pill itself shows only the name.
+  const lead = pill()!.querySelector<HTMLElement>('.ib-sr')!;
+  expect(lead.textContent!.trim()).not.toBe('');
+  expect(lead.compareDocumentPosition(pill()!.querySelector('.ib-keyt')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 test.skipIf(!hasDom)('no name, or a subject that already starts with the name: no pill, the line is the count and time as before', async () => {
@@ -135,7 +140,8 @@ test.skipIf(!hasDom)('a rename while the thread is open shows the new name; a na
 test.skipIf(!hasDom)('a one-message thread has no count line, so a named one gets a line holding only its name', async () => {
   await render(thread('session-refresh', 1));
   expect(pillName()).toBe('session-refresh');
-  expect(meta()!.textContent).toBe('Thread name: session-refresh');
+  expect([...meta()!.children]).toEqual([pill()!]);
+  expect(meta()!.textContent).not.toContain('message');
   draw(thread(null, 1));
   await settle();
   expect(meta()).toBeNull();

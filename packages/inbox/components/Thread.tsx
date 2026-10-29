@@ -3980,17 +3980,18 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         {(!one || nameChip) && (
           <div className="ib-tmeta" data-thread-meta="">
             <ThreadChip name={nameChip} lead="Thread name: " />
-            {!one && participants.length > 1 && (
-              <>
-                <span className="ib-tg-hwho" data-thread-participants="">
-                  <TagStack participants={participants} />
-                  <span>{participantsWords(participants)}</span>
-                </span>
-                <span className="ib-tdot" aria-hidden="true" />
-              </>
-            )}
+            {/* The rest of the line moves as one beside the name: a name that leaves too little room sends it all to the next line, never one dot. */}
             {!one && (
-              <>
+              <span className="ib-tmeta-rest" data-thread-meta-rest="">
+                {participants.length > 1 && (
+                  <>
+                    <span className="ib-tg-hwho" data-thread-participants="">
+                      <TagStack participants={participants} />
+                      <span>{participantsWords(participants)}</span>
+                    </span>
+                    <span className="ib-tdot" aria-hidden="true" />
+                  </>
+                )}
                 <span>{plural(thread.messages.length, 'message')}</span>
                 <span className="ib-tdot" aria-hidden="true" />
                 <span>{spanWords(root.created_at, thread.messages[thread.messages.length - 1]!.created_at)}</span>
@@ -4000,7 +4001,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                     <b>{fresh.size} new since you looked</b>
                   </>
                 )}
-              </>
+              </span>
             )}
           </div>
         )}
