@@ -236,6 +236,12 @@ test('minimize leaves the "Reply draft" pill with focus on it; Hide hides the pi
   const box = (await pill().boundingBox())!;
   expect(Math.round(box.height)).toBe(30);
   expect(Math.round(box.x + box.width / 2)).toBe(720);
+  // The pill is the file's foot now (the comment row is kept, hidden): the pane measures it, so the chip,
+  // the notes and a film's controls keep above it.
+  const foot = await pane().evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue('--ib-fvfoot')));
+  const wrap = (await page.locator('[data-fcomp-pillwrap]').boundingBox())!;
+  expect(foot).toBe(Math.round(wrap.height));
+  expect(foot).toBeGreaterThanOrEqual(30);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.mouse.move(200, 400);
   await shot(page, '2A-min-draft');
@@ -368,6 +374,16 @@ test('a phone (390 px): the card spans the width under the toolbar, Comment and 
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await shot(page, '2A-phone-attached');
     await card(page).locator('[data-fcomp-files] [data-compose-file] button').first().tap();
+    await expect(card(page).locator('[data-fcomp-files]')).toHaveCount(0);
+    // Many files: the tiles scroll inside a capped area, so the card never pushes the toolbar off the top.
+    const many = Array.from({ length: 9 }, (_, i) => ({ name: `IMG_04${20 + i}.png`, mimeType: 'image/png', buffer: crop }));
+    await card(page).locator('input[type="file"][data-fcomp-attach]').setInputFiles(many);
+    await expect(card(page).locator('[data-fcomp-files] [data-compose-file="done"]')).toHaveCount(9);
+    const files = card(page).locator('[data-fcomp-files]');
+    expect(Math.round((await files.boundingBox())!.height)).toBeLessThanOrEqual(136);
+    expect(await files.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+    await expect(page.locator('[data-full-view-bar]')).toBeInViewport({ ratio: 1 });
+    for (let left = 9; left > 0; left--) await card(page).locator('[data-fcomp-files] [data-compose-file] button').first().tap();
     await expect(card(page).locator('[data-fcomp-files]')).toHaveCount(0);
 
     await card(page).locator('[data-fcomp-minimize]').click();

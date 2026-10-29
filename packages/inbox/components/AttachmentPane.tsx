@@ -113,6 +113,15 @@ export const FULL_VIEW_CHIP_MS = 1600;
 /** What sits at a file's foot in full screen (an image's or a film's comment row, a phone's "Comment at"): the toolbar, the chips and the toast keep above it. */
 export const FILE_FOOT_ROW = '[data-image-composer], [data-file-foot]';
 
+/**
+ * The file's foot row as drawn: the first FILE_FOOT_ROW that is not hidden (full screen's composer keeps
+ * the comment row drawn but `hidden` while the card is minimized, and the pill is then the foot).
+ */
+export function fileFootRow(section: ParentNode): HTMLElement | null {
+  for (const row of section.querySelectorAll<HTMLElement>(FILE_FOOT_ROW)) if (!row.closest('[hidden]')) return row;
+  return null;
+}
+
 /** Hide / Show tools: the html-annotate scope's existing chord (⌘⇧X), HTML files only, through the file viewer's scope. */
 const TOOLS_CHORD = inboxFileViewerShortcuts.shortcuts.toggleTools.bindings[0]!;
 
@@ -558,18 +567,18 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     const section = sectionRef.current;
     if (!full || !section || (kind !== 'image' && kind !== 'video' && !(kind === 'html' && hasComposer))) return;
     const place = () => {
-      const row = section.querySelector<HTMLElement>(FILE_FOOT_ROW);
+      const row = fileFootRow(section);
       section.style.setProperty('--ib-fvfoot', `${row ? Math.round(row.getBoundingClientRect().height) : 0}px`);
     };
     place();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place);
     const mutations = new MutationObserver(() => {
       place();
-      const row = section.querySelector(FILE_FOOT_ROW);
+      const row = fileFootRow(section);
       if (row && observer) observer.observe(row);
     });
     mutations.observe(section, { childList: true, subtree: true });
-    const row = section.querySelector(FILE_FOOT_ROW);
+    const row = fileFootRow(section);
     if (row && observer) observer.observe(row);
     return () => {
       observer?.disconnect();
