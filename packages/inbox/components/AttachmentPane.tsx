@@ -18,6 +18,7 @@ import { AnnotationToolstrip } from '@plannotator/ui/components/AnnotationToolst
 import { HtmlSurfaceControls } from '@plannotator/ui/components/HtmlSurfaceControls';
 import { HtmlViewer } from '@plannotator/ui/components/html-viewer';
 import { Viewer, type ViewerHandle } from '@plannotator/ui/components/Viewer';
+import { ScrollViewportProvider } from '@plannotator/ui/hooks/useScrollViewport';
 import type { Annotation, EditorMode, InputMethod } from '@plannotator/ui/types';
 import { annotationOwnsHighlight } from '@plannotator/ui/utils/annotationOwnsHighlight';
 import { groupAnnotationsByDocument, type AnnotationScope } from '@plannotator/ui/utils/annotationScope';
@@ -327,6 +328,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const [armed, setArmed] = useState(true);
   const [scope, setScope] = useState<AnnotationScope>('all');
   const viewerRef = useRef<ViewerHandle>(null);
+  const [scrollViewport, setScrollViewport] = useState<HTMLDivElement | null>(null);
   const source = useInboxFileSource();
   const suggestion = source.suggestion?.(attachment) ?? null;
 
@@ -1791,7 +1793,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
             </div>
           )}
           {view && !isHtml && !isCode && (
-            <div className="ib-docscroll bg-card" data-look="clean">
+            <div className="ib-docscroll bg-card" data-look="clean" ref={setScrollViewport}>
+              <ScrollViewportProvider viewport={scrollViewport}>
               <ImageResolverContext.Provider value={resolveImage}>
               <Viewer
                 key={`${attachment.id}:${view.version}:${view.attachment.current?.sha256 ?? ''}`}
@@ -1820,6 +1823,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 suggestComment={suggestion?.phrase ? (selected) => suggestionFor(view.text, suggestion, selected) : undefined}
               />
               </ImageResolverContext.Provider>
+              </ScrollViewportProvider>
             </div>
           )}
         </div>
