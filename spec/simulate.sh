@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Random simulation of spec/update-lifecycle.qnt: every property against the
-# code on main, on PR #2337 (with and without its draft release flow), and
-# with the Windows replace. Prints one line per (instance, property).
+# code on main, on PR #2337 (with and without its draft release flow, and with
+# the F2-F4 fix), and with the Windows replace. Prints one line per (instance, property).
 #
 #   bash spec/simulate.sh                 # 300k samples x 40 steps each
 #   SAMPLES=50000 STEPS=30 bash spec/simulate.sh
@@ -18,7 +18,7 @@ BACKEND="${BACKEND:-rust}"
 TRACES="${TRACES:-}"
 [ -n "$TRACES" ] && mkdir -p "$TRACES"
 
-INSTANCES="${INSTANCES:-onMain onFix onFixDraft onWindows}"
+INSTANCES="${INSTANCES:-onMain onFix onWhatsNewFix onFixDraft onWindows}"
 PROPERTIES="${PROPERTIES:-NoTwoInstallers BinaryAlwaysThere InboxCanStart NothingFetchedWhileChecksOff RequestRateBounded StaleLockRecovered PersonCanUpdate WhatsNewWithinRun WhatsNewAfterAbandonedRequest WhatsNewAfterBlip WhatsNewAfterUpdate NewReleaseOffered NewReleaseOfferedAfterAbandonedCheck FailedUpdateShown}"
 
 for instance in $INSTANCES; do

@@ -11,6 +11,7 @@ import { join } from "node:path";
 import {
   DEFAULT_RELEASE_API_URL,
   fetchReleaseNotesFor,
+  patchUpdateState,
   readReleaseNotes,
   readUpdateState,
   RELEASE_ASSETS_FETCH_INTERVAL_MS,
@@ -123,6 +124,38 @@ describe("fetchReleaseNotesFor", () => {
     answer = (path) => Response.json({ tag_name: "v0.28.19", body: bodyFor("0.28.19"), path });
     expect((await fetchNotes("0.28.19", { now: NOW + RELEASE_ASSETS_FETCH_RETRY_MS })).outcome).toBe("fetched");
     expect(seen.length).toBe(2);
+  });
+
+  // The request-count promise of the network retry (F3 of #2338): a quick retry only after the network
+  // came back, and a tag API that keeps failing while the release check answers waits 6 h, never 15 min.
+  test("a failure is asked again 15 minutes after it once a release check answers, once; then 6 h while the check keeps answering", async () => {
+    const answered = (at: number) =>
+      patchUpdateState((s) => ({ ...s, latestRelease: { tag: "v0.28.19", fetchedAt: at }, releaseCheck: { attemptedAt: at } }), dataDir);
+    answer = () => new Response("unavailable", { status: 502 });
+    expect((await fetchNotes("0.28.19")).outcome).toBe("failed");
+    // No release check has answered since: the network may still be down, 6 h.
+    expect((await fetchNotes("0.28.19", { now: NOW + RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("not-due");
+    answered(NOW + RELEASE_CHECK_RETRY_MS);
+    expect((await fetchNotes("0.28.19", { now: NOW + RELEASE_NOTES_PENDING_RETRY_MS - 1 })).outcome).toBe("not-due");
+    expect((await fetchNotes("0.28.19", { now: NOW + RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("failed");
+    expect(seen.length).toBe(2);
+    // It failed again with the network up: the check answers, so this source waits 6 h.
+    answered(NOW + RELEASE_NOTES_PENDING_RETRY_MS + RELEASE_CHECK_RETRY_MS);
+    const second = NOW + RELEASE_NOTES_PENDING_RETRY_MS;
+    expect((await fetchNotes("0.28.19", { now: second + RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("not-due");
+    expect((await fetchNotes("0.28.19", { now: second + RELEASE_ASSETS_FETCH_RETRY_MS - 1 })).outcome).toBe("not-due");
+    expect(seen.length).toBe(2);
+    expect((await fetchNotes("0.28.19", { now: second + RELEASE_ASSETS_FETCH_RETRY_MS })).outcome).toBe("failed");
+    expect(seen.length).toBe(3);
+  });
+
+  test("a rate-limited failure is never asked again quickly, whatever the release check does", async () => {
+    answer = () => new Response("rate limited", { status: 429 });
+    expect((await fetchNotes("0.28.19")).outcome).toBe("failed");
+    patchUpdateState((s) => ({ ...s, latestRelease: { tag: "v0.28.19", fetchedAt: NOW + 1 }, releaseCheck: { attemptedAt: NOW + 1 } }), dataDir);
+    expect((await fetchNotes("0.28.19", { now: NOW + RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("not-due");
+    expect((await fetchNotes("0.28.19", { now: NOW + RELEASE_ASSETS_FETCH_RETRY_MS - 1 })).outcome).toBe("not-due");
+    expect(seen.length).toBe(1);
   });
 
   test("an answer for another tag is a failure and saves nothing", async () => {
