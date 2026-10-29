@@ -10,16 +10,17 @@
  *    review's "Diff out of date" banner offers Refresh.
  *
  * Nothing is mocked: `plannotator review` runs in a scratch git repository
- * under a temp PLANNOTATOR_DATA_DIR and HOME, and opens no browser. Build the
+ * under a temp PLANNOTATOR_DATA_DIR and HOME, with a PATH of its own (no agent
+ * CLI), and opens no browser. Build the
  * binary first (see inbox.spec.ts). Screenshots land in
  * .local/proof/review-explorer/ (or $PLANNOTATOR_E2E_PROOF_DIR/review-explorer).
  */
 
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { NO_BROWSER } from '../helpers/no-browser';
 
 const repoRoot = resolve(__dirname, '../..');
@@ -40,6 +41,49 @@ const FIRST_RUN: Record<string, string> = {
   'plannotator-review-dest-spotlight-seen': '1',
   'plannotator-token-hover-announcement-seen': '1',
 };
+
+/**
+ * The review server's own PATH: links to git and ripgrep (Go to Definition), then /usr/bin:/bin. Never the
+ * runner's PATH: on its first /api/ai/capabilities the server lists Ask AI models by running `<engine> models`
+ * for every engine CLI it finds there (discoverMarkerModels in packages/server/agent-jobs.ts), which on a
+ * computer with Cursor, OpenCode, Pi or Copilot is the real CLI (tests/e2e/agent-cli-stubs.ts).
+ */
+function ownPath(root: string): string {
+  const bin = join(root, 'bin');
+  mkdirSync(bin, { recursive: true });
+  for (const tool of ['git', 'rg']) {
+    const found = (process.env.PATH ?? '')
+      .split(delimiter)
+      .filter(Boolean)
+      .map((dir) => join(dir, tool))
+      .find((file) => {
+        try {
+          accessSync(file, constants.X_OK);
+          return statSync(file).isFile();
+        } catch {
+          return false;
+        }
+      });
+    if (found) symlinkSync(found, join(bin, tool));
+  }
+  return [bin, '/usr/bin', '/bin'].join(delimiter);
+}
+
+/** `plannotator review`'s environment: scratch HOME and data dir, no browser, a PATH of its own. */
+function reviewEnv(root: string, readyFile: string): NodeJS.ProcessEnv {
+  return {
+    PATH: ownPath(root),
+    HOME: root,
+    PLANNOTATOR_TEST_SANDBOX: root,
+    PLANNOTATOR_DATA_DIR: join(root, 'data'),
+    PLANNOTATOR_READY_FILE: readyFile,
+    PLANNOTATOR_BROWSER: NO_BROWSER,
+    PLANNOTATOR_SKIP_BROWSER_OPEN: '1',
+    NO_BROWSER,
+    PLANNOTATOR_REMOTE: '0',
+    PLANNOTATOR_UPDATE_CHECK: '0',
+  };
+}
 
 function git(cwd: string, args: string[]) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -108,17 +152,7 @@ test('All files: the repository at the diff, remembered, and following the disk 
   const root = mkdtempSync(join(tmpdir(), 'plannotator-review-explorer-'));
   const repo = buildRepo(root);
   const readyFile = join(root, 'ready.jsonl');
-  const env = {
-    PATH: process.env.PATH ?? '',
-    HOME: root,
-    PLANNOTATOR_DATA_DIR: join(root, 'data'),
-    PLANNOTATOR_READY_FILE: readyFile,
-    PLANNOTATOR_BROWSER: NO_BROWSER,
-    PLANNOTATOR_SKIP_BROWSER_OPEN: '1',
-    NO_BROWSER,
-    PLANNOTATOR_REMOTE: '0',
-    PLANNOTATOR_UPDATE_CHECK: '0',
-  };
+  const env = reviewEnv(root, readyFile);
   let child: ChildProcess | undefined;
   try {
     child = spawn(binary, ['review', '--diff-type', 'uncommitted'], { env, cwd: repo, stdio: 'ignore' });
@@ -189,17 +223,7 @@ test('Any file in a tab: preview, keep, Whole file with change bars, and a comme
   git(repo, ['add', 'packages/shared/long.ts']);
   git(repo, ['commit', '-q', '-m', 'long', '--', 'packages/shared/long.ts']);
   const readyFile = join(root, 'ready.jsonl');
-  const env = {
-    PATH: process.env.PATH ?? '',
-    HOME: root,
-    PLANNOTATOR_DATA_DIR: join(root, 'data'),
-    PLANNOTATOR_READY_FILE: readyFile,
-    PLANNOTATOR_BROWSER: NO_BROWSER,
-    PLANNOTATOR_SKIP_BROWSER_OPEN: '1',
-    NO_BROWSER,
-    PLANNOTATOR_REMOTE: '0',
-    PLANNOTATOR_UPDATE_CHECK: '0',
-  };
+  const env = reviewEnv(root, readyFile);
   let child: ChildProcess | undefined;
   let stdout = '';
   try {
@@ -329,17 +353,7 @@ test('Go to File, Go to Definition and References into tabs, Back / Forward, nex
   write(repo, 'packages/shared/long.ts', `${longLines.map((line, i) => (i % 20 === 10 ? `${line} // changed` : line)).join('\n')}\n`);
   write(repo, 'packages/review-editor/utils/fileKindTree.ts', "import { kindLabel } from '../../shared/kinds';\nimport { line2 } from '../../shared/long';\n\nexport function kindFolderPath(kind: string, path: string) {\n  if (path === '') return kindLabel(kind);\n  return `${kind}:${path}:${line2}`;\n}\n");
   const readyFile = join(root, 'ready.jsonl');
-  const env = {
-    PATH: process.env.PATH ?? '',
-    HOME: root,
-    PLANNOTATOR_DATA_DIR: join(root, 'data'),
-    PLANNOTATOR_READY_FILE: readyFile,
-    PLANNOTATOR_BROWSER: NO_BROWSER,
-    PLANNOTATOR_SKIP_BROWSER_OPEN: '1',
-    NO_BROWSER,
-    PLANNOTATOR_REMOTE: '0',
-    PLANNOTATOR_UPDATE_CHECK: '0',
-  };
+  const env = reviewEnv(root, readyFile);
   // VS Code's Back / Forward differ per system; headless Chromium reports the host's.
   const back = process.platform === 'darwin' ? 'Control+Minus' : process.platform === 'win32' ? 'Alt+ArrowLeft' : 'Control+Alt+Minus';
   const forward = process.platform === 'darwin' ? 'Control+Shift+Minus' : process.platform === 'win32' ? 'Alt+ArrowRight' : 'Control+Shift+Minus';
@@ -465,17 +479,7 @@ test('Go to File from a text field on macOS needs ⌘ (⌃P stays the field\'s)'
   const root = mkdtempSync(join(tmpdir(), 'plannotator-review-explorer-'));
   const repo = buildRepo(root);
   const readyFile = join(root, 'ready.jsonl');
-  const env = {
-    PATH: process.env.PATH ?? '',
-    HOME: root,
-    PLANNOTATOR_DATA_DIR: join(root, 'data'),
-    PLANNOTATOR_READY_FILE: readyFile,
-    PLANNOTATOR_BROWSER: NO_BROWSER,
-    PLANNOTATOR_SKIP_BROWSER_OPEN: '1',
-    NO_BROWSER,
-    PLANNOTATOR_REMOTE: '0',
-    PLANNOTATOR_UPDATE_CHECK: '0',
-  };
+  const env = reviewEnv(root, readyFile);
   let child: ChildProcess | undefined;
   try {
     child = spawn(binary, ['review', '--diff-type', 'uncommitted'], { env, cwd: repo, stdio: 'ignore' });
