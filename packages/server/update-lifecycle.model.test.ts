@@ -404,7 +404,7 @@ function stopReal(real: Real): void {
 function ageLock(real: Real, minutes: number): void {
   const lock = autoUpdatePaths(real.dataDir).lock;
   if (!existsSync(lock)) return;
-  const at = statSync(lock).mtimeMs - minutes * MIN;
+  const at = Math.min(statSync(lock).mtimeMs, Date.now()) - minutes * MIN;
   utimesSync(lock, at / 1000, at / 1000);
 }
 
@@ -463,7 +463,8 @@ class WriteNotes implements Cmd {
 
 class Advance implements Cmd {
   constructor(readonly minutes: number) {}
-  check = () => true;
+  // As in the spec: a spawned wrapper writes its lock line (its first command) before time moves on, or is killed.
+  check = (m: Model) => !m.inst.some((i) => i.phase === "spawned");
   async run(m: Model, r: Real) {
     m.now += this.minutes;
     r.clock += this.minutes * MIN;
