@@ -23,7 +23,7 @@ quint test --main onMain      spec/update-lifecycle.qnt
 quint test --main onFix       spec/update-lifecycle.qnt
 quint test --main onFixDraft  spec/update-lifecycle.qnt
 quint test --main onWindows   spec/update-lifecycle.qnt
-quint test --main onMainLocks spec/update-lifecycle.qnt
+quint test --main onLocks     spec/update-lifecycle.qnt
 
 # Random simulation: every property on every instance (about 5 minutes)
 bash spec/simulate.sh
@@ -51,8 +51,10 @@ work did not download.
 | `onMain` | main as of `35f9ad90d` |
 | `onFix` | PR #2337: an empty "What's New" answer for a release under 2 days old is asked again after 15 min instead of 24 h |
 | `onFixDraft` | #2337 plus its release.yml change: the draft is published with the written notes already in it |
-| `onWindows` | main, with install.ps1's replace (move aside, then move in) and the Windows lock (no holder line) |
-| `onMainLocks` | main (scripted lock traces only) |
+| `onWindows` | main, with install.ps1's replace (move aside, then move in) and the Windows lock (the wrapper's pid, no past-the-hour hold) |
+| `onLocks` | main (scripted lock traces only: F5 and F6 fixed) |
+
+The lock rules in every instance are those of PR #2342: `launchInstaller` names the wrapper in the lock at the spawn, a lock whose installer still runs holds past the hour up to a day (POSIX), a lock that no longer holds is released and recorded as failed, and a wrapper releases only its own lock.
 
 ## Properties in plain words
 
@@ -62,7 +64,7 @@ precondition began, the outcome must hold.
 
 | Property | Meaning |
 |---|---|
-| `NoTwoInstallers` | Two installs never run at the same time. |
+| `NoTwoInstallers` | Two installs never run at the same time, unless the first has run past the lock's limit (a day on POSIX, the hour on Windows). |
 | `BinaryAlwaysThere` | A kill at any step never leaves the install path without a complete binary. |
 | `InboxCanStart` | An Inbox start (or Restart) always finds a binary to run. |
 | `NothingFetchedWhileChecksOff` | With `PLANNOTATOR_UPDATE_CHECK` off, nothing automatic asks GitHub. Check now and Update now are the person's own requests, so they are allowed. |
@@ -75,10 +77,12 @@ precondition began, the outcome must hold.
 | `WhatsNewAfterUpdate` | After an update, the link shows at least once, even when the Inbox restarts before the notes were readable. |
 | `NewReleaseOffered` | A newer release is offered within 10 minutes plus one tick. |
 | `NewReleaseOfferedAfterAbandonedCheck` | The same, counted from a release check that a process abandoned mid-request. |
-| `FailedUpdateShown` | A failed install the person started shows as Failed, with the log and Try again. |
+| `FailedUpdateShown` | A failed install the person started shows as Failed, with the log and Try again. Excluded: an older install that ran past the lock's day beside the person's, and ended after it, overwrote `update-result.json` with its own version. |
 
 Environment assumptions: CI writes the release notes within an hour of
 publishing (`NOTES_LAG`). A request answers or times out before time moves on.
+A spawned wrapper writes its lock line (its first command) before time moves
+on, or is killed first.
 The real Inbox ticks every minute; `advance` jumps 1 to 1440 minutes and
 ends with one tick.
 
@@ -94,11 +98,11 @@ ends with one tick.
 | `inboxVer` | `inboxVersion` (`:211`) |
 | `pendingV`, `pendingPerson` | `pending` (`:199`) |
 | `resultV`, `resultCode` | `update-result.json`, `readAutoUpdateResult` (`packages/server/auto-update.ts:309`) |
-| `lockHeld`, `lockKind`, `lockAt`, `lockOwner` | `update.lock`: the taker's bare pid (`acquireUpdateLock`, `auto-update.ts:460`), then the wrapper's holder line (`POSIX_WRAPPER`, `:792-795`) |
-| `lockExpired`, `holderGone`, `lockHeldView`, `canAcquire`, `reap` | `lockExpired` (`:331`), `lockHolderGone` (`:384`), `isUpdateLockHeld` (`:481`), `acquireUpdateLock` (`:460`), `reapDeadUpdateLock` (`:443`) |
+| `lockHeld`, `lockKind`, `lockAt`, `lockOwner` | `update.lock`: the holder line `launchInstaller` writes at the spawn, then the POSIX wrapper's own (`POSIX_WRAPPER`) |
+| `lockExpired`, `holderGone`, `liveLock`, `lockHeldView`, `canAcquire`, `reap` | `lockExpired`, `lockHolderGone` / `judgeLockHolder`, `lockHeld` (`isUpdateLockHeld`), `acquireUpdateLock`, `reapDeadUpdateLock` (`auto-update.ts`) |
 | `autoLast`, `cliRun`, `autoAfterClaim` | `lastCheckAt`, `scheduleAutoUpdateCheck` (`:1077`), `runAutoUpdateCheck` (`:547`) |
 | `launch` | `beginManualUpdate` (`:698`), `startManualUpdate` (`:742`), the launch in `runAutoUpdateCheck` (`:629-655`), `launchInstaller` (`:970`) |
-| `inst[i].phase` | The detached wrapper and install script: lock line (`:792`), `update-prepare` download (`:816`), replace (`scripts/install.sh:1088-1099`; Windows `scripts/install.ps1:741-766`, `scripts/install.cmd:956-966`), `record` and `rm -f` the lock (`auto-update.ts:852-854`), signal trap (`:806-814`) |
+| `inst[i].phase` | The detached wrapper and install script: lock line (`:792`), `update-prepare` download (`:816`), replace (`scripts/install.sh:1088-1099`; Windows `scripts/install.ps1:741-766`, `scripts/install.cmd:956-966`), `record` and `release_lock` (only its own lock), signal trap (`:806-814`) |
 | `binOk`, `binV` | `~/.local/bin/plannotator` (`%LOCALAPPDATA%\plannotator\plannotator.exe`) |
 | `ibAlive`, `ibRuns`, `startInbox` | `createInboxUpdates` (`packages/server/inbox-updates.ts:274`), `start()` (`:584`) |
 | `ibUpdated` | `updated` (`:291`), set at start (`:296-313`) |

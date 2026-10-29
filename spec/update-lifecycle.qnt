@@ -46,6 +46,7 @@ module updateLifecycle {
   // packages/server/auto-update.ts:106, 126
   pure val AUTO_WINDOW = 1440        // AUTO_UPDATE_INTERVAL_MS
   pure val LOCK_STALE = 60           // AUTO_UPDATE_LOCK_STALE_MS
+  pure val LOCK_LIVE_MAX = 1440      // AUTO_UPDATE_LOCK_LIVE_MAX_MS (PR #2342)
 
   // The bounds of the "eventually" properties (checked as invariants).
   pure val WHATS_NEW_BOUND = 30      // a tick this long after the real notes exist shows the link
@@ -128,18 +129,24 @@ module updateLifecycle {
   pure def lockExpired(st: Sys): bool =
     st.now - st.lockAt >= LOCK_STALE or st.lockAt - st.now >= LOCK_STALE
 
-  // auto-update.ts:384 lockHolderGone: only the POSIX wrapper's own line
-  // (pid= group= host= ...) can be judged; a bare pid or Windows keeps the hour.
+  // auto-update.ts lockHolderGone: only a holder line (pid= group= host= ...)
+  // can be judged; a bare pid keeps the hour. launchInstaller writes the line at
+  // the spawn on every platform (Windows judges the wrapper's pid).
   pure def holderGone(st: Sys): bool =
-    not(WINDOWS) and st.lockKind == "wrapper" and not(running(st.inst.get(st.lockOwner)))
+    st.lockKind == "wrapper" and not(running(st.inst.get(st.lockOwner)))
 
-  // auto-update.ts:481 isUpdateLockHeld
+  // auto-update.ts lockHeld: a lock whose installer still runs holds past the
+  // hour, up to a day (POSIX; Windows keeps the hour, it reuses a pid too soon).
+  pure def liveLock(st: Sys): bool =
+    not(WINDOWS) and st.lockKind == "wrapper" and running(st.inst.get(st.lockOwner))
+      and iabs(st.now - st.lockAt) < LOCK_LIVE_MAX
+
+  // auto-update.ts lockHeld (isUpdateLockHeld)
   pure def lockHeldView(st: Sys): bool =
-    st.lockHeld and not(lockExpired(st)) and not(holderGone(st))
+    st.lockHeld and not(holderGone(st)) and (not(lockExpired(st)) or liveLock(st))
 
-  // auto-update.ts:460 acquireUpdateLock: free, expired, or its holder gone.
-  pure def canAcquire(st: Sys): bool =
-    not(st.lockHeld) or lockExpired(st) or holderGone(st)
+  // auto-update.ts acquireUpdateLock: free, or a lock that no longer holds.
+  pure def canAcquire(st: Sys): bool = not(lockHeldView(st))
 
   // ---------------------------------------------------------------------------
   // The sidebar's update button: inbox-updates.ts:230 deriveInboxUpdate
@@ -238,9 +245,10 @@ module updateLifecycle {
   // The Inbox: inbox-updates.ts:296 start, :418 compute (reap), :488 tick
   // ---------------------------------------------------------------------------
 
-  // auto-update.ts:443 reapDeadUpdateLock
+  // auto-update.ts reapDeadUpdateLock: a lock that no longer holds (its holder
+  // gone, or past its hour) is released and its install recorded as failed.
   pure def reap(st: Sys): Sys =
-    if (st.lockHeld and holderGone(st))
+    if (st.lockHeld and not(lockHeldView(st)))
       val record = st.pendingV > 0 and st.resultV != st.pendingV
       st.with("lockHeld", false)
         .with("resultV", if (record) st.pendingV else st.resultV)
@@ -293,13 +301,13 @@ module updateLifecycle {
     else if (st.inst.get(3).phase == "unused") 3
     else 0
 
-  // Take update.lock (the taker's bare pid), forget the old result, record
-  // pending, spawn the detached wrapper.
+  // Take update.lock, forget the old result, record pending, spawn the
+  // detached wrapper; launchInstaller names the wrapper in the lock at once.
   pure def launch(st: Sys, v: int, person: bool): Sys =
     val id = freeSlot(st)
     if (not(canAcquire(st)) or id == 0) st
     else
-      st.with("lockHeld", true).with("lockKind", "bare").with("lockAt", st.now).with("lockOwner", id)
+      st.with("lockHeld", true).with("lockKind", "wrapper").with("lockAt", st.now).with("lockOwner", id)
         .with("resultV", 0).with("resultCode", 0)
         .with("pendingV", v).with("pendingPerson", person)
         .with("inst", st.inst.set(id, { phase: "spawned", v: v, person: person, startedAt: st.now }))
@@ -322,16 +330,19 @@ module updateLifecycle {
 
   pure def personEnded(st: Sys, i: int, failed: bool): Sys =
     val ins = st.inst.get(i)
-    if (ins.person and ins.v == st.personV and st.personOutcome == "running")
+    // (ghost) the person's last install ends: none of theirs still runs beside it
+    if (ins.person and ins.v == st.personV and st.personOutcome == "running"
+        and not(IDS.exists(j => j != i and running(st.inst.get(j)) and st.inst.get(j).person)))
       st.with("personOutcome", if (failed) "failed" else "ok").with("tickAfterPersonEnd", false)
     else st
 
-  // The wrapper's end: record the code (update-result.json), then `rm -f` the
-  // lock (auto-update.ts:853-854), whoever holds it now.
+  // The wrapper's end: record the code (update-result.json), then release the
+  // lock only while it is still its own (release_lock; the PowerShell wrapper's
+  // own check).
   pure def finish(st: Sys, i: int, code: int): Sys =
     val ins = st.inst.get(i)
     personEnded(
-      st.with("resultV", ins.v).with("resultCode", code).with("lockHeld", false)
+      st.with("resultV", ins.v).with("resultCode", code).with("lockHeld", st.lockHeld and st.lockOwner != i)
         .with("inst", st.inst.set(i, ins.with("phase", "done"))),
       i, code != 0)
 
@@ -341,7 +352,7 @@ module updateLifecycle {
 
   // The wrapper's first line (auto-update.ts:792-795) replaces the lock's
   // content with its own holder line: `>` creates or truncates, whoever held it.
-  // The Windows wrapper writes none.
+  // The Windows wrapper writes none: the lock keeps the line launchInstaller wrote.
   pure def wrapperLock(st: Sys, i: int): Sys =
     val ins = st.inst.get(i)
     val s1 = st.with("inst", st.inst.set(i, ins.with("phase", "locked")))
@@ -370,6 +381,9 @@ module updateLifecycle {
 
   action doAdvance(d: int): bool = all {
     VERSIONS.forall(v => not(s.ibInflight.get(v))),   // a request answers or times out in seconds
+    // A wrapper writes its lock line within moments of its spawn (it is the
+    // first thing it runs), or is killed first.
+    IDS.forall(i => s.inst.get(i).phase != "spawned"),
     val later = s.with("now", s.now + d)
     s' = (if (later.ibAlive) tick(later, CHECK_INTERVAL) else later).with("act", "Advance"),
   }
@@ -547,8 +561,13 @@ module updateLifecycle {
   // Safety
   // ---------------------------------------------------------------------------
 
-  /// Never two installers at once.
-  val NoTwoInstallers = IDS.filter(i => running(s.inst.get(i))).size() <= 1
+  /// Never two installers at once, unless the first has run past the lock's
+  /// limit (a day on POSIX; Windows keeps the hour): a hung install never
+  /// holds the lock for good.
+  val NoTwoInstallers = IDS.forall(i => IDS.forall(j =>
+    (i != j and running(s.inst.get(i)) and running(s.inst.get(j))
+      and s.inst.get(i).startedAt <= s.inst.get(j).startedAt)
+    implies s.now - s.inst.get(i).startedAt >= (if (WINDOWS) LOCK_STALE else LOCK_LIVE_MAX)))
 
   /// A crash never leaves a missing or partial binary at the install path.
   val BinaryAlwaysThere = s.binOk
@@ -629,9 +648,12 @@ module updateLifecycle {
     implies uiState(s) != "none"
 
   /// A failed install the person started is shown (Failed, with the log and Try again).
+  /// Excluded: update-result.json names another version. Only an older install
+  /// that ran past the lock's day beside the person's, and ended after it, writes that.
   val FailedUpdateShown =
     (s.ibAlive and s.personOutcome == "failed" and s.tickAfterPersonEnd
       and s.pendingPerson and s.pendingV == s.personV and s.personV > s.ibRuns
+      and (s.resultV == 0 or s.resultV == s.personV)
       and s.binOk and s.binV == s.ibRuns and not(anyRunning(s)))
     implies uiState(s) == "failed"
 
@@ -765,14 +787,27 @@ module onWindows {
       .then(doInstallerStep(1, true))             // moved aside
       .then(doKill(1))
       .expect(not(BinaryAlwaysThere))
+
+  // F6 on Windows (PR #2342): the lock names the wrapper's pid from the spawn,
+  // so a killed install shows Failed at the next tick.
+  run windowsKilledInstallShowsFailedTest =
+    init
+      .then(doInboxStart)
+      .then(doPublish)
+      .then(doAdvance(10))
+      .then(doNotesAnswer(2))
+      .then(doUpdateNow)
+      .then(doKill(1))
+      .then(doAdvance(1))
+      .expect(uiState(s) == "failed" and PersonCanUpdate and FailedUpdateShown)
 }
 
-module onMainLocks {
+module onLocks {
   import updateLifecycle(NOTES_FIX = false, DRAFT_FLOW = false, WINDOWS = false).*
 
-  // An install that stalls over an hour (install.sh's binary curl has no
-  // timeout): the lock expires, a second install starts beside it.
-  run expiredLockSecondInstallerTest =
+  // F5 (PR #2342): an install that stalls past the hour keeps its lock while it
+  // runs; a second install starts beside it only after a day.
+  run slowInstallKeepsLockTest =
     init
       .then(doPublish)
       .then(doCliSession(true))
@@ -780,12 +815,15 @@ module onMainLocks {
       .then(doInstallerStep(1, true))             // the wrapper's lock line
       .then(doInstallerStep(1, true))             // downloading... stalls
       .then(doAdvance(60))
-      .then(doCliUpdateNow)                       // the lock is past its hour
-      .expect(not(NoTwoInstallers))
+      .then(doCliUpdateNow)                       // refused: the install still runs
+      .expect(s.inst.get(2).phase == "unused" and NoTwoInstallers)
+      .then(doAdvance(1440))
+      .then(doCliUpdateNow)                       // a day on: the lock no longer holds
+      .expect(s.inst.get(2).phase == "spawned" and NoTwoInstallers)
 
-  // The wrapper dies before its lock line: "Updating…" for an hour, then the
-  // failure is never shown.
-  run bareLockDeathTest =
+  // F6 (PR #2342): the install dies before the wrapper's first line; the lock
+  // already names it, so the next tick shows Failed.
+  run killedInstallShowsFailedTest =
     init
       .then(doInboxStart)
       .then(doPublish)
@@ -794,7 +832,6 @@ module onMainLocks {
       .then(doUpdateNow)
       .then(doKill(1))                            // before the wrapper wrote its line
       .then(doAdvance(1))
-      .expect(uiState(s) == "updating" and not(PersonCanUpdate))
-      .then(doAdvance(60))
-      .expect(uiState(s) == "available" and not(FailedUpdateShown))
+      .expect(uiState(s) == "failed" and PersonCanUpdate and FailedUpdateShown)
 }
+
