@@ -45,6 +45,6 @@ test('a clash only with a project that has no row in the list leaves the folder 
   expect(both.get(WORKTREE.id)).toBe('plannotator · worktrees');
 });
 
-test('a project at a filesystem root keeps the name it came with', () => {
+test('a project at a POSIX filesystem root (`/`, no folder name) keeps the name it came with', () => {
   expect(shortProjectNames([{ id: 'r', root: '/', name: 'root' }]).get('r')).toBe('root');
 });

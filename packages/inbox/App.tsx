@@ -97,7 +97,7 @@ import { movePin, unpinnedWhere } from './pins';
 import type { PinnedAction } from './components/PinnedRow';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 import { newBatchId, projectAllArchived, projectBatchToast, projectsWithReadable, type ProjectAction } from './projectMenu';
-import { shortProjectNames } from './projectLabels';
+import { listProjectNames, shortProjectNames } from './projectLabels';
 import { lookBoundary } from './folding';
 import { latestAgentSeq } from './seenOnSight';
 import { isPhone, isTouchPhone, trackKeyboard, usePhone } from './phone';
@@ -2824,7 +2824,12 @@ function Inbox() {
     : null;
 
   const filterProject = route.page === 'inbox' && route.project ? projects.find((p) => p.id === route.project) ?? null : null;
-  const notice = shown && latest ? heldNotice(filterSections(shown, route.project), filterSections(latest.sections, route.project), openedHere.current, heldOpen()).text : null;
+  // The list's name: Inbox, or one project's folder name (shortProjectNames); its back buttons read the same.
+  const listTitle = filterProject ? (shortProjectNames([filterProject]).get(filterProject.id) ?? filterProject.name) : 'Inbox';
+  const latestShown = latest ? filterSections(latest.sections, route.project) : null;
+  // "N new in <project>" names the project as the list's rows will once shown (listProjectNames).
+  const notice =
+    shown && latestShown ? heldNotice(filterSections(shown, route.project), latestShown, openedHere.current, heldOpen(), listProjectNames(latestShown, projects)).text : null;
   const firstRun = latest !== null && projects.length === 0;
   // Tidy (2026-10-28): the list header's and the Board's ⋮ menu, each reading who it would ask in its scope.
   const listTidy = useTidy(route.page === 'inbox' ? (route.project ?? null) : null, 'list', shown, route.page === 'inbox' && !firstRun);
@@ -3696,7 +3701,7 @@ function Inbox() {
         <InboxList
           scope={route.project}
           // One project's list: its folder's name (shortProjectNames), the path beside it.
-          title={filterProject ? (shortProjectNames([filterProject]).get(filterProject.id) ?? filterProject.name) : 'Inbox'}
+          title={listTitle}
           path={filterProject ? tildePath(filterProject.root, settings?.home) : null}
           sections={filterSections(shown, route.project)}
           filtered={filterProject !== null}
@@ -3745,7 +3750,7 @@ function Inbox() {
           empty={
             projectAllArchived(filterProject) ? (
               <div className="ib-empty-list" data-project-archived="">
-                <b dir="auto">Everything in {filterProject!.name} is archived.</b>
+                <b dir="auto">Everything in {listTitle} is archived.</b>
                 It leaves the sidebar when you go elsewhere, and comes back when an agent writes there.{' '}
                 <a href="#settings/archived">See archived threads</a>
               </div>
@@ -3877,7 +3882,7 @@ function Inbox() {
             onScreenChange={(state) => {
               threadOnScreenRef.current = state;
             }}
-            backLabel={fromCard ? 'Board' : (filterProject?.name ?? 'Inbox')}
+            backLabel={fromCard ? 'Board' : listTitle}
             cardChip={fromCard ? <CardChip card={cards?.cards.find((c) => c.id === fromCard) ?? null} onOpen={backToCard} /> : undefined}
             phone={phone}
             stacked={stack.thread || !!fromCard}
@@ -3894,7 +3899,7 @@ function Inbox() {
                 const room = LIST_MIN_WIDTH + THREAD_BESIDE_FILE_WIDTH + paneGutters();
                 if (width >= room && width - sidebar < room) setSidebarHeld(true);
               }
-              backFromFile.current = { thread: thread.thread_id, name: fileName, label: filterProject?.name ?? 'Inbox' };
+              backFromFile.current = { thread: thread.thread_id, name: fileName, label: listTitle };
               closeTo({ ...routeRef.current, file: null });
             }}
           />

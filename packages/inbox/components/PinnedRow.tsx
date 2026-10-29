@@ -13,6 +13,8 @@ export type PinnedAction = 'unpin' | 'up' | 'down' | 'copy-link';
 
 export interface PinnedRowProps {
   row: InboxListRow;
+  /** The project as the sidebar names it (shortProjectNames). Absent: the server's name. */
+  project?: string;
   /** The thread on screen: the list's selection pill and `aria-current`. */
   on: boolean;
   /** First or last pin: Move up or Move down is disabled. */
@@ -43,6 +45,7 @@ export function PinnedRow(props: PinnedRowProps) {
   const [portal, setPortal] = useState<HTMLElement | null>(null);
   useLayoutEffect(() => setPortal(more.current?.closest<HTMLElement>('.pn-inbox') ?? null), []);
   const { row } = props;
+  const project = props.project ?? row.project.name;
   const state = pinnedState(row);
   const subject = row.subject ?? '(no subject)';
   const items = (
@@ -84,12 +87,12 @@ export function PinnedRow(props: PinnedRowProps) {
   );
   const content = (
     <>
-      <Tip side="right" content={<PinnedTipText subject={subject} project={row.project.name} state={state.words} />}>
+      <Tip side="right" content={<PinnedTipText subject={subject} project={project} state={state.words} />}>
         <button
           type="button"
           className={`ib-pin${row.unread ? ' ib-u' : ''}${state.calm ? ' ib-calm' : ''}${props.on ? ' ib-on' : ''}`}
           onClick={props.onOpen}
-          aria-label={pinnedRowName(row)}
+          aria-label={pinnedRowName(row, project)}
           aria-current={props.on ? 'true' : undefined}
           data-pinned-row={row.thread_id}
           data-state={state.kind}

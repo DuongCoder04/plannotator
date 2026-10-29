@@ -154,6 +154,16 @@ export function Sidebar(props: SidebarProps) {
     return list.map((project) => ({ ...project, name: names.get(project.id) ?? project.name }));
   }, [props.projects, held]);
   const pins = props.pins ?? [];
+  // A pin names its project as the sidebar does; a pin whose project the sidebar does not show (an archived
+  // thread) is named against the shown projects plus its own.
+  const pinProjects = useMemo(() => {
+    const names = new Map(shown.map((project) => [project.id, project.name] as const));
+    const others = props.projects.filter((project) => !names.has(project.id) && pins.some((row) => row.project.id === project.id));
+    if (others.length === 0) return names;
+    const withOthers = shortProjectNames([...shownProjects(props.projects, held), ...others]);
+    for (const project of others) names.set(project.id, withOthers.get(project.id) ?? project.name);
+    return names;
+  }, [shown, props.projects, pins, held]);
   // One scroll area holds Pinned and Projects (no limit on pins: a long Pinned section scrolls with the projects).
   const [projsRef, moreProjects] = useMoreBelow<HTMLDivElement>(`${shown.length}:${pins.length}`);
   /**
@@ -316,6 +326,7 @@ export function Sidebar(props: SidebarProps) {
                 <PinnedRow
                   key={row.thread_id}
                   row={row}
+                  project={pinProjects.get(row.project.id)}
                   on={props.page === 'inbox' && props.openThreadId === row.thread_id}
                   first={index === 0}
                   last={index === pins.length - 1}

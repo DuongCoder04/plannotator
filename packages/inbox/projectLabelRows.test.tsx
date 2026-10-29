@@ -67,10 +67,7 @@ afterEach(() => {
   host = null;
 });
 
-function render(shape: 'wide' | 'narrow' | 'phone'): HTMLElement {
-  host = document.createElement('div');
-  document.body.append(host);
-  root = createRoot(host);
+function draw(shape: 'wide' | 'narrow' | 'phone', sections: InboxListSection[]) {
   act(() => {
     root!.render(
       <SidebarProvider>
@@ -78,7 +75,7 @@ function render(shape: 'wide' | 'narrow' | 'phone'): HTMLElement {
           <InboxList
             title="Inbox"
             path={null}
-            sections={SECTIONS}
+            sections={sections}
             filtered={false}
             projects={PROJECTS}
             narrow={shape === 'narrow'}
@@ -92,7 +89,14 @@ function render(shape: 'wide' | 'narrow' | 'phone'): HTMLElement {
       </SidebarProvider>,
     );
   });
-  return host;
+}
+
+function render(shape: 'wide' | 'narrow' | 'phone', sections: InboxListSection[] = SECTIONS): HTMLElement {
+  host = document.createElement('div');
+  document.body.append(host);
+  root = createRoot(host);
+  draw(shape, sections);
+  return host!;
 }
 
 const projectOf = (el: HTMLElement, id: string) => el.querySelector(`[data-thread-id="${id}"] .ib-p`)?.textContent;
@@ -104,6 +108,22 @@ test.skipIf(!hasDom)('a row reads its folder name unless another listed project 
     expect(projectOf(el, 'msg_repo')).toBe('plannotator');
     // "api" twice in the list (one row in the folded Quiet): each adds its parent.
     expect(projectOf(el, 'msg_w')).toBe('api · work');
+    act(() => root?.unmount());
+    host?.remove();
+  }
+});
+
+// ListRow is memoized on its row's content: a row whose data did not change must still draw the name the
+// list now gives its project, when another project's row lands and makes the name clash.
+test.skipIf(!hasDom)('a row already drawn adds its parent once a row from another project with its name lands', () => {
+  for (const shape of ['wide', 'narrow', 'phone'] as const) {
+    const repo = row('msg_repo', PROJECTS[0]!);
+    const el = render(shape, [{ id: 'waiting', label: 'Waiting on you', threads: [repo] }]);
+    expect(projectOf(el, 'msg_repo')).toBe('plannotator');
+    // The same row data (a fresh object, as each list read brings), and the old worktree's thread arriving.
+    draw(shape, [{ id: 'waiting', label: 'Waiting on you', threads: [{ ...repo }, row('msg_wt', PROJECTS[1]!)] }]);
+    expect(projectOf(el, 'msg_repo')).toBe('plannotator · plannotator');
+    expect(projectOf(el, 'msg_wt')).toBe('plannotator · worktrees');
     act(() => root?.unmount());
     host?.remove();
   }
