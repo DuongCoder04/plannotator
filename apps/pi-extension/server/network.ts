@@ -8,7 +8,7 @@ import { existsSync, statSync } from "node:fs";
 import type { Server } from "node:http";
 import os from "node:os";
 import { delimiter, join } from "node:path";
-import { loadConfig, resolveUseGlimpse } from "../generated/config.ts";
+import { loadConfig, resolveLocalUrlHostname, resolveUseGlimpse } from "../generated/config.ts";
 import { resolveAdvertisedSessionUrl } from "../generated/advertised-url.ts";
 import { parsePortSelection } from "../generated/port-range.ts";
 import { browserNoneReason, isNoOpBrowserSentinel, resolveBrowserIntent } from "../generated/browser-intent.ts";
@@ -152,6 +152,16 @@ export function getServerPort(): {
 
 export function getServerHostname(): string {
 	return isRemoteSession() ? "0.0.0.0" : LOOPBACK_HOST;
+}
+
+/**
+ * The localhost subdomain sessions are advertised at (`urlHost:
+ * "plannotator.localhost"`, #2184), or undefined. Mirrors
+ * packages/server/remote.ts: read once at server start for the loopback Host
+ * check of Ask this session.
+ */
+export function getLocalUrlHostname(): string | undefined {
+	return resolveLocalUrlHostname(loadConfig());
 }
 
 /** Compose the display-only URL advertised for a bound server port. */
