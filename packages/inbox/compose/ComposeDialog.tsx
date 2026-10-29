@@ -646,7 +646,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
           <InboxComposerField
             textareaRef={textRef}
             ariaLabel="Message"
-            ariaDescribedBy={statusId}
+            ariaDescribedBy={status ? statusId : undefined}
             destination="your message"
             placeholder="Write an idea or a request. It starts a new thread."
             // The field is tall and sits in a scrolling body above the footer: the picker opens at the
@@ -734,9 +734,11 @@ export function ComposeDialog(props: ComposeDialogProps) {
             </button>
           )}
           <span className="ib-sp" />
-          <span className="ib-cp-status" id={statusId} data-compose-status="">
-            {status}
-          </span>
+          {status && (
+            <span className="ib-cp-status" id={statusId} data-compose-status="">
+              {status}
+            </span>
+          )}
           {saveOffered && !phone && (
             <button type="button" className="ib-btn" onClick={() => void keepDraft()} disabled={busy !== null} data-compose-save="">
               Save draft
