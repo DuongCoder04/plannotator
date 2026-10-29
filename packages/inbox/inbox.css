@@ -4609,10 +4609,10 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 @media (max-width: 359px) {
   .ib-artbtn-n { display: none; }
   .pn-inbox .ib-iconbtn.ib-artbtn { width: 44px; padding: 0; }
-  /* With the pin to the sidebar there (approval "inbox-pinned-threads") one more 44 px icon has no room: Mark read
+  /* With ⋯ More and the Artifacts button there a 320 px row has no room for the words: Mark read
      shows its icon alone, its words kept as its name (visually hidden, still read). */
-  .ib-phead:has([data-pin-toggle]) .ib-hbtn[data-mark-read] .ib-hbtn-l { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .pn-inbox .ib-phead:has([data-pin-toggle]) .ib-hbtn[data-mark-read] { width: 44px; min-width: 44px; padding: 0; justify-content: center; }
+  .ib-phead:has([data-thread-more]) .ib-hbtn[data-mark-read] .ib-hbtn-l { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .pn-inbox .ib-phead:has([data-thread-more]) .ib-hbtn[data-mark-read] { width: 44px; min-width: 44px; padding: 0; justify-content: center; }
   /* With ⋯ More after Archive (design record "inbox-copy-message") the row is 2 px short at 320 px: Mark read's side margins go. */
   .pn-inbox .ib-phead:has([data-thread-more]) .ib-hbtn[data-mark-read] { margin: 0; }
 }

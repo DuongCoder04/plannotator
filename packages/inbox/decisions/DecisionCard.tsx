@@ -340,7 +340,7 @@ export function DecisionCard(props: DecisionCardProps) {
   const recommendedLabels = q.choices.filter((c) => c.recommended).map((c) => c.label);
   /** The tile pictures, for the viewer's stepping (a zoom opens on its own tile). */
   const tilePictures: CardPicture[] = q.choices.flatMap((choice, index) =>
-    choice.image && tileUrls[index] ? [{ attachmentId: '', name: choiceName(choice.label, index), alt: choice.image.alt || choice.label, ref: choice.image.src, src: tileUrls[index]! }] : [],
+    choice.image && tileUrls[index] ? [{ attachmentId: '', name: choiceName(choice.label, index, q.choices.map((c) => c.label)), alt: choice.image.alt || choice.label, ref: choice.image.src, src: tileUrls[index]! }] : [],
   );
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {

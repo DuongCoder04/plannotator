@@ -3724,9 +3724,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       </button>
     </Tip>
   );
-  // Pin to the sidebar (approval "inbox-pinned-threads"): an icon toggle, the phone's way to pin.
-  // One fixed name ("Pin to the sidebar") with `aria-pressed`, so a screen reader hears the state
-  // change rather than a new control; only the tooltip's words follow the state.
+  // Pin to the sidebar (approval "inbox-pinned-threads"): the header ⋯ menu's first item (Pin thread /
+  // Unpin thread), the phone's way to pin.
   // A click shows its state at once and its request waits for the one before it, so a quick
   // pin-then-unpin sends both, in order, and ends where the person left it.
   const [pinWant, setPinWant] = useState<{ thread: string; pinned: boolean } | null>(null);
@@ -3754,20 +3753,6 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         }
       });
   };
-  const pinButton = onPin ? (
-    <Tip content={pinShown ? 'Unpin from the sidebar' : 'Pin to the sidebar'}>
-      <button
-        type="button"
-        className="ib-iconbtn ib-pinbtn"
-        onClick={togglePin}
-        aria-pressed={pinShown}
-        aria-label="Pin to the sidebar"
-        data-pin-toggle=""
-      >
-        <Icon name="pin" size={16} />
-      </button>
-    </Tip>
-  ) : null;
   const markReadButton = markReadOffered ? (
     <Tip
       content={
@@ -3879,7 +3864,6 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 {thread.subject ?? '(no subject)'}
               </span>
             )}
-            {pinButton}
             {artifactsButton && (
               <Tip content={artifactsOn ? 'Back to the thread' : 'Artifacts: every file, image and guided review in this thread'}>
                 <button
@@ -3912,7 +3896,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
               </Tip>
             )}
             {archiveButton}
-            <ThreadMore {...copyHost} />
+            <ThreadMore {...copyHost} pin={onPin ? { pinned: pinShown, onToggle: togglePin } : undefined} />
             {phone || stacked || backBesideFile ? null : (
               <>
                 <span className="ib-vsep" aria-hidden="true" />
