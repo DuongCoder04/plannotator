@@ -267,10 +267,10 @@ export interface UpdateState {
   notesFetch?: Record<string, NotesFetchRecord>;
   /**
    * The Inbox's fetch of one release's images (packages/server/inbox-whats-new-images.ts),
-   * per version, with the same claim and back-off as `notesFetch`. Only the
-   * Inbox writes it; nothing here fetches an image.
+   * per version, with the same claim and back-off as `notesFetch` (its
+   * `inFlight` mark too). Only the Inbox writes it; nothing here fetches an image.
    */
-  releaseImagesFetch?: Record<string, { attemptedAt: number; failedAt?: number; error?: string }>;
+  releaseImagesFetch?: Record<string, Pick<NotesFetchRecord, "attemptedAt" | "failedAt" | "error" | "inFlight">>;
   /**
    * Safe updates: installs of `version` whose download did not match the
    * checksum Plannotator fetched (install.sh exit 113), counted once each.
