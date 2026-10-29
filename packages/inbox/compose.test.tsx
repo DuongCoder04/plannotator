@@ -10,7 +10,7 @@
  * has Undo; with a live session To is prefilled and Send starts the thread
  * addressed to it (the list row draws that agent, "To <agent>").
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { act } from 'react';
