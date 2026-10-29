@@ -211,12 +211,40 @@ export function dragHasFiles(event: ReactDragEvent): boolean {
 }
 
 /**
+ * A drag that started on the page itself (an image in a message dragged a
+ * little): `dragstart` fires only for those, never for files from the system,
+ * and `dragend` ends it. Some browsers give such a drag a `Files` type, so the
+ * drop targets below ignore it. One pair of document listeners for every
+ * target on the page.
+ */
+let pageDrag = false;
+let pageDragWatchers = 0;
+const onPageDragStart = () => {
+  pageDrag = true;
+};
+const onPageDragEnd = () => {
+  pageDrag = false;
+};
+function watchPageDrags(): () => void {
+  if (pageDragWatchers++ === 0) {
+    document.addEventListener('dragstart', onPageDragStart, true);
+    document.addEventListener('dragend', onPageDragEnd, true);
+  }
+  return () => {
+    if (--pageDragWatchers > 0) return;
+    document.removeEventListener('dragstart', onPageDragStart, true);
+    document.removeEventListener('dragend', onPageDragEnd, true);
+    pageDrag = false;
+  };
+}
+
+/**
  * A drop target for files: `over` while files are dragged over it, `onFiles`
  * on a drop. Drags that carry no files (text, a link, a Board card) pass
- * through untouched. A drag or drop a target inside already took
- * (`defaultPrevented`: the reply box inside the thread, New message's dialog,
- * an annotation's image picker) is left to it, and `over` goes off, so only
- * the innermost target shows.
+ * through untouched, and so does a drag that started on the page itself. A
+ * drag or drop a target inside already took (`defaultPrevented`: the reply box
+ * inside the thread) is left to it, and `over` goes off, so only the innermost
+ * target shows.
  */
 export function useFileDrop(onFiles: (files: FileList) => void, enabled = true) {
   const [over, setOver] = useState(false);
@@ -225,9 +253,10 @@ export function useFileDrop(onFiles: (files: FileList) => void, enabled = true) 
   useEffect(() => {
     if (!enabled) setOver(false);
   }, [enabled]);
+  useEffect(() => watchPageDrags(), []);
   const onDragOver = useCallback(
     (event: ReactDragEvent) => {
-      if (!enabled || !dragHasFiles(event)) return;
+      if (!enabled || pageDrag || !dragHasFiles(event)) return;
       if (event.defaultPrevented) {
         setOver(false);
         return;
@@ -247,7 +276,7 @@ export function useFileDrop(onFiles: (files: FileList) => void, enabled = true) 
   const onDrop = useCallback(
     (event: ReactDragEvent) => {
       setOver(false);
-      if (!enabled || event.defaultPrevented || event.dataTransfer.files.length === 0) return;
+      if (!enabled || pageDrag || event.defaultPrevented || event.dataTransfer.files.length === 0) return;
       event.preventDefault();
       onFilesRef.current(event.dataTransfer.files);
     },

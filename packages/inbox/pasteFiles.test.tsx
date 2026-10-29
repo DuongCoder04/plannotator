@@ -18,7 +18,8 @@
  * paperclip names its file as a paste is; and an image copied from a page with
  * only its link as the text attaches. The reply box's paperclip and a drop on
  * the box add tiles, a drop anywhere over the thread opens a closed reply box
- * with the files, a drag of text attaches nothing, and Send carries them
+ * with the files, a drag of text or one that started on the page attaches
+ * nothing, a drop on New message adds a tile, and Send carries them
  * (approval "inbox-reply-attach").
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
@@ -309,15 +310,27 @@ test.skipIf(!hasDom)('compose: a pasted image makes a tile with a dated name, up
   await until(() => dialog().querySelector('[data-compose-paste-live]')?.textContent === `Attached ${name}`, 'the announcement');
   expect(dialog().querySelector('[data-compose-paste-live]')?.getAttribute('aria-live')).toBe('polite');
 
+  // A drop on the dialog (the shared useFileDrop): a text drag is not taken; files show "Drop files to attach"
+  // and the drop adds a tile with the file's own name.
+  expect(drag(dialog(), 'dragover', { text: 'some words' })).toBe(false);
+  expect(dialog().querySelector('.ib-cp-drop')).toBeNull();
+  expect(drag(text, 'dragover', { files: [markdown('legend-notes.md')] })).toBe(true);
+  expect(dialog().querySelector('.ib-cp-drop')).not.toBeNull();
+  expect(drag(text, 'drop', { files: [markdown('legend-notes.md')] })).toBe(true);
+  expect(dialog().querySelector('.ib-cp-drop')).toBeNull();
+  await until(() => tiles(dialog()).length === 2 && tiles(dialog()).every((t) => t.getAttribute('data-compose-file') === 'done'), 'the dropped file');
+  expect(tiles(dialog())[1]!.getAttribute('data-compose-file-name')).toBe('legend-notes.md');
+
   type(text, 'This is what the legend looks like.');
   act(() => (dialog().querySelector('[data-compose-send]') as HTMLButtonElement).click());
   await until(() => document.querySelector('dialog[data-compose]') === null, 'compose closed');
   const sent = posted.find((p) => p.path === '/api/inbox/messages')!;
-  expect((sent.body.uploads as string[]).length).toBe(1);
+  expect((sent.body.uploads as string[]).length).toBe(2);
   const threads = JSON.parse((await loopback('/api/inbox/threads')).text) as { sections: { threads: { thread_id: string; subject: string }[] }[] };
   const started = threads.sections.flatMap((s) => s.threads).find((t) => t.subject === 'This is what the legend looks like')!;
   const model = JSON.parse((await loopback(`/api/inbox/threads/${started.thread_id}`)).text) as { thread: { messages: InboxMessage[] } };
-  expect(model.thread.messages[0]!.attachments!.map((a) => [a.name, a.kind])).toEqual([[name, 'image']]);
+  expect(model.thread.messages[0]!.attachments!.map((a) => a.name)).toEqual([name, 'legend-notes.md']);
+  expect(model.thread.messages[0]!.attachments![0]!.kind).toBe('image');
 }, 30_000);
 
 test.skipIf(!hasDom)('the reply box: two pasted images make two tiles (the second name kept apart), a text paste none, and Send carries both on the reply', async () => {
@@ -581,6 +594,18 @@ test.skipIf(!hasDom)('files dropped anywhere over the thread with the reply clos
   const message = el.querySelector('fieldset[data-question-key]')!;
   expect(drag(message, 'dragover', { text: 'https://example.com/q3' })).toBe(false);
   expect(pane.querySelector('[data-pane-drop]')).toBeNull();
+  // A drag that started on the page (an image in a message dragged a little), even one a browser gives a Files
+  // type: no target, nothing taken, until it ends.
+  act(() => {
+    message.dispatchEvent(new Event('dragstart', { bubbles: true }));
+  });
+  expect(drag(message, 'dragover', { files: [image('copy-of-a-tile.png')] })).toBe(false);
+  expect(pane.querySelector('[data-pane-drop]')).toBeNull();
+  expect(drag(message, 'drop', { files: [image('copy-of-a-tile.png')] })).toBe(false);
+  act(() => {
+    message.dispatchEvent(new Event('dragend', { bubbles: true }));
+  });
+  expect(replyBox(el)).toBeNull();
   // Files: the whole pane is the target.
   expect(drag(message, 'dragover', { files: [image('ledger-q3-export.png')] })).toBe(true);
   expect(pane.querySelector('[data-pane-drop]')).not.toBeNull();

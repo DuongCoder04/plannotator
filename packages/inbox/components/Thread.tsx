@@ -9,7 +9,7 @@ import { ImageLightbox } from '@plannotator/ui/components/ImageLightbox';
 import { ImageResolverContext, type ImageResolver } from '@plannotator/ui/components/ImageResolverContext';
 import { getImageSrc } from '@plannotator/ui/components/ImageThumbnail';
 import { parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
-import { inboxActionInDraft, inboxActionPersonMark, type InboxListRow, type InboxSectionId, type InboxMessageWire, type InboxProjectRepo, type InboxQuestion, type InboxSentRecipient, type InboxThread, type InboxUpload } from '@plannotator/core/inbox-types';
+import { INBOX_UPLOAD_MAX_BYTES, inboxActionInDraft, inboxActionPersonMark, type InboxListRow, type InboxSectionId, type InboxMessageWire, type InboxProjectRepo, type InboxQuestion, type InboxSentRecipient, type InboxThread, type InboxUpload } from '@plannotator/core/inbox-types';
 import { withoutInboxActionsSection } from '@plannotator/core/inbox-actions';
 import { capQuestionPrompt, emptyQuestionAnswer, indexQuestionBlocks, isQuestionAnswerEmpty, type IndexedQuestion, type QuestionAnswer, type QuestionStatus } from '@plannotator/core/question-block';
 import { INBOX_AUTO_SEND_ACK_NOTES, inboxAskingMessage, wholeMinutes, isInboxNote, isInboxTextKind, readInboxAttachmentKind, type InboxAnnotationRecord, type InboxAttachment, type InboxAttachmentState, type InboxInlineImage, type InboxQuestionState } from '@plannotator/core/inbox-types';
@@ -2532,16 +2532,6 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     replyFiles.add(list);
     setError(null);
   });
-  // Files dragged anywhere over the thread: the whole pane takes them, and a drop opens the reply box with them
-  // when it is closed. Not where no reply can be written (archived, Artifacts, the replaced-questions guard, a New message).
-  const paneDrop = useFileDrop(
-    (list) => {
-      if (!boxRef.current.open) openBox();
-      replyFiles.add(list);
-      setError(null);
-    },
-    !resolved && !artifactsOn && !guard && newMessage?.kind !== 'compose',
-  );
   useEffect(() => {
     reportUnsentReply({ subject: unsentSubject, files: unsentFiles });
     return () => reportUnsentReply(null);
@@ -2634,6 +2624,17 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const staleQuestions = stale
     .map((id) => thread.messages.flatMap((m) => m.questions ?? []).find((q) => `${q.message_id}/${q.key}` === id))
     .filter((q): q is InboxQuestion => q !== undefined && q.state === 'superseded');
+  // Files dragged anywhere over the thread: the whole pane takes them, and a drop opens the reply box with them
+  // when it is closed. Not where no reply can be written (archived, Artifacts, the replaced-questions guard, a New message).
+  const paneDrop = useFileDrop(
+    (list) => {
+      if (!boxRef.current.open) openBox();
+      replyFiles.add(list);
+      setError(null);
+    },
+    // The same conditions that hide the box (the guard shows only while a replaced question waits).
+    !resolved && !artifactsOn && !(guard && staleQuestions.length > 0) && newMessage?.kind !== 'compose',
+  );
   /** Acting on the panel: these replacements were seen, so Send goes as asked from now on. */
   const acknowledgeStale = () => {
     setStale([]);
@@ -3673,7 +3674,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             <Icon name="clip" size={20} />
             <span>
               <b>Drop to attach to your reply</b>
-              <span className="ib-panedrop-sub">Images, PDFs, any file up to 100 MB</span>
+              <span className="ib-panedrop-sub">Images, PDFs, any file up to {INBOX_UPLOAD_MAX_BYTES / (1024 * 1024)} MB</span>
             </span>
           </span>
         </div>
