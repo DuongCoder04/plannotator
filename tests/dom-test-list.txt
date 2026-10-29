@@ -413,3 +413,4 @@ packages/inbox/cookieHostSettings.test.tsx
 packages/ui/components/Settings.cookieHost.test.tsx
 packages/review-editor/components/FileTree.allFiles.test.tsx
 packages/review-editor/hooks/useRepoFiles.test.tsx
+packages/review-editor/components/RepoFileView.test.tsx
