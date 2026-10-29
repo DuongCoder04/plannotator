@@ -2217,6 +2217,15 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
 }
 .pn-inbox .ib-fl-tm > button.ib-mut { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; margin: 0 -5px 0 -3px; }
 .pn-inbox .ib-fl-tm > button.ib-mut:hover { background: var(--muted); color: var(--foreground); }
+/* A message's ⋯ (CopyMenus.tsx, design record "inbox-copy-message", option B): the sidebar ⋯'s rule. Shown while
+   the pointer is on the message, while something in it has keyboard focus, and while its menu is open; always on
+   a phone (`data-phone`) and wherever the main pointer cannot hover (a touch screen's desktop layout). */
+.pn-inbox .ib-fl-tm > button.ib-mmore[data-open] { background: var(--muted); color: var(--foreground); }
+@media (hover: hover) {
+  .pn-inbox .ib-message:not(:hover):not(:has(:focus-visible)) .ib-fl-tm > .ib-mmore:not([data-open]):not([data-phone]) { opacity: 0; }
+}
+/* The thread header's ⋯ while its menu is open. */
+.pn-inbox .ib-iconbtn.ib-tmore[data-popup-open] { background: var(--muted); color: var(--foreground); }
 /* Keyboard focus on a fold line or a message's head: the ring inside the row (inbox-polish, item 4). */
 .pn-inbox :is(button.ib-fline, .ib-fl-hit, .ib-mfold-b):focus-visible { outline-offset: -2px; }
 .pn-inbox .ib-mfold-b:focus-visible { border-radius: 8px; }
@@ -4506,6 +4515,8 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
      shows its icon alone, its words kept as its name (visually hidden, still read). */
   .ib-phead:has([data-pin-toggle]) .ib-hbtn[data-mark-read] .ib-hbtn-l { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .pn-inbox .ib-phead:has([data-pin-toggle]) .ib-hbtn[data-mark-read] { width: 44px; min-width: 44px; padding: 0; justify-content: center; }
+  /* With ⋯ More after Archive (design record "inbox-copy-message") the row is 2 px short at 320 px: Mark read's side margins go. */
+  .pn-inbox .ib-phead:has([data-thread-more]) .ib-hbtn[data-mark-read] { margin: 0; }
 }
 
 /* ───────────── Decision mode (approval "inbox-decision-mode", Queue; experimental) ─────────────
