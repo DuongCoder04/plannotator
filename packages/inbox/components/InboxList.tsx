@@ -23,6 +23,7 @@ import { UndeliveredBadge } from './Undelivered';
 import { TimeWithTick } from './DeliveryTick';
 import { RowBadge, WaitCard, badgeDescription, rowHasBadge } from './RowBadge';
 import { attachPullToRefresh } from '../pullRefresh';
+import { TidyMenu, type TidyController } from './Tidy';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
 import { isComposingKey, keyTarget, modalOpen } from '../shortcuts/guards';
 import { listMoveIndex, listStops, LIST_STOPS, type ListMove } from '../listKeys';
@@ -91,6 +92,11 @@ export interface InboxListProps {
    * older Inbox keeps no pins): neither.
    */
   pinned?: ReadonlySet<string>;
+  /**
+   * Tidy (2026-10-28): the header's ⋮ menu (Tidy, Refresh) and the run's line
+   * at the top of the list. Absent: no menu.
+   */
+  tidy?: TidyController;
 }
 
 /**
@@ -674,6 +680,15 @@ export function InboxList(props: InboxListProps) {
               <Icon name="compose" size={isMobile ? 20 : 16} />
             </button>
           </Tip>
+        )}
+        {/* Tidy's ⋮: the header's far right, after Search and New message (the approved frames). */}
+        {props.tidy && (
+          <TidyMenu
+            tidy={props.tidy}
+            phone={isMobile}
+            className="ib-lhead-more"
+            onRefresh={() => props.onRefresh?.()}
+          />
         )}
       </div>
       {pulls && (

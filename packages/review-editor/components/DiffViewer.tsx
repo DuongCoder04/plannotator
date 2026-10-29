@@ -177,6 +177,11 @@ const PierreDiffContent = React.memo(({
 ));
 
 interface DiffViewerProps {
+  /** A control drawn in the file header (the Changes | Whole file switch). */
+  headerAccessory?: React.ReactNode;
+  /** Replaces the diff below the header (the Whole file view): the header,
+   *  its viewed and staging controls stay as they are. */
+  bodyOverride?: React.ReactNode;
   patch: string;
   filePath: string;
   oldPath?: string;
@@ -302,6 +307,8 @@ const MarkdownPreviewPending: React.FC = () => (
 );
 
 export const DiffViewer: React.FC<DiffViewerProps> = ({
+  headerAccessory,
+  bodyOverride,
   patch,
   filePath,
   oldPath,
@@ -1079,6 +1086,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         showStageControl={showStageControls}
         stageError={stageError}
         onFileComment={setFileCommentAnchor}
+        accessory={headerAccessory}
         renderMarkdownView={canPreviewMarkdown
           ? ({ iconOnly, touch }) => (
             <MarkdownViewMenu
@@ -1099,7 +1107,9 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
       )}
       </div>
 
-      {!collapsed && (
+      {!collapsed && bodyOverride ? (
+        <div className="flex-1 min-h-0 relative flex flex-col" data-diff-body-override>{bodyOverride}</div>
+      ) : !collapsed && (
         <OverlayScrollArea
           className={`flex-1 min-h-0 relative ${isDraggingSplit ? 'select-none' : ''}`}
           overflowX="scroll"
