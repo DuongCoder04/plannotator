@@ -9,7 +9,7 @@
  * filter; the phone's button squeezed into the header instead of its own
  * row, or its menu not a bottom sheet.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterEach, expect, test } from 'bun:test';
 import { act } from 'react';

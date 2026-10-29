@@ -512,7 +512,8 @@ export function createInboxAcpRunner(options: InboxAcpRunnerOptions) {
     const record = sessions.get(key)!;
     const out: InboxMessage[] = [];
     for (const reply of store.pendingReplies(key, { tags: false })) {
-      if (isInboxNote(reply)) {
+      // A Tidy's wake is a turn like a reply; the other notes are only recorded.
+      if (isInboxNote(reply) && !reply.tidy) {
         try {
           store.recordDelivery(reply.id, { host: record.agent, session: key });
         } catch {

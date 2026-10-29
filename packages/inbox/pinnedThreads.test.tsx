@@ -13,7 +13,7 @@
  * header's toggle sending both in order; an archived thread stays
  * pinned and opens as an archived thread; no section when nothing is pinned.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { act } from 'react';

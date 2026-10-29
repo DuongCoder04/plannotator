@@ -47,13 +47,16 @@ import {
 	type IntegrationResult,
 	type ObsidianConfig,
 	type OctarineConfig,
+	type NotionConfig,
 	saveToBear,
 	saveToObsidian,
 	saveToOctarine,
+	saveToNotion,
+	isNotionAvailable,
 } from "./integrations.ts";
 import { buildAdvertisedUrl, isRemoteSession, listenOnPort } from "./network.ts";
 
-import { agentSwitchConfigToSave, agentToolSaveFailed, loadConfig, saveConfig, detectGitUser, getServerConfig, resolveAIEnabled, resolveFeedbackHistory, resolveSharingEnabled } from "../generated/config.ts";
+import { agentSwitchConfigToSave, agentToolSaveFailed, cookieHostConfigWrite, loadConfig, saveConfig, detectGitUser, getServerConfig, resolveAIEnabled, resolveFeedbackHistory, resolveSharingEnabled } from "../generated/config.ts";
 import { currentPiHost } from "../pi-host.ts";
 import { appendFeedbackRecord, type FeedbackDecision } from "../generated/feedback-archive.ts";
 import { isFaviconStyle, type FaviconStyle } from "../generated/favicon.ts";
@@ -265,6 +268,8 @@ export async function startPlanReviewServer(options: {
 	// on a port a new server now owns) is refused with 409 session_mismatch.
 	// A body without it (an older client) is accepted.
 	const serverSession = createServerSessionNonce();
+	// Save to Notion uses the server's NOTION_TOKEN, so it is offered only on this computer.
+	const notionAvailable = isNotionAvailable(isRemoteSession());
 	// Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for.
 	const refCards = createPiRefCards(options.refRunner);
 	const decisionPromise = new Promise<PlanReviewDecision>((r) => {
@@ -416,7 +421,7 @@ export async function startPlanReviewServer(options: {
 					archivePlans,
 					sharingEnabled,
 					shareBaseUrl,
-					serverConfig: getServerConfig(gitUser, currentPiHost()),
+					serverConfig: getServerConfig(gitUser, currentPiHost(), { cookieHost: !isRemoteSession() }),
 				});
 			} else {
 				json(res, {
@@ -438,7 +443,8 @@ export async function startPlanReviewServer(options: {
 					pasteApiUrl,
 					repoInfo,
 					projectRoot: process.cwd(),
-					serverConfig: getServerConfig(gitUser, currentPiHost()),
+					...(notionAvailable ? { notion: true } : {}),
+					serverConfig: getServerConfig(gitUser, currentPiHost(), { cookieHost: !isRemoteSession() }),
 					...piUpdateAdvert(options.origin),
 				});
 			}
@@ -480,9 +486,13 @@ export async function startPlanReviewServer(options: {
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
 				if (body.conventionalLabels !== undefined) toSave.conventionalLabels = body.conventionalLabels;
 				if (body.pfmReminder !== undefined) toSave.pfmReminder = body.pfmReminder;
+				// The cookie switch (#2184): its own write, which never replaces another urlHost;
+				// refused in remote mode.
+				const cookieHostWrite = cookieHostConfigWrite((body as { cookieHost?: unknown }).cookieHost, isRemoteSession());
+				if (cookieHostWrite && cookieHostWrite.status !== 200) return json(res, cookieHostWrite.body, cookieHostWrite.status);
 				if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return json(res, { error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, 500);
 				if (agentToolSaveFailed(toSave)) return json(res, { error: "Could not save the setting to config.json." }, 500);
-				json(res, { ok: true });
+				json(res, cookieHostWrite ? cookieHostWrite.body : { ok: true });
 			} catch {
 				json(res, { error: "Invalid request" }, 400);
 			}
@@ -599,7 +609,7 @@ export async function startPlanReviewServer(options: {
 		} else if (url.pathname === "/favicon.png") {
 			handleFavicon(res);
 		} else if (url.pathname === "/api/save-notes" && req.method === "POST") {
-			await handleSaveNotesRequest(req, res, { serverSession });
+			await handleSaveNotesRequest(req, res, { serverSession, notion: notionAvailable });
 		} else if (url.pathname === "/api/approve" && req.method === "POST") {
 			let body: Record<string, unknown> = {};
 			try {
@@ -647,6 +657,7 @@ export async function startPlanReviewServer(options: {
 				const obsConfig = body.obsidian as ObsidianConfig | undefined;
 				const bearConfig = body.bear as BearConfig | undefined;
 				const octConfig = body.octarine as OctarineConfig | undefined;
+				const notionConfig = body.notion as NotionConfig | undefined;
 				if (obsConfig?.vaultPath && obsConfig?.plan) {
 					integrationPromises.push(
 						saveToObsidian(obsConfig).then((r) => {
@@ -665,6 +676,13 @@ export async function startPlanReviewServer(options: {
 					integrationPromises.push(
 						saveToOctarine(octConfig).then((r) => {
 							integrationResults.octarine = r;
+						}),
+					);
+				}
+				if (notionAvailable && notionConfig?.plan && notionConfig?.parentPageId) {
+					integrationPromises.push(
+						saveToNotion(notionConfig).then((r) => {
+							integrationResults.notion = r;
 						}),
 					);
 				}

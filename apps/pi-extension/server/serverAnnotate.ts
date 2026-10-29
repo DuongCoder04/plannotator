@@ -1,6 +1,6 @@
 import { piUpdateAdvert } from "./update-advert.ts";
 import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
-import { annotateDiagramRenderKind } from "../generated/annotatable.ts";
+import { annotateDocumentRenderKind } from "../generated/annotatable.ts";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "../generated/app-html.ts";
 import { createServer } from "node:http";
 import type { IncomingMessage } from "node:http";
@@ -30,7 +30,7 @@ import { getPlanVersion, getVersionCount, listVersions } from "../generated/stor
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "../generated/annotate-history.ts";
 import { ANNOTATE_LIVE_VERSION_PATH, annotateLiveVersionFilePath, saveAnnotateLiveVersion } from "../generated/annotate-live-version.ts";
 import { htmlDiff } from "../generated/html-diff.ts";
-import { agentSwitchConfigToSave, agentToolSaveFailed, saveConfig, detectGitUser, getServerConfig, isAgentTerminalSide, loadConfig, resolveAIEnabled, resolveSharingEnabled, resolveAnnotateHistory, resolveFeedbackHistory, type PromptRuntime } from "../generated/config.ts";
+import { agentSwitchConfigToSave, agentToolSaveFailed, cookieHostConfigWrite, saveConfig, detectGitUser, getServerConfig, isAgentTerminalSide, loadConfig, resolveAIEnabled, resolveSharingEnabled, resolveAnnotateHistory, resolveFeedbackHistory, type PromptRuntime } from "../generated/config.ts";
 import { currentPiHost } from "../pi-host.ts";
 import { appendFeedbackRecord, type FeedbackDecision, type FeedbackSurface } from "../generated/feedback-archive.ts";
 import { isFaviconStyle, type FaviconStyle } from "../generated/favicon.ts";
@@ -68,6 +68,7 @@ import { createPiAIRuntime, handlePiAIRequest } from "./ai-runtime.ts";
 import type { SessionBridge } from "../generated/ai/session-bridge.ts";
 
 import { buildAdvertisedUrl, isRemoteSession, listenOnPort } from "./network.ts";
+import { isNotionAvailable } from "./integrations.ts";
 import { getAvailableOpenInApps, handleOpenInRequest } from "./open-in-apps.ts";
 
 import { getRepoInfo } from "./project.ts";
@@ -381,6 +382,8 @@ export async function startAnnotateServer(options: {
 	// /api/plan and echoed by every decision; a different nonce is refused
 	// with 409 session_mismatch before anything settles. Missing is accepted.
 	const serverSession = createServerSessionNonce();
+	// Save to Notion uses the server's NOTION_TOKEN, so it is offered only on this computer.
+	const notionAvailable = isNotionAvailable(isRemoteSession());
 	// Hover cards for issue, PR and MR links (ref-cards.ts): nothing runs until a card is asked for.
 	const refCards = createPiRefCards(options.refRunner);
 	const sendAlreadyDecided = (res: import("node:http").ServerResponse): void => {
@@ -398,11 +401,11 @@ export async function startAnnotateServer(options: {
 	const clientLeaseGraceMs = options.clientLeaseTestOverrides?.graceMs ?? ANNOTATE_CLIENT_LEASE_GRACE_MS;
 	const clientLeaseHeartbeatMs = options.clientLeaseTestOverrides?.heartbeatMs ?? ANNOTATE_CLIENT_LEASE_HEARTBEAT_MS;
 
-	// Diagram sources (.mmd/.mermaid/.dot/.gv) render through the diagram
-	// engine rather than the markdown pipeline: the document body stays the
+	// Diagram sources (.mmd/.mermaid/.dot/.gv) and AsciiDoc (.adoc) render
+	// through their own engine rather than the markdown pipeline: the document body stays the
 	// raw file text and /api/plan names the engine in `renderAs`. Mirrors
 	// packages/server/annotate.ts; the decision itself is shared and pure.
-	const diagramRenderKind = annotateDiagramRenderKind({
+	const documentRenderKind = annotateDocumentRenderKind({
 		filePath: options.filePath,
 		mode: options.mode || "annotate",
 		renderHtml: options.renderHtml,
@@ -667,7 +670,7 @@ export async function startAnnotateServer(options: {
 	const externalAnnotations = createExternalAnnotationHandler("plan");
 	// Set once bound: "Ask this session" answers only a loopback Host with this port.
 	let boundPort: number | undefined;
-	const aiRuntime = resolveAIEnabled() ? await createPiAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort }) : null;
+	const aiRuntime = resolveAIEnabled() ? await createPiAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort, ...(options.liveApp ? { localHostname: null } : {}) }) : null;
 	const htmlAssets = createHtmlAssetRegistry(options.mode === "annotate-folder" ? options.folderPath : undefined);
 	let agentTerminalCapability: AgentTerminalCapability = {
 		enabled: false,
@@ -943,7 +946,7 @@ export async function startAnnotateServer(options: {
 				convertHtml: false,
 				repoInfo,
 				projectRoot: process.cwd(),
-				serverConfig: getServerConfig(gitUser, currentPiHost()),
+				serverConfig: getServerConfig(gitUser, currentPiHost(), { cookieHost: !isRemoteSession() }),
 				...piUpdateAdvert(options.origin),
 				agentTerminal: agentTerminalCapability,
 				feedbackTemplates: {
@@ -996,7 +999,7 @@ export async function startAnnotateServer(options: {
 				clientLease: options.clientLeaseSupported
 					? { enabled: true as const, reconnectGraceMs: clientLeaseGraceMs }
 					: { enabled: false as const },
-				renderAs: displayRawHtml ? 'html' : diagramRenderKind ?? 'markdown',
+				renderAs: displayRawHtml ? 'html' : documentRenderKind ?? 'markdown',
 				...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
 				...(diffHtml ? { diffHtml } : {}),
 				convertHtml: options.convertHtml ?? false,
@@ -1017,12 +1020,13 @@ export async function startAnnotateServer(options: {
 				projectRoot: options.folderPath || bundleRoot || process.cwd(),
 				// The bundle's files in review order (annotate-bundle only).
 				...(bundleFiles ? { bundle: bundleFiles } : {}),
+				...(notionAvailable ? { notion: true } : {}),
 				// Extra extensions the user registered as markdown (#1307).
 				// The renderer needs them to linkify relative/wiki links to
 				// sibling docs the same way it linkifies .md ones.
 				markdownExtensions: getExtraMarkdownExtensions(),
 				...(annotateDrafts.documentsEnabled ? { documentDrafts: true } : {}),
-				serverConfig: getServerConfig(gitUser, currentPiHost()),
+				serverConfig: getServerConfig(gitUser, currentPiHost(), { cookieHost: !isRemoteSession() }),
 				...piUpdateAdvert(options.origin),
 				agentTerminal: agentTerminalCapability,
 				...(options.recentMessages ? { recentMessages: options.recentMessages } : {}),
@@ -1149,9 +1153,13 @@ export async function startAnnotateServer(options: {
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
 				if (isAgentTerminalSide(body.agentTerminalSide)) toSave.agentTerminalSide = body.agentTerminalSide;
 				if (typeof body.agentTerminalDefaultAgent === "string") toSave.agentTerminalDefaultAgent = body.agentTerminalDefaultAgent;
+				// The cookie switch (#2184): its own write, which never replaces another urlHost;
+				// refused in remote mode.
+				const cookieHostWrite = cookieHostConfigWrite((body as { cookieHost?: unknown }).cookieHost, isRemoteSession());
+				if (cookieHostWrite && cookieHostWrite.status !== 200) return json(res, cookieHostWrite.body, cookieHostWrite.status);
 				if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return json(res, { error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, 500);
 				if (agentToolSaveFailed(toSave)) return json(res, { error: "Could not save the setting to config.json." }, 500);
-				json(res, { ok: true });
+				json(res, cookieHostWrite ? cookieHostWrite.body : { ok: true });
 			} catch {
 				json(res, { error: "Invalid request" }, 400);
 			}
@@ -1438,7 +1446,7 @@ export async function startAnnotateServer(options: {
 				json(res, { error: message }, 500);
 			}
 		} else if (url.pathname === "/api/save-notes" && req.method === "POST") {
-			await handleSaveNotesRequest(req, res, { serverSession });
+			await handleSaveNotesRequest(req, res, { serverSession, notion: notionAvailable });
 		} else if (url.pathname.startsWith("/api/")) {
 			handleApiNotFound(res, url.pathname);
 		} else if (isFramedEmbeddedDocumentRequest(firstHeader(req.headers["sec-fetch-dest"]), url.pathname)) {
@@ -1552,7 +1560,8 @@ export async function startAnnotateServer(options: {
 		port,
 		liveProxyPort: liveProxy?.port,
 		portSource,
-		url: buildAdvertisedUrl(port),
+		// Keep live annotation same-site with the localhost app proxy.
+		url: options.liveApp ? `http://localhost:${port}` : buildAdvertisedUrl(port),
 		waitForDecision: () => decisionPromise,
 		hostControl,
 		stop: () => {
