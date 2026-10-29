@@ -24,9 +24,9 @@
  * description; `bun test --todo` runs them (a todo that passes fails, saying
  * the bug is fixed).
  *
- * F1 (the 0.28.37 bug) is fixed by PR #2337. The model reads which rules
- * the code under test has (RELEASE_NOTES_PENDING_RETRY_MS) and follows them,
- * so this file runs unchanged on that branch: there, the F1 todos pass.
+ * F1 (the 0.28.37 bug) is fixed by PR #2337, so its tests are ordinary
+ * tests. The model reads which rules the code under test has
+ * (RELEASE_NOTES_PENDING_RETRY_MS) and follows them.
  *
  * Runs: PLANNOTATOR_MODEL_RUNS (default 100 per property).
  */
@@ -834,10 +834,11 @@ describe("update lifecycle: the code follows the model (spec/update-lifecycle.qn
 });
 
 describe("update lifecycle: properties the code breaks today (findings: the PR #2338 description)", () => {
-  // F1. Fixed by PR #2337 (on that branch this todo passes, so `bun test --todo` fails it: drop the .todo).
+  // F1. Fixed by PR #2337 (the 15-minute retry for a young release): an ordinary test now, guarding it.
   // The seed is pinned: a random seed misses the narrow F1 path in about half the runs, and a miss would
-  // read as "fixed". With this seed main fails after 5 runs; the two F1 traces below fail on any seed.
-  test.todo(
+  // read as "fixed". With this seed the code before #2337 fails after 5 runs; the two F1 traces below
+  // fail on any seed.
+  test(
     "[FINDINGS F1] after an update, the What's new link shows within 30 minutes of the written notes (fixed by #2337)",
     async () => {
       await fc.assert(
@@ -883,7 +884,7 @@ describe("update lifecycle: properties the code breaks today (findings: the PR #
 describe("the minimal traces (findings: the PR #2338 description)", () => {
   // F1 as the 0.28.37 report saw it: the Inbox starts on the new version while the release still
   // carries GitHub's generated body.
-  test.todo("[FINDINGS F1] started on the new version before the notes were written: the link shows once they are (fixed by #2337)", async () => {
+  test("[FINDINGS F1] started on the new version before the notes were written: the link shows once they are (fixed by #2337)", async () => {
     await runModel(
       [new Publish(), new CliCheck(), new UpdateNowFromCli(), new InstallerStep(true), new InstallerStep(true), new InstallerStep(true), new InstallerStep(true), new StartInbox(), new WriteNotes(2), new Advance(30), new Advance(30)],
       (m, r) => {
@@ -895,7 +896,7 @@ describe("the minimal traces (findings: the PR #2338 description)", () => {
 
   // F1 the way the model found it: the Inbox on 1 fetched 2's notes for the update dialog while the
   // body was generated; the person updated later that day.
-  test.todo("[FINDINGS F1] notes fetched before the update while generated: the link shows after the update (fixed by #2337)", async () => {
+  test("[FINDINGS F1] notes fetched before the update while generated: the link shows after the update (fixed by #2337)", async () => {
     await runModel(
       [new StartInbox(), new Publish(), new Advance(10), new WriteNotes(2), new UpdateNow(), new InstallerStep(true), new InstallerStep(true), new InstallerStep(true), new Advance(1), new Restart(), new Advance(30), new Advance(30)],
       (m, r) => {
