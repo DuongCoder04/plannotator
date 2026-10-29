@@ -17,6 +17,7 @@ import {
   readdirSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
@@ -5587,6 +5588,77 @@ describe.skipIf(QWEN_PS_RUNNERS.length === 0)("Windows installers' Qwen Code ste
       expect(r.code).toBe(0);
       expect(readFileSync(join(shared, "SKILL.md"), "utf8")).toBe("shared copy\n");
       expect(readFileSync(join(skills, "plannotator-review", "SKILL.md"), "utf8")).toContain("is_background: true");
+    }, QWEN_PS_TIMEOUT_MS);
+  }
+});
+
+// F7 (#2338): install.ps1 under PowerShell. A run stopped between the swap's
+// two moves left no plannotator.exe until the person reinstalled by hand. The
+// next run now puts the binary it moved aside back before anything else, and
+// the swap stages the new binary next to the target first, so its two moves
+// are renames on one volume, back to back.
+describe.skipIf(PS_SHELLS.length === 0)("install.ps1 always leaves a plannotator.exe (F7)", () => {
+  const roots: string[] = [];
+  afterAll(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  function scratch(): string {
+    const root = mkdtempSync(join(tmpdir(), "plannotator-ps1-swap-test-"));
+    roots.push(root);
+    return root;
+  }
+
+  function runPs1Region(shell: string, region: string, vars: Record<string, string>) {
+    const root = scratch();
+    const driver = join(root, "driver.ps1");
+    const lines = [`$ErrorActionPreference = "Stop"`, ...Object.entries(vars).map(([k, v]) => `$${k} = ${psQuote(v)}`), region, "exit 0", ""];
+    writeFileSync(driver, lines.join("\n"));
+    const env: Record<string, string> =
+      process.platform === "win32"
+        ? { SystemRoot: process.env.SystemRoot ?? "C:\\Windows", PATH: process.env.PATH ?? "", TEMP: root, TMP: root }
+        : { PATH: "/usr/bin:/bin", HOME: root, TMPDIR: root };
+    const r = Bun.spawnSync([shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", driver], { env, cwd: root, stdout: "pipe", stderr: "pipe" });
+    return { code: r.exitCode, out: r.stdout.toString() + r.stderr.toString() };
+  }
+
+  function installDirWith(files: Record<string, string>): string {
+    const dir = join(scratch(), "plannotator dir");
+    mkdirSync(dir);
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body);
+    return dir;
+  }
+
+  const recovery = () =>
+    extractRegion(ps1Text(), '$targetExe = "$installDir\\plannotator.exe"\n\n# A run stopped', "# First plannotator release", "the plannotator.exe recovery in install.ps1");
+  const swap = () =>
+    extractRegion(ps1Text(), "# Stage the new binary next to the target first", '\nWrite-Host ""\nWrite-Host "plannotator $latestTag installed', "the binary swap in install.ps1");
+
+  for (const shell of PS_SHELLS) {
+    const name = shell.split(/[\\/]/).pop();
+
+    test(`install.ps1 (${name}): a run stopped between the two moves gets its binary back first thing`, () => {
+      const olderAside = `plannotator.exe.old-${"a".repeat(32)}`;
+      const dir = installDirWith({ "plannotator.exe.old": "newest aside", [olderAside]: "older aside" });
+      const older = (Date.now() - 60 * 60_000) / 1000;
+      utimesSync(join(dir, olderAside), older, older);
+      const r = runPs1Region(shell, recovery(), { installDir: dir });
+      expect(r.code, r.out).toBe(0);
+      expect(readFileSync(join(dir, "plannotator.exe"), "utf8")).toBe("newest aside");
+      // A plannotator.exe that is there is never touched.
+      const kept = installDirWith({ "plannotator.exe": "current", "plannotator.exe.old": "aside" });
+      expect(runPs1Region(shell, recovery(), { installDir: kept }).code).toBe(0);
+      expect(readFileSync(join(kept, "plannotator.exe"), "utf8")).toBe("current");
+    }, QWEN_PS_TIMEOUT_MS);
+
+    test(`install.ps1 (${name}): the swap puts the new binary in place and leaves no staged or aside copy`, () => {
+      const dir = installDirWith({ "plannotator.exe": "old binary" });
+      const tmpFile = join(installDirWith({ "download.tmp": "new binary" }), "download.tmp");
+      const r = runPs1Region(shell, swap(), { installDir: dir, tmpFile });
+      expect(r.code, r.out).toBe(0);
+      expect(readFileSync(join(dir, "plannotator.exe"), "utf8")).toBe("new binary");
+      expect(readdirSync(dir)).toEqual(["plannotator.exe"]);
+      expect(existsSync(tmpFile)).toBe(false);
     }, QWEN_PS_TIMEOUT_MS);
   }
 });

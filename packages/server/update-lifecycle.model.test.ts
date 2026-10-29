@@ -70,6 +70,7 @@ interface ModelInstaller {
   v: number;
   person: boolean;
   phase: Phase;
+  at: number; // started (minutes)
 }
 interface Model {
   now: number; // minutes
@@ -133,10 +134,14 @@ function initialModel(): Model {
   };
 }
 
+const DAY = 24 * 60;
 const lockExpired = (m: Model) => !!m.lock && (m.now - m.lock.at >= 60 || m.lock.at - m.now >= 60);
 const holderGone = (m: Model) => !!m.lock && m.lock.kind === "wrapper" && !isRunning(m.inst[m.lock.owner]!);
-const lockHeldView = (m: Model) => !!m.lock && !lockExpired(m) && !holderGone(m);
-const canAcquire = (m: Model) => !m.lock || lockExpired(m) || holderGone(m);
+// A wrapper lock whose install still runs holds past the hour, up to a day (AUTO_UPDATE_LOCK_LIVE_MAX_MS).
+const liveLock = (m: Model) =>
+  !!m.lock && m.lock.kind === "wrapper" && isRunning(m.inst[m.lock.owner]!) && Math.abs(m.now - m.lock.at) < DAY;
+const lockHeldView = (m: Model) => !!m.lock && !holderGone(m) && (!lockExpired(m) || liveLock(m));
+const canAcquire = (m: Model) => !lockHeldView(m);
 
 function uiState(m: Model): string {
   if (!m.ib.alive) return "none";
@@ -205,8 +210,9 @@ function link(m: Model): number {
   return notesDue(m, v) ? v : 0;
 }
 
+/** A lock that no longer holds (its holder gone, or past its hour) is released and the install recorded failed. */
 function reap(m: Model): void {
-  if (!m.lock || !holderGone(m)) return;
+  if (!m.lock || lockHeldView(m)) return;
   m.lock = null;
   if (m.pendingV && m.resultV !== m.pendingV) {
     m.resultV = m.pendingV;
@@ -232,8 +238,9 @@ function startInbox(m: Model): void {
 
 function launch(m: Model, v: number, person: boolean): boolean {
   if (!canAcquire(m)) return false;
-  m.inst.push({ v, person, phase: "spawned" });
-  m.lock = { kind: "bare", at: m.now, owner: m.inst.length - 1 };
+  m.inst.push({ v, person, phase: "spawned", at: m.now });
+  // launchInstaller names the spawned wrapper in the lock at once.
+  m.lock = { kind: "wrapper", at: m.now, owner: m.inst.length - 1 };
   m.resultV = 0;
   m.resultCode = 0;
   m.pendingV = v;
@@ -246,7 +253,8 @@ function finishModel(m: Model, index: number, code: number): void {
   ins.phase = "done";
   m.resultV = ins.v;
   m.resultCode = code;
-  m.lock = null;
+  // The wrapper removes the lock only while it is still its own.
+  if (m.lock?.owner === index) m.lock = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -369,10 +377,7 @@ function startReal(real: Real): void {
     isManaged: () => true,
     listSessions: () => [],
     probeVersion: async (path) => /^plannotator\s+(\S+)/.exec(readFileSync(path, "utf-8"))?.[1] ?? null,
-    launchInstaller: (launch) => {
-      real.launches.push(launch);
-      real.holders.push(null);
-    },
+    launchInstaller: fakeLaunch(real),
     onChange: () => {},
   });
   // The health tick is called by the test (an Advance), never by a timer.
@@ -414,6 +419,23 @@ function holderLine(pid: number): string {
   return `pid=${pid} group=${pid} host=${m.host} boot=${m.boot} pidns=${m.pidns}\n`;
 }
 
+/** Write the holder's line into the lock, its mtime past the 5 s hand-off. */
+function writeHolderLine(lock: string, holder: ChildProcess): void {
+  writeFileSync(lock, holderLine(holder.pid!));
+  const at = (Date.now() - 10_000) / 1000;
+  utimesSync(lock, at, at);
+}
+
+/** launchInstaller's stand-in: a real process group in place of the wrapper, named in the lock right away as launchInstaller does. */
+function fakeLaunch(real: Real): (launch: InstallerLaunch) => void {
+  return (launch) => {
+    real.launches.push(launch);
+    const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 600000)"], { stdio: "ignore", detached: true }); // inbox-guard: own child
+    real.holders.push(holder);
+    writeHolderLine(launch.lockPath, holder);
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The actions (each: the model's step, then the same step on the real code)
 // ---------------------------------------------------------------------------
@@ -447,7 +469,8 @@ class WriteNotes implements Cmd {
 
 class Advance implements Cmd {
   constructor(readonly minutes: number) {}
-  check = () => true;
+  // As in the spec: a spawned wrapper writes its lock line (its first command) before time moves on, or is killed.
+  check = (m: Model) => !m.inst.some((i) => i.phase === "spawned");
   async run(m: Model, r: Real) {
     m.now += this.minutes;
     r.clock += this.minutes * MIN;
@@ -537,14 +560,10 @@ class InstallerStep implements Cmd {
     const ins = m.inst[index]!;
     const lock = autoUpdatePaths(r.dataDir).lock;
     if (ins.phase === "spawned") {
-      // The wrapper's first line: its process group (a real one) and this machine.
+      // The wrapper's first line: the same process group and machine launchInstaller wrote.
       ins.phase = "locked";
       m.lock = { kind: "wrapper", at: m.now, owner: index };
-      const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 600000)"], { stdio: "ignore", detached: true }); // inbox-guard: own child
-      r.holders[index] = holder;
-      writeFileSync(lock, holderLine(holder.pid!));
-      const at = (Date.now() - 10_000) / 1000; // past the 5 s hand-off
-      utimesSync(lock, at, at);
+      writeHolderLine(lock, r.holders[index]!);
     } else if (ins.phase === "locked") {
       if (m.netUp) ins.phase = "downloaded";
       else await this.finish(m, r, index, 75);
@@ -562,7 +581,8 @@ class InstallerStep implements Cmd {
     const paths = autoUpdatePaths(r.dataDir);
     writeFileSync(`${paths.result}.tmp`, JSON.stringify({ version: `v${ver(ins.v)}`, exitCode: code }) + "\n");
     renameSync(`${paths.result}.tmp`, paths.result);
-    rmSync(paths.lock, { force: true }); // the wrapper's `rm -f`, whoever holds it now
+    // The wrapper's release_lock: only while the lock still names it.
+    if (existsSync(paths.lock) && readFileSync(paths.lock, "utf-8") === holderLine(r.holders[index]!.pid!)) rmSync(paths.lock);
     await killHolder(r, index);
   }
   toString = () => `InstallerStep(${this.ok ? "ok" : "fails"})`;
@@ -779,7 +799,9 @@ function whatsNewWithinRun(m: Model, r: Real): void {
 /** F5 and F6: never two installers; "Updating…" only while an install runs; a failed install the person started shows. */
 function installsAndLocks(m: Model, r: Real): void {
   conforms(m, r);
-  expect(m.inst.filter(isRunning).length).toBeLessThanOrEqual(1);
+  // A second install starts only beside one that has run for a day (a hung install never holds the lock for good).
+  const running = m.inst.filter(isRunning);
+  for (const older of running.slice(0, -1)) expect(m.now - older.at).toBeGreaterThanOrEqual(DAY);
   const state = r.updates?.current()?.state;
   if (state === "updating") expect(m.inst.some(isRunning)).toBe(true);
 }
@@ -858,8 +880,9 @@ describe("update lifecycle: properties the code breaks today (findings: the PR #
     300_000,
   );
 
-  test.todo(
-    "[FINDINGS F5, F6] never two installers, and Updating… only while an install runs",
+  // F5 and F6: fixed by PR #2342.
+  test(
+    "[FINDINGS F5, F6] never two installers (within a day), and Updating… only while an install runs",
     async () => {
       await fc.assert(
         fc.asyncProperty(
@@ -960,8 +983,8 @@ describe("the minimal traces (findings: the PR #2338 description)", () => {
   });
 
   // F5: an install that runs past the lock's hour (install.sh's binary download has no time limit)
-  // loses its lock to the next Update now while its process group is alive.
-  test.todo("[FINDINGS F5] a lock whose wrapper's process group is alive is never taken, however old", async () => {
+  // loses its lock to the next Update now while its process group is alive. Fixed by PR #2342.
+  test("[FINDINGS F5] a lock past its hour whose wrapper's process group is alive is not taken", async () => {
     const world = newWorld();
     const lock = autoUpdatePaths(world.r.dataDir).lock;
     const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 600000)"], { stdio: "ignore", detached: true }); // inbox-guard: own child
@@ -973,8 +996,8 @@ describe("the minimal traces (findings: the PR #2338 description)", () => {
   });
 
   // F6: the install died before the wrapper wrote its line (or on Windows, at any point): "Updating…"
-  // for an hour with no way to retry, then the failure is never shown.
-  test.todo("[FINDINGS F6] an Update now whose install died shows Failed (with Try again), not Updating… for an hour", async () => {
+  // for an hour with no way to retry, then the failure is never shown. Fixed by PR #2342.
+  test("[FINDINGS F6] an Update now whose install died shows Failed (with Try again), not Updating… for an hour", async () => {
     await runModel(
       [new StartInbox(), new Publish(), new Advance(10), new UpdateNow(), new KillInstaller(), new Advance(1), new Advance(60)],
       (m, r) => {
@@ -996,10 +1019,7 @@ class UpdateNowFromCli implements Cmd {
       now: () => r.clock,
       platform: process.platform,
       isManaged: () => true,
-      launchInstaller: (launch) => {
-        r.launches.push(launch);
-        r.holders.push(null);
-      },
+      launchInstaller: fakeLaunch(r),
     });
   }
   toString = () => "UpdateNowFromCli";

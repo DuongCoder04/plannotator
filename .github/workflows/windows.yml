@@ -48,7 +48,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Run focused uninstall tests
-        run: bun test packages/server/uninstall.test.ts apps/hook/server/cli.test.ts packages/server/auto-update.test.ts
+        run: bun test packages/server/uninstall.test.ts apps/hook/server/cli.test.ts packages/server/auto-update.test.ts packages/server/auto-update-stuck.test.ts
 
   # Path gate for the Qwen Code installer jobs below (about 20 Windows runner
   # minutes per run). Only these files can change what those tests run: the

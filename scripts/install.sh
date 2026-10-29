@@ -831,7 +831,8 @@ checksum_url="${binary_url}.sha256"
 mkdir -p "$INSTALL_DIR"
 
 tmp_file=$(mktemp)
-curl -fsSL -o "$tmp_file" "$binary_url"
+# A stalled download gives up after a minute (an update holds its lock while it runs).
+curl -fsSL -o "$tmp_file" --speed-limit 1 --speed-time 60 "$binary_url"
 
 # Safe updates (step 1): `plannotator update`, Update now and auto-update run
 # this script after the running Plannotator downloaded it, and the .sha256 of
