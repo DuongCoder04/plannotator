@@ -20,8 +20,9 @@
  * After every action the real button, the real "What's new" link and the
  * requests GitHub saw must equal the model's, and the safety properties that
  * hold on main are checked on the real code. The properties the code breaks
- * today are `test.todo` with their spec/FINDINGS.md entry; `bun test --todo` runs
- * them (a todo that passes fails, saying the bug is fixed).
+ * today are `test.todo`, each named after its finding in the PR #2338
+ * description; `bun test --todo` runs them (a todo that passes fails, saying
+ * the bug is fixed).
  *
  * F1 (the 0.28.37 bug) is fixed by PR #2337. The model reads which rules
  * the code under test has (RELEASE_NOTES_PENDING_RETRY_MS) and follows them,
@@ -363,6 +364,8 @@ function startReal(real: Real): void {
     now: () => real.clock,
     ...sources(real),
     fetchReleaseTag: (v) => track(real, fetchReleaseByTag(v, netFetch(real))),
+    // Release images too: every request stays on loopback (the fake notes have none today).
+    fetchImage: ((input: string | URL | Request, init?: RequestInit) => track(real, netFetch(real)(input, init))) as typeof fetch,
     isManaged: () => true,
     listSessions: () => [],
     probeVersion: async (path) => /^plannotator\s+(\S+)/.exec(readFileSync(path, "utf-8"))?.[1] ?? null,
@@ -645,11 +648,15 @@ const anyCommand = [
 let saved: Record<string, string | undefined> = {};
 const ENV = ["PLANNOTATOR_DATA_DIR", "PLANNOTATOR_UPDATE_CHECK", "PLANNOTATOR_UPDATE_API_URL", "PLANNOTATOR_UPDATE_LATEST_URL"];
 let worlds: Real[] = [];
+let idleDataDir = "";
 const realSetTimeout = globalThis.setTimeout;
 
 beforeEach(() => {
   saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
   for (const k of ENV) delete process.env[k];
+  // Never unset: a config read before newWorld() resolves to this empty sandbox, never ~/.plannotator.
+  idleDataDir = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-update-model-idle-")));
+  process.env.PLANNOTATOR_DATA_DIR = idleDataDir;
   // "Updating…" polls every 2 s on a real timer; the test ticks by itself.
   globalThis.setTimeout = ((fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) =>
     ms === INBOX_UPDATING_TICK_MS ? realSetTimeout(() => {}, 2 ** 30) : realSetTimeout(fn, ms, ...rest)) as typeof setTimeout;
@@ -658,6 +665,7 @@ beforeEach(() => {
 afterEach(async () => {
   globalThis.setTimeout = realSetTimeout;
   for (const r of worlds.splice(0)) await disposeWorld(r);
+  rmSync(idleDataDir, { recursive: true, force: true });
   for (const k of ENV) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
@@ -825,8 +833,10 @@ describe("update lifecycle: the code follows the model (spec/update-lifecycle.qn
   );
 });
 
-describe("update lifecycle: properties the code breaks today (spec/FINDINGS.md)", () => {
+describe("update lifecycle: properties the code breaks today (findings: the PR #2338 description)", () => {
   // F1. Fixed by PR #2337 (on that branch this todo passes, so `bun test --todo` fails it: drop the .todo).
+  // The seed is pinned: a random seed misses the narrow F1 path in about half the runs, and a miss would
+  // read as "fixed". With this seed main fails after 5 runs; the two F1 traces below fail on any seed.
   test.todo(
     "[FINDINGS F1] after an update, the What's new link shows within 30 minutes of the written notes (fixed by #2337)",
     async () => {
@@ -835,7 +845,7 @@ describe("update lifecycle: properties the code breaks today (spec/FINDINGS.md)"
           fc.commands([fc.constant(new StartInbox()), ...focused], { maxCommands: 30, size: "large" }),
           (cmds) => runModel([new StartInbox(), ...cmds], whatsNewWithinRun),
         ),
-        { numRuns: RUNS * 8 },
+        { numRuns: RUNS * 8, seed: 1818629354 },
       );
     },
     300_000,
@@ -867,10 +877,10 @@ describe("update lifecycle: properties the code breaks today (spec/FINDINGS.md)"
 });
 
 // ---------------------------------------------------------------------------
-// The minimal traces of spec/FINDINGS.md, on the real code
+// The minimal traces of the findings (the PR #2338 description), on the real code
 // ---------------------------------------------------------------------------
 
-describe("the minimal traces (spec/FINDINGS.md)", () => {
+describe("the minimal traces (findings: the PR #2338 description)", () => {
   // F1 as the 0.28.37 report saw it: the Inbox starts on the new version while the release still
   // carries GitHub's generated body.
   test.todo("[FINDINGS F1] started on the new version before the notes were written: the link shows once they are (fixed by #2337)", async () => {

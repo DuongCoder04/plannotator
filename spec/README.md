@@ -3,8 +3,8 @@
 `update-lifecycle.qnt` is a [Quint](https://quint-lang.org) model of how a
 Plannotator install learns of a release, updates, restarts and shows "What's
 new", written from the code on main (`35f9ad90d`). It covers one machine and
-one data dir. `FINDINGS.md` lists what the model found and which findings the
-real code reproduces.
+one data dir. The PR #2338 description lists what the model found and which
+findings the real code reproduces.
 
 The model is tied to the code in two ways:
 
@@ -40,7 +40,8 @@ PLANNOTATOR_MODEL_RUNS=500 bun test packages/server/update-lifecycle.model.test.
 ```
 
 `simulate.sh` uses Quint's rust simulator (`BACKEND=typescript` uses the
-slower one). Nothing here runs `quint verify`. That needs Apalache, which this
+slower one). On first use, Quint's rust backend downloads its evaluator from
+Quint's GitHub releases into `~/.quint`. Nothing here runs `quint verify`. That needs Apalache, which this
 work did not download.
 
 ## Instances
@@ -113,4 +114,5 @@ ends with one tick.
 Not modelled: the API fallback and the page's rate limit (rate-limit waits
 only lengthen the bounds), snooze, release images, an unwritable state file,
 the clock moving back, and the read-modify-write race on `update-state.json`
-between processes. FINDINGS.md lists that race as a code-read suspicion.
+between processes. The PR #2338 description lists that race as a code-read
+suspicion.
