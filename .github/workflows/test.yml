@@ -177,6 +177,7 @@ jobs:
           packages/inbox/boardOff.test.tsx
           packages/inbox/soundIntro.test.tsx
           packages/inbox/soundSettings.test.tsx
+          packages/inbox/cookieHostSettings.test.tsx
           packages/inbox/notifyHook.test.tsx
           packages/inbox/notificationStates.test.tsx
           packages/inbox/attachmentStepping.test.tsx
@@ -294,6 +295,9 @@ jobs:
           packages/review-editor/App.emptyDiffSwitch.test.tsx
           packages/review-editor/App.planLookTwoTabs.test.tsx
           packages/review-editor/components/AnnotationToolbar.placement.test.tsx
+          packages/review-editor/components/AnnotationToolbar.askOnly.test.tsx
+          apps/vscode-extension/src/guides/reader/lines.test.ts
+          apps/vscode-extension/src/guides/webview/diagram-loader.test.ts
           packages/review-editor/dock/panels/ReviewPROverviewPanel.ui.test.tsx
           packages/review-editor/components/FileHeader.edit.test.tsx
           packages/review-editor/edit/useEditSession.recovery.test.tsx
@@ -460,11 +464,13 @@ jobs:
           packages/ui/components/Settings.documentTextSize.test.tsx
           packages/ui/components/Settings.experimental.test.tsx
           packages/ui/components/Settings.gridChoice.test.tsx
+          packages/ui/components/Settings.notion.test.tsx
           packages/editor/App.planLookNotice.test.tsx
           packages/ui/config/documentTextSizeSetting.test.ts
           packages/ui/config/documentFontSetting.test.ts
           packages/ui/utils/diffFonts.test.ts
           packages/ui/components/Settings.agentTool.test.tsx
+          packages/ui/components/Settings.cookieHost.test.tsx
           packages/ui/components/settings/QuickLabelsTab.test.tsx
           packages/ui/components/AnnotationToolbar.touchTargets.test.tsx
           packages/ui/components/AnnotationToolbar.modeShortcutGuard.test.tsx

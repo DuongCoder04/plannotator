@@ -1,4 +1,5 @@
 import type { UpdateCheckSetting } from '../hooks/useUpdateCheckSetting';
+import { cookieHostDescription, type CookieHostSetting } from '../hooks/useCookieHostSetting';
 import type { PackageChangesSetting } from '../hooks/usePackageChangesSetting';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
@@ -43,6 +44,13 @@ import {
   saveOctarineSettings,
   type OctarineSettings,
 } from '../utils/octarine';
+import {
+  getNotionSettings,
+  saveNotionSettings,
+  getNotionParentPageId,
+  isNotionAvailable,
+  type NotionSettings,
+} from '../utils/notion';
 import {
   getAgentSwitchSettings,
   getAgentSwitchDefaults,
@@ -92,7 +100,7 @@ import {
 import { requestVimDocumentFocus } from '../hooks/useVimDocumentFocus';
 import { AnalysisLayerToggle } from './AnalysisLayerToggle';
 
-type SettingsTab = 'general' | 'theme' | 'git' | 'display' | 'analysis' | 'saving' | 'labels' | 'vim' | 'shortcuts' | 'ai' | 'files' | 'obsidian' | 'bear' | 'octarine' | 'comments' | 'hooks' | 'experimental';
+type SettingsTab = 'general' | 'theme' | 'git' | 'display' | 'analysis' | 'saving' | 'labels' | 'vim' | 'shortcuts' | 'ai' | 'files' | 'obsidian' | 'bear' | 'octarine' | 'notion' | 'comments' | 'hooks' | 'experimental';
 
 interface SettingsProps {
   taterMode: boolean;
@@ -146,6 +154,9 @@ interface SettingsProps {
    *  useUpdateCheckSetting); `env` is PLANNOTATOR_UPDATE_CHECK when it overrides the
    *  config file. Hosts that omit it get no row. */
   updateCheckSetting?: UpdateCheckSetting;
+  /** "Open Plannotator at plannotator.localhost" (#2184, useCookieHostSetting): present
+   *  only when the server reports it (a local session). Hosts that omit it get no row. */
+  cookieHostSetting?: CookieHostSetting;
   /** Code review's package changes switches (usePackageChangesSetting). Hosts that omit it get no rows. */
   packageChangesSetting?: PackageChangesSetting;
   /** The `plannotator` agent tool switch, as the server reports it
@@ -278,6 +289,13 @@ function SegmentedControl<T extends string>({ options, value, onChange, disabled
       ))}
     </div>
   );
+}
+
+/** Which of the cookie switch's states the row shows (a test and screenshot hook). */
+function cookieHostSettingState(setting: CookieHostSetting): string {
+  if (setting.env !== undefined) return 'locked-env';
+  if (setting.urlHost !== undefined) return 'locked-url-host';
+  return setting.on ? 'on' : 'off';
 }
 
 function ToggleSwitch({ checked, onChange, label, description, disabled = false }: {
@@ -1210,7 +1228,7 @@ const CommentsTab: React.FC = () => {
   );
 };
 
-export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange, onIdentityChange, origin, mode = 'plan', annotateParity = false, onUIPreferencesChange, onPermissionModeChange, externalOpen, onExternalClose, aiProviders = [], gitUser, autoUpdateSetting, updateCheckSetting, packageChangesSetting, agentToolSetting, onAgentToolChange, sinceBaseUnavailable, isCompactTouchLayout = false, onDetectObsidianVaults, agentTerminalAvailable = false, webmcpAvailable = false, hideEnterSavesComment = false, showDocumentTextSize = false, showDocumentFont = false }) => {
+export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange, onIdentityChange, origin, mode = 'plan', annotateParity = false, onUIPreferencesChange, onPermissionModeChange, externalOpen, onExternalClose, aiProviders = [], gitUser, autoUpdateSetting, updateCheckSetting, cookieHostSetting, packageChangesSetting, agentToolSetting, onAgentToolChange, sinceBaseUnavailable, isCompactTouchLayout = false, onDetectObsidianVaults, agentTerminalAvailable = false, webmcpAvailable = false, hideEnterSavesComment = false, showDocumentTextSize = false, showDocumentFont = false }) => {
   const webmcpTools = useWebMcpToolsEnabled();
   const autoUpdate = useConfigValue('autoUpdate');
   const updateChecksOn = updateCheckSetting ? updateCheckSetting.on : true;
@@ -1263,6 +1281,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   const [vaultsLoading, setVaultsLoading] = useState(false);
   const [bear, setBear] = useState<BearSettings>({ enabled: false, customTags: '', tagPosition: 'append', autoSave: false });
   const [octarine, setOctarine] = useState<OctarineSettings>({ enabled: false, workspace: '', folder: 'plannotator', autoSave: false });
+  const [notion, setNotion] = useState<NotionSettings>({ enabled: false, parentPageId: '', autoSave: false });
   // The agent switch default depends on the surface: plan approval hands off to
   // the build agent, review feedback stays on the current agent.
   const agentSurface: AgentSwitchSurface = mode === 'review' ? 'review' : 'plan';
@@ -1316,7 +1335,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   const integrationTabs: { id: SettingsTab; label: string }[] = [
     { id: 'files', label: 'Files' },
     ...(mode === 'plan' || annotateDocumentTabs
-      ? [{ id: 'obsidian' as SettingsTab, label: 'Obsidian' }, { id: 'bear' as SettingsTab, label: 'Bear' }, { id: 'octarine' as SettingsTab, label: 'Octarine' }]
+      ? [{ id: 'obsidian' as SettingsTab, label: 'Obsidian' }, { id: 'bear' as SettingsTab, label: 'Bear' }, { id: 'octarine' as SettingsTab, label: 'Octarine' }, ...(isNotionAvailable() ? [{ id: 'notion' as SettingsTab, label: 'Notion' }] : [])]
       : []),
   ];
   // Experimental is the last tab, on its own below the integrations (the owner,
@@ -1325,6 +1344,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   const obsidianDefaultSaveAvailable = obsidian.enabled && getEffectiveVaultPath(obsidian).trim().length > 0;
   const bearDefaultSaveAvailable = bear.enabled;
   const octarineDefaultSaveAvailable = octarine.enabled && octarine.workspace.trim().length > 0;
+  const notionDefaultSaveAvailable = getNotionParentPageId(notion) !== null;
 
   // Sync external open state
   useEffect(() => {
@@ -1340,6 +1360,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
       setObsidian(getObsidianSettings());
       setBear(getBearSettings());
       setOctarine(getOctarineSettings());
+      setNotion(getNotionSettings());
       setAgent(getAgentSwitchSettings(agentSurface));
       setPlanSave(getPlanSaveSettings());
       setUiPrefs(getUIPreferences());
@@ -1365,7 +1386,9 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
       defaultNotesApp === 'download' ||
       (defaultNotesApp === 'obsidian' && obsidianDefaultSaveAvailable) ||
       (defaultNotesApp === 'bear' && bearDefaultSaveAvailable) ||
-      (defaultNotesApp === 'octarine' && octarineDefaultSaveAvailable);
+      (defaultNotesApp === 'octarine' && octarineDefaultSaveAvailable) ||
+      // A session without Notion (remote, or no NOTION_TOKEN) keeps the choice for the next one.
+      (defaultNotesApp === 'notion' && (notionDefaultSaveAvailable || !isNotionAvailable()));
 
     if (!defaultSaveAvailable) {
       setDefaultNotesApp('ask');
@@ -1377,6 +1400,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
     obsidianDefaultSaveAvailable,
     bearDefaultSaveAvailable,
     octarineDefaultSaveAvailable,
+    notionDefaultSaveAvailable,
   ]);
 
   // Fetch detected vaults when Obsidian is enabled
@@ -1431,6 +1455,12 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
     const newSettings = { ...octarine, ...updates };
     setOctarine(newSettings);
     saveOctarineSettings(newSettings);
+  };
+
+  const handleNotionChange = (updates: Partial<NotionSettings>) => {
+    const newSettings = { ...notion, ...updates };
+    setNotion(newSettings);
+    saveNotionSettings(newSettings);
   };
 
   const handleAgentChange = (switchTo: AgentSwitchSettings['switchTo'], customName?: string) => {
@@ -1731,6 +1761,28 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                                 : 'Installs new releases in the background, at most once a day, never while another review is open.'
                           }
                         />
+                      </>
+                    )}
+
+                    {/* Open Plannotator at plannotator.localhost (#2184): writes or
+                        removes urlHost "plannotator.localhost" in config.json.
+                        Locked while PLANNOTATOR_URL_HOST is set or config.json
+                        holds another urlHost, which it never replaces. */}
+                    {cookieHostSetting && (
+                      <>
+                        <div className="border-t border-border" />
+                        <div data-cookie-host-setting={cookieHostSettingState(cookieHostSetting)}>
+                          <ToggleSwitch
+                            checked={cookieHostSetting.on}
+                            onChange={(v) => cookieHostSetting.onChange(v)}
+                            disabled={cookieHostSetting.env !== undefined || cookieHostSetting.urlHost !== undefined}
+                            label="Open Plannotator at plannotator.localhost"
+                            description={cookieHostDescription(cookieHostSetting)}
+                          />
+                          {cookieHostSetting.error && (
+                            <div role="alert" className="mt-1 text-xs text-destructive">{cookieHostSetting.error}</div>
+                          )}
+                        </div>
                       </>
                     )}
 
@@ -2316,13 +2368,14 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                         {obsidianDefaultSaveAvailable && <option value="obsidian">Obsidian</option>}
                         {bearDefaultSaveAvailable && <option value="bear">Bear</option>}
                         {octarineDefaultSaveAvailable && <option value="octarine">Octarine</option>}
+                        {(notionDefaultSaveAvailable || defaultNotesApp === 'notion') && <option value="notion">Notion</option>}
                       </select>
                       <div className="text-[10px] text-muted-foreground/70">
                         {defaultNotesApp === 'ask'
                           ? 'Opens Export dialog with Notes tab'
                           : defaultNotesApp === 'download'
                             ? `${modKey}+S downloads the annotations file`
-                            : `${modKey}+S saves directly to ${{ obsidian: 'Obsidian', bear: 'Bear', octarine: 'Octarine' }[defaultNotesApp] ?? defaultNotesApp}`}
+                            : `${modKey}+S saves directly to ${{ obsidian: 'Obsidian', bear: 'Bear', octarine: 'Octarine', notion: 'Notion' }[defaultNotesApp] ?? defaultNotesApp}`}
                       </div>
                     </div>
 
@@ -2867,6 +2920,76 @@ tags: [${mode === 'annotate' ? 'plannotator' : 'plan'}, ...]
                           >
                             <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
                               octarine.autoSave ? 'translate-x-6' : 'translate-x-1'
+                            }`} />
+                          </button>
+                        </div>
+                        </>)}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* === NOTION TAB === */}
+                {activeTab === 'notion' && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-sm font-medium">Notion</div>
+                        <div className="text-xs text-muted-foreground">
+                          {mode === 'annotate' ? 'Save documents to Notion from the Options menu. When on, plan review also saves each approved plan here.' : 'Save approved plans as Notion pages'}
+                        </div>
+                      </div>
+                      <button
+                        role="switch"
+                        aria-checked={notion.enabled}
+                        onClick={() => handleNotionChange({ enabled: !notion.enabled })}
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                          notion.enabled ? 'bg-primary' : 'bg-muted'
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                            notion.enabled ? 'translate-x-6' : 'translate-x-1'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                    {notion.enabled && (
+                      <div className="mt-3 space-y-3">
+                        <div className="space-y-1.5 pl-0.5">
+                          <label className="text-xs text-muted-foreground">Parent Page</label>
+                          <input
+                            type="text"
+                            value={notion.parentPageId}
+                            onChange={(e) => handleNotionChange({ parentPageId: e.target.value })}
+                            placeholder="https://www.notion.so/..."
+                            className="w-full px-3 py-2 bg-muted rounded-lg text-xs font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                          />
+                          <div className="text-[10px] text-muted-foreground">
+                            A page link or ID. Each save adds a page under it. Share it with your Notion integration first.
+                          </div>
+                        </div>
+
+                        {mode === 'plan' && (<>
+                        <div className="border-t border-border/30" />
+
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-xs font-medium">Auto-save on Plan Arrival</div>
+                            <div className="text-[10px] text-muted-foreground">
+                              Automatically save to Notion when a plan loads, before you approve or deny
+                            </div>
+                          </div>
+                          <button
+                            role="switch"
+                            aria-checked={notion.autoSave}
+                            onClick={() => handleNotionChange({ autoSave: !notion.autoSave })}
+                            className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                              notion.autoSave ? 'bg-primary' : 'bg-muted'
+                            }`}
+                          >
+                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                              notion.autoSave ? 'translate-x-6' : 'translate-x-1'
                             }`} />
                           </button>
                         </div>

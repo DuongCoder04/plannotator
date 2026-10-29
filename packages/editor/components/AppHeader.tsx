@@ -1,4 +1,5 @@
 import type { UpdateCheckSetting } from '@plannotator/ui/hooks/useUpdateCheckSetting';
+import type { CookieHostSetting } from '@plannotator/ui/hooks/useCookieHostSetting';
 import React from 'react';
 import type { Origin } from '@plannotator/shared/agents';
 import type { UpdateInfo } from '@plannotator/ui/hooks/useUpdateCheck';
@@ -121,6 +122,8 @@ interface AppHeaderProps {
   /** Present when the server advertises the auto-update setting; Settings shows its switch. */
   autoUpdateSetting?: { env?: boolean };
   updateCheckSetting?: UpdateCheckSetting;
+  /** "Open Plannotator at plannotator.localhost" (#2184); Settings shows its row when present. */
+  cookieHostSetting?: CookieHostSetting;
   /** The `plannotator` agent tool switch (parseAgentToolSetting of serverConfig); Settings shows its row. */
   agentToolSetting?: AgentToolSetting;
   onAgentToolChange?: (enabled: boolean) => Promise<void>;
@@ -161,6 +164,7 @@ interface AppHeaderProps {
   onSaveToObsidian: () => void;
   onSaveToBear: () => void;
   onSaveToOctarine: () => void;
+  onSaveToNotion?: () => void;
 
   // PlanHeaderMenu config
   appVersion: string;
@@ -170,6 +174,7 @@ interface AppHeaderProps {
   obsidianConfigured: boolean;
   bearConfigured: boolean;
   octarineConfigured: boolean;
+  notionConfigured?: boolean;
 }
 
 export const AppHeader = React.memo<AppHeaderProps>(({
@@ -221,6 +226,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   gitUser,
   autoUpdateSetting,
   updateCheckSetting,
+  cookieHostSetting,
   agentToolSetting,
   onAgentToolChange,
   agentTerminalAvailable,
@@ -251,6 +257,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   onSaveToObsidian,
   onSaveToBear,
   onSaveToOctarine,
+  onSaveToNotion,
   appVersion,
   updateInfo,
   isWSL,
@@ -258,6 +265,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   obsidianConfigured,
   bearConfigured,
   octarineConfigured,
+  notionConfigured = false,
 }) => {
   return (
     <header
@@ -495,6 +503,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
             gitUser={gitUser}
             autoUpdateSetting={autoUpdateSetting}
             updateCheckSetting={updateCheckSetting}
+            cookieHostSetting={cookieHostSetting}
             agentToolSetting={agentToolSetting}
             onAgentToolChange={onAgentToolChange}
             agentTerminalAvailable={agentTerminalAvailable}
@@ -519,12 +528,14 @@ export const AppHeader = React.memo<AppHeaderProps>(({
           onSaveToObsidian={onSaveToObsidian}
           onSaveToBear={onSaveToBear}
           onSaveToOctarine={onSaveToOctarine}
+          onSaveToNotion={onSaveToNotion}
           sharingEnabled={canShareCurrentSession}
           isApiMode={isApiMode}
           agentInstructionsEnabled={agentInstructionsEnabled}
           obsidianConfigured={!archiveMode && !goalSetupMode && obsidianConfigured}
           bearConfigured={!archiveMode && !goalSetupMode && bearConfigured}
           octarineConfigured={!archiveMode && !goalSetupMode && octarineConfigured}
+          notionConfigured={!archiveMode && !goalSetupMode && notionConfigured}
           compactTouchLayout={compactTouchLayout}
           compactSessionActions={compactSessionActions}
           compactDocumentActions={compactDocumentActions}

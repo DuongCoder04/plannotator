@@ -1,20 +1,21 @@
 import type { DiagramAnchor } from '@plannotator/core/diagram-anchor';
 import type { ImageRegion } from '@plannotator/core/image-region';
-import type { DiagramRenderKind } from '@plannotator/core/annotatable';
+import type { DocumentRenderKind } from '@plannotator/core/annotatable';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
 
 export type { DiagramAnchor } from '@plannotator/core/diagram-anchor';
 export type { ImageRegion, ImageRegionBox } from '@plannotator/core/image-region';
 export type { QuestionAnswer } from '@plannotator/core/question-block';
-export type { DiagramRenderKind } from '@plannotator/core/annotatable';
+export type { DiagramRenderKind, DocumentRenderKind } from '@plannotator/core/annotatable';
 
 /**
  * How a document's body is rendered. `markdown` and `html` are the original
  * pair; the two diagram kinds are whole-file diagram sources (.mmd/.mermaid,
  * .dot/.gv) that render as ONE diagram through the same engine a ```mermaid
- * fence uses — see diagramDocumentBlocks in utils/parser.
+ * fence uses — see diagramDocumentBlocks in utils/parser. `asciidoc` is an
+ * .adoc source parsed by utils/asciidocParser into the same block model.
  */
-export type DocumentRenderAs = 'markdown' | 'html' | DiagramRenderKind;
+export type DocumentRenderAs = 'markdown' | 'html' | DocumentRenderKind;
 
 export enum AnnotationType {
   DELETION = 'DELETION',
