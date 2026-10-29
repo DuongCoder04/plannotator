@@ -53,7 +53,8 @@ import {
   stopSettle,
   type SettleSnapshot,
 } from './settle';
-import { tildePath } from './format';
+import { plural, tildePath } from './format';
+import { copyMarkdown, threadMarkdown } from './copyMarkdown';
 import { inboxImageSrcResolver } from './images';
 import { shellLine, type ConnectContext } from './harnesses';
 import { Sidebar } from './components/Sidebar';
@@ -2251,6 +2252,22 @@ function Inbox() {
   };
 
   /**
+   * The row menu's Copy thread (copyMarkdown.ts): the open thread as it is on
+   * screen, any other read first (one clipboard item with promised parts, so
+   * the write still starts inside the click).
+   */
+  const copyThreadOf = (row: InboxListRow) => {
+    let count = 0;
+    const read = thread?.thread_id === row.thread_id ? Promise.resolve(thread) : inboxApi.thread(row.thread_id).then((model) => model.thread);
+    const markdown = read.then((open) => {
+      count = open.messages.length;
+      return threadMarkdown(open);
+    });
+    void copyMarkdown(markdown).then((ok) =>
+      showToast(ok ? { icon: 'check', lead: 'Thread copied', detail: plural(count, 'message') } : { icon: 'warn', lead: "Couldn't copy" }, 4200),
+    );
+  };
+  /**
    * A thread row's right-click menu. Copy link and Copy thread ID say so in
    * the window's one toast; Mark read, Move back and Archive are the row's
    * hover action and the header's, with their toasts.
@@ -2259,6 +2276,7 @@ function Inbox() {
     if (action === 'pin' || action === 'unpin') return void setPin(row, action === 'pin');
     if (action === 'read' || action === 'unread') return void markRead(row.thread_id, action === 'read');
     if (action === 'archive') return void archive(row.thread_id, row.thread_id, true);
+    if (action === 'copy-thread') return void copyThreadOf(row);
     const text = action === 'copy-link' ? threadLink(row.thread_id, settings, window.location.origin) : row.thread_id;
     void copyTextToClipboard(text).then((ok) =>
       showToast(
@@ -3860,6 +3878,7 @@ function Inbox() {
             fileStacked={stack.file}
             remote={settings ? (settings.via ?? 'local') === 'tailnet' : null}
             onToast={(t) => showToast(t)}
+            linkOf={(messageId) => threadLink(thread.thread_id, settings, window.location.origin, messageId)}
             onBackToList={(fileName) => {
               // The file's own close (its ×), then focus on this thread's row and one line for a screen reader.
               const root = rootRef.current;

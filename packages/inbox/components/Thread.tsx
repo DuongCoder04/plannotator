@@ -35,6 +35,8 @@ import { highlightSearchHits } from '../search/highlight';
 import { AuthorMark, Icon } from '../icons';
 import { PILL_BAND_PX, atEnd, followBy, lookThrough, measureFirstLines, unseenArrivals, useSeenOnSight } from '../seenOnSight';
 import { GuideCard } from './GuideCard';
+import { MessageMenu, ThreadMore, type CopyMenuHost } from './CopyMenus';
+import { threadLink } from '../rowMenu';
 import { inboxMessageImageBase, inlineImageRefFromSrc, markTallImage } from '../images';
 import { reportUnsentReply } from '../unsent';
 import { useReplyDraft } from '../replyDraft';
@@ -891,6 +893,11 @@ export interface ThreadPaneProps {
   /** The window's one toast: "Files open side by side now" with Undo, when a picked view becomes the remembered one. */
   onToast?: (toast: Omit<InboxToastModel, 'id'>) => void;
   /**
+   * The thread's address, or one message's (`&msg=<id>`), for the copy menus' Copy link (CopyMenus.tsx). Absent:
+   * the window's own origin (rowMenu.ts `threadLink` before the settings load).
+   */
+  linkOf?: (messageId?: string) => string;
+  /**
    * A search result to land on (`#thread=…&msg=…`): the message is unfolded
    * if folded or hidden in the middle fold, scrolled to the centre, focused
    * and ringed (a question's card when the match was in a question), and the
@@ -1100,7 +1107,7 @@ async function replyLanded(threadId: string, key: string): Promise<'yes' | 'no' 
 
 const THREAD_GONE_TEXT = 'This thread was deleted, so nothing was sent.';
 
-export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, drawn = null, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', cardChip, phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, fullFromSide = false, fullExitFile = null, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts, decide = null }: ThreadPaneProps) {
+export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, drawn = null, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', cardChip, phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, linkOf, fullFromSide = false, fullExitFile = null, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts, decide = null }: ThreadPaneProps) {
   // "Open in" (OpenIn.tsx): apps on this computer; a new tab only through the tailnet or on a phone.
   const openIn: OpenInSurface | undefined = phone || remote === true ? 'tab' : remote === null ? undefined : 'apps';
   const root = thread.messages[0]!;
@@ -3592,6 +3599,14 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     </Tip>
   ) : null;
 
+  // The copy menus (CopyMenus.tsx): the header's ⋯ and each open message's.
+  const copyHost: CopyMenuHost = {
+    thread,
+    phone,
+    onToast,
+    linkOf: linkOf ?? ((messageId) => threadLink(thread.thread_id, null, window.location.origin, messageId)),
+  };
+
   return (
     <>
     <section
@@ -3698,6 +3713,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
               </Tip>
             )}
             {archiveButton}
+            <ThreadMore {...copyHost} />
             {phone || stacked || backBesideFile ? null : (
               <>
                 <span className="ib-vsep" aria-hidden="true" />
@@ -3994,56 +4010,63 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
               data-arrived={arrivedIds.has(message.id) ? '' : undefined}
               tabIndex={-1}
             >
-              <div className="ib-fline ib-is-open" data-open-head="" data-revealed={revealed ? '' : undefined}>
-                {!one && (
-                  <button
-                    type="button"
-                    className="ib-fl-hit"
-                    data-fold-head=""
-                    aria-expanded={true}
-                    aria-label={foldLabel}
-                    onClick={() => toggleMessage(message.id)}
-                  />
-                )}
-                <span className="ib-a11y-skip" aria-hidden={hide}>
-                  {isAgent ? (
-                    <AuthorMark author={message.author} big />
-                  ) : (
-                    <span className="ib-mk ib-big">
-                      <Icon name="reply" />
+              <MessageMenu
+                {...copyHost}
+                message={message}
+                head={(more) => (
+                  <div className="ib-fline ib-is-open" data-open-head="" data-revealed={revealed ? '' : undefined}>
+                    {!one && (
+                      <button
+                        type="button"
+                        className="ib-fl-hit"
+                        data-fold-head=""
+                        aria-expanded={true}
+                        aria-label={foldLabel}
+                        onClick={() => toggleMessage(message.id)}
+                      />
+                    )}
+                    <span className="ib-a11y-skip" aria-hidden={hide}>
+                      {isAgent ? (
+                        <AuthorMark author={message.author} big />
+                      ) : (
+                        <span className="ib-mk ib-big">
+                          <Icon name="reply" />
+                        </span>
+                      )}
                     </span>
-                  )}
-                </span>
-                <Tip content={one ? name : null} cut>
-                  <span className="ib-fl-nm ib-who" aria-hidden={hide}>
-                    <bdi>{name}</bdi>
-                  </span>
-                </Tip>
-                {/* The project gives way first; "to you", the session-ended mark and the count never shrink (the row wraps instead). */}
-                <span className="ib-fl-meta">
-                  <span className="ib-fl-in" aria-hidden={hide}>
-                    in <bdi>{thread.project.name}</bdi>{' '}
-                  </span>
-                  <span className="ib-fl-to" aria-hidden={hide}>
-                    <span className="ib-to-sep">·</span> <span className="ib-to">{toWords}</span>
-                  </span>
-                  {count && <span className="ib-fl-files">{count}</span>}
-                </span>
-                <span className="ib-fl-chips" />
-                <span className="ib-fl-tm">
-                  {isNew && <span className="ib-newtag">New</span>}
-                  <Tip content={fullWhen}>
-                    <span data-full-when="">{time}</span>
-                  </Tip>
-                  {isAgent && liveMessage(message) && (
-                    <Tip content="Reply">
-                      <button type="button" className="ib-mut" onClick={() => openBox()} aria-label="Reply">
-                        <Icon name="reply" size={15} />
-                      </button>
+                    <Tip content={one ? name : null} cut>
+                      <span className="ib-fl-nm ib-who" aria-hidden={hide}>
+                        <bdi>{name}</bdi>
+                      </span>
                     </Tip>
-                  )}
-                </span>
-              </div>
+                    {/* The project gives way first; "to you", the session-ended mark and the count never shrink (the row wraps instead). */}
+                    <span className="ib-fl-meta">
+                      <span className="ib-fl-in" aria-hidden={hide}>
+                        in <bdi>{thread.project.name}</bdi>{' '}
+                      </span>
+                      <span className="ib-fl-to" aria-hidden={hide}>
+                        <span className="ib-to-sep">·</span> <span className="ib-to">{toWords}</span>
+                      </span>
+                      {count && <span className="ib-fl-files">{count}</span>}
+                    </span>
+                    <span className="ib-fl-chips" />
+                    <span className="ib-fl-tm">
+                      {isNew && <span className="ib-newtag">New</span>}
+                      <Tip content={fullWhen}>
+                        <span data-full-when="">{time}</span>
+                      </Tip>
+                      {isAgent && liveMessage(message) && (
+                        <Tip content="Reply">
+                          <button type="button" className="ib-mut" onClick={() => openBox()} aria-label="Reply">
+                            <Icon name="reply" size={15} />
+                          </button>
+                        </Tip>
+                      )}
+                      {more}
+                    </span>
+                  </div>
+                )}
+              />
               <div className="ib-msg" data-revealed={revealed ? '' : undefined}>
                 {count && (
                   <div className="ib-hatts" id={bandId} role="region" aria-label="Attachments in this message" hidden={!filesOpen} onKeyDown={closeHeaderOnEscape(message.id)} data-header-band={message.id}>
