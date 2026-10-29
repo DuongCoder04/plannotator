@@ -203,16 +203,14 @@ If anything is missing, fix it before proceeding to Phase 4. Common fixes:
    - `viewer-pin-live`: requires guides.show (deployed for the same tag by `guides-show-deploy.yml`) to serve the guide viewer JS and CSS that the `build` and `npm-package` jobs pinned, retrying for about 5 minutes; `attest`, `release` and `npm-publish` wait for it, so a failure attests, releases and publishes nothing. Recovery: deploy guides.show on the tag (`gh workflow run guides-show-deploy.yml --ref vX.Y.Z`), then "Re-run failed jobs" on the release run
    - Generates SLSA build provenance attestations for all 12 binaries via `actions/attest-build-provenance` (signed through Sigstore, recorded in Rekor)
    - Uses the separate official `actions/attest` SBOM path to bind the CycloneDX predicate to all 12 binaries and the `@plannotator/opencode`, `@plannotator/pi-extension` and `@plannotator/dsh` tarballs through the same GitHub OIDC/Sigstore service. This is an inventory attestation, not a replacement for SLSA or npm provenance
-   - Creates the GitHub Release as a **draft** with all binaries, SHA256 sidecars, the versioned CycloneDX SBOM, and its SHA256 sidecar attached. It is not public until you publish it in step 5 (the release job's summary and a warning name the exact command)
+   - Creates the GitHub Release with all binaries, SHA256 sidecars, the versioned CycloneDX SBOM, and its SHA256 sidecar attached
    - Publishes `@plannotator/opencode` and `@plannotator/pi-extension` to npm with provenance, then the gated `@plannotator/dsh` tarball last, in a step allowed to fail until its trusted publishing is set up (a failure there shows as a warning; check it with `npm view`)
 
    **SBOM scope:** the public document is a release-wide Syft inventory of the monorepo's locked build inputs and dependencies. It is deliberately not described as exact binary runtime contents. Coverage testing found that Bun standalone executables hide bundled JavaScript dependency metadata from Syft. The OpenCode tarball is similarly opaque; the Pi tarball exposes only a partial view through nested package-lock files. The scope and limitations are also embedded in the CycloneDX metadata.
 
    **Exceptions:** there is no active production exception file. If a future release baseline needs one, do not add a loose ignore. Add a repository-reviewed OpenVEX document and explicitly wire it through `PLANNOTATOR_RELEASE_VEX`; each statement must match one exact package URL and vulnerability ID and carry `not_affected` status, an OpenVEX justification, impact statement, HTTPS evidence, owner, created date, and expiration date. The policy tests reject expired, malformed, broad, and nonmatching records.
 
-   **Note on immutable releases:** The repo has GitHub Immutable Releases enabled, so once the release is published, the tag→commit and tag→asset bindings are permanent. You cannot delete and re-create a tag to "fix" a bad release — you must ship a new version. The workflow leaves the release as a draft (assets attached, not yet locked); publishing it in step 5 locks it. Release notes remain editable after publishing, but everything else is locked.
-
-   **Why a draft:** the Inbox and auto-update read the release body to show "What's new". Published with GitHub's generated body, the release would be read in the minutes before the written notes replaced it. A draft is never `releases/latest`, so install.sh, the update check and the Inbox see the version only once step 5 publishes it with its notes. npm publishes without waiting for step 5, so do step 5 as soon as the draft is verified.
+   **Note on immutable releases:** The repo has GitHub Immutable Releases enabled, so once the `v*` tag is pushed and the release is created, the tag→commit and tag→asset bindings are permanent. You cannot delete and re-create a tag to "fix" a bad release — you must ship a new version. Release notes remain editable (see step 5), but everything else is locked.
 
 4. **Monitor the pipeline:**
    Watch the release workflow run until it completes:
@@ -223,7 +221,7 @@ If anything is missing, fix it before proceeding to Phase 4. Common fixes:
    Verify:
    - All jobs pass, including `release-security`, `viewer-pin-live`, `attest`, `release`, and `npm-publish`
    - `release-security-evidence` records the Syft/Grype versions, active database schema/build/checksum/update status, all Grype matches, and an `ACCEPT` policy decision
-   - The draft GitHub Release was created (`gh release view vX.Y.Z --json isDraft` is true until step 5) with all binary artifacts, SHA256 sidecars, the versioned `plannotator-X.Y.Z-release-sbom.cdx.json`, and its `.sha256` sidecar
+   - The GitHub Release was created with all binary artifacts, SHA256 sidecars, the versioned `plannotator-X.Y.Z-release-sbom.cdx.json`, and its `.sha256` sidecar
    - npm packages published successfully (check with `npm view @plannotator/opencode version`, `npm view @plannotator/dsh version` and `npm view @plannotator/pi-extension version`)
 
    A pull request proves generation, schema/sentinel validation, database policy, Grype evaluation, least-privilege job wiring, and all report artifacts. GitHub OIDC issuance, publication to the artifact-attestation service, and final release-asset publication only run for a real eligible `v*` tag. For the first release after this control lands, complete this bounded tag-only verification before calling the rollout complete:
@@ -254,12 +252,11 @@ If anything is missing, fix it before proceeding to Phase 4. Common fixes:
 
    If anything fails, investigate the logs and report to the user before retrying.
 
-5. **Publish the release with its notes:**
-   Once the draft is verified, publish it with the drafted release notes in one command, so the public release never carries GitHub's generated body:
+5. **Replace the release notes:**
+   Once the release is live and verified, replace the auto-generated notes body with the drafted release notes:
    ```bash
-   gh release edit vX.Y.Z --notes-file RELEASE_NOTES_vX.Y.Z.md --draft=false --latest
+   gh release edit vX.Y.Z --notes-file RELEASE_NOTES_v<VERSION>.md
    ```
-   Then confirm it is public: `gh release view vX.Y.Z --json isDraft` is false, its body starts with your notes, and `https://github.com/backnotprop/plannotator/releases/latest` redirects to `vX.Y.Z`. Until this runs, every CLI, Inbox and install.sh stays on the previous version while npm already serves this one.
 
 ---
 
@@ -288,11 +285,10 @@ Before tagging, verify:
 
 After tagging, verify:
 - [ ] Release workflow completed with `release-security`, `viewer-pin-live`, `attest`, `release`, and `npm-publish` green (if `viewer-pin-live` failed: deploy guides.show on the tag, then "Re-run failed jobs")
-- [ ] Draft GitHub Release created with all binaries, sidecars, SBOM, and SBOM sidecar
+- [ ] GitHub Release created with all binaries, sidecars, SBOM, and SBOM sidecar
 - [ ] One native binary passes both the explicit SLSA and CycloneDX predicate checks pinned to the tag and signer workflow
 - [ ] Downloaded SBOM checksum passes and canonical JSON matches the attested predicate
 - [ ] `release-security-evidence` shows a fresh/active database and an accepted policy decision
 - [ ] npm packages published at correct version
 - [ ] npm trusted-publishing provenance remains visible for both packages
-- [ ] Release published with its notes: `gh release edit vX.Y.Z --notes-file RELEASE_NOTES_vX.Y.Z.md --draft=false --latest`
-- [ ] Release is published (not a draft): `gh release view vX.Y.Z --json isDraft` is false
+- [ ] Release notes replaced via `gh release edit`
