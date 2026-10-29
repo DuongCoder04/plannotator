@@ -390,6 +390,13 @@ function PinnedWords() {
 export const WIDE_ROWS_MIN_LIST_WIDTH = 900;
 
 /**
+ * From this list width a wide row draws the full words and the badge's words (the owner, 2026-10-29: full words in
+ * full-width mode; a 1440px window with the sidebar gives a 1192px list). Narrower wide rows keep approval
+ * "inbox-row-byline", option A (the short forms, the bare triangle), so the subject keeps its room.
+ */
+export const FULL_WORDS_MIN_LIST_WIDTH = 1150;
+
+/**
  * One row of the wide list, on one line (approval "inbox-row-byline", the
  * one-line row). With every project shown it is six columns: the project, the
  * subject cell (the thread pill, the subject), then right-aligned the agents'
@@ -685,14 +692,22 @@ export function InboxList(props: InboxListProps) {
     });
   }, [pullOn]);
   const [listRef, narrowList] = useNarrowerThan(WIDE_ROWS_MIN_LIST_WIDTH, props.narrow);
+  const [fullRef, shortWords] = useNarrowerThan(FULL_WORDS_MIN_LIST_WIDTH, props.narrow);
+  const listEl = useCallback(
+    (el: HTMLElement | null) => {
+      listRef.current = el;
+      fullRef.current = el;
+    },
+    [listRef, fullRef],
+  );
   // Two-line rows in a list too narrow for the wide row's columns: beside an
   // open thread for every list (the column is 380px unless its edge was
   // dragged past the wide rows' width), and in the full list for every
   // project (one project's wide row fits any width).
   const twoLine = narrowList && (props.narrow || !props.filtered);
-  // The full words on a wide row (the owner, 2026-10-29: full words in full-width mode) need a list of at least
-  // 900px; one project's wide row in a narrower list keeps the short forms and the bare triangles (option A).
-  const fullWords = !twoLine && !narrowList;
+  // The full words on a wide row need a list of at least 1150px (FULL_WORDS_MIN_LIST_WIDTH); a narrower wide row
+  // keeps the short forms and the bare triangles (option A).
+  const fullWords = !twoLine && !shortWords;
   // The column beside a thread gets the sidebar's resize edge, except on a phone.
   const { isMobile, open: sidebarDocked } = useSidebar();
   // New message in the header: a phone always has it (its CSS draws it); a wider window only while the
@@ -731,7 +746,7 @@ export function InboxList(props: InboxListProps) {
   const day = new Date().toDateString();
   return (
     <section
-      ref={listRef}
+      ref={listEl}
       id={columnId}
       className={`ib-listcol${props.narrow ? ' ib-narrow' : ''}${resizable ? ' ib-resizable' : ''}${props.filtered ? ' ib-noproj' : ''}${fullWords ? ' ib-fullw' : ''}`}
       aria-label={props.title}
@@ -882,7 +897,7 @@ interface ListRowProps {
   /** The group the row sits in on screen. */
   drawn: InboxSectionId;
   shape: 'wide' | 'narrow' | 'phone';
-  /** A wide row in a list at least 900px wide: the full words and the badge's words. */
+  /** A wide row in a list at least FULL_WORDS_MIN_LIST_WIDTH wide: the full words and the badge's words. */
   full: boolean;
   filtered: boolean;
   selected: boolean;

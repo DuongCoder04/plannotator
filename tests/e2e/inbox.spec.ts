@@ -427,7 +427,7 @@ test('a pick is saved at once and the agent reads it through read_thread', async
       // A two-line row's count ends line 2 (approval "inbox-row-byline"), under the time: it must end inside that line.
       const l2 = el.querySelector('.ib-l2');
       const lineEnd = l2 ? Math.round(l2.getBoundingClientRect().right - count.right) : null;
-      return { shape: el.className.split(' ')[0], list: el.closest('.ib-lbody')!.clientWidth, text: el.querySelector('.ib-c .ib-cs')!.textContent, full: el.querySelector('.ib-c')!.getAttribute('data-count-words'), gap: time.left - count.right, sameLine: Math.abs(count.top - time.top) < 4, lineEnd, last: l2 ? l2.lastElementChild === el.querySelector('.ib-c') : null };
+      return { shape: el.className.split(' ')[0], list: document.querySelector('.ib-lbody')!.clientWidth, text: el.querySelector('.ib-c .ib-cs')!.textContent, full: el.querySelector('.ib-c')!.getAttribute('data-count-words'), gap: time.left - count.right, sameLine: Math.abs(count.top - time.top) < 4, lineEnd, last: l2 ? l2.lastElementChild === el.querySelector('.ib-c') : null };
     });
   for (const [folder, narrowShape] of [[/^Inbox/, 'ib-nrow'], [/^billing-svc(?: \d+)?$/, 'ib-row']] as const) {
     await side(page).getByRole('button', { name: folder }).click();
@@ -448,9 +448,9 @@ test('a pick is saved at once and the agent reads it through read_thread', async
         }, where)
         .toBe(true);
       const measured = await textGap();
-      // A wide row in a list of 900px or more draws the full words (the owner, 2026-10-29); a two-line row, and one
+      // A wide row in a list of 1150px or more draws the full words (the owner, 2026-10-29); a two-line row, and one
       // project's wide row in a narrower list, "Draft" (option A).
-      expect(measured.text).toBe(measured.shape === 'ib-row' && measured.list >= 900 ? 'Draft · 2 picks' : 'Draft');
+      expect(measured.text).toBe(measured.shape === 'ib-row' && measured.list >= 1150 ? 'Draft · 2 picks' : 'Draft');
       expect(measured.full).toBe('Draft · 2 picks');
       if (measured.shape === 'ib-row') {
         expect(measured.sameLine).toBe(true);

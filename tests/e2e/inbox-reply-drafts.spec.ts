@@ -116,13 +116,15 @@ test('type, leave: the words are kept, the row says "Draft · Your reply", and t
   // Leave the thread: the row it settles in says what waits.
   await pane(page).getByRole('button', { name: 'Close the thread' }).click();
   await expect(pane(page)).toHaveCount(0);
-  // A wide row draws the full words (the owner, 2026-10-29); a two-line or phone row "Draft" (option A).
-  await expect(row(page, threads.news).locator('[data-draft-label]')).toHaveText('Draft · Your reply');
+  // A wide row in a list of 1150px or more draws the full words (the owner, 2026-10-29); a narrower one (1280's list
+  // is about 1030px), a two-line or a phone row "Draft" (option A).
+  await expect(row(page, threads.news).locator('[data-draft-label]')).toHaveText('Draft');
   await expect(row(page, threads.news).locator('.ib-c')).toHaveAttribute('data-count-words', 'Draft · Your reply');
   expect(await sectionOf(page, threads.news)).toBe('new');
   // Not bold: nothing new arrived; the label says what is there.
   await expect(row(page, threads.news)).not.toHaveClass(/\bib-u\b/);
   await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(row(page, threads.news).locator('[data-draft-label]')).toHaveText('Draft · Your reply');
   await shot(page, 'list-1440');
 });
 

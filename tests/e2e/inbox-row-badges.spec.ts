@@ -467,19 +467,25 @@ test('desktop, rows whose count has words (a draft, Undelivered, action items): 
     [world.long, /^Undelivered 1d$/, /^Undelivered 1 day$/],
   ];
   try {
-    // Full width (the owner, 2026-10-29): the full words, drawn and read as they are. At 1440 and at the 900 px
-    // list (the narrowest wide list) every column lines up, and the subject has the widest column.
-    for (const viewport of [1440, 1148]) {
+    // A list of 1150 px or more (1440, a 1192 px list; the owner, 2026-10-29): the full words and the badge's words,
+    // drawn and read as they are. A wide list under that (1000 and 900 px) keeps option A: the short forms in their
+    // 124 px column, the bare triangle, the full words in the row's name. Every column lines up at each width, and
+    // the subject has the widest column.
+    for (const viewport of [1440, 1248, 1148]) {
+      const full = viewport === 1440;
       await page.setViewportSize({ width: viewport, height: 900 });
       await page.goto(world.url);
-      for (const [id, , full] of expected) {
+      for (const [id, short, words] of expected) {
         const row = page.locator(`.ib-row[data-thread-id="${id}"]`);
-        const words = row.locator('.ib-cw > .ib-c > .ib-cs');
-        await expect(words).toHaveText(full);
-        await expect(words).toBeVisible();
-        await expect(row.locator('.ib-cw > .ib-c > [aria-hidden="true"], .ib-cw .ib-sr')).toHaveCount(0);
-        await expect(row).toHaveAccessibleName(named(full));
+        const drawn = row.locator('.ib-cw > .ib-c > .ib-cs');
+        await expect(drawn).toHaveText(full ? words : short);
+        await expect(drawn).toBeVisible();
+        if (full) await expect(row.locator('.ib-cw > .ib-c > [aria-hidden="true"], .ib-cw .ib-sr')).toHaveCount(0);
+        else expect(await row.locator('.ib-cw > .ib-c').evaluate((c) => c.getBoundingClientRect().width)).toBeLessThanOrEqual(124.5);
+        await expect(row).toHaveAccessibleName(named(words));
       }
+      if (full) await expect(page.locator('.ib-row .ib-bwords').first()).toBeVisible();
+      else await expect(page.locator('.ib-row .ib-bwords')).toHaveCount(0);
       const layout = await page.evaluate(() => ({
         list: document.querySelector('.ib-lbody')!.clientWidth,
         rows: [...document.querySelectorAll<HTMLElement>('.ib-row')].map((r) => {
@@ -497,8 +503,8 @@ test('desktop, rows whose count has words (a draft, Undelivered, action items): 
         }),
       }));
       const where = `at ${viewport}px (a ${layout.list} px list)`;
-      expect(layout.list, where).toBeGreaterThanOrEqual(900);
-      if (viewport < 1440) expect(layout.list, where).toBeLessThan(920);
+      expect(layout.list, where).toBeGreaterThanOrEqual(full ? 1150 : 900);
+      if (!full) expect(layout.list, where).toBeLessThan(1150);
       expect(layout.rows.length).toBeGreaterThanOrEqual(9);
       for (let i = 0; i < 6; i++) expect(new Set(layout.rows.map((g) => g.rights[i])).size, `column ${i} ${where}: ${JSON.stringify(layout.rows)}`).toBe(1);
       expect(new Set(layout.rows.map((g) => g.subj)).size).toBe(1);
@@ -518,8 +524,8 @@ test('desktop, rows whose count has words (a draft, Undelivered, action items): 
     await page.mouse.move(5, 5);
     await shot(page, 'desktop-words');
 
-    // One project's list under 900 px keeps the wide row but not the full words: the short forms in their 124 px
-    // column, so the subject keeps its room (tests/e2e/inbox-guides.spec.ts measures it with a long thread name).
+    // One project's list under 900 px keeps the wide row, with the short forms in their 124 px column, so the
+    // subject keeps its room (tests/e2e/inbox-guides.spec.ts measures it with a long thread name).
     const projects = (await (await page.request.get(`${world.url}api/inbox/projects`)).json()).projects as { id: string; name: string }[];
     await page.setViewportSize({ width: 1000, height: 900 });
     await page.goto(`${world.url}#project=${projects.find((p) => p.name === 'deploy-app')!.id}`);
