@@ -43,12 +43,19 @@ function fakePlannotator(body: string): { calls: string } {
 /** What the command sent the session: Pi's `sendMessage` calls, message and options. */
 const sent: Array<[unknown, unknown]> = [];
 
-async function runInboxCommand(): Promise<Array<{ message: string; type: string }>> {
+/** The extension's `before_agent_start` handlers: Pi runs them as the next prompt starts. */
+const beforeAgentStart: Array<() => unknown> = [];
+
+/** A Pi session with the extension loaded; `run` runs /plannotator-inbox in it. */
+function piSession() {
 	sent.length = 0;
+	beforeAgentStart.length = 0;
 	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
 	const pi = {
 		events: { on: () => undefined, emit: () => undefined },
-		on: () => undefined,
+		on: (event: string, handler: () => unknown) => {
+			if (event === "before_agent_start") beforeAgentStart.push(handler);
+		},
 		registerFlag: () => undefined,
 		registerShortcut: () => undefined,
 		registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => commands.set(name, command),
@@ -66,8 +73,24 @@ async function runInboxCommand(): Promise<Array<{ message: string; type: string 
 	plannotator(pi as never);
 	const notices: Array<{ message: string; type: string }> = [];
 	const ctx = { ui: { notify: (message: string, type: string) => notices.push({ message, type }) } };
-	await commands.get("plannotator-inbox")!.handler("", ctx);
-	return notices;
+	return {
+		notices,
+		run: () => commands.get("plannotator-inbox")!.handler("", ctx),
+		/** The person's next prompt starts: Pi hands it the pending messages and runs the handlers (others' may need more than this stand-in has). */
+		nextPrompt: async () => {
+			for (const handler of beforeAgentStart) {
+				try {
+					await handler();
+				} catch {}
+			}
+		},
+	};
+}
+
+async function runInboxCommand(): Promise<Array<{ message: string; type: string }>> {
+	const session = piSession();
+	await session.run();
+	return session.notices;
 }
 
 describe.skipIf(process.platform === "win32")("/plannotator-inbox", () => {
@@ -82,6 +105,19 @@ describe.skipIf(process.platform === "win32")("/plannotator-inbox", () => {
 		expect(sent).toEqual([
 			[{ customType: "plannotator-inbox-briefing", content: INBOX_COMMAND_BRIEFING, display: false }, { deliverAs: "nextTurn" }],
 		]);
+	});
+
+	// Failure caught: the briefing queued once per run, so the next prompt carries two copies.
+	test("run twice before the next prompt, the briefing waits once; after that prompt, it is queued again", async () => {
+		fakePlannotator("echo 'http://localhost:61234/'");
+		const session = piSession();
+		await session.run();
+		await session.run();
+		expect(session.notices).toHaveLength(2);
+		expect(sent).toHaveLength(1);
+		await session.nextPrompt();
+		await session.run();
+		expect(sent).toHaveLength(2);
 	});
 
 	test("an older plannotator without --open is told to update", async () => {

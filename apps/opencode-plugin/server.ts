@@ -153,7 +153,12 @@ const serverPlugin = {
       try {
         await ctx.session.hook("context", async (event) => {
           // Read before the notices go: /plannotator-inbox's notice marks a session for the briefing.
-          await addInboxBriefing(event, inboxBriefings, getAgents);
+          // Never in the filter's way: the notices are for the person whatever happens here.
+          try {
+            await addInboxBriefing(event, inboxBriefings, getAgents);
+          } catch (error) {
+            console.error(`[Plannotator] Could not add the Inbox briefing: ${error instanceof Error ? error.message : String(error)}`);
+          }
           dropSessionUrlNotices(event.messages as unknown[]);
           // A Send now reply that reached the session twice (its steer row and the fallback queued turn): one copy.
           dropInboxDuplicates(event.messages as unknown[]);

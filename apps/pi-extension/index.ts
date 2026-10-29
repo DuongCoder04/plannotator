@@ -1640,7 +1640,14 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 	// this extension's: Pi is its client. Opened, the model also gets the
 	// Inbox briefing (INBOX_COMMAND_BRIEFING) as a hidden message with the
 	// next prompt (`nextTurn`, no turn of its own): people type the command
-	// to teach their agent the Inbox.
+	// to teach their agent the Inbox. One copy waits at a time: the command
+	// run twice before the next prompt queues it once (Pi hands every pending
+	// `nextTurn` message to that prompt, which `before_agent_start` follows).
+	let inboxBriefingQueued = false;
+	pi.on("before_agent_start", () => {
+		inboxBriefingQueued = false;
+		return undefined;
+	});
 	pi.registerCommand("plannotator-inbox", {
 		description: "Open the Plannotator Inbox in the browser, show its address, and brief the agent on it",
 		handler: async (_args, ctx) => {
@@ -1651,6 +1658,8 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 				const opened = await openInboxInBrowser({ dataDir: getPlannotatorDataDir() });
 				if ("url" in opened) {
 					ctx.ui.notify(inboxOpenedText(opened.url), "info");
+					if (inboxBriefingQueued) return;
+					inboxBriefingQueued = true;
 					pi.sendMessage(
 						{ customType: PI_INBOX_BRIEFING_CUSTOM_TYPE, content: inboxCommandBriefing(), display: false },
 						{ deliverAs: "nextTurn" },
