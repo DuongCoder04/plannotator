@@ -19,6 +19,7 @@ import type { InboxAnnotationRecord, InboxAttachment, InboxAttachmentKind, Inbox
 import type { InboxDeliverNowBy, InboxRowDelivery } from "./inbox-delivery";
 import type { InboxRowRun } from "./inbox-acp";
 import type { InboxCard } from "./inbox-cards";
+import type { InboxTidyMark } from "./inbox-tidy";
 import { INBOX_CODEX_QUEUE_MIN_VERSION } from "./inbox-codex";
 import { INBOX_QWEN_WAKE_MIN_VERSION } from "./inbox-qwen";
 
@@ -33,6 +34,8 @@ export * from "./inbox-qwen";
 export * from "./inbox-cards";
 // The surface bridge's messages (the phone, PLAN step S1), the same way.
 export * from "./inbox-surface-bridge";
+// Tidy (the list header's and the Board's ⋮ menu), the same way.
+export * from "./inbox-tidy";
 
 /** Every record and line carries this version. Fields are only ever added. */
 export const INBOX_RECORD_VERSION = 1 as const;
@@ -60,7 +63,7 @@ export function ulid(now: number = Date.now()): string {
 }
 
 /** `upl`: a file the person uploaded for a message; `drf`: a draft of one (compose); `crd`: a Board card. */
-export type InboxIdPrefix = "msg" | "prj" | "ses" | "dec" | "dev" | "upl" | "drf" | "crd" | "run";
+export type InboxIdPrefix = "msg" | "prj" | "ses" | "dec" | "dev" | "upl" | "drf" | "crd" | "run" | "tdy";
 
 export function inboxId(prefix: InboxIdPrefix, now?: number): string {
   return `${prefix}_${ulid(now)}`;
@@ -79,6 +82,8 @@ const ID_RE: Record<InboxIdPrefix, RegExp> = {
   crd: /^crd_[0-9A-HJKMNP-TV-Z]{26}$/,
   /** A session the Inbox runs itself over ACP (packages/server/inbox-acp-runner.ts): its agent session id. */
   run: /^run_[0-9A-HJKMNP-TV-Z]{26}$/,
+  /** One press of Tidy (packages/core/inbox-tidy.ts). */
+  tdy: /^tdy_[0-9A-HJKMNP-TV-Z]{26}$/,
 };
 
 export function isInboxId(prefix: InboxIdPrefix, value: unknown): value is string {
@@ -231,7 +236,8 @@ export type InboxAuthor =
 /**
  * One of the Inbox's own notes to the asking agent: Mark read's set-aside
  * note (`set_aside`), a late Undo's reopened note (`reopened`), or the note
- * that carries a 👍 Looks good to the agent (`ack_of`). They are stored as
+ * that carries a 👍 Looks good to the agent (`ack_of`), or a Tidy note
+ * (`tidy`). They are stored as
  * the person's messages so they reach the agent like any reply, but they are
  * not the person's reply and not a look: the list's `sent`, `unseen`, the
  * look boundary and "came back" all read past them.
@@ -241,10 +247,14 @@ export function isInboxNote(message: {
   set_aside?: readonly string[] | null;
   reopened?: readonly string[] | null;
   ack_of?: string | null;
+  tidy?: InboxTidyMark | null;
 }): boolean {
   return (
     message.author.kind === "person" &&
-    ((message.set_aside?.length ?? 0) > 0 || (message.reopened?.length ?? 0) > 0 || (typeof message.ack_of === "string" && message.ack_of !== ""))
+    ((message.set_aside?.length ?? 0) > 0 ||
+      (message.reopened?.length ?? 0) > 0 ||
+      (typeof message.ack_of === "string" && message.ack_of !== "") ||
+      (typeof message.tidy === "object" && message.tidy !== null))
   );
 }
 
@@ -369,6 +379,13 @@ export interface InboxMessage {
    * but not sent go with it as answers. Absent on every other message.
    */
   reask?: string[];
+  /**
+   * On a Tidy note (the person's Tidy, 2026-10-28): its run, and whether it
+   * is the one note of its session that carries the wake (`wake`; the others
+   * only show in their threads and are never delivered). An Inbox note: the
+   * row never moves for it. Absent on every other message.
+   */
+  tidy?: InboxTidyMark;
   /**
    * On a root: the seq up to which the asking agent has read the person's
    * replies (wait_for_reply returned one, or read_thread read the thread),

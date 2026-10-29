@@ -110,6 +110,7 @@ import type { InboxSearchIndex, InboxSearchIndexOptions } from "@plannotator/sha
 import { createInboxSearchRoutes } from "./inbox-search";
 import { inboxSkillsRoute } from "./inbox-skills";
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
+import { createInboxTidy } from "./inbox-tidy";
 import { InboxError } from "@plannotator/shared/inbox/schema";
 import { inboxPromptsModel, parseInboxPromptsChange, saveInboxPromptsChange } from "./inbox-prompts";
 import { InboxStore } from "@plannotator/shared/inbox/store";
@@ -311,6 +312,8 @@ export interface InboxServerOptions {
   windowGraceMs?: number;
   /** Tests: the clock (epoch ms) send_message's "not read since" line reads (packages/server/inbox-session-reads.ts). Default: the wall clock. */
   mcpNow?: () => number;
+  /** Tests: the store's clock (what it stamps on messages, cards and deliveries), so a test can write what reads as hours old. Default: the wall clock. */
+  storeNow?: () => Date;
   /**
    * The argv that runs this CLI (the compiled binary's absolute path, or bun
    * plus the entry script), so the window's connect snippets name a command
@@ -462,6 +465,8 @@ const ERROR_STATUS: Record<string, number> = {
   question_set_aside: 409,
   // Re-ask: every question of that session is answered, picked or closed already.
   nothing_to_reask: 409,
+  // Tidy: none of the sessions asked has anything to tidy now (asked a moment ago, or nothing left).
+  nothing_to_tidy: 409,
   thread_resolved: 409,
   // 👍 Looks good: refused on a person's message, on an older agent message, and while a question is open.
   ack_not_allowed: 422,
@@ -689,7 +694,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   try {
     previousInboxVersion = readUpdateState(dataDir).inboxVersion ?? null;
   } catch {}
-  const store = InboxStore.open(dataDir);
+  const store = InboxStore.open(dataDir, options.storeNow ? { now: options.storeNow } : {});
   // A send a crash interrupted leaves a temp blob; the next start removes it once it is stale.
   sweepStaleInboxSendTemps(store.dir);
   const serverSession = createServerSessionNonce();
@@ -2038,6 +2043,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     return { ...ownerCommand(reply, sendNow), ...handedFrom, ...(alsoTagged.length > 0 ? { also_tagged: alsoTagged } : {}) };
   };
   const ownerCommand = (reply: InboxMessage, sendNow: boolean): InboxReplyCommand => {
+    // Tidy: the note's body is the whole wake (inboxWakeText words it); never a reply to anything.
+    if (reply.tidy) {
+      return { type: "message", id: reply.id, thread_id: reply.thread_id, reply_to: null, subject: "Tidy", body: reply.body, url: threadPageUrl(baseUrl, reply.thread_id), tidy: true };
+    }
     // A reply the person sent to another session because the one that asked
     // had ended: the wake says so, naming the agent that asked.
     const asked = reply.to && reply.reply_to ? store.message(reply.reply_to) : null;
@@ -2437,6 +2446,19 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     launcher: options.openInLauncher ?? systemOpenInLauncher(),
   });
 
+  // Tidy (packages/server/inbox-tidy.ts): the list header's and the Board's ⋮ menu.
+  const tidy = createInboxTidy({
+    store,
+    serverSession,
+    deliveryConnectionOf: (session) => live.deliveryConnectionOf(session),
+    // The last idle transition, kept through a busy turn and the session's end (not the live idle_since).
+    idleSince: (session) => live.lastIdleOf(session),
+    mcpAgents: () => live.mcpAgents(),
+    boardOn,
+    readBody,
+    json,
+  });
+
   const handle = async (req: Request, via: RequestVia): Promise<Response> => {
     // The tailnet listener checked its own Host (the served MagicDNS name)
     // and the owner's Tailscale login before handing the request here.
@@ -2603,6 +2625,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         return json({ serverSession, cursor: store.cursor(), decisions });
       }
       if (path === "/api/inbox/projects" && req.method === "GET") return json({ serverSession, cursor: store.cursor(), projects: projectFolders() });
+      // Tidy: who it would ask (GET) and asking them (POST).
+      const tidied = await tidy.route(req, url);
+      if (tidied) return tidied;
       // A hover card's data for an issue, PR or MR link (ref-cards.ts). Read only, the window's own
       // read guard; the owner over the tailnet gets it too. Never on the device door (not in its
       // allowlist), so nothing of it reaches a phone or the relay.

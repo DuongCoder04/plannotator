@@ -36,7 +36,7 @@ import type { InboxRunAgentId, InboxRunAgentsModel, InboxRunStatus } from '@plan
 import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
 import type { RecipientConnection } from './deliveryLine';
 import { parseRestartAgents } from './restartAgents';
-import type { InboxRestartAgents } from '@plannotator/core/inbox-types';
+import type { InboxRestartAgents, InboxTidyPlan, InboxTidyRun } from '@plannotator/core/inbox-types';
 import type { InboxSearchAnswer, InboxSearchFrom, InboxSearchGroupId, InboxSearchStatus } from '@plannotator/core/inbox-search';
 import type {
   InboxAgentId,
@@ -711,6 +711,16 @@ export const inboxApi = {
   settings: () => get<SettingsModel>('/api/inbox/settings'),
   /** Decision mode (experimental): every decision waiting on the person, in queue order. 404 while the feature is off. */
   decisions: () => get<InboxDecisionsModel>('/api/inbox/decisions'),
+  /** Tidy: who it would ask in the list's (or the Board's) scope, and the last run. */
+  tidy: (project: string | null, surface: 'list' | 'board') => {
+    const query = new URLSearchParams(surface === 'board' ? { surface } : {});
+    if (project) query.set('project', project);
+    const qs = query.toString();
+    return get<InboxTidyPlan>(`/api/inbox/tidy${qs ? `?${qs}` : ''}`);
+  },
+  /** Tidy: ask these sessions. A replay of the key answers the run it wrote. */
+  startTidy: (input: { sessions: readonly string[]; idempotency_key: string; project: string | null; surface: 'list' | 'board' }) =>
+    post<{ run: InboxTidyRun | null; asked: string[] }>('/api/inbox/tidy', { ...input, sessions: [...input.sessions] }),
   saveCookieHost: (on: boolean) => post<{ cookie_host: InboxCookieHost }>('/api/inbox/settings', { cookie_host: on }),
   saveExperimental: (change: { decision_mode: boolean }) =>
     post<{ experimental: InboxExperimentalSettings }>('/api/inbox/settings', { experimental: change }),
