@@ -92,6 +92,7 @@ import {
 	REPO_FILE_ENDPOINT,
 	REPO_FILES_ENDPOINT,
 	REPO_FILES_STREAM_ENDPOINT,
+	REPO_FILES_SEARCH_ENDPOINT,
 	createRepoListingCache,
 	diffFileStates,
 	findRepoOnDiskChanges,
@@ -100,6 +101,7 @@ import {
 	repoLiveMode,
 	handleRepoFileRequest,
 	handleRepoFilesRequest,
+	handleRepoFilesSearchRequest,
 	type RepoFileRead,
 	type RepoFilesUnavailable,
 } from "../generated/repo-files.ts";
@@ -3726,6 +3728,15 @@ export async function startReviewServer(options: {
 						? findRepoOnDiskChanges(reviewRuntime, listing.root, diffFileStates(currentPatch), snapshotCapturedAt)
 						: Promise.resolve(null),
 				lazyThreshold: options.repoFilesLazyThreshold,
+			});
+			json(res, result.body, result.status);
+		} else if (url.pathname === REPO_FILES_SEARCH_ENDPOINT && req.method === "GET") {
+			const result = await handleRepoFilesSearchRequest({
+				params: url.searchParams,
+				unavailable: repoFilesUnavailable(),
+				isCurrentSnapshot: (snapshot) => snapshot === currentSnapshotId(),
+				loadListing: loadRepoListing,
+				preferred: new Set(diffFileStates(currentPatch).keys()),
 			});
 			json(res, result.body, result.status);
 		} else if (url.pathname === REPO_FILES_STREAM_ENDPOINT && req.method === "GET") {

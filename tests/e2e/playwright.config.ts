@@ -21,9 +21,8 @@ export default defineConfig({
   testMatch: '*.spec.ts',
   testIgnore: OWN_CONFIG,
   outputDir: '../../.local/test-results',
-  // A stand-in first on PATH for every agent CLI the Inbox runs itself, and a tripwire that fails the run on a call past --version (tests/helpers/agent-cli-guard.ts).
+  // Feedback never reaches the live Worker (global-setup.ts).
   globalSetup: './global-setup.ts',
-  globalTeardown: './global-teardown.ts',
   fullyParallel: false,
   workers: 1,
   retries: 0,

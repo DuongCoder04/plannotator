@@ -280,6 +280,8 @@ interface DiffViewerProps {
    */
   onTokenHoverEnter?: (props: DiffTokenEventBaseProps, filePath: string) => void;
   onTokenHoverLeave?: () => void;
+  /** The token under the pointer, and the last one clicked: where F12 looks. */
+  onTokenTarget?: import('../utils/tokenTarget').TokenTargetHandler;
   /** Every file path in this review. A link in the Markdown preview to one of
    *  them opens it; any other local link renders inert. */
   reviewFilePaths?: ReadonlySet<string>;
@@ -384,6 +386,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   onCodeNavRequest,
   onTokenHoverEnter,
   onTokenHoverLeave,
+  onTokenTarget,
   reviewFilePaths,
   onOpenReviewFile,
   markdownView: markdownViewProp,
@@ -992,6 +995,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
 
   // Token interaction handlers (code area clicks)
   const handleTokenClick = useCallback((props: DiffTokenEventBaseProps, event: MouseEvent) => {
+    onTokenTarget?.('click', props, filePath);
     // Alt is an unadvertised alias for the same References-panel path; the
     // meta/ctrl branch itself is unchanged.
     if ((event.metaKey || event.ctrlKey || event.altKey) && onCodeNavRequest) {
@@ -999,7 +1003,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
       return;
     }
     toolbarHostRef.current?.handleTokenClick(props, event);
-  }, [filePath, onCodeNavRequest]);
+  }, [filePath, onCodeNavRequest, onTokenTarget]);
 
   const handleTokenEnter = useCallback((props: DiffTokenEventBaseProps, event: PointerEvent) => {
     // Only where a card can actually open. The class carries a pointer cursor
@@ -1010,14 +1014,16 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
     if ((event.metaKey || event.ctrlKey) && onCodeNavRequest) {
       props.tokenElement.classList.add('pn-token-nav');
     }
+    onTokenTarget?.('enter', props, filePath);
     onTokenHoverEnter?.(props, filePath);
-  }, [filePath, onCodeNavRequest, onTokenHoverEnter]);
+  }, [filePath, onCodeNavRequest, onTokenHoverEnter, onTokenTarget]);
 
   const handleTokenLeave = useCallback((props: DiffTokenEventBaseProps) => {
     props.tokenElement.classList.remove('pn-token-hover');
     props.tokenElement.classList.remove('pn-token-nav');
+    onTokenTarget?.('leave', props, filePath);
     onTokenHoverLeave?.();
-  }, [onTokenHoverLeave]);
+  }, [filePath, onTokenHoverLeave, onTokenTarget]);
 
   const splitGridStyle = useMemo(() => {
     if (!isSplitLayout || diffOverflow === 'wrap') return undefined;

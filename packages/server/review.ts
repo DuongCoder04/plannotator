@@ -81,6 +81,7 @@ import {
   REPO_FILE_ENDPOINT,
   REPO_FILES_ENDPOINT,
   REPO_FILES_STREAM_ENDPOINT,
+  REPO_FILES_SEARCH_ENDPOINT,
   createRepoListingCache,
   diffFileStates,
   findRepoOnDiskChanges,
@@ -89,6 +90,7 @@ import {
   repoLiveMode,
   handleRepoFileRequest,
   handleRepoFilesRequest,
+  handleRepoFilesSearchRequest,
   type RepoFileRead,
   type RepoFilesUnavailable,
 } from "@plannotator/shared/repo-files";
@@ -3811,6 +3813,19 @@ export async function startReviewServer(
                   ? findRepoOnDiskChanges(gitRuntime, listing.root, diffFileStates(currentPatch), snapshotCapturedAt)
                   : Promise.resolve(null),
               lazyThreshold: options.repoFilesLazyThreshold,
+            });
+            return Response.json(result.body, { status: result.status });
+          }
+
+          // API: Go to File over the listing (the client searches a listing it
+          // holds itself; past the lazy threshold it asks here).
+          if (url.pathname === REPO_FILES_SEARCH_ENDPOINT && req.method === "GET") {
+            const result = await handleRepoFilesSearchRequest({
+              params: url.searchParams,
+              unavailable: repoFilesUnavailable(),
+              isCurrentSnapshot: (snapshot) => snapshot === currentSnapshotId(),
+              loadListing: loadRepoListing,
+              preferred: new Set(diffFileStates(currentPatch).keys()),
             });
             return Response.json(result.body, { status: result.status });
           }

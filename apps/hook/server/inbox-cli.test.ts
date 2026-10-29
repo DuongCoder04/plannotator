@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { INBOX_HOST_NAMES, type InboxQuestion } from "@plannotator/core/inbox-types";
+import type { InboxQuestion } from "@plannotator/core/inbox-types";
 import { inboxStatus, isPidAlive, readInboxRegistry, writeInboxRegistry } from "@plannotator/shared/inbox/registry";
 import { startInboxServer } from "@plannotator/server/inbox";
 import { INBOX_DEFAULT_SERVED_TOOLS } from "@plannotator/server/inbox-mcp";
@@ -348,10 +348,8 @@ describe("plannotator inbox mcp inside an agent session", () => {
     expect(INBOX_SESSION_HOST_NAMES[piHost!]).toBe(piName!);
     // Codex and Qwen Code have no plannotator_inbox tool: the Inbox wakes them itself (`codex queue`, Qwen's
     // cross-session messaging), and the shim sends as their session.
-    // Grok Build: a session the Inbox runs itself (inbox-acp-runner.ts), named as its messages are (core INBOX_HOST_NAMES).
-    expect(Object.keys(INBOX_SESSION_HOST_NAMES).sort()).toEqual(["claude-code", "codex", "grok", "opencode", "pi", "qwen"]);
+    expect(Object.keys(INBOX_SESSION_HOST_NAMES).sort()).toEqual(["claude-code", "codex", "opencode", "pi", "qwen"]);
     expect(INBOX_SESSION_HOST_NAMES.codex).toBe("Codex");
-    expect(INBOX_SESSION_HOST_NAMES.grok).toBe(INBOX_HOST_NAMES.grok);
     expect(INBOX_SESSION_HOST_NAMES.qwen).toBe("Qwen Code");
     // A Qwen session in the tag is a Qwen session id, never anything else.
     expect(inboxHostSessionFromEnv({ PLANNOTATOR_SESSION_TAG: "qwen:8e016be8-5b48-4c13-ad22-1f5326ae64ac" })).toEqual({ host: "qwen", session: "8e016be8-5b48-4c13-ad22-1f5326ae64ac", name: "Qwen Code" });
@@ -451,20 +449,6 @@ describe("plannotator inbox mcp inside an agent session", () => {
         .arguments,
     ).toEqual({ body: "hi", project_path: "/work", agent_session: "ses_OWN" });
     expect(call("send_message", { body: "hi", agent_name: "Helper" })).toMatchObject({ agent_host: "claude-code", agent_name: "Helper" });
-    // A Claude Code session's calls never claim to wake (its connection says so itself).
-    expect(fillInboxToolArguments({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "send_message", arguments: {} } }, "/work", "ses_OWN", hostSession).params!._meta).toBeUndefined();
-  });
-
-  test("a session the Inbox runs (Grok Build, PLANNOTATOR_SESSION_TAG set by the runner) sends as that session, marked as woken by its replies", () => {
-    const run = "run_01HZY3T5R4M2Q8W9X6V7B1N0KP";
-    const hostSession = inboxHostSessionFromEnv({ PLANNOTATOR_SESSION_TAG: `grok:${run}` });
-    expect(hostSession).toEqual({ host: "grok", session: run, name: "Grok Build" });
-    const filled = fillInboxToolArguments({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "send_message", arguments: { body: "hi" } } }, "/work", "ses_OWN", hostSession).params!;
-    expect(filled.arguments).toEqual({ body: "hi", project_path: "/work", agent_session: run, agent_host: "grok", agent_name: "Grok Build" });
-    expect(filled._meta).toEqual({ "ai.plannotator/inbox-wakes": true });
-    // An agent that names another host is not that session, and claims nothing.
-    const other = fillInboxToolArguments({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "send_message", arguments: { body: "hi", agent_host: "codex" } } }, "/work", "ses_OWN", hostSession).params!;
-    expect(other._meta).toBeUndefined();
   });
 
   test("a command a Claude Code session runs sends as that session: the tool's author, its thread, and the reply wakes it", async () => {
