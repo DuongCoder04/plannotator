@@ -74,6 +74,7 @@ import { CompletionOverlay } from '@plannotator/ui/components/CompletionOverlay'
 import { useUpdateCheck } from '@plannotator/ui/hooks/useUpdateCheck';
 import { useUpdateToast } from '@plannotator/ui/hooks/useUpdateToast';
 import { useUpdateCheckSetting } from '@plannotator/ui/hooks/useUpdateCheckSetting';
+import { useCookieHostSetting } from '@plannotator/ui/hooks/useCookieHostSetting';
 import { parseUpdateAdvert, parseUpdateCheckFailing, type UpdateAdvert, type UpdateCheckFailingAdvert } from '@plannotator/ui/utils/updateNotice';
 import { claimAutoUpdateNotice, describeAutoUpdateNotice, parseAutoUpdateNotice, type AutoUpdateNotice } from '@plannotator/ui/utils/autoUpdateNotice';
 import { LookAndFeelAnnouncementDialog } from '@plannotator/ui/components/LookAndFeelAnnouncementDialog';
@@ -670,6 +671,7 @@ const App: React.FC = () => {
   const [autoUpdateActive, setAutoUpdateActive] = useState(false);
   // The update-notice switch for Settings: present when the server reports it.
   const updateCheckSetting = useUpdateCheckSetting();
+  const cookieHostSetting = useCookieHostSetting();
   // One-time notice after a background auto-update (#1634); the compiled
   // CLI's server attaches it to the initial payload.
   const [autoUpdateNotice, setAutoUpdateNotice] = useState<AutoUpdateNotice | undefined>();
@@ -3957,6 +3959,7 @@ const App: React.FC = () => {
         setUpdateAdvert(parseUpdateAdvert(data.updateAvailable));
         setUpdateCheckFailing(parseUpdateCheckFailing(data.updateCheckFailing));
         updateCheckSetting.adopt(data.serverConfig as Record<string, unknown> | undefined);
+        cookieHostSetting.adopt(data.serverConfig as Record<string, unknown> | undefined);
         if (data.mode === 'goal-setup' && data.goalSetup) {
           setGoalSetupBundle(data.goalSetup);
           setMarkdown('');
@@ -7489,6 +7492,7 @@ const App: React.FC = () => {
           gitUser={gitUser}
           autoUpdateSetting={autoUpdateSetting}
           updateCheckSetting={updateCheckSetting.setting}
+          cookieHostSetting={cookieHostSetting.setting}
           agentToolSetting={agentTool.setting}
           onAgentToolChange={agentTool.save}
           agentTerminalAvailable={showAgentTerminalControls}

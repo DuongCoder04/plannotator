@@ -728,6 +728,8 @@ describe("the update control never answers through the tailnet", () => {
       ["GET", "/api/inbox/whats-new/image?version=0.28.12&src=https%3A%2F%2Fgithub.com%2Fuser-attachments%2Fassets%2Fa", undefined],
       ["POST", "/api/inbox/settings", { serverSession: inbox.serverSession, auto_update: true }],
       ["POST", "/api/inbox/settings", { serverSession: inbox.serverSession, update_check: false }],
+      // The address this computer's browser opens (#2184).
+      ["POST", "/api/inbox/settings", { serverSession: inbox.serverSession, cookie_host: true }],
     ];
     for (const [method, path, body] of calls) {
       const response = await throughServe(inbox, path, { method, headers: own, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -737,6 +739,19 @@ describe("the update control never answers through the tailnet", () => {
     const config = JSON.parse(readFileSync(join(dataDir, "config.json"), "utf8"));
     expect(config.autoUpdate).toBeUndefined();
     expect(config.updateCheck).toBeUndefined();
+    expect(config.urlHost).toBeUndefined();
+    // A page through the tailnet is not shown the cookie switch at all.
+    const shown = await throughServe(inbox, "/api/inbox/settings", { method: "GET", headers: own });
+    expect(shown.status).toBe(200);
+    expect((await shown.json()).cookie_host).toBeUndefined();
+    // Nor in the answer to a save it may make.
+    const saved = await throughServe(inbox, "/api/inbox/settings", {
+      method: "POST",
+      headers: own,
+      body: JSON.stringify({ serverSession: inbox.serverSession, text_size: 14 }),
+    });
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).cookie_host).toBeUndefined();
     // The same Update now works on this computer.
     const local = await fetch(`http://127.0.0.1:${inbox.port}/api/inbox/update`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     expect(local.status).toBe(200);

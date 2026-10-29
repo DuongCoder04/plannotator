@@ -408,3 +408,5 @@ apps/vscode-extension/src/guides/reader/lines.test.ts
 apps/vscode-extension/src/guides/webview/diagram-loader.test.ts
 packages/review-editor/components/AnnotationToolbar.askOnly.test.tsx
 packages/ui/components/Settings.notion.test.tsx
+packages/inbox/cookieHostSettings.test.tsx
+packages/ui/components/Settings.cookieHost.test.tsx
