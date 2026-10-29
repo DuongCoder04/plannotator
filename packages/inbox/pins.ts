@@ -48,9 +48,12 @@ export function pinnedState(row: InboxListRow): PinnedState {
   }
 }
 
-/** A pinned row's name: "subject, project, state" ("Board step 2: names, plannotator, 3 questions"). */
-export function pinnedRowName(row: InboxListRow): string {
-  return `${row.subject ?? '(no subject)'}, ${row.project.name}, ${pinnedState(row).words}`;
+/**
+ * A pinned row's name: "subject, project, state" ("Board step 2: names, plannotator, 3 questions").
+ * `project`: the sidebar's name for it (shortProjectNames); absent, the server's.
+ */
+export function pinnedRowName(row: InboxListRow, project: string = row.project.name): string {
+  return `${row.subject ?? '(no subject)'}, ${project}, ${pinnedState(row).words}`;
 }
 
 /** The pins' order after moving one up (-1) or down (+1); unchanged at an end or for a thread not pinned. */
