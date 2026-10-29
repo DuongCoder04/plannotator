@@ -456,14 +456,14 @@ test.skipIf(!hasDom)('with a thread open: Archive from another row keeps it in p
   expect(toast()!.textContent).toContain(`“${subject}”`);
   expect(posted.some((p) => p.path === `/api/inbox/messages/${ids.waiting}/resolve` && p.body.resolved === true)).toBe(true);
   // The list holds still while the thread is open: the row stays where it was, shown archived.
-  await until(() => rowButton(ids.waiting)?.querySelector('.ib-c')?.textContent === 'Archived', 'the row shown archived');
+  await until(() => rowButton(ids.waiting)?.querySelector('.ib-c .ib-cs')?.textContent === 'Archived', 'the row shown archived');
   expect(placed()).toEqual(before);
   expect(window.location.hash).toContain(`thread=${ids.stopped}`);
   await act(async () => {
     toast()!.querySelector<HTMLButtonElement>('[data-toast-undo]')!.click();
   });
   await until(async () => (await serverSections()).get(ids.waiting) === 'waiting', 'the thread unarchived');
-  await until(() => rowButton(ids.waiting)?.querySelector('.ib-c')?.textContent !== 'Archived', 'the row no longer shown archived');
+  await until(() => rowButton(ids.waiting)?.querySelector('.ib-c .ib-cs')?.textContent !== 'Archived', 'the row no longer shown archived');
   expect(placed()).toEqual(before);
 });
 
@@ -487,7 +487,7 @@ test.skipIf(!hasDom)('with a thread open, Archive from the menu then a mouse clo
   const next = order[order.indexOf(ids.waiting) + 1]!;
   await openMenu(ids.waiting);
   await choose('archive');
-  await until(() => rowButton(ids.waiting)?.querySelector('.ib-c')?.textContent === 'Archived', 'the row shown archived');
+  await until(() => rowButton(ids.waiting)?.querySelector('.ib-c .ib-cs')?.textContent === 'Archived', 'the row shown archived');
   // A mouse close moves nothing (App's rule); the list settles and the archived row leaves.
   mouseClick(document.querySelector<HTMLElement>('section.ib-pane [aria-label="Close the thread"]')!);
   await until(() => !rowButton(ids.waiting), 'the archived row to leave once the thread closed');
