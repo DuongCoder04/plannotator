@@ -32,6 +32,8 @@ const CASES: { what: string; projects: Project[] }[] = [
   { what: 'trailing slashes', projects: [p('a', '/work/api/'), p('b', '/home/api//')] },
   { what: 'the same root twice', projects: [p('a', '/w/api'), p('b', '/w/api')] },
   { what: 'empty root', projects: [p('a', '', 'empty-slug')] },
+  // A worktrees folder in a home folder is an ordinary folder for the window: the server's names.
+  { what: 'worktrees in a home folder', projects: [p('a', '/Users/ramos/worktrees/foo'), p('b', '/home/ramos/worktrees/foo'), p('c', 'C:\\Users\\ramos\\.claude\\worktrees\\api')] },
 ];
 
 test('the window and the server name the same projects the same way', () => {
@@ -47,6 +49,7 @@ const WORKTREE_CASES: { what: string; projects: Project[] }[] = [
   { what: 'two repositories named alike', projects: [p('a', '/home/work/api/worktrees/main'), p('b', '/home/oss/api/worktrees/main')] },
   { what: 'a checkout and a plain folder', projects: [p('a', 'C:\\src\\api\\worktrees\\main'), p('b', '/srv/api')] },
   { what: 'nested clash', projects: [p('a', '/x/work/api/worktrees/main'), p('b', '/y/work/api/worktrees/dev'), p('c', '/home/api')] },
+  { what: "a dot-folder's worktrees", projects: [p('a', '/u/me/plannotator/.claude/worktrees/agent-1'), p('b', '/w/plannotator')] },
 ];
 
 test('a checkout in a worktrees folder is named as the server would name its repository', () => {

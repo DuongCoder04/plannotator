@@ -101,3 +101,23 @@ test('a folder that is not in a worktrees folder is unchanged, a folder named wo
   // Nothing above `worktrees` to name it by: the folder's own name, as before.
   expect(names.get('s')).toBe('main · worktrees');
 });
+
+test("a checkout in a dot-folder's worktrees (Claude Code's agent worktrees) reads as the repository above the dot-folder", () => {
+  const names = shortProjectNames([
+    { id: 'c', root: '/Users/me/plannotator/plannotator/.claude/worktrees/agent-a4ef845a', name: 'x' },
+    { id: 'd', root: '/src/tool/.cache/.tools/worktrees/fix', name: 'x' },
+  ]);
+  expect(names.get('c')).toBe('plannotator');
+  expect(names.get('d')).toBe('tool');
+});
+
+test('a worktrees folder right in a home folder (or with only dot-folders up to it) is an ordinary folder, never named for the person', () => {
+  const names = shortProjectNames([
+    { id: 'mac', root: '/Users/ramos/worktrees/foo', name: 'x' },
+    { id: 'linux', root: '/home/ramos/worktrees/bar', name: 'x' },
+    { id: 'win', root: 'C:\\Users\\ramos\\worktrees\\baz', name: 'x' },
+    { id: 'dot', root: '/Users/ramos/.claude/worktrees/qux', name: 'x' },
+    { id: 'top', root: '/.hidden/worktrees/quux', name: 'x' },
+  ]);
+  expect(['mac', 'linux', 'win', 'dot', 'top'].map((id) => names.get(id))).toEqual(['foo', 'bar', 'baz', 'qux', 'quux']);
+});

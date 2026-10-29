@@ -33,10 +33,14 @@ const CHECKOUTS = new Set(['worktrees', '.worktrees']);
  */
 export function labelPath(root: string): { parts: string[]; checkout: string | null } {
   const parts = segments(root);
-  if (parts.length >= 3 && CHECKOUTS.has(sameKey(parts[parts.length - 2]!))) {
-    return { parts: parts.slice(0, -2), checkout: parts[parts.length - 1]!.normalize('NFC') };
-  }
-  return { parts, checkout: null };
+  if (parts.length < 3 || !CHECKOUTS.has(sameKey(parts[parts.length - 2]!))) return { parts, checkout: null };
+  // A dot-folder holds tools' checkouts (Claude Code's `<repo>/.claude/worktrees/agent-…`): the repository is above it.
+  let repo = parts.length - 3;
+  while (repo >= 0 && parts[repo]!.startsWith('.')) repo -= 1;
+  // No repository above, or `worktrees` sits in a home folder (`/Users/<x>`, `/home/<x>`, `C:\Users\<x>`): an ordinary folder.
+  const home = repo >= 1 && ['users', 'home'].includes(sameKey(parts[repo - 1]!)) && (repo === 1 || (repo === 2 && parts[0]!.endsWith(':')));
+  if (repo < 0 || home) return { parts, checkout: null };
+  return { parts: parts.slice(0, repo + 1), checkout: parts[parts.length - 1]!.normalize('NFC') };
 }
 
 /**
