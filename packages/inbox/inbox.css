@@ -180,6 +180,10 @@
   --ib-badge-bg: var(--ib-badge-bg-s, transparent);
   --ib-badge-stop-bg: var(--ib-badge-stop-bg-s, transparent);
   --ib-badge-hold-bg: var(--ib-badge-hold-bg-s, transparent);
+  /* The open action items' pill (approval "inbox-row-action-icon", A2): a neutral fill, the text colour 10% on dark
+     (8% on light, below), the same step as the alert's tint; today's badges are outlined, with no fill. */
+  --ib-badge-act-bg-s: var(--ib-soft-badges) color-mix(in oklch, var(--foreground) 10%, transparent);
+  --ib-badge-act-bg: var(--ib-badge-act-bg-s, transparent);
   /* Used as var(--ib-badge-stop-fg, currentcolor): today's badge takes its row's colour. */
   --ib-badge-stop-fg: var(--ib-badge-stop-fg-s);
   --ib-badge-hold-fg: var(--ib-badge-hold-fg-s);
@@ -300,6 +304,7 @@
   }
 }
 :root.light .pn-inbox {
+  --ib-badge-act-bg-s: var(--ib-soft-badges) color-mix(in oklch, var(--foreground) 8%, transparent);
   --ib-shadow-ink: var(--inbox-shadow-ink, var(--foreground));
   --ib-ground-soft: var(--inbox-ground, color-mix(in oklch, var(--muted) 55%, var(--background)));
   --ib-pane-shadow-soft: var(--inbox-pane-shadow, 0 0 0 1px color-mix(in oklch, var(--border) 55%, transparent), 0 1px 2px color-mix(in oklch, var(--ib-shadow-ink) 5%, transparent), 0 6px 18px -8px color-mix(in oklch, var(--ib-shadow-ink) 12%, transparent));
@@ -725,24 +730,26 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-band .ib-n { font-weight: 500; color: var(--muted-foreground); }
 .ib-band .ib-ic { margin-left: auto; color: var(--muted-foreground); }
 /* The one-line row (approval "inbox-row-byline", 2026-10-29): the project, the subject cell (the thread pill, the
-   subject), then right-aligned the count in words, the agents' marks, the badge, `?N` and the time, each in a column
-   of its own so they line up down the list in every row, and every subject has the same room. Every row's tracks
-   depend only on the list's width (no row's content sizes them), so they line up though each row is its own grid.
-   The owner's call of 2026-10-29: full-width rows (a list of 1150px or more, `.ib-fullw`) say the full words. The
-   words column is 14% of the row, from 148px to 160px (1440 and wider), where "1 question, 1 action item", "Draft · Your reply, 2 picks" and
-   "Undelivered 23 hours" fit; longer words end in "…" with the full words in the tooltip. The project column gives
-   way the same way, 15% from 120px to 170px. The badge column
-   (110px) fits the triangle and "Holds up 12"; `?N` gets 44px: `?128` fits. A wide row in a list under 1150px (no
-   `.ib-fullw`) keeps option A: the short words in 124px and the bare triangle in 52px. */
-.ib-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 124px 64px 52px 44px 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
-.ib-fullw .ib-row { grid-template-columns: clamp(120px, 15%, 170px) minmax(0, 1fr) clamp(148px, 14%, 160px) 64px 110px 44px 76px; }
+   subject), then right-aligned the count in words, the agents' marks, the badge, the open counts and the time, each
+   in a column of its own so they line up down the list in every row, and every subject has the same room. Every
+   row's tracks depend only on the list's width (no row's content sizes them), so they line up though each row is its
+   own grid. The owner's call of 2026-10-29: full-width rows (a list of 1150px or more, `.ib-fullw`) say the full
+   words. The words column is 14% of the row, from 148px to 160px (1440 and wider), where "Draft · Your reply, 2 picks"
+   and "Undelivered 23 hours" fit; longer words end in "…" with the full words in the tooltip. The project column
+   gives way the same way, 15% from 120px to 170px. The badge column (110px) fits the triangle and "Holds up 12". The
+   open counts (approval "inbox-row-action-icon", 2026-10-29) get 84px: the action pill and `?N` side by side, both
+   two digits ("[□ 12] ?12"). A wide row in a list under 1150px (no `.ib-fullw`) keeps option A: the short words in
+   124px and the bare triangle in 52px. */
+.ib-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 124px 64px 52px 84px 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
+.ib-fullw .ib-row { grid-template-columns: clamp(120px, 15%, 170px) minmax(0, 1fr) clamp(148px, 14%, 160px) 64px 110px 84px 76px; }
 /* One project's list: no project column (InboxList's WideRow). */
-.ib-noproj .ib-row { grid-template-columns: minmax(0, 1fr) 124px 64px 52px 44px 76px; }
-.ib-noproj.ib-fullw .ib-row { grid-template-columns: minmax(0, 1fr) clamp(148px, 14%, 160px) 64px 110px 44px 76px; }
-/* The words, the agents' marks, the badge and `?N`, each right-aligned in its column, so every subject starts on
-   one left edge; up to three agents' marks overlap within theirs, past that two and "+N". A `?N` wider than its
-   column (four digits) runs out to the left, into the gap, never into the time. */
+.ib-noproj .ib-row { grid-template-columns: minmax(0, 1fr) 124px 64px 52px 84px 76px; }
+.ib-noproj.ib-fullw .ib-row { grid-template-columns: minmax(0, 1fr) clamp(148px, 14%, 160px) 64px 110px 84px 76px; }
+/* The words, the agents' marks, the badge and the open counts, each right-aligned in its column, so every subject
+   starts on one left edge; up to three agents' marks overlap within theirs, past that two and "+N". Open counts
+   wider than their column (three digits) run out to the left, into the gap, never into the time. */
 .ib-row :is(.ib-cw, .ib-mcol, .ib-bcol, .ib-cq) { display: inline-flex; justify-content: flex-end; align-items: center; min-width: 0; }
+.ib-row .ib-cq { gap: 8px; }
 .ib-row .ib-c.ib-qn { justify-content: flex-end; }
 .ib-row .ib-p { font-weight: 400; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-row.ib-u .ib-s { font-weight: 600; }
@@ -821,13 +828,12 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-nrow .ib-l2 .ib-mcol { display: inline-flex; flex: none; align-items: center; margin-left: auto; }
 .ib-nrow .ib-l2 > :is(.ib-badge, .ib-c) { flex: none; }
 /* The count in words (`CountWords`; approval "inbox-row-byline", option A, 2026-10-29): the short form, "Draft",
-   "Undelivered 14m", "1 action", "1 action ?1", in a slot of at most 124px (a wide row's column) on every row, so
-   it never takes the subject's room. Longer words ("To Claude Code (another session)") end in "…"; the full words
-   are the tooltip's and the row's name. */
+   "Undelivered 14m", "Read", in a slot of at most 124px (a wide row's column) on every row, so it never takes the
+   subject's room. Longer words ("To Claude Code (another session)") end in "…"; the full words are the tooltip's
+   and the row's name. */
 .ib-c.ib-cwords { display: inline-flex; justify-content: flex-end; align-items: center; max-width: 124px; min-width: 0; flex: none; }
 .ib-cwords > .ib-cs { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; white-space: nowrap; }
 .ib-cs > .ib-cst { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.ib-cs > .ib-qn { display: inline-flex; align-items: center; gap: 4px; flex: none; font-variant-numeric: tabular-nums; }
 /* A wide row's full words fill its words column; past it they end in "…" (the draft's words too). */
 .ib-row .ib-c.ib-cwords.ib-cfull { max-width: 100%; }
 .ib-cfull > .ib-cs > .ib-draft-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -837,8 +843,16 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-b-wait > .ib-bwt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A wide row's badge says its words (the owner, 2026-10-29): the triangle, then "Stopped" or "Holds up 3". */
 .ib-badge.ib-bicon.ib-bwords { gap: 5px; padding: 0 8px 0 7px; }
-/* The open count on line 2 (`LineCount`): the question icon and the number, `?2`; its words are for a screen reader. */
-.ib-c.ib-qn { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
+/* The open questions (`QuestionCount`; approval "inbox-row-action-icon", Q3, 2026-10-29): a speech bubble with a "?"
+   right next to its number, in quiet text with no pill; its words are for a screen reader. */
+.ib-c.ib-qn { display: inline-flex; align-items: center; gap: 3px; font-variant-numeric: tabular-nums; }
+.pn-inbox .ib-qn svg.ib-qbub { stroke-width: 1.8; }
+/* The open action items (`ActionBadge`; approval "inbox-row-action-icon", A2, 2026-10-29): the checklist card's box
+   with its tick taken out and the number, in the alert badge's pill with a neutral fill and the text colour, so it
+   reads one step under the red and amber badge and one over the question count. Today's badges (Soft off) are
+   outlined, and so is this one. */
+.ib-badge.ib-bicon.ib-b-act { padding: 0 7px 0 6px; background: var(--ib-badge-act-bg); color: var(--foreground); }
+.pn-inbox .ib-b-act svg.ib-ic { stroke-width: 2; }
 /* Several agents in that box (any list row, the one-line row too): the scale's 20 px tiles, overlapping 2 px rather than the stack's 5, so the second
    tile never covers the first one's glyph (13 px, 3.5 px inside its tile): both marks read whole. */
 :is(.ib-row, .ib-nrow, .ib-mrow) .ib-mcol .ib-tg-stack .ib-mk + .ib-mk { margin-left: -2px; }

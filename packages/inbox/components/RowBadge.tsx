@@ -21,6 +21,8 @@
  */
 import type { ReactNode } from 'react';
 import type { InboxListRow, InboxRowWait } from '@plannotator/core/inbox-types';
+import { formatCount } from '../format';
+import { Icon } from '../icons';
 import { Tip } from './Tip';
 
 /** Heroicons' exclamation-triangle, outline (MIT), drawn in the badge's own colour. */
@@ -228,4 +230,38 @@ export function RowBadge({ row, card, open = false, words: shown = false }: { ro
       {badge}
     </Tip>
   );
+}
+
+/** The row's open action items: never more than its open count. */
+export function rowActionCount(row: InboxListRow): number {
+  return Math.max(0, Math.min(row.questions.actions ?? 0, row.questions.open));
+}
+
+/** The action count's words, its accessible name and tooltip: "1 action to do", "2 actions to do". */
+export function actionCountWords(n: number): string {
+  return `${formatCount(n)} action${n === 1 ? '' : 's'} to do`;
+}
+
+/**
+ * The open action items' count (approval "inbox-row-action-icon", A2 "Empty box", 2026-10-29): the action
+ * checklist card's box with its tick taken out ("still to do") and the number, in a pill of the alert badge's
+ * shape with a neutral fill and the text colour. One step under the red and amber badge, one over the quiet
+ * question count beside it. Its words ("2 actions to do") are visually hidden text and, with `tip`, the
+ * tooltip (a phone has none). Nothing when no action item is open.
+ */
+export function ActionBadge({ row, tip = false }: { row: InboxListRow; tip?: boolean }) {
+  const n = rowActionCount(row);
+  if (n < 1) return null;
+  const words = actionCountWords(n);
+  const badge = (
+    <span className="ib-badge ib-bicon ib-b-act" data-action-count={n}>
+      <Icon name="todoOpen" size={14} />
+      <span className="ib-bn" aria-hidden="true">
+        {formatCount(n)}
+      </span>
+      {/* Spaced, so the row's name never runs it into the badge's words or the question count's. */}
+      <span className="ib-sr">{` ${words} `}</span>
+    </span>
+  );
+  return tip ? <Tip content={words}>{badge}</Tip> : badge;
 }
