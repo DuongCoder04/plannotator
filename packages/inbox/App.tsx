@@ -97,7 +97,8 @@ import { threadLink, type RowMenuAction } from './rowMenu';
 import { movePin, unpinnedWhere } from './pins';
 import type { PinnedAction } from './components/PinnedRow';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
-import { newBatchId, projectAllArchived, projectBatchToast, projectsWithReadable, type ProjectAction } from './projectMenu';
+import { newBatchId, projectAllArchived, projectBatchToast, projectsWithReadable, shownProjects, type ProjectAction } from './projectMenu';
+import { windowProjectNames } from './projectLabels';
 import { lookBoundary } from './folding';
 import { latestAgentSeq } from './seenOnSight';
 import { isPhone, isTouchPhone, trackKeyboard, usePhone } from './phone';
@@ -2827,7 +2828,17 @@ function Inbox() {
     : null;
 
   const filterProject = route.page === 'inbox' && route.project ? projects.find((p) => p.id === route.project) ?? null : null;
-  const notice = shown && latest ? heldNotice(filterSections(shown, route.project), filterSections(latest.sections, route.project), openedHere.current, heldOpen()).text : null;
+  // The project the sidebar keeps while its list shows (Sidebar's `held`: its page is the Inbox, not a card's thread).
+  const sidebarKeeps = (route.page === 'inbox' || route.page === 'tour') && !(route.page === 'inbox' && route.thread && route.card) ? route.project : null;
+  // One name per project for the whole window (windowProjectNames): the sidebar, the rows, the pins, the list's
+  // title and "N new in …" all read it, so the held list and the live sidebar never name a project two ways.
+  const projectNames = useMemo(
+    () => windowProjectNames({ projects, sidebar: shownProjects(projects, sidebarKeeps), sections: shown ?? [], pins: pinRows }),
+    [projects, sidebarKeeps, shown, pinRows],
+  );
+  // The list's name: Inbox, or the project's window name; its back buttons read the same.
+  const listTitle = filterProject ? (projectNames.get(filterProject.id) ?? filterProject.name) : 'Inbox';
+  const notice = shown && latest ? heldNotice(filterSections(shown, route.project), filterSections(latest.sections, route.project), openedHere.current, heldOpen(), projectNames).text : null;
   const firstRun = latest !== null && projects.length === 0;
   // Tidy (2026-10-28): the list header's and the Board's ⋮ menu, each reading who it would ask in its scope.
   const listTidy = useTidy(route.page === 'inbox' ? (route.project ?? null) : null, 'list', shown, route.page === 'inbox' && !firstRun);
@@ -3698,10 +3709,12 @@ function Inbox() {
         {!fileOpen && !fromCard && (
         <InboxList
           scope={route.project}
-          title={filterProject?.name ?? 'Inbox'}
+          // One project's list: its window name, the path beside it.
+          title={listTitle}
           path={filterProject ? tildePath(filterProject.root, settings?.home) : null}
           sections={filterSections(shown, route.project)}
           filtered={filterProject !== null}
+          projectNames={projectNames}
           // A stacked thread covers the list, which keeps its own width (and scroll) under it.
           narrow={route.thread !== null && !stack.thread}
           selectedThreadId={route.thread}
@@ -3746,7 +3759,7 @@ function Inbox() {
           empty={
             projectAllArchived(filterProject) ? (
               <div className="ib-empty-list" data-project-archived="">
-                <b dir="auto">Everything in {filterProject!.name} is archived.</b>
+                <b dir="auto">Everything in {listTitle} is archived.</b>
                 It leaves the sidebar when you go elsewhere, and comes back when an agent writes there.{' '}
                 <a href="#settings/archived">See archived threads</a>
               </div>
@@ -3878,7 +3891,7 @@ function Inbox() {
             onScreenChange={(state) => {
               threadOnScreenRef.current = state;
             }}
-            backLabel={fromCard ? 'Board' : (filterProject?.name ?? 'Inbox')}
+            backLabel={fromCard ? 'Board' : listTitle}
             cardChip={fromCard ? <CardChip card={cards?.cards.find((c) => c.id === fromCard) ?? null} onOpen={backToCard} /> : undefined}
             phone={phone}
             stacked={stack.thread || !!fromCard}
@@ -3895,7 +3908,7 @@ function Inbox() {
                 const room = LIST_MIN_WIDTH + THREAD_BESIDE_FILE_WIDTH + paneGutters();
                 if (width >= room && width - sidebar < room) setSidebarHeld(true);
               }
-              backFromFile.current = { thread: thread.thread_id, name: fileName, label: filterProject?.name ?? 'Inbox' };
+              backFromFile.current = { thread: thread.thread_id, name: fileName, label: listTitle };
               closeTo({ ...routeRef.current, file: null });
             }}
           />
@@ -3954,6 +3967,7 @@ function Inbox() {
             projectId={route.project}
             inboxCount={waitingCount(latestSections)}
             projects={projects}
+            projectNames={projectNames}
             projectCounts={projectCounts}
             projectsReadable={projectsReadable}
             onProjectAction={(projectId, action) => void projectAction(projectId, action)}

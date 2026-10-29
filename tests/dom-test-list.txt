@@ -74,6 +74,7 @@ packages/inbox/openQuestions.test.tsx
 packages/inbox/decisionMode.test.tsx
 packages/inbox/decisionCardContract.test.tsx
 packages/inbox/threadFolding.test.tsx
+packages/inbox/threadNameMeta.test.tsx
 packages/inbox/choiceLabels.test.tsx
 packages/inbox/pasteTarget.test.ts
 packages/inbox/seenOnSight.test.tsx
@@ -140,6 +141,8 @@ packages/inbox/threadReadRetry.test.tsx
 packages/inbox/tabCountWindow.test.tsx
 packages/inbox/phoneList.test.tsx
 packages/inbox/listLabels.test.tsx
+packages/inbox/projectLabelRows.test.tsx
+packages/inbox/projectLabelHeld.test.tsx
 packages/inbox/listRowMemo.test.tsx
 packages/inbox/rowTicks.test.tsx
 packages/inbox/guideDiffStyle.test.tsx
