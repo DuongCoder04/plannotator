@@ -5,10 +5,14 @@
  * in both places; given the same projects, the two must name them the same, or
  * the window and the agents would disagree on a name for no reason the person
  * chose. A change to one copy that misses the other fails here.
+ *
+ * The one chosen difference (owner's pick, 2026-10-29): the window names a
+ * checkout in a `worktrees` folder by its repository (`labelPath`). For those
+ * the window must equal the server's rule over the repository's path.
  */
 import { expect, test } from 'bun:test';
 import { inboxProjectLabels } from '../packages/shared/inbox/project-name';
-import { shortProjectNames } from '../packages/inbox/projectLabels';
+import { labelPath, shortProjectNames } from '../packages/inbox/projectLabels';
 
 type Project = { id: string; root: string; name: string };
 const p = (id: string, root: string, name = 'slug'): Project => ({ id, root, name });
@@ -35,5 +39,19 @@ test('the window and the server name the same projects the same way', () => {
     const server = Object.fromEntries(inboxProjectLabels(projects));
     const window = Object.fromEntries(shortProjectNames(projects));
     expect({ what, names: window }).toEqual({ what, names: server });
+  }
+});
+
+const WORKTREE_CASES: { what: string; projects: Project[] }[] = [
+  { what: 'three checkouts of three repositories', projects: [p('a', '/w/appnotes/worktrees/main'), p('b', '/w/workspaces/worktrees/main'), p('c', '/w/workspaces-cli/.worktrees/main')] },
+  { what: 'two repositories named alike', projects: [p('a', '/home/work/api/worktrees/main'), p('b', '/home/oss/api/worktrees/main')] },
+  { what: 'a checkout and a plain folder', projects: [p('a', 'C:\\src\\api\\worktrees\\main'), p('b', '/srv/api')] },
+  { what: 'nested clash', projects: [p('a', '/x/work/api/worktrees/main'), p('b', '/y/work/api/worktrees/dev'), p('c', '/home/api')] },
+];
+
+test('a checkout in a worktrees folder is named as the server would name its repository', () => {
+  for (const { what, projects } of WORKTREE_CASES) {
+    const repos = projects.map((project) => ({ ...project, root: labelPath(project.root).parts.join('/') }));
+    expect({ what, names: Object.fromEntries(shortProjectNames(projects)) }).toEqual({ what, names: Object.fromEntries(inboxProjectLabels(repos)) });
   }
 });

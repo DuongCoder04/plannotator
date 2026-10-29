@@ -21,7 +21,7 @@ const AGENT = { kind: 'agent' as const, host: 'claude-code', session: 'ses_a', n
 const PROJECTS = [
   { id: 'prj_repo', root: '/Users/me/plannotator/plannotator', name: 'plannotator · plannotator' },
   // Stored, no row in the list: the clash the server's name carries.
-  { id: 'prj_old_wt', root: '/Users/me/worktrees/plannotator', name: 'plannotator · worktrees' },
+  { id: 'prj_old_wt', root: '/Users/me/old/plannotator', name: 'plannotator · old' },
   { id: 'prj_api_w', root: '/work/api', name: 'api · work' },
   { id: 'prj_api_h', root: '/personal/api', name: 'api · personal' },
 ];
@@ -124,7 +124,7 @@ test.skipIf(!hasDom)('a row already drawn adds its parent once a row from anothe
     // The same row data (a fresh object, as each list read brings), and the old worktree's thread arriving.
     draw(shape, [{ id: 'waiting', label: 'Waiting on you', threads: [{ ...repo }, row('msg_wt', PROJECTS[1]!)] }]);
     expect(projectOf(el, 'msg_repo')).toBe('plannotator · plannotator');
-    expect(projectOf(el, 'msg_wt')).toBe('plannotator · worktrees');
+    expect(projectOf(el, 'msg_wt')).toBe('plannotator · old');
     act(() => root?.unmount());
     host?.remove();
   }
