@@ -18,8 +18,7 @@
  * (`onExtNotification`), never the params, and keeps no copy; extension
  * requests answer "method not found".
  *
- * Shared by the VS Code extension's Guides and the Inbox's ACP runner
- * (packages/server/inbox-acp-runner.ts).
+ * Used by Guided Reviews in the VS Code extension.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -90,7 +89,7 @@ export interface AcpClientHandlers {
 export interface AcpStartOptions {
   /** The environment the agent starts from (default: this process's). */
   env?: Readonly<Record<string, string | undefined>>;
-  /** Append the usual program folders to PATH (default true; the Inbox passes its own PATH as it is). */
+  /** Append the usual program folders to PATH (default true; a host with its own PATH passes it as it is). */
   augmentPath?: boolean;
   /**
    * Give up on an agent that does not answer `initialize` in this long: its

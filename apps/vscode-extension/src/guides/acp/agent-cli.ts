@@ -1,8 +1,8 @@
 /**
  * Guided Reviews runs the user's own Claude Code / Codex CLI through their ACP
  * adapters. Kept in the extension (not the shared `@plannotator/acp-client`):
- * it is Guides' choice, with Guides' setting and wording; the Inbox's runner
- * resolves its agents without it.
+ * it is Guides' choice, with Guides' setting and wording; the shared resolver
+ * (`resolveAgentLaunch`) works without it.
  */
 
 import { CLAUDE_CODE, CODEX, resolveAgentLaunch, type AdapterResolution, type AgentDescriptor, type CommandOverride, type ManagedLaunch } from "@plannotator/acp-client/agents";

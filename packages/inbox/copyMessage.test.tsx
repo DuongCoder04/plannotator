@@ -11,6 +11,10 @@
  * backticks stays one code span, and a prompt's own bold renders beside the
  * bold Q1./A1. label instead of nesting in it.
  *
+ * Attached files (DOM): a message's copy ends with "Files: …", the display
+ * names in send order, drawn as plain text however odd the name; a thread
+ * copy names each message's files under that message.
+ *
  * The menus (DOM-gated: DOM_TESTS=1, from the test.yml DOM list), on the real
  * ThreadPane: each open message's ⋯ after Reply and its items, Copy message
  * and Copy link to message with their toasts, the header's ⋯ and Copy thread
@@ -22,7 +26,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { composeInboxReplyBody, parseInboxQuestionBlocks } from '@plannotator/core/inbox-questions';
-import type { InboxAuthor, InboxMessageWire, InboxProject, InboxQuestion, InboxQuestionRecord, InboxThread } from '@plannotator/core/inbox-types';
+import type { InboxAttachment, InboxAuthor, InboxInlineImage, InboxMessageWire, InboxProject, InboxQuestion, InboxQuestionRecord, InboxThread } from '@plannotator/core/inbox-types';
 import { parseInboxActionBlocks } from '@plannotator/core/inbox-actions';
 import { chatMarkdownToHtml } from '@plannotator/ui/utils/aiChatFormat';
 import { copyTime, messageMarkdown, threadMarkdown } from './copyMarkdown';
@@ -452,6 +456,48 @@ test.skipIf(!hasDom)("the header's ⋯: Copy thread copies every message, folded
   await choose(item(threadMenu(), 'thread-id'));
   expect(copied[2]!.text).toBe(M1);
   expect(toasts[0]).toMatchObject({ lead: 'Thread ID copied' });
+});
+
+/** An attached file as the store records it: the display name, and a local path that is never copied. */
+function attached(id: string, name: string): InboxAttachment {
+  return { id, path: `/work/billing/out/${id}.bin`, named_path: null, name, kind: 'file', sent_sha256: 'f'.repeat(64), size: 10, sent_at: '2026-10-28T19:33:00.000Z', sent_mtime: '2026-10-28T19:33:00.000Z' };
+}
+
+/** The paragraphs of a copy's rich part, as a paste shows them. */
+function drawnParagraphs(html: string | null): HTMLParagraphElement[] {
+  return [...new DOMParser().parseFromString(html ?? '', 'text/html').querySelectorAll('p')];
+}
+
+test.skipIf(!hasDom)('attached files are named at the end of the copy, in send order, as plain text', async () => {
+  const ODD = 'shot, final `v2` **draft** [1]_<b>&amp;~x~ #3!.png';
+  const t = sample();
+  const shown = { ...attached('att_inline', 'inline-shot.png'), kind: 'image', ref: './inline-shot.png' } as unknown as InboxInlineImage;
+  t.messages[3] = { ...t.messages[3]!, attachments: [attached('att_1', 'plan.md'), attached('att_2', ODD)], inline_images: [shown] };
+  t.messages[0] = { ...t.messages[0]!, attachments: [attached('att_0', 'stripe-409s.log')] };
+  await render(t);
+  await press(more(M4)!);
+  await until(() => !!messageMenu(), 'the message menu');
+  await choose(item(messageMenu(), 'message'));
+  // The Markdown ends with the line; the body above it is unchanged.
+  expect(copied[0]!.text.startsWith(`${THIRD}\n\nFiles: `)).toBe(true);
+  // Drawn, the last paragraph is the names exactly as written: no code, bold, link, tag or entity read from them.
+  const last = drawnParagraphs(copied[0]!.html).at(-1)!;
+  expect(last.textContent).toBe(`Files: plan.md, ${ODD}`);
+  expect(last.children.length).toBe(0);
+  // The display name, never the local path; an image the body shows is not an attached file.
+  expect(copied[0]!.text).not.toContain('/work/billing/out');
+  expect(copied[0]!.text).not.toContain('inline-shot.png');
+  await until(() => !messageMenu(), 'the menu to close');
+
+  // A thread copy names each message's files under that message; a message with none has no line.
+  toasts = [];
+  await press(threadMore()!);
+  await until(() => !!threadMenu(), 'the thread menu');
+  await choose(item(threadMenu(), 'thread'));
+  const lines = drawnParagraphs(copied[1]!.html).map((p) => p.textContent).filter((text) => text?.startsWith('Files: '));
+  expect(lines).toEqual(['Files: stripe-409s.log', `Files: plan.md, ${ODD}`]);
+  expect(copied[1]!.text).toBe(threadMarkdown(t));
+  expect(copied[1]!.text.indexOf('Files: stripe-409s.log')).toBeLessThan(copied[1]!.text.indexOf(`**You**`));
 });
 
 test.skipIf(!hasDom)('the keyboard: ⋯ opens with the arrows, the arrows walk the items, Escape closes and focus goes back to ⋯', async () => {

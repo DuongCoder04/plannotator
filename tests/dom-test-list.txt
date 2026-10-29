@@ -149,7 +149,6 @@ packages/inbox/sidebarUpdateDot.test.tsx
 packages/inbox/updateStuck.test.tsx
 packages/inbox/palettePicker.test.tsx
 packages/inbox/textSize.test.tsx
-packages/inbox/runLine.test.tsx
 packages/inbox/agentNoteDialog.test.tsx
 packages/inbox/agentsSettings.test.tsx
 packages/inbox/promptsSettings.test.tsx
@@ -344,6 +343,7 @@ packages/ui/components/Viewer.alertDraftRestore.test.tsx
 packages/ui/components/Viewer.belowTitle.test.tsx
 packages/ui/utils/belowTitleSlot.test.ts
 packages/ui/components/AnnotationPanel.allFiles.test.tsx
+packages/ui/components/AnnotationPanel.sectionRefs.test.tsx
 packages/ui/hooks/useLinkedDoc.crossFile.test.tsx
 packages/ui/hooks/useLinkedDoc.revealSidebar.test.tsx
 packages/ui/hooks/useLinkedDoc.reapplyFilter.test.tsx
