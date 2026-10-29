@@ -66,6 +66,16 @@ type Message = { id: string; body: string; author: { kind: string } };
 const threadOf = async (id: string) =>
   JSON.parse((await loopback(`/api/inbox/threads/${id}`)).text) as { thread: { project: { root: string }; messages: Message[] } };
 
+/** The person's reply once the server has stored it: the box closes before the Send lands, so wait on the server. */
+async function personReply(id: string): Promise<Message> {
+  for (let i = 0; i < 100; i++) {
+    const found = (await threadOf(id)).thread.messages.find((m) => m.author.kind === 'person');
+    if (found) return found;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error('the reply never reached the server');
+}
+
 /** A Claude Code session's bridge poll: live in the project now, and what it would be woken with. */
 async function poll(session: string, projectPath: string): Promise<{ commands: { body: string; type?: string }[] }> {
   const { token } = JSON.parse(readFileSync(join(dir!, 'data', 'inbox', 'inbox.json'), 'utf8')) as { token: string };
@@ -255,7 +265,7 @@ test.skipIf(!hasDom)('the reply box: the picker, the underline and its line, Esc
   await until(() => textarea(el) === null, 'the Send');
 
   // What the agent reads: the words, the still-open line, then the block with the SKILL.md and its folder.
-  const reply = (await threadOf(world.waiting)).thread.messages.find((m) => m.author.kind === 'person')!;
+  const reply = await personReply(world.waiting);
   const skillDir = join(dir!, '.claude', 'skills', 'readback');
   expect(reply.body.startsWith('Please run /readback first, then tighten with $write-better.\n\n')).toBe(true);
   expect(reply.body).toContain(
@@ -312,7 +322,7 @@ test.skipIf(!hasDom)('Mod+Enter still sends with the picker open; a bare trigger
   expect(enter.defaultPrevented).toBe(false);
   await press(textarea(el), 'Enter', { metaKey: true });
   await until(() => textarea(el) === null, 'the Send');
-  const reply = (await threadOf(world.waiting)).thread.messages.find((m) => m.author.kind === 'person')!;
+  const reply = await personReply(world.waiting);
   // No skill referenced: no block.
   expect(reply.body).not.toContain('Skills referenced');
   expect(el.querySelector('[data-skills-line]')).toBeNull();
@@ -389,7 +399,7 @@ test.skipIf(!hasDom)('a comment on an attached file: its skill rides the one blo
   await type(textarea(el), 'See my note.');
   act(() => button(el, 'Send').click());
   await until(() => textarea(el) === null, 'the Send');
-  const reply = (await threadOf(world.filed)).thread.messages.find((m) => m.author.kind === 'person')!;
+  const reply = await personReply(world.filed);
   expect(reply.body).toContain('Run $readback on this first.');
   expect(reply.body.match(/\*\*Skills referenced\*\*/g)).toHaveLength(1);
   expect(reply.body.indexOf('Feedback on the attached files')).toBeLessThan(reply.body.indexOf('**Skills referenced**'));
