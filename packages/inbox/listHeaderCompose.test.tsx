@@ -135,6 +135,8 @@ async function renderApp(hash = '') {
 }
 
 const headerCompose = (el: ParentNode) => el.querySelector<HTMLButtonElement>('.ib-lhead [data-open-compose]');
+const headerSearch = (el: ParentNode) => el.querySelector<HTMLButtonElement>('.ib-lhead [data-open-search]');
+const searchDialog = () => document.querySelector('[role="dialog"][aria-label="Search the Inbox"]');
 const sidebarState = (el: ParentNode) => el.querySelector('[data-collapsible]')?.getAttribute('data-state') ?? null;
 const dialog = () => document.querySelector('dialog[data-compose]') as HTMLDialogElement | null;
 
@@ -187,4 +189,36 @@ test.skipIf(!hasDom)('the sidebar closed, a thread open beside the list: the hea
   expect(button).not.toBeNull();
   act(() => button.click());
   await until(() => !!dialog()?.querySelector('[data-compose-to]'), 'compose');
+});
+
+test.skipIf(!hasDom)('Search in the list header: only while the sidebar is closed, before New message, and it opens the same search as the sidebar', async () => {
+  const el = await renderApp();
+  expect(sidebarState(el)).toBe('expanded');
+  expect(el.querySelector('.ib-side [data-open-search]')).not.toBeNull();
+  expect(headerSearch(el)).toBeNull();
+
+  act(() => (el.querySelector('.ib-lhead [data-sidebar="trigger"]') as HTMLButtonElement).click());
+  await until(() => sidebarState(el) === 'collapsed', 'the sidebar closed');
+  const search = headerSearch(el)!;
+  expect(search).not.toBeNull();
+  expect(search.getAttribute('aria-label')).toBe('Search');
+  expect(search.getAttribute('aria-haspopup')).toBe('dialog');
+  expect(search.hasAttribute('title')).toBe(false);
+  // The sidebar's Search names the same shortcut.
+  expect(search.getAttribute('aria-keyshortcuts')).toBe(el.querySelector('.ib-side [data-open-search]')!.getAttribute('aria-keyshortcuts'));
+  // Search, then New message, then Tidy's menu (the phone header's order).
+  expect(search.nextElementSibling).toBe(headerCompose(el));
+  expect(headerCompose(el)!.nextElementSibling).toBe(el.querySelector('.ib-lhead [data-tidy-menu]'));
+
+  act(() => search.click());
+  await until(() => searchDialog() !== null, 'search');
+
+  act(() => root?.unmount());
+  root = null;
+  host?.remove();
+  host = null;
+  storage.setItem(SIDEBAR_COOKIE, 'true');
+  const reopened = await renderApp();
+  expect(sidebarState(reopened)).toBe('expanded');
+  expect(headerSearch(reopened)).toBeNull();
 });

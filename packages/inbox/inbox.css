@@ -3292,6 +3292,9 @@ dialog.ib-sp::backdrop { background: oklch(0 0 0 / 0.45); }
    header's other icon buttons (the sidebar toggle, the thread's close). Never on a phone (InboxList sets the
    attribute only off a phone), so the phone's rules below keep their look. */
 .pn-inbox .ib-lhead-compose[data-sidebar-closed] { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; margin-left: auto; padding: 0; border: 0; background: none; border-radius: var(--ib-r10-s, 7px); color: var(--muted-foreground); transition: var(--ib-fade2-s, var(--ib-ui-fade)); }
+.pn-inbox .ib-lhead-search[data-sidebar-closed] { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; margin-left: auto; padding: 0; border: 0; background: none; border-radius: var(--ib-r10-s, 7px); color: var(--muted-foreground); transition: var(--ib-fade2-s, var(--ib-ui-fade)); }
+.pn-inbox .ib-lhead-search[data-sidebar-closed]:hover { background: var(--ib-hb-hover-s, var(--muted)); color: var(--foreground); }
+.pn-inbox .ib-lhead-search[data-sidebar-closed] + .ib-lhead-compose[data-sidebar-closed] { margin-left: 0; }
 .pn-inbox .ib-lhead-compose[data-sidebar-closed]:hover { background: var(--ib-hb-hover-s, var(--muted)); color: var(--foreground); }
 
 /* The dialog: pinned to the upper part of the window like the search palette, 680 px wide. */
@@ -5613,7 +5616,7 @@ dialog.ib-dlg.ib-fbk { width: min(540px, calc(100vw - 32px)); }
 .pn-inbox .ib-tidytrig:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .pn-inbox .ib-tidytrig svg { transform: rotate(90deg); }
 .ib-lhead .ib-lhead-more { margin-left: auto; }
-.ib-lhead .ib-lhead-compose[data-sidebar-closed] ~ .ib-lhead-more { margin-left: 0; }
+.ib-lhead :is(.ib-lhead-search, .ib-lhead-compose)[data-sidebar-closed] ~ .ib-lhead-more { margin-left: 0; }
 .ib-bhead .ib-bhead-more { margin-left: 0; }
 .ib-pmi .ib-pmi-n { margin-left: auto; padding-left: 16px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .ib-tidy-pos { z-index: 80; outline: none; }

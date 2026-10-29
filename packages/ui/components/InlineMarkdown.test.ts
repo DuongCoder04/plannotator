@@ -278,6 +278,30 @@ describe('InlineMarkdown math', () => {
     expect(html).toContain('$5/mo and tier B is $10/mo.');
   });
 
+  // Regression: two `$skill` names in one paragraph made the text between them
+  // math, so the Inbox skill highlight (skillReferenceRanges) lost both names.
+  test('does not turn the text between two $skill references into math', () => {
+    const html = renderToStaticMarkup(
+      createElement(InlineMarkdown, { text: 'Go, then $write-better on the copy, and $readback after.' }),
+    );
+    expect(html).not.toContain('katex');
+    expect(html).toContain('$write-better on the copy, and $readback after.');
+  });
+
+  test('does not render "costs $5 and $10" as inline math', () => {
+    const html = renderToStaticMarkup(createElement(InlineMarkdown, { text: 'It costs $5 and $10 total.' }));
+    expect(html).not.toContain('katex');
+    expect(html).toContain('$5 and $10 total.');
+  });
+
+  test('still renders $x^2$ and $a + b$ as math', () => {
+    for (const tex of ['x^2', 'a + b']) {
+      const html = renderToStaticMarkup(createElement(InlineMarkdown, { text: `Take $${tex}$ here.` }));
+      expect(html).toContain('katex');
+      expect(html).toContain(`data-math-tex="${tex}"`);
+    }
+  });
+
   test('still renders a leading-digit formula not abutting a later amount', () => {
     const html = renderToStaticMarkup(createElement(InlineMarkdown, { text: 'Coefficient $2x + 1$ grows.' }));
     expect(html).toContain('katex');
