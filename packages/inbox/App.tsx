@@ -53,12 +53,14 @@ import {
   stopSettle,
   type SettleSnapshot,
 } from './settle';
-import { tildePath } from './format';
+import { plural, tildePath } from './format';
+import { copyMarkdown, threadMarkdown } from './copyMarkdown';
 import { inboxImageSrcResolver } from './images';
 import { shellLine, type ConnectContext } from './harnesses';
 import { Sidebar } from './components/Sidebar';
 import { SidebarShell } from './shell/SidebarShell';
 import { InboxList } from './components/InboxList';
+import { useTidy } from './components/Tidy';
 import { ThreadPane } from './components/Thread';
 import { SearchHost, type SearchLanding } from './components/SearchHost';
 import { onOpenSearchKey } from './search/searchShortcut';
@@ -2264,6 +2266,22 @@ function Inbox() {
   };
 
   /**
+   * The row menu's Copy thread (copyMarkdown.ts): the open thread as it is on
+   * screen, any other read first (one clipboard item with promised parts, so
+   * the write still starts inside the click).
+   */
+  const copyThreadOf = (row: InboxListRow) => {
+    let count = 0;
+    const read = thread?.thread_id === row.thread_id ? Promise.resolve(thread) : inboxApi.thread(row.thread_id).then((model) => model.thread);
+    const markdown = read.then((open) => {
+      count = open.messages.length;
+      return threadMarkdown(open);
+    });
+    void copyMarkdown(markdown).then((ok) =>
+      showToast(ok ? { icon: 'check', lead: 'Thread copied', detail: plural(count, 'message') } : { icon: 'warn', lead: "Couldn't copy" }, 4200),
+    );
+  };
+  /**
    * A thread row's right-click menu. Copy link and Copy thread ID say so in
    * the window's one toast; Mark read, Move back and Archive are the row's
    * hover action and the header's, with their toasts.
@@ -2272,6 +2290,7 @@ function Inbox() {
     if (action === 'pin' || action === 'unpin') return void setPin(row, action === 'pin');
     if (action === 'read' || action === 'unread') return void markRead(row.thread_id, action === 'read');
     if (action === 'archive') return void archive(row.thread_id, row.thread_id, true);
+    if (action === 'copy-thread') return void copyThreadOf(row);
     const text = action === 'copy-link' ? threadLink(row.thread_id, settings, window.location.origin) : row.thread_id;
     void copyTextToClipboard(text).then((ok) =>
       showToast(
@@ -2817,6 +2836,9 @@ function Inbox() {
   const filterProject = route.page === 'inbox' && route.project ? projects.find((p) => p.id === route.project) ?? null : null;
   const notice = shown && latest ? heldNotice(filterSections(shown, route.project), filterSections(latest.sections, route.project), openedHere.current, heldOpen()).text : null;
   const firstRun = latest !== null && projects.length === 0;
+  // Tidy (2026-10-28): the list header's and the Board's ⋮ menu, each reading who it would ask in its scope.
+  const listTidy = useTidy(route.page === 'inbox' ? (route.project ?? null) : null, 'list', shown, route.page === 'inbox' && !firstRun);
+  const boardTidy = useTidy(boardFilter, 'board', cards, route.page === 'board');
   // The first-run screen shows who is running now ("Message Claude Code") and moves on by itself
   // once an agent is installed or turned on: it reads the agents again when the window comes back
   // into focus (the person ran the install command in a terminal) and every few seconds while shown.
@@ -3637,6 +3659,7 @@ function Inbox() {
           void refreshList(false);
         }}
         onSeeDrops={seeDrops}
+        tidy={boardTidy}
         onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id, board: route.board ?? 'lanes', boardProject: boardFilter })}
         onCreateThread={(card, session, opener) => openCompose({ session, card: { id: card.id, title: card.title } }, opener)}
         // The lane marks run this computer's gh / glab: never asked from a page opened over the tailnet.
@@ -3723,6 +3746,7 @@ function Inbox() {
           onSendNow={(row) => void sendNowFromRow(row)}
           onRowAction={rowAction}
           pinned={pinsOn ? pinnedIds : undefined}
+          tidy={listTidy}
           onSearch={(opener) => openSearch(opener)}
           onCompose={(opener) => openCompose({}, opener)}
           phone={phone}
@@ -3869,6 +3893,7 @@ function Inbox() {
             fileStacked={stack.file}
             remote={settings ? (settings.via ?? 'local') === 'tailnet' : null}
             onToast={(t) => showToast(t)}
+            linkOf={(messageId) => threadLink(thread.thread_id, settings, window.location.origin, messageId)}
             onBackToList={(fileName) => {
               // The file's own close (its ×), then focus on this thread's row and one line for a screen reader.
               const root = rootRef.current;

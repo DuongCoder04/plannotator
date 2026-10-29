@@ -279,6 +279,8 @@ export interface AllFilesCodeViewProps {
   ) => void;
   onSelectAnnotation: (id: string | null) => void;
   onDeleteAnnotation: (id: string) => void;
+  onExplainAnnotation?: (id: string) => void;
+  agentFindingSources?: ReadonlySet<string>;
   // Header actions (P3). Mirror AllFilesDiffView's header surface.
   onAddFileCommentForFile?: (filePath: string, text: string) => void;
   viewedFiles?: Set<string>;
@@ -677,6 +679,8 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
   onEditAnnotation,
   onSelectAnnotation,
   onDeleteAnnotation,
+  onExplainAnnotation,
+  agentFindingSources,
   onAddFileCommentForFile,
   viewedFiles,
   onToggleViewed,
@@ -1134,6 +1138,10 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     if (!ann) return;
     toolbarHostRef.current?.startEdit(ann);
   });
+  // Same for Explain: the portal'd card keeps whatever handler it was given, so
+  // it calls the latest one (the Ask AI provider may have changed since).
+  const handleExplainAnnotation = useStableCallback((id: string) => onExplainAnnotation?.(id));
+  const explainHandler = onExplainAnnotation ? handleExplainAnnotation : undefined;
 
   // Per-file file-scoped comments, namespaced to the active PR/diff-scope. These
   // render in the file HEADER (renderCustomHeader, below the path) when the file
@@ -1184,6 +1192,9 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
           onSelect={onSelectAnnotation}
           onEdit={handleEditAnnotation}
           onDelete={onDeleteAnnotation}
+          onExplain={explainHandler}
+          agentFindingSources={agentFindingSources}
+          explainDisabled={isAILoading}
         />
       );
     },
@@ -2230,6 +2241,23 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
     }
   }, [showViewedControls, showStageControls, filePathToItemIds, refreshItem]);
 
+  // The Explain action on agent findings shows in the portal'd comment cards,
+  // so a change in whether it is offered or busy republishes the files that
+  // carry an agent's comments (same slot-portal constraint as above).
+  const explainKey = onExplainAnnotation
+    ? `${isAILoading}|${[...(agentFindingSources ?? [])].join('\0')}`
+    : '';
+  const prevExplainKeyRef = useRef(explainKey);
+  useEffect(() => {
+    if (prevExplainKeyRef.current === explainKey) return;
+    prevExplainKeyRef.current = explainKey;
+    const paths = new Set<string>();
+    for (const a of annotationsRef.current) if (a.source && a.filePath) paths.add(a.filePath);
+    for (const path of paths) {
+      for (const itemId of filePathToItemIds.get(path) ?? []) refreshItem(itemId);
+    }
+  }, [explainKey, filePathToItemIds, refreshItem]);
+
   // --- Line selection through CodeView (replaces geometry-based inference) ---
 
   const handleSelectedLinesChange = useStableCallback(
@@ -3040,6 +3068,9 @@ export const AllFilesCodeView: React.FC<AllFilesCodeViewProps> = ({
             onSelect={onSelectAnnotation}
             onEdit={onEditAnnotation}
             onDelete={onDeleteAnnotation}
+            onExplain={explainHandler}
+            agentFindingSources={agentFindingSources}
+            explainDisabled={isAILoading}
             // Re-measure the item when a comment expands/collapses/edits — the
             // custom-header height isn't auto-observed, so without this the
             // content below would overlap until an unrelated refresh.

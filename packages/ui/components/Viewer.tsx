@@ -452,6 +452,9 @@ export interface ViewerHandle {
   removeHighlight: (id: string) => void;
   clearAllHighlights: () => void;
   applySharedAnnotations: (annotations: Annotation[]) => void;
+  /** Markdown `Viewer` only: scroll a heading anchor (`#id`) into view.
+   *  Returns false when it is not in this document. */
+  scrollToAnchor?: (hash: string) => boolean;
   /** `HtmlViewer` only: move a pinned draft to the element around it
    *  (`'parent'`) or back in (`'child'`), for a host that composes
    *  (`onHostDraft`). The markdown `Viewer` does not implement it. */
@@ -1379,6 +1382,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
 
   // Imperative handle — delegates to hook, extends removeHighlight for code blocks
   useImperativeHandle(ref, () => ({
+    scrollToAnchor,
     removeHighlight: (id: string) => {
       // The re-highlight below notifies the swap listener, which would happily
       // paint this annotation's mark straight back in — the host has not
@@ -1406,7 +1410,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     clearAllHighlights,
     applySharedAnnotations: applyAnnotations,
     takeSelection,
-  }), [hookRemoveHighlight, clearAllHighlights, applyAnnotations, blocks, takeSelection]);
+  }), [hookRemoveHighlight, clearAllHighlights, applyAnnotations, blocks, takeSelection, scrollToAnchor]);
 
   // --- Viewer-specific: code block annotation ---
 

@@ -2255,6 +2255,15 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
 }
 .pn-inbox .ib-fl-tm > button.ib-mut { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; margin: 0 -5px 0 -3px; }
 .pn-inbox .ib-fl-tm > button.ib-mut:hover { background: var(--muted); color: var(--foreground); }
+/* A message's ⋯ (CopyMenus.tsx, design record "inbox-copy-message", option B): the sidebar ⋯'s rule. Shown while
+   the pointer is on the message, while something in it has keyboard focus, and while its menu is open; always on
+   a phone (`data-phone`) and wherever the main pointer cannot hover (a touch screen's desktop layout). */
+.pn-inbox .ib-fl-tm > button.ib-mmore[data-open] { background: var(--muted); color: var(--foreground); }
+@media (hover: hover) {
+  .pn-inbox .ib-message:not(:hover):not(:has(:focus-visible)) .ib-fl-tm > .ib-mmore:not([data-open]):not([data-phone]) { opacity: 0; }
+}
+/* The thread header's ⋯ while its menu is open. */
+.pn-inbox .ib-iconbtn.ib-tmore[data-popup-open] { background: var(--muted); color: var(--foreground); }
 /* Keyboard focus on a fold line or a message's head: the ring inside the row (inbox-polish, item 4). */
 .pn-inbox :is(button.ib-fline, .ib-fl-hit, .ib-mfold-b):focus-visible { outline-offset: -2px; }
 .pn-inbox .ib-mfold-b:focus-visible { border-radius: 8px; }
@@ -4544,6 +4553,8 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
      shows its icon alone, its words kept as its name (visually hidden, still read). */
   .ib-phead:has([data-pin-toggle]) .ib-hbtn[data-mark-read] .ib-hbtn-l { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .pn-inbox .ib-phead:has([data-pin-toggle]) .ib-hbtn[data-mark-read] { width: 44px; min-width: 44px; padding: 0; justify-content: center; }
+  /* With ⋯ More after Archive (design record "inbox-copy-message") the row is 2 px short at 320 px: Mark read's side margins go. */
+  .pn-inbox .ib-phead:has([data-thread-more]) .ib-hbtn[data-mark-read] { margin: 0; }
 }
 
 /* ───────────── Decision mode (approval "inbox-decision-mode", Queue; experimental) ─────────────
@@ -5066,6 +5077,9 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-bsum { color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-variant-numeric: tabular-nums; }
 .ib-bsum b { color: var(--ib-onyou-fg); font-weight: 600; }
 .ib-bsp { flex: 1; }
+/* A narrow page: tighter gaps, so the counts stay whole beside the Tidy ⋮ (the Project chip has its own row). */
+.ib-bhead[data-narrow] { gap: 8px; }
+.ib-bhead[data-narrow] .ib-blinks { gap: 4px; }
 .ib-blinks { display: flex; align-items: center; gap: 8px; font-size: var(--ib-fs-14, 14px); color: var(--muted-foreground); white-space: nowrap; }
 .ib-blinks a { color: var(--muted-foreground); text-decoration: none; border-radius: 6px; padding: 4px 6px; font-variant-numeric: tabular-nums; }
 .ib-blinks a:hover { color: var(--foreground); background: var(--ib-hover); }
@@ -5641,4 +5655,48 @@ dialog.ib-dlg.ib-fbk { width: min(540px, calc(100vw - 32px)); }
 }
 @media (forced-colors: active) {
   .pn-inbox .ib-fbk-cat[aria-pressed="true"] { border-color: Highlight; color: Highlight; }
+}
+
+/* Tidy (components/Tidy.tsx): the list's and the Board's ⋮ menu, its popover (a sheet on a phone), the thread note. */
+.pn-inbox .ib-tidytrig { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0; background: none; border-radius: var(--ib-r10-s, 7px); color: var(--muted-foreground); transition: var(--ib-fade2-s, var(--ib-ui-fade)); }
+.pn-inbox .ib-tidytrig:hover, .pn-inbox .ib-tidytrig[data-popup-open], .pn-inbox .ib-tidytrig[data-open] { background: var(--ib-hb-hover-s, var(--muted)); color: var(--foreground); }
+.pn-inbox .ib-tidytrig:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.pn-inbox .ib-tidytrig svg { transform: rotate(90deg); }
+.ib-lhead .ib-lhead-more { margin-left: auto; }
+.ib-lhead .ib-lhead-compose[data-sidebar-closed] ~ .ib-lhead-more { margin-left: 0; }
+.ib-bhead .ib-bhead-more { margin-left: 0; }
+.ib-pmi .ib-pmi-n { margin-left: auto; padding-left: 16px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.ib-tidy-pos { z-index: 80; outline: none; }
+.ib-tidy { width: 288px; max-width: calc(100vw - 16px); padding: 6px; border-radius: var(--ib-rl-lg-s, 10px); background: var(--popover); color: var(--popover-foreground); box-shadow: var(--ib-float-s, 0 0 0 1px var(--border), 0 12px 30px -12px oklch(0 0 0 / 0.5)); transform-origin: var(--transform-origin, top right); animation: ib-pm-in 120ms cubic-bezier(0.23, 1, 0.32, 1); outline: none; font-size: var(--ib-fs-13, 13px); }
+@media (prefers-reduced-motion: reduce) { .ib-tidy { animation: none; } }
+.ib-tidy-top { display: flex; align-items: baseline; gap: 8px; padding: 6px 8px 4px; }
+.ib-tidy-top b { font-weight: 650; font-size: var(--ib-fs-14, 14px); }
+.ib-tidy-top span { margin-left: auto; color: var(--muted-foreground); font-size: var(--ib-fs-12-5, 12.5px); }
+.ib-tidy-ags { list-style: none; margin: 0; padding: 0; }
+.ib-tidy-ag { display: grid; grid-template-columns: 16px 18px minmax(0, 1fr) auto; align-items: center; column-gap: 9px; height: 32px; padding: 0 8px; border-radius: var(--ib-rl-xs-s, 6px); cursor: default; }
+@media (hover: hover) { label.ib-tidy-ag:hover { background: var(--ib-hover-s, color-mix(in oklch, var(--muted) 80%, transparent)); } }
+.ib-tidy-ag input { margin: 0; accent-color: var(--primary); }
+.ib-tidy-ag .ib-glyph, .ib-tidy-ag > svg { width: 16px; height: 16px; }
+.ib-tidy-nm { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ib-tidy-ag em { font-style: normal; color: var(--muted-foreground); font-variant-numeric: tabular-nums; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.ib-tidy-run[data-state="tidied"] em { color: var(--foreground); }
+.ib-tidy-top[data-below] { margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--ib-hair, var(--border)); }
+.ib-tidy-err { margin: 6px 8px 0; font-size: var(--ib-fs-12, 12px); color: var(--destructive); }
+.ib-tidy-bot { display: flex; align-items: center; gap: 8px; padding: 6px 2px 2px 8px; margin-top: 4px; border-top: 1px solid var(--ib-hair, var(--border)); }
+.pn-inbox .ib-tidy-bot .ib-btn { margin-left: auto; }
+.ib-tidy-mark { display: flex; align-items: center; gap: 10px; margin: 0; padding: 12px 0; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
+.ib-tidy-mark > .ib-ic { flex: none; width: 14px; height: 14px; margin: 0 5px; }
+.ib-pbody.ib-folding .ib-tidy-mark { border-top: 1px solid var(--ib-sep-s, var(--ib-hair)); }
+@media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
+  .pn-inbox .ib-tidytrig { width: 44px; height: 44px; border-radius: 8px; color: var(--foreground); }
+  .ib-lhead .ib-lhead-compose:not(.ib-lhead-search ~ .ib-lhead-compose) { margin-left: auto; }
+  .ib-lhead :is(.ib-lhead-search, .ib-lhead-compose) ~ .ib-lhead-more { margin-left: 0; }
+  .ib-tidy-pos[data-phone] { position: fixed !important; left: 8px !important; right: 8px !important; top: auto !important; bottom: calc(8px + env(safe-area-inset-bottom)) !important; transform: none !important; width: auto !important; }
+  .ib-tidy-pos[data-phone] .ib-tidy { width: auto; max-width: none; padding: 8px; border-radius: var(--ib-sheet-corner, 12px); font-size: var(--ib-fs-15, 15px); animation: ib-pm-up 200ms cubic-bezier(0.23, 1, 0.32, 1); }
+  @media (prefers-reduced-motion: reduce) { .ib-tidy-pos[data-phone] .ib-tidy { animation: none; } }
+  .ib-tidy-pos[data-phone] .ib-tidy-ag { height: 48px; grid-template-columns: 20px 20px minmax(0, 1fr) auto; }
+  .ib-tidy-pos[data-phone] .ib-tidy-ag input { width: 18px; height: 18px; }
+  .ib-tidy-pos[data-phone] .ib-tidy-ag .ib-glyph, .ib-tidy-pos[data-phone] .ib-tidy-ag > svg { width: 20px; height: 20px; }
+  .ib-tidy-pos[data-phone] .ib-tidy-top b { font-size: var(--ib-fs-16-in, 16px); }
+  .pn-inbox .ib-tidy-pos[data-phone] .ib-tidy-bot .ib-btn { height: 44px; padding: 0 22px; font-size: var(--ib-fs-15, 15px); }
 }
