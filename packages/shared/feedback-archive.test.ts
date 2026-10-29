@@ -344,6 +344,12 @@ describe("feedback archive: project bucketing", () => {
     expect(deriveFeedbackProject("/Users/x/code/plannotator")).toBe("plannotator");
     expect(deriveFeedbackProject(undefined)).toBe("_unknown");
   });
+
+  test("a project name cut at a hyphen keys the same bucket as history/ (#2306)", () => {
+    const historyKey = deriveFeedbackProject("/Users/x/code/abcdefghijklmnopqrstuvwxyzabc_def");
+    expect(historyKey).toBe("abcdefghijklmnopqrstuvwxyzabc");
+    expect(normalizeFeedbackProject(historyKey)).toBe(historyKey);
+  });
 });
 
 describe("feedback archive: diagram anchors", () => {
