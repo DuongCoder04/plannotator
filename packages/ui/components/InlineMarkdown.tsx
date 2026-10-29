@@ -350,6 +350,9 @@ function canRenderSpacedDollarMath(tex: string): boolean {
   const trimmed = normalizeMathTex(tex);
   if (!trimmed) return false;
   if (!/^\s|\s$/.test(tex)) return true;
+  // Padding must be symmetric (`$ y $`). In `$write-better on the copy, and $`
+  // the closing `$` is really the opener of the next `$skill` token.
+  if (/^\s/.test(tex) !== /\s$/.test(tex)) return false;
   return (
     /\\[a-zA-Z]+/.test(trimmed) ||
     /[=^_{}+\-*/<>|]/.test(trimmed) ||
