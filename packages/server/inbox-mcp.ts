@@ -1160,13 +1160,20 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
         }
         if (!input.project_path) throw new InboxError("validation_error", "project_path: required to list threads (or pass thread_id).");
         const peek = callerPeeks(ctx);
-        // A list never makes a project: a folder this Inbox has no project for has no threads of its own
-        // (a read is not a write, as search). A connection's own list for the session's thread list
-        // (peek) then lists nothing; an agent's list still shows the threads it was tagged in.
+        // A list never makes a project: it is scoped by the projects the folder names (findProjects,
+        // as search: its project, plus the one an older Inbox kept for its worktree), looked up, never
+        // made. A folder with neither has no threads of its own: a connection's own list for the
+        // session's thread list (peek) lists nothing; an agent's list still shows the threads it was
+        // tagged in. Without findProjects (or when its lookup refused the path), the resolving scope,
+        // so a path that is not a folder is still a validation_error.
         const found = context.findProjects ? await context.findProjects(input.project_path).catch(() => null) : null;
-        const none = !!found && found.projects.length === 0;
-        if (peek && (none || !found)) return okComplete("0 threads.", { project: null, threads: [], total: 0 });
-        const { project, projectIds } = none ? { project: null, projectIds: new Set<string>() } : await threadReadScope(context, input.project_path);
+        if (peek && (!found || found.projects.length === 0)) return okComplete("0 threads.", { project: null, threads: [], total: 0 });
+        if (found?.unresolved) {
+          throw new InboxError("project_unresolved", "git did not answer in time, so this folder's project is not known yet. Nothing was listed; try the same call again.");
+        }
+        const { project, projectIds } = found
+          ? { project: found.projects[0] ?? null, projectIds: new Set(found.projects.map((p) => p.id)) }
+          : await threadReadScope(context, input.project_path);
         const session = input.agent_session?.trim() || null;
         const askedBy = input.asked_by ?? (session ? "me" : "anyone");
         if (askedBy === "me" && !session) throw new InboxError("validation_error", "asked_by: \"me\" needs agent_session.");

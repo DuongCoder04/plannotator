@@ -1983,6 +1983,9 @@ export type InboxToolCostHost = "pi" | "opencode";
  * With the follow-through rule merged in as well: measured on Pi, 10,062
  * bytes (+142, about +35 tokens; the rounded token figure stands). With the
  * Board on 11,481 (11,339 + 142, estimated).
+ * Then `project_path`'s description says it defaults to the folder the
+ * session started in (INBOX_AGENT_PROJECT_PATH_DESCRIPTION): about +86
+ * bytes (0.9%, estimated, inside the 5% drift test); the stated cost stands.
  */
 const INBOX_TOOL_COST_NOW = { bytes: 10062, tokens: 2700 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */

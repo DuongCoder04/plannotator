@@ -230,12 +230,15 @@ export function inboxReminderEnvValue(on: boolean, toolName: string | null, cust
 export const INBOX_SESSION_THREADS_TIMEOUT_MS = 1_500
 
 /**
- * Whether Claude Code's own `/cd` moves this session's Inbox project
+ * Whether a move of the session's root moves this session's Inbox project
  * (`InboxLink.projectFolder`). A shell `cd` never does: the project is the
- * session's root, which only `/cd` moves. On: a `/cd` the person typed is a
- * deliberate move, so the project follows it (the plain reading; the owner's
- * question on it is still open, 2026-10-29). Off: the folder the session
- * started in stands for its whole life. The one switch for that question.
+ * session's root, `$.session.root()`, which moves only on Claude Code's own
+ * `/cd`, a host's directory change or a worktree move (EnterWorktree; a
+ * linked worktree folds into its main repository's project anyway). On: such
+ * a move is deliberate, so the project follows it (the plain reading; the
+ * owner's question on `/cd` is still open, 2026-10-29). Off: the folder the
+ * session started in stands for its whole life. The one switch for that
+ * question.
  */
 export const INBOX_PROJECT_FOLLOWS_SLASH_CD = true
 
@@ -472,7 +475,8 @@ export interface InboxLinkOptions {
   cwd?: () => Promise<string>
   /**
    * The session's root (`$.session.root()`: where it started; a shell `cd`
-   * never moves it, a `/cd` does). Its first answer is sent as
+   * never moves it; `/cd`, a host's directory change or a worktree move
+   * (EnterWorktree) does). Its first answer is sent as
    * `session_folder`: the folder `claude --resume` runs in, for the Inbox's
    * restart command. It is also the session's project folder
    * (`projectFolder`), asked again each time while
@@ -771,21 +775,26 @@ export class InboxLink {
    * person's New message lands there too) and of the thread lists after a
    * compaction or a resume. It is the session's root, where it started: a
    * shell `cd` never moves it, so one session stays one project however far
-   * the agent wanders. Claude Code's own `/cd` moves the root, and the project
-   * with it while INBOX_PROJECT_FOLLOWS_SLASH_CD; otherwise the first answer
-   * stands. With no root, the working folder (as before). Null when nothing
-   * answers with an absolute path.
+   * the agent wanders. Claude Code's own `/cd`, a host's directory change or
+   * a worktree move (EnterWorktree) moves the root, and the project with it
+   * while INBOX_PROJECT_FOLLOWS_SLASH_CD; otherwise the first answer stands.
+   * A root that no longer exists (a deleted scratch folder or worktree the
+   * session started in) gives way to the working folder, as before this rule,
+   * so plain sends and polls are not refused. With no root, the working
+   * folder. Null when nothing answers with an absolute path.
    */
   async projectFolder(): Promise<string | null> {
+    const usable = async (folder: string | null): Promise<boolean> =>
+      !!folder && folder.startsWith('/') && (await this.host.exists(folder).catch(() => false))
     const live = INBOX_PROJECT_FOLLOWS_SLASH_CD && this.options.root ? await this.options.root().catch(() => null) : null
-    if (live && live.startsWith('/')) return live
+    if (live && (await usable(live))) return live
     const first = await this.folderNow()
-    if (first && first.startsWith('/')) return first
+    if (first && (await usable(first))) return first
     const cwd = this.options.cwd ? await this.options.cwd().catch(() => null) : null
     return cwd && cwd.startsWith('/') ? cwd : null
   }
 
-  /** Where the session started, asked once (the first answer stands; a later /cd moves `$.session.root()`). */
+  /** Where the session started, asked once (the first answer stands; a later /cd, host directory change or worktree move moves `$.session.root()`). */
   private async folderNow(): Promise<string | null> {
     this.folder ??= (async () => {
       if (!this.options.root) return this.options.cwd ? await this.options.cwd().catch(() => null) : null

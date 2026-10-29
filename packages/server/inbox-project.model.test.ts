@@ -318,6 +318,28 @@ describe('Inbox project of a Claude Code session that moves (spec/inbox-project.
     )
   }, 600_000)
 
+  // A session whose start folder was deleted (a scratch folder, a removed worktree): its plain sends and polls
+  // fall back to the working folder, as before the rule, instead of naming a folder the Inbox refuses.
+  test('a start folder that no longer exists gives way to the working folder: sends and polls still land', async () => {
+    const { model, real, done } = await setup('top')
+    try {
+      const gone = join(base, 'gone-scratch')
+      mkdirSync(gone)
+      rmSync(gone, { recursive: true })
+      real.session.root = gone
+      real.session.cwd = abs('top/notes')
+      model.cwd = 'top/notes'
+      await (real.link as unknown as { pendingNow(waitMs: number): Promise<unknown[] | null> }).pendingNow(0).then((commands) => expect(commands).not.toBeNull())
+      const text = await send(real, { action: 'send_message', body: 'From a session whose start folder is gone.', attachments: ['here.txt'] })
+      const { message, project } = messageOf(real, text)
+      expect(project.root).toBe(abs('top/notes'))
+      expect(message.attachments?.[0]?.path).toBe(join(abs('top/notes'), 'here.txt'))
+      expect(realProjects(real)).toEqual([abs('top/notes')])
+    } finally {
+      done()
+    }
+  }, 120_000)
+
   // The session that showed the bug, on synthetic folders of the same shape: started in a plain folder,
   // four New messages while the shell stood in four places. Main filed them in four projects.
   test('the four New messages of a session started in a plain folder land in one project', async () => {
