@@ -1889,7 +1889,7 @@ Recommended: Local only, purged after 30 days
   - Add a screenshot (\`![alt](path)\`) for anything visual.
   - Link a file that shows it better (a plan, a mock): \`[the mock](mock.html)\`. In the Inbox, attach it too; the link opens it beside the thread.
 - Choices: \`- [ ] label\`, optionally \`- [ ] label — why\`. The reviewer can also answer "Other", add a note, or skip.
-- \`Recommended: <label>\` marks yours (\`A, B and C\` on \`:::question-multi\`); other text shows as one more answer, tagged Recommended. Keep choices in their natural order (A, B, C), never moved to put yours first.
+- \`Recommended: <label>\` marks yours (\`A, B and C\` on \`:::question-multi\`); other text shows as one more answer, tagged Recommended. Keep choices in their natural order (A, B, C); don't move yours first.
 - Ask only what you cannot decide alone, about 8 a round at most. Do not ask rhetorical questions or questions the codebase answers.
 - \`- [x]\` marks a settled choice. On resubmit, check the chosen answer, or drop the block and state the decision in prose.
 - Leave blank lines between the parts so the block reads well on GitHub.

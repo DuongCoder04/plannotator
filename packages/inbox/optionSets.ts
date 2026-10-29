@@ -58,21 +58,18 @@ export function choiceLetter(index: number): string {
   return index < 26 ? String.fromCharCode(65 + index) : String(index + 1);
 }
 
-/**
- * Whether a label already starts with its own letter as a token ("B · Total
- * pinned", "B) Tabs", "B"). A word that only starts with the letter ("A great
- * idea", "Bold") does not.
- */
-export function labelHasLetter(label: string, letter: string): boolean {
-  const trimmed = label.trim();
-  if (!trimmed.startsWith(letter)) return false;
-  const rest = trimmed.slice(letter.length);
-  return rest === '' || /^\s*[·.:)\-–—]/.test(rest);
+/** A label's leading single capital as a token: "C · x", "C: x", "C) x", "B. Total", "A — x", "A - x", "C". Not "X-axis", "U.S.", "A.I.", "A great idea". */
+const LEADING_LETTER = /^\s*([A-Z])(?=\s*(?:[·:)]|[.\-–—](?=\s|$))|\s*$)/;
+
+/** The letter a label leads with, when it is one of the first `count` letters (so "I. Intro" on 3 choices has none); null otherwise. */
+export function labelOwnLetter(label: string, count = 26): string | null {
+  const letter = LEADING_LETTER.exec(label)?.[1] ?? null;
+  return letter !== null && letter.charCodeAt(0) - 65 < count ? letter : null;
 }
 
-/** The single capital letter a label leads with as a token ("C · The section", "C) Tabs", "C"); null for "A great idea" or none. */
-export function labelOwnLetter(label: string): string | null {
-  return /^\s*([A-Z])(?=\s*[·.:)\-–—]|\s*$)/.exec(label)?.[1] ?? null;
+/** Whether a label already starts with the given letter as a token ("B · Total pinned", "B) Tabs", "B"). */
+export function labelHasLetter(label: string, letter: string): boolean {
+  return labelOwnLetter(label) === letter;
 }
 
 /**
@@ -84,7 +81,7 @@ export function labelOwnLetter(label: string): string | null {
  * positions, so a caption never names two choices alike.
  */
 export function choiceLetters(labels: readonly string[]): { letter: string; lettered: boolean }[] {
-  const own = labels.map(labelOwnLetter);
+  const own = labels.map((label) => labelOwnLetter(label, labels.length));
   const letters = own.map((l, i) => l ?? choiceLetter(i));
   if (new Set(letters).size === letters.length) return letters.map((letter, i) => ({ letter, lettered: own[i] !== null }));
   return labels.map((label, i) => ({ letter: choiceLetter(i), lettered: labelHasLetter(label, choiceLetter(i)) }));
@@ -93,11 +90,11 @@ export function choiceLetters(labels: readonly string[]): { letter: string; lett
 /**
  * A picture choice's name in a viewer: "B · Quiet hover menu" (the label as it
  * is when it leads with its letter). `labels`: every label of the question, so
- * a name agrees with the caption when letters repeat.
+ * the name agrees with the caption.
  */
-export function choiceName(label: string, index: number, labels?: readonly string[]): string {
-  const named = labels?.[index] === label ? choiceLetters(labels)[index]! : { letter: labelOwnLetter(label) ?? choiceLetter(index), lettered: labelOwnLetter(label) !== null };
-  return named.lettered ? label.trim() : `${named.letter} · ${label}`;
+export function choiceName(label: string, index: number, labels: readonly string[]): string {
+  const { letter, lettered } = choiceLetters(labels)[index] ?? { letter: choiceLetter(index), lettered: false };
+  return lettered ? label.trim() : `${letter} · ${label}`;
 }
 
 /**
