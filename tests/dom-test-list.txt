@@ -344,6 +344,7 @@ packages/ui/components/Viewer.alertDraftRestore.test.tsx
 packages/ui/components/Viewer.belowTitle.test.tsx
 packages/ui/utils/belowTitleSlot.test.ts
 packages/ui/components/AnnotationPanel.allFiles.test.tsx
+packages/ui/components/AnnotationPanel.sectionRefs.test.tsx
 packages/ui/hooks/useLinkedDoc.crossFile.test.tsx
 packages/ui/hooks/useLinkedDoc.revealSidebar.test.tsx
 packages/ui/hooks/useLinkedDoc.reapplyFilter.test.tsx
