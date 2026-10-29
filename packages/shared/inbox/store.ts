@@ -4285,13 +4285,17 @@ export class InboxStore {
   }
 
   /**
-   * The Send that carried the reply box's words: drop the draft only while it is
-   * still the one those words were saved as (`updated_at`), so a newer draft
-   * another window saved meanwhile stays. True when it went.
+   * The Send that carried the reply box's words: drop the draft while it is
+   * still the one those words were saved as (`updated_at`), or while it holds
+   * exactly those words (`words`: the window may not know the `updated_at` of a
+   * save whose answer it never read). A newer, different draft another window
+   * saved meanwhile stays. True when it went.
    */
-  clearSentReplyDraft(threadId: string, updatedAt: string): boolean {
+  clearSentReplyDraft(threadId: string, updatedAt: string, words?: string): boolean {
     const existing = this.replyDrafts.get(threadId);
-    if (!existing || existing.updated_at !== updatedAt) return false;
+    if (!existing) return false;
+    const sameWords = words !== undefined && words.trim() !== "" && existing.body.trim() === words.trim();
+    if (existing.updated_at !== updatedAt && !sameWords) return false;
     return this.deleteReplyDraft(threadId);
   }
 

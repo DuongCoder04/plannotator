@@ -2457,11 +2457,10 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   hasFilesRef.current = replyFiles.files.length > 0;
   useEffect(() => {
     if (draftChanged === 0) return;
-    const local = boxRef.current.open ? boxRef.current.text : null;
-    void reloadDraft(local).then((answer) => {
+    // The box's words as the answer comes (a restore or typing may change them meanwhile): edits there
+    // win, and the next save is refused if the draft moved.
+    void reloadDraft(() => (boxRef.current.open ? boxRef.current.text : null)).then((answer) => {
       if (!answer?.replaceBox) return;
-      // Typed into meanwhile: those words win, and the next save is refused if the draft moved.
-      if (!boxRef.current.open || boxRef.current.text !== local) return;
       if (answer.draft) {
         setBox({ open: true, text: answer.draft.body });
         announce('This reply changed in another window.');
@@ -2766,7 +2765,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         setError(line);
         announce(line);
         // Its clear_draft went with it: a closed box's foot no longer shows a draft of those words.
-        if (after === 'closed') await replyDraft.reload(null);
+        if (after === 'closed') await replyDraft.reload();
       } else if (landed === 'no') setError(null);
       else if (landed === 'gone') setError(THREAD_GONE_TEXT);
     });
@@ -2789,7 +2788,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       const line = box.open && box.text.trim() ? 'Your earlier reply went; Send sends your edited words as another reply.' : (leftover ?? 'Your reply went.');
       setError(line);
       announce(line);
-      if (!box.open) void replyDraft.reload(null);
+      if (!box.open) void replyDraft.reload();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [thread]);
@@ -2914,7 +2913,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         words = replyDraft.conflict.trim();
       } else {
         // The box is closed: the words as the draft holds them now (another window may have changed them).
-        const fresh = await replyDraft.reload(null);
+        const fresh = await replyDraft.reload();
         const kept = fresh === undefined ? replyDraft.draft : fresh.draft;
         words = kept?.body.trim() ?? '';
         draftSavedAs = kept?.updated_at ?? null;
@@ -2991,8 +2990,9 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           // The pasted files ride the reply that carries the words, as attachments.
           ...(last && uploads.length > 0 ? { uploads } : {}),
           ...(tags.length > 0 ? { tags } : {}),
-          // The reply that carries the box's words: their draft goes with the Send (that draft only).
-          ...(last && words !== '' && draftSavedAs !== null ? { clear_draft: draftSavedAs } : {}),
+          // The reply that carries the box's words: their draft goes with the Send (that draft, or one holding
+          // exactly these words when the `updated_at` they were saved as is not known here).
+          ...(last && words !== '' ? { clear_draft: draftSavedAs ?? '' } : {}),
           // Only a message the ended session asked goes to the session picked;
           // an answer to another session's message still goes to that session.
           ...(to && target.message.author.kind === 'agent' && target.message.author.session === asking?.session ? { to } : {}),
