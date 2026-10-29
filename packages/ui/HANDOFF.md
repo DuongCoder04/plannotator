@@ -2546,6 +2546,10 @@ Settings → Display can show a **Document font** row beside Text size. Inert un
 - **`theme.css`**: one base-layer rule gated on `[data-doc-font]` sets the font on the blocks Text size scales; code keeps its monospace font, and figure captions keep the sans font. `PlanCleanDiffView`'s unchanged chunks now carry `data-doc-text`, so both Text size and the font reach them.
 - **`Settings`** gains **`showDocumentFont?: boolean`** (default false). The Code Font row and the new row share one `FontFamilyField`; Code Font behaves as before (its select now has an `aria-label`).
 
+## AsciiDoc documents (#1009; next ui + core release; additive, one widened setter)
+
+`@plannotator/core/annotatable` gains `DocumentRenderKind` (`DiagramRenderKind | "asciidoc"`), `documentRenderKindForPath`, `isDocumentRenderKind` and `annotateDocumentRenderKind`; `.adoc`/`.asciidoc` join the annotatable sets. `@plannotator/ui` gains `utils/asciidocParser` (`parseAsciidocToBlocks`, the same Block model as the markdown parser), `DocumentRenderAs` widens to include `'asciidoc'`, and share payloads may carry `r: 'asciidoc'`. `useSharing` takes an optional trailing `renderAs` and its `setRenderAs` parameter widens to `DocumentRenderAs`, so a host whose state is typed `'markdown' | 'html'` must widen its setter. Publish core first.
+
 ## The law (guardrails for anyone editing `@plannotator/ui`)
 
 These are enforced socially and, where possible, by CI. They exist because a prior from-scratch reimplementation of this UI broke the app and was reverted.
