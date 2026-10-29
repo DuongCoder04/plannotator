@@ -177,6 +177,7 @@ jobs:
           packages/inbox/boardOff.test.tsx
           packages/inbox/soundIntro.test.tsx
           packages/inbox/soundSettings.test.tsx
+          packages/inbox/cookieHostSettings.test.tsx
           packages/inbox/notifyHook.test.tsx
           packages/inbox/notificationStates.test.tsx
           packages/inbox/attachmentStepping.test.tsx
@@ -338,6 +339,8 @@ jobs:
           packages/review-editor/components/PanelChrome.test.tsx
           packages/review-editor/components/FileTree.search-placement.test.tsx
           packages/review-editor/components/FileTree.fileKinds.test.tsx
+          packages/review-editor/components/FileTree.allFiles.test.tsx
+          packages/review-editor/hooks/useRepoFiles.test.tsx
           packages/review-editor/components/FileHeader.fileKind.test.tsx
           packages/review-editor/components/PackageChangesCard.test.tsx
           packages/review-editor/components/FileTreeNode.controls.test.tsx
@@ -466,6 +469,7 @@ jobs:
           packages/ui/config/documentFontSetting.test.ts
           packages/ui/utils/diffFonts.test.ts
           packages/ui/components/Settings.agentTool.test.tsx
+          packages/ui/components/Settings.cookieHost.test.tsx
           packages/ui/components/settings/QuickLabelsTab.test.tsx
           packages/ui/components/AnnotationToolbar.touchTargets.test.tsx
           packages/ui/components/AnnotationToolbar.modeShortcutGuard.test.tsx
