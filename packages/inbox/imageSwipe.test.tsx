@@ -103,11 +103,11 @@ function stubViews() {
 }
 
 /** The pane as the thread drives it on a phone; `set`: the thread opened it over the question's choices. */
-function Pane({ start, opened, closed, set, only }: { start: InboxAttachmentState; opened: string[]; closed: () => void; set: boolean; only?: boolean }) {
+function Pane({ start, opened, closed, set, only, setOf = SET }: { start: InboxAttachmentState; opened: string[]; closed: () => void; set: boolean; only?: boolean; setOf?: OptionSet }) {
   const [open, setOpen] = useState(start);
   const noop = () => {};
-  const inSet = set && SET.steps.some((s) => s.attachment.id === open.id);
-  const steps = only ? ALL_STEPS.filter((s) => s.attachment.id === start.id) : inSet ? SET.steps : ALL_STEPS;
+  const inSet = set && setOf.steps.some((s) => s.attachment.id === open.id);
+  const steps = only ? ALL_STEPS.filter((s) => s.attachment.id === start.id) : inSet ? setOf.steps : ALL_STEPS;
   return (
     <AttachmentPane
       attachment={open}
@@ -130,7 +130,7 @@ function Pane({ start, opened, closed, set, only }: { start: InboxAttachmentStat
       strip={{ picks: 0, annotations: 0, onWriteReply: noop }}
       steps={steps}
       allSteps={ALL_STEPS}
-      optionSet={inSet ? SET : null}
+      optionSet={inSet ? setOf : null}
       phone
       onStep={(id) => {
         opened.push(id);
@@ -146,7 +146,7 @@ async function settle(ms = 60) {
   });
 }
 
-async function render(start: InboxAttachmentState, { set = true, only = false } = {}) {
+async function render(start: InboxAttachmentState, { set = true, only = false, setOf = SET } = {}) {
   const opened: string[] = [];
   const closes = { count: 0 };
   host = document.createElement('div');
@@ -154,7 +154,7 @@ async function render(start: InboxAttachmentState, { set = true, only = false } 
   document.body.appendChild(host);
   await act(async () => {
     root = createRoot(host!);
-    root.render(<Pane start={start} opened={opened} closed={() => closes.count++} set={set} only={only} />);
+    root.render(<Pane start={start} opened={opened} closed={() => closes.count++} set={set} only={only} setOf={setOf} />);
   });
   await settle();
   sized(area());
@@ -267,6 +267,20 @@ test.skipIf(!hasDom)('a picture choice opens its question\'s choices: the captio
   await settle(40);
   expect(opened).toHaveLength(5);
   expect(caption()!.querySelector('[data-option-end]')!.textContent).toBe('First option');
+});
+
+test.skipIf(!hasDom)('choices labeled with their own letters out of order (C, A, B) are captioned by that letter, with no chip of a position letter', async () => {
+  stubViews();
+  reducedMotion(true);
+  const cab = message(M2, '2026-10-10T11:06:00.000Z', {
+    questions: [{ key: 'q-design', prompt: 'Which?', choices: [choice('C · The section is the folder', 'C'), choice('A · A tab', 'A'), choice('B · Header menu', 'B')] }],
+  });
+  const steps = attachmentSequence([MESSAGES[0]!, cab], ALL).map((s) => (s.attachment.kind === 'image' ? { ...s, inline: true } : s));
+  const cabSet = optionSetOf([MESSAGES[0]!, cab], steps, optionSetId(M2, 'q-design'))!;
+  await render(optC, { setOf: cabSet });
+  expect(caption()!.getAttribute('data-option-caption')).toBe('C');
+  expect(caption()!.querySelector('.ib-optcap-letter')).toBeNull();
+  expect(caption()!.querySelector('.ib-optcap-label')!.textContent).toBe('C · The section is the folder');
 });
 
 test.skipIf(!hasDom)('the pill\'s sheet still lists every file of the thread; its ‹ Previous and Next › step inside the set; a pick outside leaves it', async () => {
