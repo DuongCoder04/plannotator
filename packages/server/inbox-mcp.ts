@@ -645,7 +645,7 @@ const IMAGE_NOT_SHOWN_REASONS: Record<string, string> = {
   image_read_failed: "could not be read",
   not_an_image: "not an image (png, jpg, gif, webp, svg, avif, bmp, ico)",
   image_too_large: "over 10 MB or 50 megapixels",
-  image_hidden: "in a hidden folder, or a hidden or .env file",
+  image_hidden: "a .env file, or in a hidden folder of the home folder such as ~/.ssh",
   validation_error: "not a file path",
 };
 const IMAGE_NOT_YET_REASON = "does not exist yet; it will show if it is written there later";
@@ -687,7 +687,7 @@ export function imagesNotShownText(list: readonly ImageNotShown[]): string {
   const later = list.filter((image) => image.not_yet);
   let text = "";
   if (never.length > 0) {
-    text += ` The message was sent, but ${never.length === 1 ? "this image will not show" : `${never.length} images will not show`}: ${namedImages(never, IMAGES_NOT_SHOWN_MAX)}. Save the image as a local file outside hidden folders and link that path, or attach it with attachments.`;
+    text += ` The message was sent, but ${never.length === 1 ? "this image will not show" : `${never.length} images will not show`}: ${namedImages(never, IMAGES_NOT_SHOWN_MAX)}. Copy the image to a plain folder and link that path, or attach it with attachments.`;
   }
   if (later.length > 0) {
     text += ` ${later.length === 1 ? "This image does not exist yet" : `${later.length} images do not exist yet`}: ${namedImages(later, IMAGES_NOT_SHOWN_MAX)}; ${later.length === 1 ? "it shows" : "they show"} once written there.`;

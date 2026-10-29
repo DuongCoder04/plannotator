@@ -6,7 +6,7 @@
  * `/api/inbox/messages/<id>/image?path=<src>`. The server reads the image
  * only when the message's body shows it: for an agent's message from
  * anywhere the user can read, for the person's own from its project, never
- * from a hidden folder outside those or a dotenv file
+ * from a hidden folder of the home folder (`~/.ssh`) or a dotenv file
  * (packages/shared/inbox/message-images.ts). An attached Markdown file's
  * images work the same way with `inboxMarkdownImageBase(attachment, version)`:
  * `/api/inbox/attachments/<id>/markdown-image?path=<src>&version=…`, relative
