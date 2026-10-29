@@ -722,7 +722,6 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
   .pn-inbox .ib-lhead-title:hover svg.ib-ic-refresh { opacity: 1; }
 }
 .pn-inbox .ib-lhead-title:focus-visible svg.ib-ic-refresh, .pn-inbox .ib-lhead-title[data-refreshing] svg.ib-ic-refresh { opacity: 1; }
-.ib-lhead .ib-path { font-family: var(--font-mono); font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); min-width: 0; flex: 0 1000000 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-lbody { padding: 0 10px 10px; overflow-y: auto; flex: 1; min-height: 0; position: relative; }
 /* A row that left the rows on screen when the list settled (settle.ts): a copy drawn where it was, fading
    out under the rows sliding past it (they are opaque and sit above it while they move). */
@@ -2589,7 +2588,6 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   /* the list: a compact header, sticky section bands, mail rows */
   .ib-lhead { height: calc(52px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 12px 0 4px; gap: 4px; border-bottom: 1px solid var(--ib-hair); }
   .ib-lhead h1 { font-size: var(--ib-fs-22, 22px); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ib-lhead .ib-path { display: none; }
   .pn-inbox .ib-sb-trigger { width: 44px; height: 44px; }
   .ib-sb-trigger-dot { top: 11px; right: 11px; }
   .ib-lbody { padding: 0 0 calc(24px + env(safe-area-inset-bottom)); }

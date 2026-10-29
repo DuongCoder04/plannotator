@@ -139,6 +139,7 @@ packages/inbox/pullToRefresh.test.tsx
 packages/inbox/threadReadRetry.test.tsx
 packages/inbox/tabCountWindow.test.tsx
 packages/inbox/phoneList.test.tsx
+packages/inbox/listHeaderPath.test.tsx
 packages/inbox/listLabels.test.tsx
 packages/inbox/listRowMemo.test.tsx
 packages/inbox/rowTicks.test.tsx
