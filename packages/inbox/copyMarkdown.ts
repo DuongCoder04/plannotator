@@ -12,6 +12,8 @@
  *   1 question.", the still-open line, "## Answers to your questions", the
  *   action items section, the skills block): their own words. The answers
  *   show on the questions they answered.
+ * - A message with attached files ends with "Files: plan.md, shot.png" (the
+ *   display names, in send order, escaped to read as plain text).
  * - A thread is "# Subject", "project · N messages", then each message under
  *   "**Author** · Oct 28, 2026, 7:34 PM", separated by `---`. Folded messages
  *   are included: it copies the thread, not what is on screen.
@@ -172,9 +174,31 @@ function personMarkdown(message: InboxMessageWire): string {
   return INBOX_REPLY_SENTENCE_LINE.test(first) ? first : '';
 }
 
-/** One message as Markdown a person reads. */
+/**
+ * A file name as plain Markdown text: each character Markdown could read as
+ * code, emphasis, a link, an image, HTML, an entity, a table cell or a
+ * strikethrough is escaped with a backslash.
+ */
+function plainMarkdownText(text: string): string {
+  return text.replace(/[\\`*_[\]<>|~&!#]/g, '\\$&');
+}
+
+/**
+ * The message's attached files by name, in the order they were sent
+ * ("Files: plan.md, shot.png"), or null when it has none. Images the body
+ * shows (`inline_images`) are not attachments: they stay in the body as
+ * written.
+ */
+function filesLine(message: InboxMessageWire): string | null {
+  const names = (message.attachments ?? []).map((file) => plainMarkdownText(file.name));
+  return names.length > 0 ? `Files: ${names.join(', ')}` : null;
+}
+
+/** One message as Markdown a person reads, its attached files named at the end. */
 export function messageMarkdown(message: InboxMessageWire): string {
-  return message.author.kind === 'agent' ? agentMarkdown(message) : personMarkdown(message);
+  const text = message.author.kind === 'agent' ? agentMarkdown(message) : personMarkdown(message);
+  const files = filesLine(message);
+  return files ? [text, files].filter(Boolean).join('\n\n') : text;
 }
 
 /** The whole thread: the subject, the project and count, then each message under its author and time. */
