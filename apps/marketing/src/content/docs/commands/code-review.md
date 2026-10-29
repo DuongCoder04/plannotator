@@ -133,7 +133,7 @@ By default the review opens showing **all changes since your base branch** — e
 - **Last commit** - the diff introduced by the most recent commit
 - **vs main** (or your default branch) - all committed changes on your branch compared to the base branch. Only appears when you're on a branch other than the default.
 
-Your default view and diff type live in **Settings → Git**. On repos where the base branch can't be resolved, the review falls back to uncommitted changes.
+Your default view and diff type live in **Settings → Review**, which keeps a separate default diff for Git and for Jujutsu repositories. On repos where the base branch can't be resolved, the review falls back to uncommitted changes.
 
 If the base branch has moved on GitHub since your last fetch, a "Baseline is behind" banner offers a one-click fetch so you're reviewing against the real base.
 
@@ -253,7 +253,7 @@ file you un-checked, until you mark it viewed by hand again. A file whose
 content changes under a refresh loses its checkmark, because a check on code
 the agent just rewrote is misleading.
 
-It is on by default, and there are two off switches: **Settings → Git →
+It is on by default, and there are two off switches: **Settings → Review →
 Auto-mark viewed**, and the **Auto-mark viewed** row in the gear popover above
 the file list. The first time it fires, a toast points at both.
 
@@ -278,7 +278,7 @@ Call Flow is syntactic and does not resolve types, imports, runtime dispatch, or
 
 ### Panel views
 
-The left panel has three views. **Tree** is the default. The tabs at the top are session-scoped — glancing at another view never changes your saved default (change that in Settings → Git).
+The left panel has three views. **Tree** is the default. The tabs at the top are session-scoped — glancing at another view never changes your saved default (change that in Settings → Review).
 
 Under the tabs, the comparison reads as one sentence, for example **All changes ⌄ since main ⌄**: click the first words to pick which changes are shown, and the branch to pick what they are compared with. A long branch name keeps its start and end; hover it for the full name. Below that, **Changes** and **All files** switch the tree between the files this review changes and every file of the repository, and the search button opens Go to File (⌘P / Ctrl+P). The **All changes** row in the list opens every change of the review in one scrolling view.
 
