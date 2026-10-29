@@ -1334,8 +1334,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     const container = containerRef.current;
     if (!container || !scrollViewport) return false;
 
-    const target = document.getElementById(anchor);
-    if (!target || !container.contains(target)) return false;
+    const target = container.querySelector<HTMLElement>(`#${CSS.escape(anchor)}`);
+    if (!target) return false;
 
     const documentHeader = stickyActions
       ? container.querySelector<HTMLElement>('[data-viewer-document-header]')
