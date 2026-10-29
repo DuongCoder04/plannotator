@@ -9,13 +9,16 @@ import { CommentPopover, type CommentAskAIHandler } from './CommentPopover';
 import { ImagePeek, type ImagePeekHandle, type ImagePeekRow } from './ImagePeek';
 import { RegionBoxLayer, RegionToolStrip, regionOf, type RegionBoxItem } from './ImageRegions';
 import { ImageZoomStage, type ImageZoomStageHandle, type WheelHintGate, type ZoomDraw, type ZoomMode } from './ImageZoomStage';
-import type { NaturalBox, ZoomSize, ZoomViewport } from './imageZoom';
+import { canPanToward, type NaturalBox, type ZoomSize, type ZoomViewport } from './imageZoom';
 import { useIsMobile } from '../hooks/useIsMobile';
+import { useSwipeStep } from '../hooks/useSwipeStep';
 
 /** One image of a document, for the lightbox's stepping (`images`). */
 export interface LightboxImage {
   src: string;
   alt: string;
+  /** What the viewer calls the image (a picture choice: "B · Quiet hover menu"). Absent: the file name its src names. */
+  name?: string;
   /** The heading the image sits under ("Options"), for "2 of 4 · in “Options”" and the peek's rows. */
   section?: string | null;
   /**
@@ -70,10 +73,12 @@ function isTextField(el: EventTarget | null): boolean {
 }
 
 /**
- * The file name an image's src names: the `path` a host route carries
- * (`/api/image?path=…`), else the URL's last segment, else the alt text.
+ * What the viewer calls an image: its `name` when the host gave one, else the
+ * file name its src names (the `path` a host route carries,
+ * `/api/image?path=…`, else the URL's last segment), else the alt text.
  */
-export function lightboxImageName(image: Pick<LightboxImage, 'src' | 'alt'>): string {
+export function lightboxImageName(image: Pick<LightboxImage, 'src' | 'alt' | 'name'>): string {
+  if (image.name) return image.name;
   try {
     const base = typeof window !== 'undefined' && /^https?:/.test(window.location.href) ? window.location.href : 'http://localhost/';
     const url = new URL(image.src, base);
@@ -162,7 +167,15 @@ export const ImageLightbox: React.FC<{
   images?: readonly LightboxImage[];
   /** Comments on part of an image (#2100). Additive: absent, no region tools. */
   regions?: LightboxRegionComments;
-}> = ({ src, alt, onClose, images, regions }) => {
+  /**
+   * A touch screen's swipe through `images` (`useSwipeStep`, the Inbox
+   * phone viewer's, approval "inbox-image-swipe"): the image follows the
+   * finger and steps past a third of the width or on a flick, a zoomed image
+   * pans to its edge first, and a drag down at Fit closes. Additive: absent,
+   * no swipe.
+   */
+  swipe?: boolean;
+}> = ({ src, alt, onClose, images, regions, swipe }) => {
   const overlayRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -389,6 +402,31 @@ export const ImageLightbox: React.FC<{
   }, [index]);
   const stepRef = useRef(step);
   stepRef.current = step;
+  // A touch screen's swipe (`swipe`): the image area follows the finger; a box being drawn, Region, or the peek keep the touch.
+  const swipeAreaRef = useRef<HTMLDivElement>(null);
+  const dimsRef = useRef(dims);
+  dimsRef.current = dims;
+  const zoomModeRef = useRef(zoomMode);
+  zoomModeRef.current = zoomMode;
+  useSwipeStep(swipeAreaRef, {
+    enabled: !!swipe && framed && !(canDraw && tool === 'region') && !peekOpen && !drawerOpen,
+    canStep: (dir) => stepping && index + dir >= 0 && index + dir < (list?.length ?? 0),
+    onStep: (dir) => stepRef.current(dir),
+    wouldAsk: () => pending !== null,
+    keeps: (dir) => !stepping || canPanToward(stageRef.current?.visibleBox() ?? null, dimsRef.current?.width ?? 0, dir),
+    dismiss: {
+      can: () => {
+        if (zoomModeRef.current !== 'fit') return false;
+        const box = stageRef.current?.visibleBox() ?? null;
+        return box === null || box.y <= 1;
+      },
+      onDismiss: () => onCloseRef.current(),
+      onProgress: (share) => {
+        const overlay = overlayRef.current;
+        if (overlay) overlay.style.backgroundColor = share > 0 ? `color-mix(in oklch, var(--background) ${Math.round((1 - share) * 100)}%, transparent)` : '';
+      },
+    },
+  });
   const steppingRef = useRef(stepping);
   steppingRef.current = stepping;
   const peekOpenRef = useRef(peekOpen);
@@ -711,7 +749,7 @@ export const ImageLightbox: React.FC<{
                 </svg>
               </button>
             )}
-            <div className="relative min-h-0 min-w-0 flex-1 self-stretch">
+            <div ref={swipeAreaRef} className="relative min-h-0 min-w-0 flex-1 self-stretch" data-lightbox-swipe={swipe ? '' : undefined}>
               <ImageZoomStage
                 ref={stageRef}
                 key={`${index}:${current.src}`}

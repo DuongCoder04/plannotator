@@ -309,6 +309,10 @@ export interface ViewerProps {
   /** A small label over each picture tile's picture (see `QuestionBlock`
    *  `pictureBadge`); absent: none. */
   questionPictureBadge?: (choice: { label: string; image: { alt: string; src: string } }) => string | null;
+  /** A picture tile's zoom, told its question's key and the choice's index (see
+   *  `QuestionBlock` `onZoomChoice`). Absent: the zoom opens the picture
+   *  through `onImageClick`, as before. */
+  onQuestionPictureZoom?: (key: string, index: number, url: string, alt: string) => void;
   /** Makes a question's "Records a decision" tag a toggle button
    *  (`aria-pressed`); a click calls this with the question's key and the
    *  next state, which the host stores and returns from
@@ -819,6 +823,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   questionContractLines = false,
   questionPictureChoices = true,
   questionPictureBadge,
+  onQuestionPictureZoom,
   onToggleQuestionDecisionRecording,
   onOpenQuestionDecision,
   questionDecisionLocked,
@@ -1957,6 +1962,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
                   questionContractLines={questionContractLines}
                   questionPictureChoices={questionPictureChoices}
                   questionPictureBadge={questionPictureBadge}
+                  onQuestionPictureZoom={onQuestionPictureZoom}
                 />
               );
               // `textComments`: a question card's words are not commented on

@@ -271,6 +271,11 @@ export interface QuestionBlockProps {
    *  answer, never read by the parser. Default absent, so every card draws as
    *  before (the Plannotator Inbox's onboarding tour labels its pictures). */
   pictureBadge?: (choice: { label: string; image: { alt: string; src: string } }) => string | null;
+  /** The zoom button on a picture tile, told which question and which choice
+   *  (its index in the question's choices) as well as the picture: a host can
+   *  open a gallery of that question's choices (the Plannotator Inbox's option
+   *  sets). Absent: the zoom calls `onImageClick(url, alt)` as before. */
+  onZoomChoice?: (key: string, index: number, url: string, alt: string) => void;
 }
 
 /** The picture tile's label (`pictureBadge`): a small dark chip over the picture's top-left corner. */
@@ -321,6 +326,7 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
   onNavigateAnchor,
   pictureChoices = true,
   pictureBadge,
+  onZoomChoice,
 }) => {
   const { question, number } = indexed;
   const resolveImage = useImageResolver();
@@ -880,7 +886,11 @@ export const QuestionBlock: React.FC<QuestionBlockProps> = ({
                 name={groupName}
                 readOnly={readOnly}
                 onPick={pick}
-                onZoom={onImageClick}
+                onZoom={
+                  onZoomChoice
+                    ? (url, alt, index) => onZoomChoice(question.key, index, url, alt)
+                    : onImageClick
+                }
                 onPictureError={markPictureFailed}
                 heldTitle={pictureHeldTitle}
                 renderText={inline}
@@ -1121,8 +1131,8 @@ export interface QuestionPictureTilesProps {
   readOnly?: boolean;
   /** The tile's radio or checkbox changed (the picture and the label pick through it). */
   onPick: (label: string, checked: boolean) => void;
-  /** The separate zoom button (absent: no zoom button). Never picks. */
-  onZoom?: (url: string, alt: string) => void;
+  /** The separate zoom button (absent: no zoom button). Never picks. `index`: the choice's place in `choices`. */
+  onZoom?: (url: string, alt: string, index: number) => void;
   onPictureError?: (url: string) => void;
   /** The host's reason a picture is held (its image resolver's `unavailable` title). */
   heldTitle?: (src: string) => string | null;
@@ -1256,7 +1266,7 @@ export const QuestionPictureTiles: React.FC<QuestionPictureTilesProps> = ({
           {shown && onZoom && (
             <button
               type="button"
-              onClick={() => onZoom(shown, alt)}
+              onClick={() => onZoom(shown, alt, index)}
               aria-label={`Zoom: ${alt}`}
               className="annotation-exclude absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-md bg-background/85 text-foreground shadow-sm ring-1 ring-border/70 before:absolute before:-inset-2 before:content-[''] hover:bg-background focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
               data-pinpoint-ignore=""

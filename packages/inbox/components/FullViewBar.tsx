@@ -71,6 +71,8 @@ export interface FullViewBarProps {
     index: number;
     total: number;
     name: string;
+    /** What `index` of `total` counts: the thread's files, or a question's picture choices (optionSets.ts). Absent: files. */
+    noun?: 'file' | 'option';
     open: boolean;
     peekId: string;
     onOpenChange: (open: boolean) => void;
@@ -397,7 +399,7 @@ export const FullViewBar = forwardRef<FullViewBarHandle, FullViewBarProps>(funct
               // A phone's pill: its name starts with the text it shows (WCAG 2.5.3, Label in Name), then says it in words.
               aria-label={
                 phone
-                  ? `${position.index + 1}/${position.total}: file ${position.index + 1} of ${position.total}, ${position.name}. Show every file`
+                  ? `${position.index + 1}/${position.total}: ${position.noun ?? 'file'} ${position.index + 1} of ${position.total}, ${position.name}. Show every file`
                   : `${position.index + 1} of ${position.total}, ${position.name}. Show every file in this thread`
               }
               onClick={() => position.onOpenChange(!position.open)}

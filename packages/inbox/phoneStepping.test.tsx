@@ -10,7 +10,7 @@
  * it, resists at the last file and says the end note; and every case it
  * leaves alone: a vertical scroll, two fingers, selected text, a block that
  * scrolls sideways (and the same block at its edge, which steps), HTML pages,
- * images (their own swipe), a desktop, an open sheet; a typed comment asks
+ * a desktop, an open sheet (images follow the finger too: imageSwipe.test.tsx); a typed comment asks
  * first; reduced motion steps on release without following. The real-touch
  * proof is tests/e2e/inbox-phone-stepping.spec.ts.
  *
@@ -207,7 +207,7 @@ test('which files take the swipe', () => {
   expect(fileSwipeMode('file', false)).toBe('follow');
   // A text file too large to show is the download card.
   expect(fileSwipeMode('html', true)).toBe('follow');
-  expect(fileSwipeMode('image', false)).toBe('image');
+  expect(fileSwipeMode('image', false)).toBe('follow');
   for (const kind of ['html', 'mermaid', 'graphviz', 'video'] as const) expect(fileSwipeMode(kind, false)).toBe('none');
 });
 
@@ -389,7 +389,7 @@ test.skipIf(!hasDom)('reduced motion: nothing follows the finger, the step happe
   expect(opened).toEqual([plan.id]);
 });
 
-test.skipIf(!hasDom)('an HTML page and an image take no swipe from the pane (the image keeps its own at Fit); an open sheet stops it', async () => {
+test.skipIf(!hasDom)('an HTML page takes no swipe from the pane; an image takes the pane\'s swipe (approval "inbox-image-swipe"); an open sheet stops it', async () => {
   stubViews();
   reducedMotion(true);
   const opened = await render(page);
@@ -402,12 +402,12 @@ test.skipIf(!hasDom)('an HTML page and an image take no swipe from the pane (the
   host?.remove();
 
   const fromImage = await render(shot);
-  expect(area().getAttribute('data-file-swipe')).toBe('image');
+  expect(area().getAttribute('data-file-swipe')).toBe('follow');
   sized(area());
-  // Over the pane's area but not the image: nothing (the image's own swipe sits on the image).
+  // Anywhere over the image's area, as over a document (its own touchend-only swipe is off here).
   await drag(area(), -200);
   await settle(80);
-  expect(fromImage).toEqual([]);
+  expect(fromImage).toEqual([page.id]);
   act(() => root?.unmount());
   host?.remove();
 

@@ -1018,7 +1018,9 @@ export function DecisionMode(props: DecisionModeProps) {
           <ImageLightbox
             src={lightbox.pictures[lightbox.index]!.src}
             alt={lightbox.pictures[lightbox.index]!.name}
-            images={lightbox.pictures.length > 1 ? lightbox.pictures.map((p) => ({ src: p.src, alt: p.name })) : undefined}
+            // Each picture by its choice ("B · Quiet hover menu"), not its file's route; a finger swipes through them (approval "inbox-image-swipe").
+            images={lightbox.pictures.length > 1 ? lightbox.pictures.map((p) => ({ src: p.src, alt: p.alt ?? p.name, name: p.name })) : undefined}
+            swipe
             onClose={() => setLightbox(null)}
           />,
           dialogRef.current ?? document.body,

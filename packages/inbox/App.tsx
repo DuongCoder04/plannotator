@@ -227,9 +227,10 @@ interface Route {
   /**
    * An attachment open beside the thread: `file=att_…`, `v=sent` for the version the agent sent, `at=` an annotation to show,
    * `linked=` a page the attached HTML page links to, shown read-only over it (its path in the page's folder, `#fragment` kept),
-   * `view=full|side` the view it is shown in (fileView.ts; absent: the remembered choice, then the rule by kind).
+   * `view=full|side` the view it is shown in (fileView.ts; absent: the remembered choice, then the rule by kind),
+   * `set=<message id>:<question key>` a question's picture choices the viewer steps through (optionSets.ts; absent: every file of the thread).
    */
-  file?: { id: string; version: 'current' | 'sent'; focus: string | null; linked?: string | null; view?: 'full' | 'side' | null } | null;
+  file?: { id: string; version: 'current' | 'sent'; focus: string | null; linked?: string | null; view?: 'full' | 'side' | null; set?: string | null } | null;
   /** The message whose guided review is open over the window (`#thread=…&guide=msg_…`). */
   guide?: string | null;
   /**
@@ -271,7 +272,7 @@ function routeOf(fullHash: string): Route {
     page: 'inbox',
     project: params.get('project'),
     thread,
-    file: fileId ? { id: fileId, version: params.get('v') === 'sent' ? 'sent' : 'current', focus: params.get('at'), linked: params.get('linked'), view: parseFileView(params.get('view')) } : null,
+    file: fileId ? { id: fileId, version: params.get('v') === 'sent' ? 'sent' : 'current', focus: params.get('at'), linked: params.get('linked'), view: parseFileView(params.get('view')), set: params.get('set') } : null,
     guide: thread ? params.get('guide') : null,
     msg: thread ? params.get('msg') : null,
     artifacts: thread ? params.has('artifacts') : false,
@@ -307,6 +308,8 @@ function hashOf(route: Route): string {
       if (route.file.linked) params.set('linked', route.file.linked);
       // The view rides the address (fileView.ts), so a reload or a shared link opens the same way.
       if (route.file.view) params.set('view', route.file.view);
+      // A question's picture choices (optionSets.ts): a reload and Back keep stepping through them.
+      if (route.file.set) params.set('set', route.file.set);
     }
     if (route.thread && route.guide) params.set('guide', route.guide);
     // A thread opened from a Board card: its way back is the card (`&card=crd_…`).

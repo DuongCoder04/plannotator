@@ -12,9 +12,10 @@ import { FileName } from './FileName';
  * from, fading in with the finger's travel. Only while a swipe is under way;
  * hidden from screen readers (the step is said in the pane's live region).
  */
-export function FileSwipeCard({ swipe, steps, index }: { swipe: FileSwipe; steps: readonly AttachmentStep[]; index: number }) {
+export function FileSwipeCard({ swipe, steps, index, skip }: { swipe: FileSwipe; steps: readonly AttachmentStep[]; index: number; skip?: (dir: 1 | -1) => boolean }) {
   const progress = useSwipeProgress(swipe);
-  if (!progress) return null;
+  // An image coming in beside an image is drawn whole (ImageSwipePeek): no card.
+  if (!progress || progress.phase !== 'drag' || skip?.(progress.dir)) return null;
   const step = steps[index + progress.dir];
   if (!step) return null;
   const { attachment } = step;
