@@ -410,3 +410,5 @@ packages/review-editor/components/AnnotationToolbar.askOnly.test.tsx
 packages/ui/components/Settings.notion.test.tsx
 packages/inbox/cookieHostSettings.test.tsx
 packages/ui/components/Settings.cookieHost.test.tsx
+packages/review-editor/components/FileTree.allFiles.test.tsx
+packages/review-editor/hooks/useRepoFiles.test.tsx
