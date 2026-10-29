@@ -149,13 +149,17 @@ const MAX_VIM_COPY_TEXT_LENGTH = 2 * 1024 * 1024;
 export const HTML_VIEWER_SANDBOX = "allow-scripts allow-modals";
 
 /**
- * The srcdoc frame's `sandbox` attribute: the `sandbox` prop's value (default
- * `HTML_VIEWER_SANDBOX`) as given, plus `allow-popups` when `hostNavigates`
- * needs it and the value lacks it.
+ * The srcdoc frame's `sandbox` attribute: the `sandbox` prop's value as given,
+ * plus `allow-popups` when `hostNavigates` needs it and the value lacks it.
+ * Anything that is not a string (`undefined`, and also `null` from a host's
+ * unset config, which a destructuring default does not catch) becomes
+ * `HTML_VIEWER_SANDBOX`, so the frame always carries a sandbox: React would
+ * drop a `null` attribute and run the page unsandboxed.
  */
-function srcdocSandbox(sandbox: string, hostNavigates: boolean): string {
-  if (!hostNavigates || sandbox.split(/\s+/).includes("allow-popups")) return sandbox;
-  return sandbox.trim() ? `${sandbox} allow-popups` : "allow-popups";
+function srcdocSandbox(sandbox: unknown, hostNavigates: boolean): string {
+  const value = typeof sandbox === "string" ? sandbox : HTML_VIEWER_SANDBOX;
+  if (!hostNavigates || value.split(/\s+/).includes("allow-popups")) return value;
+  return value.trim() ? `${value} allow-popups` : "allow-popups";
 }
 
 /** Default wait for the bridge's `ready` on the `bridgeScriptUrl` path. */
@@ -390,8 +394,17 @@ export interface HtmlViewerProps {
    * as given, except that `hostNavigates` still adds `allow-popups`, which it
    * needs. Never add `allow-same-origin` beside `allow-scripts`: the page
    * could then remove its own sandbox. Live-app (`src`) mode has no sandbox
-   * and ignores this. Absent → `HTML_VIEWER_SANDBOX`
-   * (`"allow-scripts allow-modals"`), unchanged.
+   * and ignores this. Absent, or any non-string such as `null` →
+   * `HTML_VIEWER_SANDBOX` (`"allow-scripts allow-modals"`), unchanged.
+   *
+   * `""` (or only spaces) is kept as given: the strictest frame, with no
+   * scripts, so the annotation bridge never starts and the page cannot be
+   * annotated. It never falls back to the wider default.
+   *
+   * Read when the frame loads a document: browsers apply a changed `sandbox`
+   * only on the frame's next navigation (a new `rawHtml`, for example). To
+   * apply a new value to the document already shown, remount the viewer (for
+   * example, key it on the value).
    */
   sandbox?: string;
 }

@@ -2593,10 +2593,13 @@ See `packages/ui/README.md` and `packages/ui/AGENTS.md` (CLAUDE.md symlink) for 
 
 - **Absent:** `HTML_VIEWER_SANDBOX`, `"allow-scripts allow-modals"`, as before. Plannotator passes none, so the Inbox, annotate and review frames are unchanged.
 - **Set:** the value is the attribute as given. Workspaces passes `sandbox="allow-scripts"` and can drop its pnpm patch.
+- **Not a string** (`null` from an unset config field, for example): the default, never a frame without a sandbox. React drops a `null` attribute, and a destructuring default does not catch `null`, so `HtmlViewer` checks the type itself.
+- **`""`** (or only spaces): kept as given. That is the strictest frame, with no scripts, so the annotation bridge never starts and the page cannot be annotated. It never widens to the default. With `hostNavigates` it becomes `allow-popups` alone.
+- **A changed value** applies when the frame next loads a document (a new `rawHtml`, for example): browsers read `sandbox` at navigation. To apply it to the document already shown, remount the viewer (for example, key it on the value).
 - **With `hostNavigates`:** `allow-popups` is still added when the value lacks it, because that mode opens links with `window.open`.
 - **Never add `allow-same-origin`** beside `allow-scripts`: the page could then remove its own sandbox and reach the host's origin.
 - Live-app mode (`src`) has no sandbox and ignores the prop. `HtmlViewer` draws one frame, so the prop covers every frame of the document.
-- Pinned by `components/html-viewer/HtmlViewer.sandbox.test.tsx`: no prop gives `allow-scripts allow-modals`, `sandbox="allow-scripts"` gives exactly `allow-scripts`, `hostNavigates` adds `allow-popups` to either, and `src` mode has no sandbox.
+- Pinned by `components/html-viewer/HtmlViewer.sandbox.test.tsx`: no prop gives `allow-scripts allow-modals`, `sandbox="allow-scripts"` gives exactly `allow-scripts`, `hostNavigates` adds `allow-popups` to either, `null` gives the default (with and without `hostNavigates`), `""` gives an empty attribute, and `src` mode has no sandbox.
 
 **Note for hosts that pin CodeMirror (from ui 0.54.0).** ui 0.54.0 raised its CodeMirror and Lezer minimums. A host that pins these packages lower must raise its pins to at least these, or its build ships two copies (two `@codemirror/state` copies break editor extensions at runtime):
 

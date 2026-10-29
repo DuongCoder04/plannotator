@@ -5,7 +5,10 @@
  * (Plannotator's Inbox, annotate and review are unchanged); a host's value
  * is the frame's whole attribute, so `"allow-scripts"` blocks a shared page's
  * dialogs; `hostNavigates` still adds the `allow-popups` it needs, on either
- * value; and live-app `src` mode stays unsandboxed whatever is passed.
+ * value; a non-string (`null` from a host's unset config) still gets the
+ * default rather than no sandbox at all, with or without `hostNavigates`; `""`
+ * stays the strictest frame and never widens to the default; and live-app
+ * `src` mode stays unsandboxed whatever is passed.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import React from 'react';
@@ -25,7 +28,8 @@ afterEach(async () => {
   document.body.replaceChildren();
 });
 
-type MountProps = { sandbox?: string; hostNavigates?: boolean; src?: string };
+// `sandbox` is typed `string`; `null` reaches it from plain JS or a cast.
+type MountProps = { sandbox?: string | null; hostNavigates?: boolean; src?: string };
 
 async function frameFor(props: MountProps): Promise<HTMLIFrameElement> {
   if (!htmlViewerModule) throw new Error('DOM test environment is not registered');
@@ -44,7 +48,7 @@ async function frameFor(props: MountProps): Promise<HTMLIFrameElement> {
         selectedAnnotationId={null}
         mode="selection"
         inputMethod="pinpoint"
-        {...props}
+        {...(props as Omit<MountProps, "sandbox"> & { sandbox?: string })}
       />,
     );
   });
@@ -72,6 +76,19 @@ describe.if(hasDom)('HtmlViewer sandbox', () => {
       .toBe('allow-scripts allow-popups');
     expect((await frameFor({ hostNavigates: true, sandbox: 'allow-scripts allow-popups' })).getAttribute('sandbox'))
       .toBe('allow-scripts allow-popups');
+  });
+
+  test('a null sandbox falls back to the default instead of dropping the attribute', async () => {
+    expect((await frameFor({ sandbox: null })).getAttribute('sandbox')).toBe('allow-scripts allow-modals');
+    expect((await frameFor({ sandbox: null, hostNavigates: true })).getAttribute('sandbox'))
+      .toBe('allow-scripts allow-modals allow-popups');
+  });
+
+  test('an empty sandbox is the strictest frame, never the wider default', async () => {
+    const frame = await frameFor({ sandbox: '' });
+    expect(frame.hasAttribute('sandbox')).toBe(true);
+    expect(frame.getAttribute('sandbox')).toBe('');
+    expect((await frameFor({ sandbox: '', hostNavigates: true })).getAttribute('sandbox')).toBe('allow-popups');
   });
 
   test('live-app src mode stays unsandboxed when a sandbox is passed', async () => {
