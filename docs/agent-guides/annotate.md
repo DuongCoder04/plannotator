@@ -20,6 +20,8 @@ Input type detected:
   .mmd/.mermaid → file read, rendered as ONE Mermaid diagram in the full
              diagram viewer (see "Diagram files" below) — not as text
   .dot/.gv   → same, through the Graphviz engine
+  .adoc/.asciidoc → file read, parsed by the AsciiDoc block parser (see
+             "AsciiDoc files" below) — not as markdown
   .html/.htm → file read, rendered as raw HTML by default (or converted to markdown with --markdown)
   https://   → fetched via Jina Reader (default) or fetch+Turndown (--no-jina)
   http://localhost:* (also 127.x and [::1])
@@ -40,6 +42,14 @@ User annotates content, provides feedback
 Send Feedback → annotations sent to agent session
 Done / Approve (gate) → positive decision recorded (see the decision control below)
 ```
+
+### AsciiDoc files
+
+`.adoc`/`.asciidoc` take the diagram path through `packages/core/annotatable.ts`: they are annotatable plain text everywhere on the server (resolution, 2MB cap, folders, file browser, bundles, version history), and both servers set `renderAs: "asciidoc"` on `/api/plan` and `/api/doc` with the RAW file as the body (`annotateDocumentRenderKind` / `documentRenderKindForPath`). The editor's `blocksForRenderAs` (`packages/editor/feedbackDocuments.ts`) sends that text through `parseAsciidocToBlocks` (`packages/ui/utils/asciidocParser.ts`), which maps AsciiDoc onto the markdown `Block` model with each block's real source span, so annotations, export line labels, drafts and linked docs need no special case. A share payload carries `r: 'asciidoc'`. No asciidoctor.js: it would bloat the single-file page.
+
+Supported: section titles, the document header (author/revision lines and attribute entries, with `{name}` substitution), paragraphs and literal (indented) paragraphs, `*`/`-`/`.`/`1.` lists with nesting, checklists and `+` continuation, description lists, `----` `....` `++++` and ```` ``` ```` listings with `[source,lang]`, admonition paragraphs and `[NOTE]` + `====` blocks, `____` quotes, `|===` tables (`cols`, `%header`, implicit header, colspans), block titles, images, links, cross references (a link when the target is another local `.adoc`), footnotes and constrained `*bold*`.
+
+Not supported: `include::` and conditionals (`ifdef`/`ifndef`/`ifeval`/`endif`) are shown as written, never resolved; lists and listings nested inside an admonition block or an `a|` table cell flatten to text; row spans; CSV/DSV tables; callout lists; counters, macros such as `kbd:`/`btn:`/`menu:`, and inline roles show as plain text. The author and revision lines under the title are not shown. The version diff ("Show changes") compares the text through the markdown view, as it does for diagram files. Editing the file in Plannotator is off (source save is markdown/text only), like the other non-markdown types.
 
 ### Annotate header decision control
 

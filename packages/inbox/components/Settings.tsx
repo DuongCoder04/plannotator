@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type MouseEvent, type ReactNode, type RefO
 import { KeyboardSettings } from './KeyboardSettings';
 import { INBOX_SOUND_MAX_VOLUME, INBOX_SOUND_MIN_VOLUME, INBOX_TEXT_SIZES } from '@plannotator/core/inbox-types';
 import type { InboxSound } from '../sound';
-import type { AgentToolHost, InboxExperimentalSettings, SettingsModel } from '../api';
+import type { AgentToolHost, InboxCookieHost, InboxExperimentalSettings, SettingsModel } from '../api';
+import { cookieHostDescription } from '@plannotator/ui/hooks/useCookieHostSetting';
 import { formatBytes, formatCount, plural, tildePath } from '../format';
 import { HARNESSES, type ConnectContext } from '../harnesses';
 import { HostMark, Icon, type IconName } from '../icons';
@@ -53,6 +54,8 @@ export interface SettingsPageProps {
   onToggleTool: (host: AgentToolHost, next: boolean) => void;
   /** Settings → Capabilities → Experimental: decision mode's switch. Absent (or an Inbox that reports no experimental features): no Experimental group. */
   onToggleExperimental?: (next: boolean) => void;
+  /** Settings → General: "Open Plannotator at plannotator.localhost" (#2184). Absent: no row. */
+  onToggleCookieHost?: (next: boolean) => void;
   /** `#settings/experimental` (an old link): Capabilities scrolls to its Experimental group and focuses its heading. */
   landOnExperimental?: boolean;
   /** Settings → Capabilities → Board: the Board's switch. Absent (or an Inbox without the switch): no Board group. */
@@ -103,6 +106,36 @@ export interface SettingsPageProps {
   onAgents?: (next: InboxAgentsModel) => void;
   /** Settings → Prompts saved a change: the server's model of it. */
   onPrompts?: (next: InboxPromptsSettings) => void;
+}
+
+/**
+ * "Open Plannotator at plannotator.localhost" (#2184), the switch plan review,
+ * code review and annotate show in their Settings too: config.json
+ * `urlHost: "plannotator.localhost"`. Locked (with the reason) while
+ * PLANNOTATOR_URL_HOST is set or config.json holds another `urlHost`, which it
+ * never replaces. The server leaves it out for a page that came through the tailnet.
+ */
+function CookieHostGroup({ cookieHost, onToggle }: { cookieHost: InboxCookieHost; onToggle: (next: boolean) => void }) {
+  const locked = cookieHost.env !== null || cookieHost.url_host !== null;
+  const state = cookieHost.env !== null ? 'locked-env' : cookieHost.url_host !== null ? 'locked-url-host' : cookieHost.on ? 'on' : 'off';
+  return (
+    <section className="ib-sgroup" data-settings-cookie-host={state} aria-labelledby="ib-g-browser">
+      <h2 id="ib-g-browser">This browser</h2>
+      <div className="ib-card">
+        <div className="ib-prow">
+          <span className="ib-txt">
+            <span className="ib-l" id="ib-cookie-host-label">
+              Open Plannotator at plannotator.localhost
+            </span>
+            <span className="ib-desc">{cookieHostDescription({ on: cookieHost.on, env: cookieHost.env ?? undefined, urlHost: cookieHost.url_host ?? undefined }, { inbox: true })}</span>
+          </span>
+          <span className="ib-ctl">
+            <Switch on={cookieHost.on} labelledBy="ib-cookie-host-label" disabled={locked} onClick={() => onToggle(!cookieHost.on)} />
+          </span>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 /** A row's switch, named by its visible title. */
@@ -201,9 +234,11 @@ function GeneralSection({
   notifyReach,
   onTestNotification,
   sound,
+  onToggleCookieHost,
   onTakeTour,
   updateRow,
 }: {
+  onToggleCookieHost?: (next: boolean) => void;
   onTakeTour?: () => void;
   updateRow?: ReactNode;
   settings: SettingsModel;
@@ -376,6 +411,7 @@ function GeneralSection({
           Notifications are allowed per address, so a browser on another device asks once there.
         </div>
       </section>
+      {settings.cookie_host && onToggleCookieHost && <CookieHostGroup cookieHost={settings.cookie_host} onToggle={onToggleCookieHost} />}
     </>
   );
 }
@@ -796,6 +832,7 @@ export function SettingsPage(props: SettingsPageProps) {
             notifyReach={notifyReach}
             onTestNotification={onTestNotification}
             sound={sound}
+            onToggleCookieHost={props.onToggleCookieHost}
             onTakeTour={props.onTakeTour}
             updateRow={props.updateRow}
           />

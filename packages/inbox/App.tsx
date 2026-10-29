@@ -59,6 +59,7 @@ import { shellLine, type ConnectContext } from './harnesses';
 import { Sidebar } from './components/Sidebar';
 import { SidebarShell } from './shell/SidebarShell';
 import { InboxList } from './components/InboxList';
+import { useTidy } from './components/Tidy';
 import { ThreadPane } from './components/Thread';
 import { SearchHost, type SearchLanding } from './components/SearchHost';
 import { onOpenSearchKey } from './search/searchShortcut';
@@ -2665,6 +2666,19 @@ function Inbox() {
     }
   };
 
+  // Settings → General: "Open Plannotator at plannotator.localhost" (#2184), saved to config.json; applies from the next start.
+  const toggleCookieHost = async (next: boolean) => {
+    setSettingsError(null);
+    setSettings((current) => (current?.cookie_host ? { ...current, cookie_host: { ...current.cookie_host, on: next } } : current));
+    try {
+      const saved = await inboxApi.saveCookieHost(next);
+      setSettings((current) => (current ? { ...current, cookie_host: saved.cookie_host } : current));
+    } catch (cause) {
+      setSettingsError(cause instanceof Error ? cause.message : 'The setting was not saved.');
+      void refreshSettings();
+    }
+  };
+
   // Settings → Capabilities → Experimental: decision mode, saved to config.json and applied at once.
   // The Board's switch: saved to config.json; the page and the sidebar row follow at once, agents at their next session.
   const toggleBoard = async (next: boolean) => {
@@ -2790,6 +2804,9 @@ function Inbox() {
   const filterProject = route.page === 'inbox' && route.project ? projects.find((p) => p.id === route.project) ?? null : null;
   const notice = shown && latest ? heldNotice(filterSections(shown, route.project), filterSections(latest.sections, route.project), openedHere.current, heldOpen()).text : null;
   const firstRun = latest !== null && projects.length === 0;
+  // Tidy (2026-10-28): the list header's and the Board's ⋮ menu, each reading who it would ask in its scope.
+  const listTidy = useTidy(route.page === 'inbox' ? (route.project ?? null) : null, 'list', shown, route.page === 'inbox' && !firstRun);
+  const boardTidy = useTidy(boardFilter, 'board', cards, route.page === 'board');
   // The first-run screen shows who is running now ("Message Claude Code") and moves on by itself
   // once an agent is installed or turned on: it reads the agents again when the window comes back
   // into focus (the person ran the install command in a terminal) and every few seconds while shown.
@@ -3475,6 +3492,7 @@ function Inbox() {
         error={settingsError}
         onToggleTool={toggleTool}
         onToggleExperimental={(next) => void toggleExperimental(next)}
+        onToggleCookieHost={(next) => void toggleCookieHost(next)}
         landOnExperimental={route.experimental === true}
         onToggleBoard={(next) => void toggleBoard(next)}
         agents={agents}
@@ -3609,6 +3627,7 @@ function Inbox() {
           void refreshList(false);
         }}
         onSeeDrops={seeDrops}
+        tidy={boardTidy}
         onOpenThread={(card, threadId) => go({ page: 'inbox', project: null, thread: threadId, card: card.id, board: route.board ?? 'lanes', boardProject: boardFilter })}
         onCreateThread={(card, session, opener) => openCompose({ session, card: { id: card.id, title: card.title } }, opener)}
         // The lane marks run this computer's gh / glab: never asked from a page opened over the tailnet.
@@ -3695,6 +3714,7 @@ function Inbox() {
           onSendNow={(row) => void sendNowFromRow(row)}
           onRowAction={rowAction}
           pinned={pinsOn ? pinnedIds : undefined}
+          tidy={listTidy}
           onSearch={(opener) => openSearch(opener)}
           onCompose={(opener) => openCompose({}, opener)}
           phone={phone}

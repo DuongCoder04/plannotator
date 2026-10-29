@@ -23,6 +23,7 @@ import { UndeliveredBadge } from './Undelivered';
 import { TimeWithTick } from './DeliveryTick';
 import { RowBadge, WaitCard, badgeDescription, rowHasBadge } from './RowBadge';
 import { attachPullToRefresh } from '../pullRefresh';
+import { TidyMenu, type TidyController } from './Tidy';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
 import { isComposingKey, keyTarget, modalOpen } from '../shortcuts/guards';
 import { listMoveIndex, listStops, LIST_STOPS, type ListMove } from '../listKeys';
@@ -91,6 +92,11 @@ export interface InboxListProps {
    * older Inbox keeps no pins): neither.
    */
   pinned?: ReadonlySet<string>;
+  /**
+   * Tidy (2026-10-28): the header's ⋮ menu (Tidy, Refresh) and the run's line
+   * at the top of the list. Absent: no menu.
+   */
+  tidy?: TidyController;
 }
 
 /**
@@ -161,9 +167,9 @@ function BadgeWords({ row, id }: { row: InboxListRow; id: string }) {
 }
 
 /**
- * The agent's mark in a box of its own (approval "inbox-row-badges", and the owner's pick (h) of 2026-10-27):
- * a wide row's column just before the time; the end of a two-line row's second line; the end of a phone
- * row's last line. Each box ends on the row's right edge, so every mark lines up.
+ * The agent's mark in a box of its own: a wide row's column just before the time (approval "inbox-row-badges");
+ * on a two-line row it leads line 2, and on a phone row the line under the subject, after the badge when the
+ * row has one (approval "inbox-row-mark-left", 2026-10-28), so a row without a badge starts with its agent.
  */
 function MarkCol({ row }: { row: InboxListRow }) {
   return (
@@ -441,11 +447,11 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
         </span>
       </div>
-      {/* Line 2: the badge, the thread's name and the subject, then the agent's mark at the bottom right. */}
+      {/* Line 2 (approval "inbox-row-mark-left"): the badge, the agent's mark, the thread's name, the subject. */}
       <div className="ib-l2">
         {badge}
-        <SubjectLine row={row} pinned={pinned} />
         <MarkCol row={row} />
+        <SubjectLine row={row} pinned={pinned} />
       </div>
       {pinned && <PinnedWords />}
     </button>
@@ -457,9 +463,9 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
 /**
  * A row on a phone, read like a mail app's: where and when on the first line
  * (the project, or the agent in one project's list, and the time), the subject
- * on up to two lines, then what the thread holds (the badge, the thread's
- * name, the question count, the guided review mark) on one line ended by the
- * agent's mark. With nothing for that line, the mark ends the subject's last line.
+ * on up to two lines, then a line led by the badge and the agent's mark
+ * (approval "inbox-row-mark-left"), with what the thread holds after them (the
+ * thread's name, the guided review mark, then the question count at the line's end).
  */
 function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: InboxListRow; filtered: boolean; lit: boolean; menu: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
   const wordsId = useId();
@@ -489,34 +495,24 @@ function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: Inb
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
         </span>
       </span>
-      {badge || chip || count || guide ? (
-        <>
-          <span className="ib-m2" dir="auto">{subjectOf(row)}</span>
-          {/* One line where it fits: the guided review label, then the thread's name (down to a floor) give way before the line wraps. */}
-          <span className="ib-m3">
-            {badge}
-            {chip && (
-              <span className="ib-key">
-                <span className="ib-keyt" dir="auto">{chip}</span>
-              </span>
-            )}
-            {count && <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{count}</span>}
-            {guide && (
-              <span className="ib-att" data-guide-mark="" role="img" aria-label="Guided review">
-                <Icon name="book" size={13} />
-                <span className="ib-att-l">Guided review</span>
-              </span>
-            )}
-            <MarkCol row={row} />
+      <span className="ib-m2" dir="auto">{subjectOf(row)}</span>
+      {/* One line where it fits: the guided review label, then the thread's name (down to a floor) give way before the line wraps. */}
+      <span className="ib-m3">
+        {badge}
+        <MarkCol row={row} />
+        {chip && (
+          <span className="ib-key">
+            <span className="ib-keyt" dir="auto">{chip}</span>
           </span>
-        </>
-      ) : (
-        // Nothing for a third line: the mark ends the subject's last line instead of taking a line of its own.
-        <span className="ib-m2end">
-          <span className="ib-m2" dir="auto">{subjectOf(row)}</span>
-          <MarkCol row={row} />
-        </span>
-      )}
+        )}
+        {guide && (
+          <span className="ib-att" data-guide-mark="" role="img" aria-label="Guided review">
+            <Icon name="book" size={13} />
+            <span className="ib-att-l">Guided review</span>
+          </span>
+        )}
+        {count && <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{count}</span>}
+      </span>
       {pinned && <PinnedWords />}
     </button>
     <BadgeWords row={row} id={wordsId} />
@@ -676,6 +672,15 @@ export function InboxList(props: InboxListProps) {
               <Icon name="compose" size={isMobile ? 20 : 16} />
             </button>
           </Tip>
+        )}
+        {/* Tidy's ⋮: the header's far right, after Search and New message (the approved frames). */}
+        {props.tidy && (
+          <TidyMenu
+            tidy={props.tidy}
+            phone={isMobile}
+            className="ib-lhead-more"
+            onRefresh={() => props.onRefresh?.()}
+          />
         )}
       </div>
       {pulls && (
