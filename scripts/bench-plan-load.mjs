@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
+import { openPackedApp } from "../packages/shared/packed-app.ts";
 
 class CdpClient {
   constructor(url, commandTimeoutMs) {
@@ -88,10 +89,19 @@ try {
   process.exit(1);
 }
 
-const html = fs.readFileSync(htmlPath);
-const htmlSha256 = createHash("sha256").update(html).digest("hex");
+// Served as the CLI serves it: the page, and the chunks packed behind it.
+const bundle = fs.readFileSync(htmlPath);
+const htmlSha256 = createHash("sha256").update(bundle).digest("hex");
+const app = openPackedApp(bundle.toString("utf8"));
+const html = Buffer.from(app.html);
 const servedHtml = options.gzip ? gzipSync(html) : html;
-const server = http.createServer((request, response) => {
+const server = http.createServer(async (request, response) => {
+  if (request.url?.startsWith("/assets/")) {
+    const asset = await app.answer(new URL(request.url, "http://localhost").pathname, request.method, options.gzip ? "gzip" : null, options.gzip === true);
+    response.writeHead(asset.status, asset.headers);
+    response.end(asset.body);
+    return;
+  }
   if (request.url === "/") {
     send(response, "text/html; charset=utf-8", servedHtml, options.gzip ? { "Content-Encoding": "gzip" } : undefined);
     return;
@@ -153,6 +163,7 @@ try {
       const wallMs = performance.now() - startedAt;
       const snapshot = await evaluate(page, `(() => ({
         navigation: performance.getEntriesByType("navigation")[0]?.toJSON(),
+        resourceTransferBytes: performance.getEntriesByType("resource").reduce((total, entry) => total + entry.transferSize, 0),
         longTasks: window.__plannotatorLongTasks ?? []
       }))()`);
       const metrics = await readMetrics(page);
@@ -167,7 +178,7 @@ try {
     chrome: version.Browser,
     protocolVersion: version["Protocol-Version"],
     htmlPath,
-    htmlBytes: html.length,
+    htmlBytes: bundle.length,
     servedHtmlBytes: servedHtml.length,
     htmlSha256,
     contentEncoding: options.gzip ? "gzip" : "identity",
@@ -203,7 +214,7 @@ function parseArgs(args) {
     else if (arg === "--gzip") parsed.gzip = true;
     else if (arg === "--json") parsed.json = true;
     else if (arg === "--help" || arg === "-h") {
-      console.log(`Usage: node scripts/bench-plan-load.mjs [options]
+      console.log(`Usage: bun scripts/bench-plan-load.mjs [options]
 
 Options:
   --runs <count>       Number of isolated cold loads (default: 3)
@@ -294,6 +305,7 @@ function toResult(run, wallMs, snapshot, metrics) {
     domInteractiveMs: round(navigation.domInteractive ?? 0),
     loadEndMs: round(navigation.loadEventEnd ?? 0),
     documentTransferBytes: navigation.transferSize ?? 0,
+    totalTransferBytes: (navigation.transferSize ?? 0) + (snapshot.resourceTransferBytes ?? 0),
     scriptMs: round((metrics.ScriptDuration ?? 0) * 1000),
     taskMs: round((metrics.TaskDuration ?? 0) * 1000),
     longTaskCount: longTasks.length,

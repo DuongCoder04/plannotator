@@ -42,6 +42,16 @@ const GraphvizBlock = lazy(async () => ({ default: (await import('./GraphvizBloc
 /** ```html and ```svg fences drawn, for a host that opts in (`htmlEmbeds`); loaded only then. */
 const HtmlEmbedBlock = lazy(async () => ({ default: (await import('./html-embed/HtmlEmbedBlock')).HtmlEmbedBlock }));
 const SvgFenceBlock = lazy(async () => ({ default: (await import('./html-embed/SvgFenceBlock')).SvgFenceBlock }));
+/**
+ * Each lazy block sits in a `LazyBlockBoundary`: when its chunk cannot load,
+ * the block shows its source and a Reload notice, and the document stays.
+ */
+const embedFallback = (block: Block) => (notice: React.ReactNode) => (
+  <div className="my-5 [&>[data-block-id]]:my-0">
+    {notice}
+    <CodeBlock block={block} isHovered={false} />
+  </div>
+);
 
 // Debug error boundary to catch silent toolbar crashes
 class ToolbarErrorBoundary extends React.Component<
@@ -67,6 +77,7 @@ import { AttachmentsButton } from './AttachmentsButton';
 import { MessagesIcon } from './icons/MessagesIcon';
 import { DiagramAnchorClaims, DiagramAnchorClaimsContext } from './diagram/anchorClaims';
 import { DiagramBlockPending } from './diagram/DiagramPending';
+import { LazyBlockBoundary } from './LazyBlockBoundary';
 import { isGraphvizLanguage, isMermaidLanguage } from './diagramLanguages';
 import { isHtmlEmbedLanguage, isSvgFenceLanguage } from './html-embed/languages';
 import type { HtmlEmbedHost } from './html-embed/HtmlEmbedBlock';
@@ -1805,41 +1816,49 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
               );
             })()
           ) : htmlEmbeds && group.block.type === 'code' && isHtmlEmbedLanguage(group.block.language) ? (
-            <Suspense key={group.block.id} fallback={<CodeBlock block={group.block} isHovered={false} />}>
-              <HtmlEmbedBlock block={group.block} host={htmlEmbeds} />
-            </Suspense>
+            <LazyBlockBoundary key={group.block.id} fallback={embedFallback(group.block)}>
+              <Suspense fallback={<CodeBlock block={group.block} isHovered={false} />}>
+                <HtmlEmbedBlock block={group.block} host={htmlEmbeds} />
+              </Suspense>
+            </LazyBlockBoundary>
           ) : htmlEmbeds && group.block.type === 'code' && isSvgFenceLanguage(group.block.language) ? (
-            <Suspense key={group.block.id} fallback={<CodeBlock block={group.block} isHovered={false} />}>
-              <SvgFenceBlock block={group.block} />
-            </Suspense>
+            <LazyBlockBoundary key={group.block.id} fallback={embedFallback(group.block)}>
+              <Suspense fallback={<CodeBlock block={group.block} isHovered={false} />}>
+                <SvgFenceBlock block={group.block} />
+              </Suspense>
+            </LazyBlockBoundary>
           ) : group.block.type === 'code' && isMermaidLanguage(group.block.language) ? (
-            <Suspense key={group.block.id} fallback={<DiagramBlockPending block={group.block} kind="mermaid" />}>
-              <MermaidBlock
-                block={group.block}
-                annotations={annotations}
-                selectedAnnotationId={selectedAnnotationId}
-                onSelectAnnotation={onSelectAnnotation}
-                onAddAnnotation={authoringOff ? undefined : onAddAnnotation}
-                readOnly={authoringOff}
-                onRestoreReport={onRestoreReport}
-                onAskAI={authoringOff ? undefined : onAskAI}
-                askAISourcePath={linkedDocInfo?.filepath ?? sourceInfo}
-              />
-            </Suspense>
+            <LazyBlockBoundary key={group.block.id} fallback={(notice) => <DiagramBlockPending block={group.block} kind="mermaid" notice={notice} />}>
+              <Suspense fallback={<DiagramBlockPending block={group.block} kind="mermaid" />}>
+                <MermaidBlock
+                  block={group.block}
+                  annotations={annotations}
+                  selectedAnnotationId={selectedAnnotationId}
+                  onSelectAnnotation={onSelectAnnotation}
+                  onAddAnnotation={authoringOff ? undefined : onAddAnnotation}
+                  readOnly={authoringOff}
+                  onRestoreReport={onRestoreReport}
+                  onAskAI={authoringOff ? undefined : onAskAI}
+                  askAISourcePath={linkedDocInfo?.filepath ?? sourceInfo}
+                />
+              </Suspense>
+            </LazyBlockBoundary>
           ) : group.block.type === 'code' && isGraphvizLanguage(group.block.language) ? (
-            <Suspense key={group.block.id} fallback={<DiagramBlockPending block={group.block} kind="graphviz" />}>
-              <GraphvizBlock
-                block={group.block}
-                annotations={annotations}
-                selectedAnnotationId={selectedAnnotationId}
-                onSelectAnnotation={onSelectAnnotation}
-                onAddAnnotation={authoringOff ? undefined : onAddAnnotation}
-                readOnly={authoringOff}
-                onRestoreReport={onRestoreReport}
-                onAskAI={authoringOff ? undefined : onAskAI}
-                askAISourcePath={linkedDocInfo?.filepath ?? sourceInfo}
-              />
-            </Suspense>
+            <LazyBlockBoundary key={group.block.id} fallback={(notice) => <DiagramBlockPending block={group.block} kind="graphviz" notice={notice} />}>
+              <Suspense fallback={<DiagramBlockPending block={group.block} kind="graphviz" />}>
+                <GraphvizBlock
+                  block={group.block}
+                  annotations={annotations}
+                  selectedAnnotationId={selectedAnnotationId}
+                  onSelectAnnotation={onSelectAnnotation}
+                  onAddAnnotation={authoringOff ? undefined : onAddAnnotation}
+                  readOnly={authoringOff}
+                  onRestoreReport={onRestoreReport}
+                  onAskAI={authoringOff ? undefined : onAskAI}
+                  askAISourcePath={linkedDocInfo?.filepath ?? sourceInfo}
+                />
+              </Suspense>
+            </LazyBlockBoundary>
           ) : group.block.type === 'table' ? (
             <TableBlock
               key={group.block.id}

@@ -12,7 +12,8 @@
  */
 
 import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
-import { appHtmlResponse, likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
+import { likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
+import { openPackedApp, packedAppResponse } from "@plannotator/shared/packed-app";
 import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl, getLocalUrlHostname } from "./remote";
 import { createRequestHostGuard } from "./request-host-guard";
 import { withPlannotatorServerHeader } from "./plannotator-server-marker";
@@ -358,6 +359,7 @@ export async function startAnnotateServer(
   // The app page is served compressed only to sessions reachable from another
   // device: remote mode or --tailscale (#1617). Local sessions are unchanged.
   const compressAppHtml = isRemote || options.tailnetPublished === true;
+  const app = openPackedApp(htmlContent);
   // Save to Notion uses the server's NOTION_TOKEN: never for a session another device can open.
   const notionAvailable = isNotionAvailable(isRemote || options.tailnetPublished === true);
   const wslFlag = await isWSL();
@@ -1638,8 +1640,8 @@ export async function startAnnotateServer(
           const framedMiss = framedDocumentNotFound(req, url);
           if (framedMiss) return framedMiss;
 
-          // Serve embedded HTML for all other routes (SPA)
-          return appHtmlResponse(req, htmlContent, compressAppHtml);
+          // Serve the app for all other routes (SPA): the page or a packed asset
+          return packedAppResponse(app, req, url.pathname, compressAppHtml);
         },
         websocket: agentTerminal.websocket,
 
@@ -1717,7 +1719,7 @@ export async function startAnnotateServer(
   // Start the likely encoding now (gzip for plain-http remote mode, brotli
   // behind tailscale serve) so the first load does not wait for it.
   if (compressAppHtml) {
-    prewarmAppHtml(htmlContent, likelyAppHtmlEncoding(options.tailnetPublished === true));
+    prewarmAppHtml(app.html, likelyAppHtmlEncoding(options.tailnetPublished === true));
   }
 
   // Notify caller that server is ready. An async ready handler that rejects

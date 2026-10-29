@@ -14,7 +14,8 @@
  */
 
 import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
-import { appHtmlResponse, likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
+import { likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
+import { openPackedApp, packedAppResponse } from "@plannotator/shared/packed-app";
 import type { Origin } from "@plannotator/shared/agents";
 import { isAbsolute, resolve } from "path";
 import { statSync } from "node:fs";
@@ -272,6 +273,7 @@ export async function startPlannotatorServer(
   };
 
   const isRemote = isRemoteSession();
+  const app = openPackedApp(htmlContent);
   // The localhost subdomain this session is advertised at (#2184), read once:
   // the one extra name the loopback Host checks accept.
   const localHostname = getLocalUrlHostname();
@@ -939,8 +941,8 @@ export async function startPlannotatorServer(
             return handleApiNotFound(url.pathname);
           }
 
-          // Serve embedded HTML for all other routes (SPA)
-          return appHtmlResponse(req, htmlContent, isRemote);
+          // Serve the app for all other routes (SPA): the page or a packed asset
+          return packedAppResponse(app, req, url.pathname, isRemote);
         },
 
         error(err) {
@@ -971,7 +973,7 @@ export async function startPlannotatorServer(
 
   // Remote sessions serve the app page compressed (#1617); start the likely
   // encoding (gzip over plain http) now so the first load does not wait.
-  if (isRemote) prewarmAppHtml(htmlContent, likelyAppHtmlEncoding(false));
+  if (isRemote) prewarmAppHtml(app.html, likelyAppHtmlEncoding(false));
 
   // The cache warm must never gate the listening socket. Its async filesystem
   // walk yields between directories while requests remain serviceable.

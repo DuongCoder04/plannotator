@@ -14,7 +14,8 @@ import { createPackageChangesService, MAX_PACKAGE_FILE_BYTES, PACKAGE_CHECKOUT_W
 import { parseDiffToFiles } from "@plannotator/core/diff-files";
 import { homedir } from "node:os";
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
-import { appHtmlResponse, likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
+import { likelyAppHtmlEncoding, prewarmAppHtml } from "@plannotator/shared/app-html";
+import { openPackedApp, packedAppResponse } from "@plannotator/shared/packed-app";
 import {
   answerDiagramEngineRequest,
   createDiagramEngineAssets,
@@ -1965,6 +1966,7 @@ export async function startReviewServer(
   // The app page is served compressed only to sessions reachable from another
   // device: remote mode or --tailscale (#1617). Local sessions are unchanged.
   const compressAppHtml = isRemote || options.tailnetPublished === true;
+  const app = openPackedApp(htmlContent);
   // Hashed off the request path, so `/api/diff` finds it ready.
   const diagramEngineAssets = createDiagramEngineAssets(options.diagramEngine);
   diagramEngineAssets.warm();
@@ -4618,8 +4620,8 @@ export async function startReviewServer(
             return handleApiNotFound(url.pathname);
           }
 
-          // Serve embedded HTML for all other routes (SPA)
-          return appHtmlResponse(req, htmlContent, compressAppHtml);
+          // Serve the app for all other routes (SPA): the page or a packed asset
+          return packedAppResponse(app, req, url.pathname, compressAppHtml);
         },
 
         error(err) {
@@ -4658,7 +4660,7 @@ export async function startReviewServer(
   // Start the likely encoding now (gzip for plain-http remote mode, brotli
   // behind tailscale serve) so the first load does not wait for it.
   if (compressAppHtml) {
-    prewarmAppHtml(htmlContent, likelyAppHtmlEncoding(options.tailnetPublished === true));
+    prewarmAppHtml(app.html, likelyAppHtmlEncoding(options.tailnetPublished === true));
   }
 
   // Notify caller that server is ready. An async ready handler that rejects

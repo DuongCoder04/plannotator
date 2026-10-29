@@ -80,7 +80,6 @@
         "@vitejs/plugin-react": "^5.0.0",
         "typescript": "~5.8.2",
         "vite": "^6.2.0",
-        "vite-plugin-singlefile": "^2.3.4",
       },
     },
     "apps/inbox": {
@@ -215,7 +214,6 @@
         "@vitejs/plugin-react": "^5.0.0",
         "typescript": "~5.8.2",
         "vite": "^6.2.0",
-        "vite-plugin-singlefile": "^2.3.4",
       },
     },
     "apps/vscode-extension": {
