@@ -264,7 +264,7 @@ If Workspaces ever wants one of these surfaces, the path is the same as everythi
 The renderer's `MathBlock` (and inline math) uses KaTeX. **KaTeX's stylesheet and its ~1.1MB of math fonts are deliberately NOT in the published `styles.css`** — bundling them would 9x the CSS for every page load, math or not. This is app-developer setup, done once; end users never touch it. Pick one:
 
 1. **Self-hosted (recommended for production):** copy `katex/dist/katex.min.css` + `katex/dist/fonts/` to your own asset origin and add one `<link rel="stylesheet">`. No third-party dependency in your serving path; fonts download lazily, only on pages that actually render math.
-2. **CDN tag:** `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@<version>/dist/katex.min.css">` in your HTML — pin `<version>` to the `katex` version in `@plannotator/ui`'s package.json (`^0.18.11` since ui 0.54.0; it was `^0.16.47`) so CSS and the bundled KaTeX JS stay in step. A stylesheet from another KaTeX minor does not match the markup: 0.18 renamed 21 internal classes (see "Dependency bumps: KaTeX 0.18, @pierre/diffs 1.5.2, Mermaid 12.2 (unreleased, 0.54.0)"). The same goes for a self-hosted copy (option 1). Same lazy-font behavior; adds a third-party origin.
+2. **CDN tag:** `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@<version>/dist/katex.min.css">` in your HTML — pin `<version>` to the `katex` version in `@plannotator/ui`'s package.json (`^0.19.0` from the next ui release, `^0.18.11` in ui 0.54.0, `^0.16.47` before) so CSS and the bundled KaTeX JS stay in step. A stylesheet from another KaTeX minor does not match the markup: 0.18 renamed 21 internal classes (see "Dependency bumps: KaTeX 0.18, @pierre/diffs 1.5.2, Mermaid 12.2 (unreleased, 0.54.0)"). The same goes for a self-hosted copy (option 1). Same lazy-font behavior; adds a third-party origin.
 3. **Bundler import:** `import 'katex/dist/katex.min.css';` next to your `styles.css` import — your bundler ships the fonts as separate lazy-loaded files. With npm/bun this resolves out of the box (`katex` is a dependency of `@plannotator/ui` and gets hoisted); under pnpm's strict `node_modules`, add `katex` to your own dependencies to import it directly.
 
 If you skip all three and render math, equations appear as broken-looking raw HTML — that's the symptom to recognize. If you never render math, do nothing.
@@ -2586,3 +2586,14 @@ See `packages/ui/README.md` and `packages/ui/AGENTS.md` (CLAUDE.md symlink) for 
 - **`onTokenNavigate?: (target: CodeFileTokenTarget) => void`** is a Cmd/Ctrl-click (or Alt-click) on a token.
 
 `CodeFileTokenTarget` is `{ tokenText, tokenElement, lineNumber, lineCharStart }`. Absent: today's view, byte for byte (`CodeFilePopout` and the Inbox pass none).
+
+## KaTeX 0.19 (unreleased; dependency bump, no API change, no core change)
+
+**`katex` is now `^0.19.0`** (was `^0.18.11`). npm marks 0.18.11 deprecated ("Accidentally published with breaking changes. Use 0.19.0 instead."), and `^0.18.11` resolves only to 0.18.x.
+
+- **Rendering is unchanged.** The 0.19.0 tarball matches 0.18.11 file for file, except for the version string (`katex.version` and the `.katex-version::after` content) and the READMEs. The fonts are identical. The breaking change named in the 0.19.0 notes shipped in 0.18.11: a missing character metric is reported through `strict` (code `symbolNotInFont`), and a `strict` callback that returns `undefined` or `null` now warns. ui calls KaTeX with `strict: 'warn'` and no callback, so ui is not affected. Plan review screenshots of a math fixture (inline, display, `aligned`, `\text`, `\def` / `\newcommand`, `\tag`, `cases`, and errors) show 0 changed pixels between 0.18.11 and 0.19.0, in dark and light.
+- **Hosts that serve their own KaTeX stylesheet must move it to 0.19** (CDN or self-hosted; see "Math rendering (KaTeX)" above). The 0.19 rules are the same as the 0.18.11 rules, but keep the stylesheet and the bundled JS on one version.
+- **Mermaid 12.2.0 still declares `katex ^0.18.0`.** ^0.18.0 does not accept 0.19, so without action a host installs two KaTeX copies: 0.19 for ui and 0.18.11 for Mermaid's `$$` labels. Plannotator's root `package.json` has the override `"katex": "^0.19.0"`, so its builds carry one copy. A host has two ways to keep one copy:
+  - Add the same override: `pnpm.overrides` for pnpm, `overrides` for npm, or `resolutions` for Yarn.
+  - Point Mermaid's `katex` import at `utils/mermaid-math-slot` (see "Lazy renderers and eager entries", item 2).
+- **0.19.1** (2026-10-23) fixes a `%` inside a raw argument. `^0.19.0` accepts it. This repo's lockfile records 0.19.0, because `bunfig.toml`'s seven-day `minimumReleaseAge` holds 0.19.1 back until 2026-10-30.
