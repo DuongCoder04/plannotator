@@ -1,5 +1,7 @@
 import React, { useMemo } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
+import { LazyBlockBoundary } from '@plannotator/ui/components/LazyBlockBoundary';
+import { MarkdownPreviewFailed } from '../../components/DiffViewer';
 import { AllFilesCodeView } from '../../components/AllFilesCodeView';
 import { CommitDescriptionHeader } from '../../components/CommitDescriptionHeader';
 import { ImageDiffPreview } from '../../components/ImageDiffPreview';
@@ -104,7 +106,8 @@ export const ReviewAllFilesDiffPanel: React.FC<IDockviewPanelProps> = () => {
               <ReviewMarkdownViewControl file={file} iconOnly={iconOnly} touch={touch} />
             ),
             render: ({ file, onHeightChange }: { file: DiffFile; onHeightChange: () => void }) => (
-              <React.Suspense key={`${reviewSnapshotId ?? ''}:${file.path}`} fallback={null}>
+              <LazyBlockBoundary key={`${reviewSnapshotId ?? ''}:${file.path}`} fallback={(notice) => <MarkdownPreviewFailed notice={notice} />}>
+              <React.Suspense fallback={null}>
               <MarkdownFilePreview
                 key={`${reviewSnapshotId ?? ''}:${file.path}`}
                 filePath={file.path}
@@ -119,6 +122,7 @@ export const ReviewAllFilesDiffPanel: React.FC<IDockviewPanelProps> = () => {
                 onHeightChange={onHeightChange}
               />
               </React.Suspense>
+              </LazyBlockBoundary>
             ),
           }
         : undefined,
