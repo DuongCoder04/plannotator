@@ -7,9 +7,9 @@
  * Every decision is in packages/shared/inbox/message-images.ts: the path
  * must be an image the message's own body references; for an agent's message
  * anywhere the person's user can read, for a person's own message inside its
- * project or the folder it was sent from; never a hidden folder outside those
- * (nor under a home folder or above) or a dotenv file (judged as named and by
- * realpath); an image by extension and by its magic bytes, at
+ * project or the folder it was sent from; never, outside those, a hidden
+ * folder of the home folder or of `/` (`~/.ssh`), nor a dotenv file anywhere
+ * (judged as named and by realpath); an image by extension and by its magic bytes, at
  * most 10 MB and 50 megapixels. This file adds the
  * transport: a cross-site request is refused before anything is read, and
  * every answer carries nosniff, a sandbox CSP and a same-origin CORP, so

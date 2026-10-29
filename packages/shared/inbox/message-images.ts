@@ -18,13 +18,14 @@
  *     project or a linked worktree of its repository), else the project
  *     root; an absolute one is taken as it is. It may lead anywhere the
  *     person's user can read, as an attachment may (owner ruling
- *     2026-10-16: no project boundary), except what attachments and the
- *     wide asset roots refuse (`403 image_hidden`), judged on the path as
- *     named AND on its realpath, so a symlink into `~/.ssh` is refused too:
- *     a dotenv-family name anywhere, and outside the project and the folder
- *     sent from, any segment starting with `.` (`refusesHiddenHtmlAssetPath`).
- *     Inside those two folders hidden folders stay allowed, as before
- *     (screenshots in `.walkthrough/`, a project in `~/.claude/worktrees/`).
+ *     2026-10-16: no project boundary), except (`403 image_hidden`), judged
+ *     on the path as named AND on its realpath, so a symlink into `~/.ssh`
+ *     is refused too: a dotenv-family name anywhere, as attachments refuse
+ *     it, and, outside the project and the folder sent from, anything in a
+ *     hidden folder of the home folder or of `/` (`~/.ssh`, `~/.config`,
+ *     `~/.cache`). A hidden folder anywhere else shows, as an attachment
+ *     from it would (`~/work/.ops/shot.png`, `.walkthrough/`, a project in
+ *     `~/.claude/worktrees/`).
  *  4. The realpath is opened once, `O_RDONLY | O_NOFOLLOW | O_NONBLOCK`, and
  *     everything after that reads the descriptor: `fstat` must say a regular
  *     file of at most MAX_REVIEW_IMAGE_PREVIEW_BYTES, at most cap + 1 bytes
@@ -38,10 +39,9 @@
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { isDotenvFileName } from "@plannotator/core/annotatable";
 import { MAX_REVIEW_IMAGE_PREVIEW_BYTES, MAX_REVIEW_IMAGE_PREVIEW_PIXELS, isReviewImagePath } from "../diff-paths";
-import { refusesHiddenHtmlAssetPath } from "../html-assets";
 import { isLfsPointer, readImageDimensions, sniffImageContentType } from "../review-image";
 
 /** The longest `path` the route takes. */
@@ -306,17 +306,26 @@ function exemptsHidden(anchor: string, protectedHomes: readonly string[]): boole
 
 /**
  * The hidden rule for one absolute path. A dotenv-family file name is refused
- * everywhere. Outside `anchors` (the project root and the folder sent from,
- * each in both spellings), a segment starting with `.` is refused too
- * (`refusesHiddenHtmlAssetPath`: `~/.ssh`, `~/.config`). Inside them the
- * agent's own working tree is trusted as before: screenshots in
- * `.walkthrough/` or `.playwright-mcp/`, and a project that itself sits in a
- * hidden folder (`~/.claude/worktrees/…`), still show. An anchor that is `/`,
- * the home folder or above it exempts nothing (`protectedFolders`).
+ * everywhere, as attachments refuse it. Outside `anchors` (the project root
+ * and the folder sent from, each in both spellings), a path in a hidden
+ * folder of the home folder or of `/` is refused too (`inHomeDotFolder`:
+ * `~/.ssh`, `~/.config`, `~/.cache`, where keys, settings and caches live).
+ * A hidden folder anywhere else belongs to someone's work and shows, as an
+ * attachment from it would: `~/work/.ops/shot.png`, screenshots in
+ * `.walkthrough/` or `.playwright-mcp/`, a project that itself sits in a
+ * hidden folder (`~/.claude/worktrees/…`). An anchor that is `/`, the home
+ * folder or above it exempts nothing (`protectedFolders`).
  */
-function hiddenPath(path: string, anchors: readonly string[]): boolean {
+function hiddenPath(path: string, anchors: readonly string[], homes: readonly string[]): boolean {
   if (isDotenvFileName(basename(path))) return true;
-  return !anchors.some((folder) => isInside(path, folder)) && refusesHiddenHtmlAssetPath(path);
+  return !anchors.some((folder) => isInside(path, folder)) && inHomeDotFolder(path, homes);
+}
+
+/** `path` is, or is under, an entry starting with `.` directly in a home folder (`homes`) or in `/`. */
+function inHomeDotFolder(path: string, homes: readonly string[]): boolean {
+  return [...homes, parse(path).root].some(
+    (folder) => path !== folder && isInside(path, folder) && relative(folder, path).split(sep)[0]!.startsWith("."),
+  );
 }
 
 /** A folder and its realpath, when it has one. */
@@ -375,7 +384,7 @@ function locateInboxMessageImage(input: InboxMessageImageInput): Refusal | { ok:
     if (!inArea(real)) return refuse(403, "outside_project", OUTSIDE) as Refusal;
     // By where it really leads (a symlink into a hidden folder is refused), and as named: the
     // name in its folder's real location (a link kept in `~/.config`, whatever spells the folder).
-    if (hiddenPath(real, anchors) || hiddenPath(join(realFolder(dirname(named)), basename(named)), anchors)) {
+    if (hiddenPath(real, anchors, protectedHomes) || hiddenPath(join(realFolder(dirname(named)), basename(named)), anchors, protectedHomes)) {
       return refuse(403, "image_hidden", HIDDEN) as Refusal;
     }
     return { ok: true, real, named };
@@ -385,7 +394,7 @@ function locateInboxMessageImage(input: InboxMessageImageInput): Refusal | { ok:
 
 const OUTSIDE = "A message you write shows images from its project only.";
 
-const HIDDEN = "That image is in a hidden folder, or is a hidden or .env file.";
+const HIDDEN = "That image is a .env file, or in a hidden folder of the home folder (such as ~/.ssh).";
 
 function realFolder(folder: string): string {
   try {
