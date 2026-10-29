@@ -1,7 +1,7 @@
 /**
  * The window's one toast (design record "inbox-toast", approved 2026-10-14):
  * its approved words (pure, always run), and under DOM_TESTS=1 (happy-dom,
- * from the test.yml DOM list) its shape, its actions, that a desktop toast
+ * from tests/dom-test-list.txt) its shape, its actions, that a desktop toast
  * never moves for what is open (its place, the window's bottom center, is
  * CSS and is measured in tests/e2e/inbox-mark-read.spec.ts), and the phone's
  * short form.
