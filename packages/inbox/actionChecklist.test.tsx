@@ -681,7 +681,7 @@ test.skipIf(!hasDom)("Copy is named by its visible words, and its result is said
   expect(['Command copied.', "Couldn't copy the command."]).toContain(status.textContent!);
 });
 
-test.skipIf(!hasDom)('the row says "1 action item", or "1 question, 1 action item", as plain text', () => {
+test.skipIf(!hasDom)('the row says "1 action", or "1 action ?1" beside a question; "1 action item", "1 question, 1 action item" in full', () => {
   expect(waitCount(1, 1)).toBe('1 action item');
   expect(waitCount(2, 1)).toBe('1 question, 1 action item');
   expect(waitCount(3, 1)).toBe('2 questions, 1 action item');
@@ -715,7 +715,22 @@ test.skipIf(!hasDom)('the row says "1 action item", or "1 question, 1 action ite
       <InboxList title="Inbox" path={null} sections={sections} filtered={false} narrow={false} selectedThreadId={null} notice={null} onShowNew={() => {}} onOpen={() => {}} phone={false} />
     </SidebarProvider>,
   );
-  const count = (id: string) => el.querySelector(`[data-thread-id="${id}"] .ib-c`)?.textContent;
-  expect(count('msg_a')).toBe('1 action item');
-  expect(count('msg_b')).toBe('1 question, 1 action item');
+  // A wide row draws the full words (the owner, 2026-10-29), read as they are: no hidden copy.
+  const wide = (id: string) => {
+    const cell = el.querySelector(`.ib-row[data-thread-id="${id}"] .ib-cw > .ib-c`)!;
+    return { drawn: cell.querySelector('.ib-cs')!.textContent, hidden: cell.querySelector('[aria-hidden="true"]') !== null, sr: cell.querySelector('.ib-sr') !== null };
+  };
+  expect(wide('msg_a')).toEqual({ drawn: '1 action item', hidden: false, sr: false });
+  expect(wide('msg_b')).toEqual({ drawn: '1 question, 1 action item', hidden: false, sr: false });
+  // Beside a thread (approval "inbox-row-byline", option A): the short form drawn, the full words for a screen
+  // reader; an action item keeps its words at line 2's end, never `?N`.
+  const words = (cell: Element | null) => ({ short: cell!.querySelector('.ib-cst')!.textContent, questions: cell!.querySelector('.ib-qn')?.textContent ?? null, full: cell!.querySelector('.ib-sr')!.textContent, hidden: cell!.querySelector('.ib-cs')!.getAttribute('aria-hidden') });
+  rerender(
+    <SidebarProvider>
+      <InboxList title="Inbox" path={null} sections={sections} filtered={false} narrow selectedThreadId={null} notice={null} onShowNew={() => {}} onOpen={() => {}} phone={false} />
+    </SidebarProvider>,
+  );
+  expect(words(el.querySelector('.ib-nrow[data-thread-id="msg_a"] .ib-l2 > .ib-c'))).toEqual({ short: '1 action', questions: null, full: '1 action item', hidden: 'true' });
+  expect(words(el.querySelector('.ib-nrow[data-thread-id="msg_b"] .ib-l2 > .ib-c'))).toEqual({ short: '1 action', questions: '1', full: '1 question, 1 action item', hidden: 'true' });
+  expect(el.querySelector('.ib-nrow .ib-c.ib-qn')).toBeNull();
 });

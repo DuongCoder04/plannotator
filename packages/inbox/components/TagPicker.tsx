@@ -138,10 +138,12 @@ export function TagPicker({
 /**
  * Several agents on one thread (Lines): their marks overlapping, the first
  * agent first. Decorative: the words beside it (or the row's label) name them.
- * At most four marks; more read as "+N".
+ * At most four marks; more read as "+N". `fold` (a two-line or phone list
+ * row, approval "inbox-row-byline"): up to that many marks, and past it two
+ * marks and "+N".
  */
-export function TagStack({ participants }: { participants: readonly { host: string | null; session: string }[] }) {
-  const shown = participants.slice(0, 4);
+export function TagStack({ participants, fold }: { participants: readonly { host: string | null; session: string }[]; fold?: number }) {
+  const shown = fold === undefined ? participants.slice(0, 4) : participants.length > fold ? participants.slice(0, 2) : participants;
   const more = participants.length - shown.length;
   return (
     <span className="ib-tg-stack" aria-hidden="true" data-tag-stack={participants.length}>

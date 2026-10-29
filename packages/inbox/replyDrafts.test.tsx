@@ -367,14 +367,20 @@ test.skipIf(!hasDom)('an `event: drafts` for the open thread reads its draft aga
   expect((el.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Newer words.');
 });
 
-test.skipIf(!hasDom)('the list says "Draft · Your reply" and "Draft · 1 pick"; the Drafts row counts them and its page lists them above the messages', async () => {
+test.skipIf(!hasDom)('the list says "Draft" ("Draft · Your reply", "Draft · 1 pick" in full); the Drafts row counts them and its page lists them above the messages', async () => {
   // Words typed in this world's waiting thread, through the window's route.
   const saved = await loopback(`/api/inbox/threads/${world.waiting}/draft`, 'POST', JSON.stringify({ body: 'Pagefind.', base: null }));
   expect(saved.status).toBe(200);
   const el = await renderApp('');
+  // The full words (`data-count-words`); the row draws them on a wide row, "Draft" on a two-line or phone row
+  // (approval "inbox-row-byline", option A).
   const label = (id: string) => el.querySelector(`[data-thread-id="${id}"] [data-draft-label]`)?.textContent?.replace(/\s+/g, ' ').trim();
-  await until(() => label(world.waiting) === 'Draft · Your reply', 'the waiting row');
-  expect(label(world.picked)).toBe('Draft · 1 pick');
+  const full = (id: string) => el.querySelector(`[data-thread-id="${id}"] .ib-c`)?.getAttribute('data-count-words');
+  const drawn = (id: string) => (el.querySelector(`.ib-row[data-thread-id="${id}"] .ib-cfull`) ? full(id) ?? undefined : 'Draft');
+  await until(() => full(world.waiting) === 'Draft · Your reply', 'the waiting row');
+  expect(label(world.waiting)).toBe(drawn(world.waiting));
+  expect(full(world.picked)).toBe('Draft · 1 pick');
+  expect(label(world.picked)).toBe(drawn(world.picked));
   const nav = el.querySelector('[data-drafts-nav]')!;
   const replies = (JSON.parse((await loopback('/api/inbox/drafts')).text) as { replies: { thread_id: string }[] }).replies;
   expect(replies.map((r) => r.thread_id)).toContain(world.waiting);

@@ -9,7 +9,7 @@ import { ImageLightbox } from '@plannotator/ui/components/ImageLightbox';
 import { ImageResolverContext, type ImageResolver } from '@plannotator/ui/components/ImageResolverContext';
 import { getImageSrc } from '@plannotator/ui/components/ImageThumbnail';
 import { parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
-import { inboxActionInDraft, inboxActionPersonMark, type InboxListRow, type InboxSectionId, type InboxMessageWire, type InboxProjectRepo, type InboxQuestion, type InboxSentRecipient, type InboxThread, type InboxUpload } from '@plannotator/core/inbox-types';
+import { INBOX_UPLOAD_MAX_BYTES, inboxActionInDraft, inboxActionPersonMark, type InboxListRow, type InboxSectionId, type InboxMessageWire, type InboxProjectRepo, type InboxQuestion, type InboxSentRecipient, type InboxThread, type InboxUpload } from '@plannotator/core/inbox-types';
 import { withoutInboxActionsSection } from '@plannotator/core/inbox-actions';
 import { capQuestionPrompt, emptyQuestionAnswer, indexQuestionBlocks, isQuestionAnswerEmpty, type IndexedQuestion, type QuestionAnswer, type QuestionStatus } from '@plannotator/core/question-block';
 import { INBOX_AUTO_SEND_ACK_NOTES, inboxAskingMessage, wholeMinutes, isInboxNote, isInboxTextKind, readInboxAttachmentKind, type InboxAnnotationRecord, type InboxAttachment, type InboxAttachmentState, type InboxInlineImage, type InboxQuestionState } from '@plannotator/core/inbox-types';
@@ -48,7 +48,7 @@ import { autoAfterText, deliveryLine, restartNote, TURN_ENDED_TEXT, uncertainIte
 import { RestartLine } from './RestartNote';
 import { UndeliveredBand, UndeliveredText, useMinuteClock } from './Undelivered';
 import { SendToAnotherSession } from '../compose/SendToAnotherSession';
-import { ComposeFileTiles, attachedAnnouncement, useComposeFiles } from '../compose/ComposeFiles';
+import { AttachFilesButton, ComposeFileTiles, attachedAnnouncement, useComposeFiles, useFileDrop } from '../compose/ComposeFiles';
 import {
   AskerEndedNote,
   CLOSED_ROUTE,
@@ -1198,8 +1198,9 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   /** The thread whose draft was put back already (once per visit). */
   const restoredFor = useRef<string | null>(null);
   /**
-   * Files pasted into the reply box (the owner: "paste in images … if I'm
-   * focused in a reply"): compose's tiles and upload path. They live with the
+   * Files pasted, dropped or picked with the paperclip into the reply box (the
+   * owner: "paste in images … if I'm focused in a reply"; approval
+   * "inbox-reply-attach"): compose's tiles and upload path. They live with the
    * box: Cancel, Escape, a Send and another thread forget them.
    */
   // A paste is said in the thread's polite live region ("Attached pasted-image-….png").
@@ -2530,6 +2531,12 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   // its way, words a conflict left unsaved: replyDraftUnsaved, read when the guard asks), would be lost.
   const unsentSubject = thread.subject ?? 'this thread';
   const unsentFiles = box.open && replyFiles.files.length > 0;
+
+  // Files dropped on the reply box attach there (a dashed "Drop to attach"; approval "inbox-reply-attach").
+  const boxDrop = useFileDrop((list) => {
+    replyFiles.add(list);
+    setError(null);
+  });
   useEffect(() => {
     reportUnsentReply({ subject: unsentSubject, files: unsentFiles });
     return () => reportUnsentReply(null);
@@ -2622,6 +2629,17 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const staleQuestions = stale
     .map((id) => thread.messages.flatMap((m) => m.questions ?? []).find((q) => `${q.message_id}/${q.key}` === id))
     .filter((q): q is InboxQuestion => q !== undefined && q.state === 'superseded');
+  // Files dragged anywhere over the thread: the whole pane takes them, and a drop opens the reply box with them
+  // when it is closed. Not where no reply can be written (archived, Artifacts, the replaced-questions guard, a New message).
+  const paneDrop = useFileDrop(
+    (list) => {
+      if (!boxRef.current.open) openBox();
+      replyFiles.add(list);
+      setError(null);
+    },
+    // The same conditions that hide the box (the guard shows only while a replaced question waits).
+    !resolved && !artifactsOn && !(guard && staleQuestions.length > 0) && newMessage?.kind !== 'compose',
+  );
   /** Acting on the panel: these replacements were seen, so Send goes as asked from now on. */
   const acknowledgeStale = () => {
     setStale([]);
@@ -3749,7 +3767,19 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       className={`ib-pane${fileOpen ? ' ib-withfile' : ''}`}
       aria-label={thread.subject ?? 'Thread'}
       data-thread-id={thread.thread_id}
+      {...paneDrop.handlers}
     >
+      {paneDrop.over && (
+        <div className="ib-panedrop" aria-hidden="true" data-pane-drop="">
+          <span className="ib-panedrop-card">
+            <Icon name="clip" size={20} />
+            <span>
+              <b>Drop to attach to your reply</b>
+              <span className="ib-panedrop-sub">Images, PDFs, any file up to {INBOX_UPLOAD_MAX_BYTES / (1024 * 1024)} MB</span>
+            </span>
+          </span>
+        </div>
+      )}
       <div className="ib-phead" data-artifacts-on={artifactsOn ? '' : undefined}>
         {/* A phone leads with the way back to the list; Archive sits at the right, where the close was. */}
         {phone && artifactsOn ? (
@@ -4511,6 +4541,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             {staleQuestions.length > 0 && <ChangedNotice questions={staleQuestions} thread={thread} onJump={jumpTo} />}
             <div
               className="ib-rbox"
+              data-drop-over={boxDrop.over ? '' : undefined}
+              {...boxDrop.handlers}
               // A press beside the text (the row of chips under it) puts the caret in the reply.
               onMouseDown={(event) => focusReplyFromBox(event, textRef.current)}
               // A paste that carries files (a screenshot, a copied image) attaches them; text pastes as text.
@@ -4555,34 +4587,50 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
               )}
               {draftAnswers.length > 0 && <ReplyAnswers answers={draftAnswers} onJump={jumpTo} />}
               {draftActions.length > 0 && <ReplyActions actions={draftActions} onJump={jumpTo} />}
-              {(draftAnswers.length > 0 || dropped.length > 0 || takesAnnotations || unanswered.length > 0) && (
-                <div className={`ib-rfoot${keepOpen ? ' ib-keep' : ''}`}>
-                  {/* The answers the list above shows, a pick still being saved included, so the two numbers agree. */}
-                  {draftAnswers.length > 0 && (
-                    <span className="ib-rchip" data-picks-chip="">
-                      <Icon name="check" size={13} />
-                      {plural(draftAnswers.length, 'pick')}
+              {/* The box's toolbar: the paperclip first (any file; a phone's picker offers the photo library too, and
+                  names what it hands over as a paste is), then the picks, skip and annotations chips. */}
+              <div className={`ib-rfoot${keepOpen ? ' ib-keep' : ''}`}>
+                <AttachFilesButton
+                  className="ib-rclip"
+                  iconSize={phone ? 19 : 16}
+                  phone={phone}
+                  inputData="data-reply-attach"
+                  onFiles={(list) => {
+                    (phone ? replyFiles.attach : replyFiles.add)(list);
+                    setError(null);
+                  }}
+                />
+                {/* The answers the list above shows, a pick still being saved included, so the two numbers agree. */}
+                {draftAnswers.length > 0 && (
+                  <span className="ib-rchip" data-picks-chip="">
+                    <Icon name="check" size={13} />
+                    {plural(draftAnswers.length, 'pick')}
+                  </span>
+                )}
+                <SkipChip count={keepOpen ? unanswered.length : skipIds.size} keepOpen={keepOpen} onToggle={toggleKeepOpen} />
+                {dropped.length > 0 && (
+                  <Tip content="Replaced; this pick won't be sent">
+                    <span className="ib-rchip ib-dropped" data-dropped-picks-chip="">
+                      {dropped.length} {dropped.length === 1 ? 'pick' : 'picks'} on a replaced question
                     </span>
-                  )}
-                  <SkipChip count={keepOpen ? unanswered.length : skipIds.size} keepOpen={keepOpen} onToggle={toggleKeepOpen} />
-                  {dropped.length > 0 && (
-                    <Tip content="Replaced; this pick won't be sent">
-                      <span className="ib-rchip ib-dropped" data-dropped-picks-chip="">
-                        {dropped.length} {dropped.length === 1 ? 'pick' : 'picks'} on a replaced question
-                      </span>
-                    </Tip>
-                  )}
-                  {takesAnnotations && (
-                    <AnnotationsChip
-                      records={records}
-                      attachments={allFiles}
-                      onEdit={editRecord}
-                      onRemove={removeRecord}
-                      onOpen={openRecord}
-                      messageName={messageCommentName}
-                      unanchored={unanchoredComments}
-                    />
-                  )}
+                  </Tip>
+                )}
+                {takesAnnotations && (
+                  <AnnotationsChip
+                    records={records}
+                    attachments={allFiles}
+                    onEdit={editRecord}
+                    onRemove={removeRecord}
+                    onOpen={openRecord}
+                    messageName={messageCommentName}
+                    unanchored={unanchoredComments}
+                  />
+                )}
+              </div>
+              {boxDrop.over && (
+                <div className="ib-rdrop" aria-hidden="true" data-box-drop="">
+                  <Icon name="clip" size={18} />
+                  Drop to attach
                 </div>
               )}
             </div>
@@ -4603,28 +4651,6 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                   Cancel
                 </button>
                 <span className="ib-sp" />
-                {/* A phone has no way to paste a picture into the reply (iOS offers no Paste for an image in a plain
-                    text field), so it gets an attach button: the photo library or Files, into the same tiles,
-                    upload path and names as a paste. A desktop stays paste-only (the owner's choice). */}
-                {phone && (
-                  <Tip content="Attach files">
-                    <label className="ib-rattach" aria-label="Attach files">
-                      <Icon name="clip" size={19} />
-                      <input
-                        type="file"
-                        multiple
-                        accept="image/*,*/*"
-                        className="ib-sr"
-                        data-reply-attach=""
-                        onChange={(event) => {
-                          if (event.target.files) replyFiles.attach(event.target.files);
-                          event.target.value = '';
-                          setError(null);
-                        }}
-                      />
-                    </label>
-                  </Tip>
-                )}
                 {/* The in-thread New message button is off (approval "inbox-acknowledge"); its route and code stay. */}
                 {SHOW_NEW_MESSAGE_BUTTON && !archived && <NewMessageButton live={live} mode={newMessage} onClick={() => void pressNewMessage()} />}
               </div>

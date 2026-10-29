@@ -25,7 +25,7 @@ import { inboxId, type InboxDraftTo } from '@plannotator/core/inbox-types';
 import { InboxApiError, inboxApi, type ComposeSessionsModel, type DraftView, type StartThreadInput } from '../api';
 import { whenTime } from '../format';
 import { HostMark, Icon } from '../icons';
-import { ComposeFileTiles, attachedAnnouncement, useComposeFiles } from './ComposeFiles';
+import { AttachFilesButton, ComposeFileTiles, attachedAnnouncement, useComposeFiles, useFileDrop } from './ComposeFiles';
 import { ToPicker } from './ToPicker';
 import { ThreadNameChip } from './ThreadNameChip';
 import { useComposeSessions } from './useComposeSessions';
@@ -174,6 +174,8 @@ export function ComposeDialog(props: ComposeDialogProps) {
       setTimeout(() => setPasteSaid(attachedAnnouncement(names)), 30);
     },
   });
+  // A drop anywhere on the dialog attaches the files ("Drop files to attach").
+  const drop = useFileDrop(files.add, takesFiles);
   const { model, load } = useComposeSessions(true, transport?.sessions);
   const projects = model?.projects ?? [];
   const target = findTarget(projects, chosen);
@@ -209,7 +211,6 @@ export function ComposeDialog(props: ComposeDialogProps) {
   const [nameError, setNameError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<DraftView | null>(null);
   const [busy, setBusy] = useState<null | 'send' | 'save' | 'delete'>(null);
-  const [dropping, setDropping] = useState(false);
 
   // The idempotency key of one Send: new whenever what would be sent changes.
   const sendKey = useRef(crypto.randomUUID());
@@ -518,24 +519,10 @@ export function ComposeDialog(props: ComposeDialogProps) {
         const r = dialog.getBoundingClientRect();
         if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) requestClose();
       }}
-      onDragOver={(event) => {
-        if (!takesFiles || ![...event.dataTransfer.types].includes('Files')) return;
-        event.preventDefault();
-        setDropping(true);
-      }}
-      onDragLeave={(event) => {
-        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-        setDropping(false);
-      }}
+      {...drop.handlers}
       // A paste anywhere in the dialog that carries files attaches them; text pastes as text.
       onPaste={(event) => {
         if (takesFiles && files.paste(event)) setError(null);
-      }}
-      onDrop={(event) => {
-        if (!takesFiles || event.dataTransfer.files.length === 0) return;
-        event.preventDefault();
-        setDropping(false);
-        files.add(event.dataTransfer.files);
       }}
     >
       {phone ? (
@@ -725,24 +712,8 @@ export function ComposeDialog(props: ComposeDialogProps) {
       ) : (
         <div className="ib-cp-foot">
           {takesFiles ? (
-            <Tip content="Attach files">
-              <label className="ib-cp-clip" aria-label="Attach files">
-                <Icon name="clip" size={17} />
-                <input
-                  type="file"
-                  multiple
-                  className="ib-sr"
-                  data-compose-attach=""
-                  // A phone's picker offers the photo library and Files (iOS gives no Paste for a picture in a text
-                  // field); what it hands over is named as a paste is (`image.jpg` -> `pasted-image-<stamp>.jpg`).
-                  accept={phone ? 'image/*,*/*' : undefined}
-                  onChange={(event) => {
-                    if (event.target.files) (phone ? files.attach : files.add)(event.target.files);
-                    event.target.value = '';
-                  }}
-                />
-              </label>
-            </Tip>
+            // On a phone what the picker hands over is named as a paste is (`image.jpg` -> `pasted-image-<stamp>.jpg`).
+            <AttachFilesButton className="ib-cp-clip" iconSize={17} phone={phone} inputData="data-compose-attach" onFiles={(list) => (phone ? files.attach : files.add)(list)} />
           ) : (
             <Tip content="Files: not in the tour">
               <span className="ib-cp-clip" role="img" aria-label="Files: not in the tour" aria-disabled="true" data-compose-attach-off="">
@@ -792,7 +763,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
         {pasteSaid}
       </div>
       {props.aside}
-      {dropping && (
+      {drop.over && (
         <div className="ib-cp-drop" aria-hidden="true">
           <Icon name="clip" size={20} />
           Drop files to attach

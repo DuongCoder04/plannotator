@@ -400,7 +400,7 @@ test.skipIf(!hasDom)('the row hover action marks read without opening the thread
   expect(toast.querySelector('[data-toast-reply]')).toBeNull();
   // Quiet is folded: open it, and the row says why it is there, with no action of its own.
   act(() => (el.querySelector('[data-section-id="quiet"] .ib-band') as HTMLButtonElement).click());
-  expect(el.querySelector(`[data-row="${ids.waiting}"] .ib-c`)?.textContent).toBe('Read');
+  expect(el.querySelector(`[data-row="${ids.waiting}"] .ib-c .ib-cs`)?.textContent).toBe('Read');
   expect(el.querySelector(`[data-row="${ids.waiting}"] [data-row-mark-read]`)).toBeNull();
 });
 
