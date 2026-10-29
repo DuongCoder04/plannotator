@@ -395,11 +395,17 @@ function stopReal(real: Real): void {
   real.tickNow = null;
 }
 
-/** Move the lock's mtime back by `minutes` (its checks read the wall clock). */
+/**
+ * Move the lock's mtime back by `minutes` (its checks read the wall clock).
+ * A file's mtime has sub-millisecond precision and can be up to 1 ms ahead
+ * of Date.now() (whole milliseconds), so a lock aged exactly to the model's
+ * 60 minutes could still read as 59:59.999 when the check runs within that
+ * millisecond: count the age from no later than now, never from ahead of it.
+ */
 function ageLock(real: Real, minutes: number): void {
   const lock = autoUpdatePaths(real.dataDir).lock;
   if (!existsSync(lock)) return;
-  const at = statSync(lock).mtimeMs - minutes * MIN;
+  const at = Math.min(statSync(lock).mtimeMs, Date.now()) - minutes * MIN;
   utimesSync(lock, at / 1000, at / 1000);
 }
 
@@ -998,3 +1004,4 @@ class UpdateNowFromCli implements Cmd {
   }
   toString = () => "UpdateNowFromCli";
 }
+
