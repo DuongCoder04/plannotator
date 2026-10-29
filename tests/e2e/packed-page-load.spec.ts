@@ -13,8 +13,8 @@
  *    is still on its way, so text never paints in the fallback font first;
  *  - a saved light theme keeps the light canvas;
  *  - the stylesheet or the entry script failing twice shows "Plannotator
- *    couldn't finish loading." with Reload, instead of an unstyled or blank
- *    page forever;
+ *    couldn't finish loading." with Reload, and only that (the app root is
+ *    hidden), instead of an unstyled or blank page forever;
  *  - failing once is retried, and the app loads with no line.
  */
 
@@ -153,6 +153,8 @@ for (const file of builds) {
         const reload = line.getByRole('button', { name: 'Reload', exact: true });
         await expect(reload).toBeVisible();
         expect((await reload.boundingBox())!.height).toBeGreaterThanOrEqual(24);
+        // Only the line: an app that ran without its stylesheet is hidden, not drawn unstyled under it.
+        await expect(page.locator('#root')).toBeHidden();
         expect(aborted).toBe(2);
         await expect(page.locator('#plannotator-updated')).toHaveCount(0);
       } finally {

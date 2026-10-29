@@ -25,16 +25,18 @@ const CONTENT_TYPES: Record<string, string> = {
  * else says nothing: a network error, or a proxy's 502 once the session ended
  * (Tailscale serve, the VS Code cookie proxy), a 404, a healthy entry (the
  * app's own retry handles a lazy failure).
- * Inline and plain, because the app's own code and CSS are what failed; when
- * the entry failed the message is the whole page, so the page follows the
- * system's light or dark scheme.
+ * Inline and plain, because the app's own code and CSS are what failed. Its
+ * Canvas and CanvasText follow the page's color-scheme, which the head script
+ * (`headScript`) set from the user's theme before anything painted, so the
+ * page keeps that scheme when the message appears; only a page with none set
+ * falls back to the system's light or dark scheme.
  */
 export const UPDATED_WHILE_OPEN_MESSAGE =
   'Plannotator was updated while this session was open. Run /reload in Pi (or /restart in Oh My Pi), or restart your agent, to finish.';
 
 const UPDATED_WHILE_OPEN_SCRIPT = `<script>(function(){
 var shown=false;
-function show(page){if(page)document.documentElement.style.colorScheme="light dark";if(shown)return;shown=true;var p=document.createElement("p");p.setAttribute("role","alert");p.id="plannotator-updated";p.textContent=${JSON.stringify(UPDATED_WHILE_OPEN_MESSAGE)};p.style.cssText="position:fixed;top:0;left:0;right:0;margin:0;padding:12px 16px;font:14px/1.5 system-ui,sans-serif;color-scheme:light dark;background:Canvas;color:CanvasText;z-index:2147483647";(document.body||document.documentElement).prepend(p)}
+function show(page){var h=document.documentElement;if(page&&!h.style.colorScheme)h.style.colorScheme="light dark";if(shown)return;shown=true;var p=document.createElement("p");p.setAttribute("role","alert");p.id="plannotator-updated";p.textContent=${JSON.stringify(UPDATED_WHILE_OPEN_MESSAGE)};p.style.cssText="position:fixed;top:0;left:0;right:0;margin:0;padding:12px 16px;font:14px/1.5 system-ui,sans-serif;background:Canvas;color:CanvasText;z-index:2147483647";(document.body||document.documentElement).prepend(p)}
 function entry(){return document.querySelector('script[type="module"][src^="/assets/"]')}
 function check(page){var s=entry();if(s)fetch(s.src,{method:"HEAD",cache:"no-store",redirect:"manual"}).then(function(r){if(r.ok&&/^text\\/html/i.test(r.headers.get("content-type")||""))show(page)},function(){})}
 addEventListener("error",function(e){if(e.target===entry())check(true)},true);
@@ -67,14 +69,16 @@ const PRELOADED_FONTS = [/^assets\/inter-latin-wght-normal-[^/]+\.woff2$/, /^ass
  *    retry at once and shows the line.) Nothing is said when the entry's URL answers 200 with the page:
  *    that is a server from before the pack, which UPDATED_WHILE_OPEN_SCRIPT
  *    speaks for. Inline styles only, because the app's CSS may be what
- *    failed; Canvas and CanvasText follow the scheme set above.
+ *    failed; Canvas and CanvasText follow the scheme set above. The line
+ *    hides the app root, so an app that ran without its stylesheet does not
+ *    show unstyled under it.
  */
 function headScript(core: string[]): string {
   return `<script>(function(){
 var d=document,h=d.documentElement;
 try{var m=(d.cookie.match(/(?:^|; )plannotator-theme=([^;]*)/)||[])[1];m=m?decodeURIComponent(m):"dark";if(m==="system")m=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";h.style.colorScheme=m==="light"?"light":"dark"}catch(e){}
 var core=${JSON.stringify(core)},failed=false;
-function show(){if(d.getElementById("plannotator-load-failed"))return;var p=d.createElement("p");p.id="plannotator-load-failed";p.setAttribute("role","alert");p.style.cssText="position:fixed;top:0;left:0;right:0;margin:0;padding:12px 16px;font:14px/1.5 system-ui,sans-serif;background:Canvas;color:CanvasText;z-index:2147483646";p.appendChild(d.createTextNode(${JSON.stringify(LOAD_FAILED_MESSAGE + ' ')}));var b=d.createElement("button");b.type="button";b.textContent="Reload";b.style.cssText="font:inherit;color:inherit;background:none;border:0;margin:-4px -6px;padding:4px 6px;min-height:28px;text-decoration:underline;cursor:pointer";b.onclick=function(){location.reload()};p.appendChild(b);var st=d.createElement("style");st.textContent="@media (pointer:coarse){#plannotator-load-failed button{min-height:44px;margin-block:-12px}}";p.appendChild(st);(d.body||h).prepend(p)}
+function show(){if(d.getElementById("plannotator-load-failed"))return;var p=d.createElement("p");p.id="plannotator-load-failed";p.setAttribute("role","alert");p.style.cssText="position:fixed;top:0;left:0;right:0;margin:0;padding:12px 16px;font:14px/1.5 system-ui,sans-serif;background:Canvas;color:CanvasText;z-index:2147483646";p.appendChild(d.createTextNode(${JSON.stringify(LOAD_FAILED_MESSAGE + ' ')}));var b=d.createElement("button");b.type="button";b.textContent="Reload";b.style.cssText="font:inherit;color:inherit;background:none;border:0;margin:-4px -6px;padding:4px 6px;min-height:28px;text-decoration:underline;cursor:pointer";b.onclick=function(){location.reload()};p.appendChild(b);var st=d.createElement("style");st.textContent="#root{display:none!important}@media (pointer:coarse){#plannotator-load-failed button{min-height:44px;margin-block:-12px}}";p.appendChild(st);(d.body||h).prepend(p)}
 function fail(){if(failed)return;failed=true;var s=d.querySelector('script[type="module"][src^="/assets/"]');if(!s)return show();fetch(s.src,{method:"HEAD",cache:"no-store",redirect:"manual"}).then(function(r){if(!(r.ok&&/^text\\/html/i.test(r.headers.get("content-type")||"")))show()},show)}
 addEventListener("error",function(e){var t=e.target,a=t&&t.tagName==="LINK"?"href":"src",u=t&&t.getAttribute&&t.getAttribute(a);if(!u||!(t.tagName==="LINK"||t.tagName==="SCRIPT"))return;if(t.hasAttribute("data-plannotator-retry"))return fail();if(core.indexOf(u)<0)return;var n=d.createElement(t.tagName);for(var i=0;i<t.attributes.length;i++)n.setAttribute(t.attributes[i].name,t.attributes[i].value);if(a==="href")n.setAttribute(a,u+(u.indexOf("?")<0?"?":"&")+"retry=1");n.setAttribute("data-plannotator-retry","");t.parentNode.insertBefore(n,t.nextSibling)},true);
 })()</script>`;

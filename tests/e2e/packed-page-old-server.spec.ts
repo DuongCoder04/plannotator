@@ -10,6 +10,8 @@
  * `bun run --cwd apps/review build && bun run build:hook` first), in headless
  * Chromium:
  *  - served the old way, the message shows, and none of the pack renders;
+ *  - the message keeps the scheme the page's head set from the user's theme
+ *    (a dark theme on an OS-light machine stays dark, readable);
  *  - served by a current server, the app loads and no message shows;
  *  - a failed lazy chunk shows the message only when the entry's URL answers
  *    200 with the page (an old server), never while the entry still loads;
@@ -77,6 +79,28 @@ for (const file of builds) {
     }
   });
 
+  test(`${name} served whole by an old server keeps the scheme of the user's theme when the message shows`, async ({ browser }) => {
+    test.skip(!existsSync(file), 'build the apps first');
+    const bundle = readFileSync(file, 'utf8');
+    const { server, url } = await serve({ current: oldServer(bundle) });
+    // A dark theme on an OS-light machine: the page's head script paints dark from the first frame, and the message must not flip it white.
+    const context = await browser.newContext({ colorScheme: 'light' });
+    try {
+      await context.addCookies([{ name: 'plannotator-theme', value: 'dark', url }]);
+      const page = await context.newPage();
+      await page.goto(url);
+      const message = page.locator('#plannotator-updated');
+      await expect(message).toHaveText(UPDATED_WHILE_OPEN_MESSAGE);
+      expect(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe('dark');
+      const [bg, fg] = await message.evaluate((el) => [getComputedStyle(el).backgroundColor, getComputedStyle(el).color]);
+      expect(luminance(bg)).toBeLessThan(64);
+      expect(luminance(fg)).toBeGreaterThan(192);
+    } finally {
+      await context.close();
+      server.close();
+    }
+  });
+
   test(`${name} served by a current server loads without the message; a lazy chunk failure shows it only once an old server answers`, async ({ page }) => {
     test.skip(!existsSync(file), 'build the apps first');
     const bundle = readFileSync(file, 'utf8');
@@ -117,6 +141,12 @@ for (const file of builds) {
       server.close();
     }
   });
+}
+
+/** Relative luminance (0-255) of a computed `rgb()` / `rgba()` color. */
+function luminance(color: string): number {
+  const [r, g, b] = (color.match(/[\d.]+/g) ?? []).map(Number);
+  return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
 }
 
 /** Fire a lazy chunk failure and wait for the page's HEAD check of its entry to finish. */
