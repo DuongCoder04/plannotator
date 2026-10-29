@@ -223,9 +223,9 @@ module updateLifecycle {
       val prev = st.nf.get(v)
       // #2337 keeps a young release's date on the claim (pendingBefore).
       val keep = NOTES_FIX and prev.at >= 0 and not(prev.failed) and young(prev, st.now)
-      // WHATS_NEW_FIX: marked in flight; a failure of it may retry quickly unless the
-      // release check answers now and answered since the failure before it.
-      val quick = WHATS_NEW_FIX and (st.rcFailed or not(prev.at >= 0 and prev.failed and st.latestAt > prev.at))
+      // WHATS_NEW_FIX: marked in flight; a failure of it may retry quickly unless a
+      // release check answered since the failure before it.
+      val quick = WHATS_NEW_FIX and not(prev.at >= 0 and prev.failed and st.latestAt > prev.at)
       st.with("nf", st.nf.set(v, { at: st.now, failed: false, pub: if (keep) prev.pub else -1, inFlight: WHATS_NEW_FIX, quick: quick }))
         .with("ibInflight", st.ibInflight.set(v, true))
         .with("minNotesGap", if (st.lastNotesReq.get(v) < 0) st.minNotesGap else imin(st.minNotesGap, st.now - st.lastNotesReq.get(v)))
@@ -830,9 +830,9 @@ module onWhatsNewFix {
       .then(doAdvance(30))
       .expect(link(s) == 2 and WhatsNewAfterBlip)
 
-  // F3 on a flapping network: the quick retry fails too (the network dropped
-  // again), and is still a failure that may have been the network.
-  run flappingNetworkRetriedTest =
+  // The known limit of F3: the network drops again before the quick retry, so
+  // the retry fails too, and that failure waits 6 h (today's back-off).
+  run flappingNetworkWaitsTest =
     init
       .then(doPublish)
       .then(doWriteNotes(2))
@@ -848,13 +848,12 @@ module onWhatsNewFix {
       .then(doNetToggle)                          // online
       .then(doAdvance(10))                        // the release check answers
       .then(doNetToggle)                          // offline again
-      .then(doAdvance(10))                        // the check fails; the quick retry claims
-      .then(doNotesAnswer(2))                     // and fails
+      .then(doAdvance(10))                        // the quick retry claims
+      .then(doNotesAnswer(2))                     // and fails: a check answered since the failure before
       .then(doNetToggle)                          // online
-      .then(doAdvance(15))                        // the release check answers; asked again
-      .then(doNotesAnswer(2))                     // the written notes
+      .then(doAdvance(15))                        // the release check answers; not asked (6 h)
       .then(doAdvance(30))
-      .expect(link(s) == 2 and WhatsNewAfterBlip)
+      .expect(link(s) == 0 and not(WhatsNewAfterBlip))
 
   // F4: the run that started on 2 ends before the notes are readable.
   run restartKeepsWhatsNewTest =

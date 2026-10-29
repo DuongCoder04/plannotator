@@ -5,7 +5,7 @@
  * per-version throttle, and stored notes without a "What's New" part.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -155,6 +155,22 @@ describe("fetchReleaseNotesFor", () => {
     patchUpdateState((s) => ({ ...s, latestRelease: { tag: "v0.28.19", fetchedAt: NOW + 1 }, releaseCheck: { attemptedAt: NOW + 1 } }), dataDir);
     expect((await fetchNotes("0.28.19", { now: NOW + RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("not-due");
     expect((await fetchNotes("0.28.19", { now: NOW + RELEASE_ASSETS_FETCH_RETRY_MS - 1 })).outcome).toBe("not-due");
+    expect(seen.length).toBe(1);
+  });
+
+  test("a release check dated in the future (the clock moved back) does not unlock the quick retry", async () => {
+    answer = () => new Response("unavailable", { status: 502 });
+    expect((await fetchNotes("0.28.19")).outcome).toBe("failed");
+    patchUpdateState((s) => ({ ...s, latestRelease: { tag: "v0.28.19", fetchedAt: NOW + RELEASE_ASSETS_FETCH_RETRY_MS }, releaseCheck: { attemptedAt: NOW } }), dataDir);
+    expect((await fetchNotes("0.28.19", { now: NOW + RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("not-due");
+    expect(seen.length).toBe(1);
+  });
+
+  // The answer clears the claim's in-flight mark: notes that could not be saved wait a day, not 15 minutes.
+  test("an answer whose notes could not be saved is not asked again in 15 minutes", async () => {
+    writeFileSync(updateCheckPaths(dataDir).notes, "not a folder"); // update-notes/ cannot be created
+    expect((await fetchNotes("0.28.19")).outcome).toBe("fetched");
+    expect((await fetchNotes("0.28.19", { now: NOW + RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("not-due");
     expect(seen.length).toBe(1);
   });
 

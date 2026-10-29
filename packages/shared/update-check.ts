@@ -171,12 +171,12 @@ export interface NotesFetchRecord {
    */
   inFlight?: boolean;
   /**
-   * Set on a failure that may have been the network (not a rate limit; the
-   * release check failing too, or not answering between the failure before
-   * it and this one): asked again RELEASE_NOTES_PENDING_RETRY_MS after it
-   * once a release check has answered since (the network is back), not after
-   * 6 h. At most one quick retry per return of the network, so a source that
-   * keeps failing while the network is up waits 6 h.
+   * Set on a failure that may have been the network (not a rate limit, and
+   * no release check answered between the failure before it and this one):
+   * asked again RELEASE_NOTES_PENDING_RETRY_MS after it once a release check
+   * has answered since (the network is back), not after 6 h. One quick retry,
+   * then 6 h: a source that keeps failing while the network is up (or a
+   * network that drops again before the quick retry) waits 6 h.
    */
   retryOnline?: boolean;
 }
@@ -1094,10 +1094,13 @@ function isYoungRelease(record: NotesFetchRecord, now: number): boolean {
   return typeof published === "number" && Number.isFinite(published) && Math.abs(now - published) < RELEASE_NOTES_YOUNG_MS;
 }
 
-/** A release check answered after `at` (the network is up again since then). */
-function releaseCheckAnsweredAfter(state: UpdateState, at: number): boolean {
+/**
+ * A release check answered after `at` (the network is up again since then).
+ * An answer dated after `now` (the clock moved back) does not count.
+ */
+function releaseCheckAnsweredAfter(state: UpdateState, at: number, now: number): boolean {
   const answered = state.latestRelease?.fetchedAt;
-  return typeof answered === "number" && answered > at;
+  return typeof answered === "number" && answered > at && answered <= now;
 }
 
 /**
@@ -1113,7 +1116,7 @@ export function isNotesFetchDue(state: UpdateState, version: string, now: number
   const at = record?.attemptedAt;
   if (!record || typeof at !== "number" || !Number.isFinite(at) || at > now) return true;
   const wait = record.failedAt
-    ? record.retryOnline && releaseCheckAnsweredAfter(state, record.failedAt)
+    ? record.retryOnline && releaseCheckAnsweredAfter(state, record.failedAt, now)
       ? RELEASE_NOTES_PENDING_RETRY_MS
       : RELEASE_ASSETS_FETCH_RETRY_MS
     : record.inFlight || isYoungRelease(record, now)
@@ -1183,12 +1186,9 @@ export async function fetchReleaseNotesFor(deps: ReleaseNotesFetchDeps): Promise
     const error = result.ok ? `the release answered for ${JSON.stringify(result.release.tag).slice(0, 80)}` : result.error;
     // Maybe the network (a laptop waking, a VPN): asked again 15 minutes after,
     // once a release check answers. Not after a rate limit, and not when this
-    // source failed before with the release check answering since and now (it
-    // keeps failing while the network is up: 6 h).
-    const check = state.releaseCheck;
-    const checkFailing = typeof check?.failedAt === "number" && check.failedAt >= check.attemptedAt;
-    const retryOnline =
-      !(!result.ok && result.rateLimited) && (checkFailing || !(previous?.failedAt && releaseCheckAnsweredAfter(state, previous.failedAt)));
+    // source failed before with a release check answering since (it keeps
+    // failing while the network is up: 6 h).
+    const retryOnline = !(!result.ok && result.rateLimited) && !(previous?.failedAt && releaseCheckAnsweredAfter(state, previous.failedAt, now));
     updateLog(`could not read the release notes for ${version} (${error}); next try in ${retryOnline ? "15m once online, else 6h" : "6h"}`, dataDir);
     try {
       record({ attemptedAt: now, failedAt: now, error: error.slice(0, 200), ...(retryOnline && { retryOnline }) });

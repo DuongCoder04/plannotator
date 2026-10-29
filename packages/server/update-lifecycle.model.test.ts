@@ -201,9 +201,8 @@ function ensureNotes(m: Model, v: number): void {
   m.nf[v] = { at: m.now, failed: false, pub: keep ? prev!.pub : -1 };
   if (!m.netUp || v > m.published) {
     if (m.netUp) m.tagRequests[v] = (m.tagRequests[v] ?? 0) + 1;
-    // A failure retries 15 minutes after it once a release check answered, unless the release check answers now and also
-    // answered between it and the failure before.
-    m.nf[v] = { at: m.now, failed: true, pub: -1, quick: m.rcFailed || !(prev?.failed && m.latestAt > prev.at) };
+    // A failure retries 15 minutes after it once a release check answered, unless one answered between it and the failure before.
+    m.nf[v] = { at: m.now, failed: true, pub: -1, quick: !(prev?.failed && m.latestAt > prev.at) };
     return;
   }
   m.tagRequests[v] = (m.tagRequests[v] ?? 0) + 1;
