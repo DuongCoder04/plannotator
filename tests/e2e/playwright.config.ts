@@ -21,7 +21,7 @@ export default defineConfig({
   testMatch: '*.spec.ts',
   testIgnore: OWN_CONFIG,
   outputDir: '../../.local/test-results',
-  // Feedback never reaches the live Worker (global-setup.ts).
+  // Feedback never reaches the live Worker, and agent CLI stubs go first on PATH: a stub that is called fails the run (global-setup.ts, agent-cli-stubs.ts).
   globalSetup: './global-setup.ts',
   fullyParallel: false,
   workers: 1,
