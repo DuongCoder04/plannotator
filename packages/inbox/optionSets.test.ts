@@ -9,7 +9,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { InboxAttachmentState, InboxMessageWire } from '@plannotator/core/inbox-types';
 import type { AttachmentStep } from './stepping';
-import { choiceName, labelHasLetter, optionAnnouncement, optionEndLine, optionOf, optionSetId, optionSetOf, parseOptionSetId, FIRST_OPTION_NOTE, LAST_OPTION_NOTE } from './optionSets';
+import { choiceLetters, choiceName, labelHasLetter, optionAnnouncement, optionEndLine, optionOf, optionSetId, optionSetOf, parseOptionSetId, FIRST_OPTION_NOTE, LAST_OPTION_NOTE } from './optionSets';
 
 const M1 = 'msg_01K7M1MMMMMMMMMMMMMMMMMMMM';
 const M2 = 'msg_01K7M2MMMMMMMMMMMMMMMMMMMM';
@@ -87,6 +87,26 @@ describe('option sets', () => {
     const set = optionSetOf([MESSAGE], [today, a, { ...b, alsoIds: ['att_b_attached'] }, d], optionSetId(M2, 'q-design'))!;
     expect(optionOf(set, 'att_b_attached')?.choice.letter).toBe('B');
     expect(optionOf(set, 'att_today')).toBeNull();
+  });
+
+  test('labels lettered out of order keep their own letters in the caption, the announcement and the name', () => {
+    const labels = ['C · The section is the folder', 'A · A tab', 'B · Header menu'];
+    const message = { id: M2, questions: [{ key: 'q-order', prompt: 'Which?', choices: labels.map((label, i) => choice(label, `shots/${'cab'[i]}.png`)) }] } as unknown as InboxMessageWire;
+    const steps = ['c', 'a', 'b'].map((x) => step(image(`att_${x}`, `shots/${x}.png`, M2)));
+    const set = optionSetOf([message], steps, optionSetId(M2, 'q-order'))!;
+    expect(set.choices.map((c) => c.letter)).toEqual(['C', 'A', 'B']);
+    expect(set.choices.every((c) => c.lettered)).toBe(true);
+    expect(optionAnnouncement(set, 0).startsWith('Option C of 3')).toBe(true);
+    expect(choiceName('C · The section', 0)).toBe('C · The section');
+  });
+
+  test('mixed or repeated letters: unlabeled choices keep positions, and a clash makes the question use positions', () => {
+    expect(choiceLetters(['C · x', 'plain', 'A · y']).map((c) => c.letter)).toEqual(['C', 'B', 'A']);
+    expect(choiceLetters(['plain', 'B · y']).map((c) => c.lettered)).toEqual([false, true]);
+    // Two labels both "A", or an unlabeled third choice next to a "C" label: no two choices share a letter.
+    expect(choiceLetters(['A · one', 'A · two']).map((c) => c.letter)).toEqual(['A', 'B']);
+    expect(choiceLetters(['C · x', 'plain', 'plain']).map((c) => c.letter)).toEqual(['A', 'B', 'C']);
+    expect(choiceName('A · two', 1, ['A · one', 'A · two'])).toBe('B · A · two');
   });
 
   test('a label that already leads with its letter gets no second one', () => {
