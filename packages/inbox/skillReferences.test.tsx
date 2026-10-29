@@ -9,8 +9,8 @@
  *   arrowed row inserts on Enter, Escape closes the menu before the box, a
  *   human-only skill is underlined and says its instructions go with the
  *   reply; the Send pastes its SKILL.md and names its folder at the end of
- *   the stored reply, and the thread folds that block behind one "Skills: …"
- *   line;
+ *   the stored reply, and the thread folds that block into one quiet line (the box icon and the
+ *   names as a comma list), kept after the agent answers;
  * - a comment on an attached file: its reference rides the same one block
  *   (the per-comment list is off in the Inbox);
  * - New message: a clicked row inserts, and the session's wake carries the
@@ -198,6 +198,15 @@ async function press(el: EventTarget, key: string, init: KeyboardEventInit = {})
   return event;
 }
 
+/** The quiet skills line (approval "inbox-skills-line", option B): the names as a comma list, nothing to open, no size. */
+function expectQuietSkillsLine(line: HTMLElement, names: string[]) {
+  expect(line.tagName).not.toBe('DETAILS');
+  expect(line.querySelector('summary, [data-skills-block]')).toBeNull();
+  expect([...line.querySelectorAll('[data-skill-name]')].map((n) => n.textContent)).toEqual(names);
+  expect(line.textContent!.replace(/^Skills:\s*/, '').trim()).toBe(names.join(', '));
+  expect(line.textContent).not.toMatch(/\bKB\b|instructions went|Show|Hide/);
+}
+
 const menu = () => document.querySelector('[data-skill-menu]');
 const rows = () => [...document.querySelectorAll('[data-skill-item]')].map((r) => r.getAttribute('data-skill-item'));
 
@@ -265,10 +274,8 @@ test.skipIf(!hasDom)('the reply box: the picker, the underline and its line, Esc
   // The window: the words read whole, the block folded behind one quiet line.
   await until(() => el.querySelector(`[data-message-id="${reply.id}"] [data-skills-line]`) !== null, 'the Skills line');
   const message = el.querySelector(`[data-message-id="${reply.id}"]`)!;
-  const line = message.querySelector('[data-skills-line]') as HTMLDetailsElement;
-  expect(line.open).toBe(false);
-  expect(line.querySelector('summary')!.textContent).toContain('Skills: readback, write-better');
-  expect(line.querySelector('summary')!.textContent).toContain("readback's instructions went with this reply");
+  const line = message.querySelector('[data-skills-line]') as HTMLElement;
+  expectQuietSkillsLine(line, ['readback', 'write-better']);
   const viewerText = message.textContent!.replace(line.textContent!, '');
   expect(viewerText).toContain('Please run /readback first');
   expect(viewerText).not.toContain('State what I am asking for');
@@ -279,11 +286,20 @@ test.skipIf(!hasDom)('the reply box: the picker, the underline and its line, Esc
   const ranges = skillReferenceRanges(message, splitInboxSkillsBlock(reply.body)!.skills);
   expect(ranges.human.map((r) => r.toString())).toEqual(['/readback']);
   expect(ranges.plain.map((r) => r.toString())).toEqual(['$write-better']);
-  // Opened, it shows exactly what the agent got.
-  act(() => {
-    line.open = true;
-  });
-  expect(line.querySelector('[data-skills-block]')!.textContent).toContain('--- BEGIN SKILL INSTRUCTIONS: readback ---');
+  // The line is there before the agent answers, above the Delivered line (never inside it).
+  const delivered = el.querySelector('.ib-delivered');
+  if (delivered) expect(line.compareDocumentPosition(delivered) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // The agent answers: the same line stays under the same message, unchanged.
+  (child!.stdin as import('bun').FileSink).write(`${JSON.stringify({ send: { project: world.project, session: 'ses_agent', body: 'Done, tightened.', reply_to: world.waiting } })}\n`);
+  (child!.stdin as import('bun').FileSink).flush();
+  const answer = (JSON.parse(await readLine()) as { sent: string }).sent;
+  // The window's live feed is stubbed here, so open the thread again to read it with the answer in.
+  act(() => root?.unmount());
+  host?.remove();
+  const again = await renderApp(`#thread=${world.waiting}&msg=${reply.id}`);
+  await until(() => again.querySelector(`[data-message-id="${answer}"]`) !== null, "the agent's answer");
+  const after = again.querySelector(`[data-message-id="${reply.id}"] [data-skills-line]`) as HTMLElement;
+  expectQuietSkillsLine(after, ['readback', 'write-better']);
 });
 
 test.skipIf(!hasDom)('Mod+Enter still sends with the picker open; a bare trigger leaves Enter a newline', async () => {
@@ -440,8 +456,7 @@ test.skipIf(!hasDom)('compose (a message you start): the field takes a skill, th
   });
   await until(() => el.querySelector(`[data-message-id="${command.thread_id}"] [data-skills-line]`) !== null, 'the Skills line');
   const message = el.querySelector(`[data-message-id="${command.thread_id}"]`)!;
-  const line = message.querySelector('[data-skills-line]') as HTMLDetailsElement;
-  expect(line.open).toBe(false);
-  expect(line.querySelector('summary')!.textContent).toContain('Skills: readback');
+  const line = message.querySelector('[data-skills-line]') as HTMLElement;
+  expectQuietSkillsLine(line, ['readback']);
   expect(message.textContent!.replace(line.textContent!, '')).not.toContain('State what I am asking for');
 });
