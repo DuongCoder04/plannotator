@@ -9,19 +9,20 @@
  * Every build that ships a pin (release binaries, the OpenCode and Pi packages,
  * the guides.show Worker, @plannotator/core's tarball, the VS Code extension)
  * runs `bun run build:viewer-pin` first, so it pins the viewer built from its
- * own commit, the same bytes the release's guides.show deploy publishes (the
- * viewer build is deterministic: content hashes, no timestamps; decision
- * record D8/D10). A checkout that has not built the viewer gets the fallback
- * pin (`fallback-viewer-pin.json`): a real viewer already published on
- * guides.show (v0.28.36's), so typecheck, tests and local exports work and an
- * unbuilt pin can never point at a missing file.
+ * own commit; on release tags, release.yml refuses to publish unless guides.show
+ * serves the pinned entry files. A checkout that has not built the viewer gets
+ * the fallback pin (`fallback-viewer-pin.json`): v0.28.36's viewer, already
+ * published on guides.show, so typecheck, tests and local exports work and an
+ * unbuilt pin never points at a missing file. It carries no grammar chunk map
+ * (those are only modulepreload hints), and `fallback-viewer-pin.test.ts`
+ * freezes its values.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { GUIDE_LANGUAGE_IDS } from '../../../packages/core/guide-format';
 import type { ViewerManifest } from './manifest-plugin';
 
-type ViewerPin = Pick<ViewerManifest, 'js' | 'css' | 'jsIntegrity' | 'cssIntegrity' | 'langs'>;
+type ViewerPin = Pick<ViewerManifest, 'js' | 'css' | 'jsIntegrity' | 'cssIntegrity'> & { langs?: ViewerManifest['langs'] };
 
 const built = path.resolve(import.meta.dirname, '../dist/viewer/manifest.json');
 const fallback = path.resolve(import.meta.dirname, 'fallback-viewer-pin.json');
@@ -31,7 +32,7 @@ function render(pin: ViewerPin, origin: string): string {
   // Every grammar chunk is built and published, but the pin only lists the ids
   // `detectGuideLanguages` can produce: those are the only modulepreload hints
   // an export can ever emit, and the rest would just bloat this file.
-  const langs = Object.entries(pin.langs)
+  const langs = Object.entries(pin.langs ?? {})
     .filter(([lang]) => GUIDE_LANGUAGE_IDS.includes(lang))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([lang, file]) => `    ${JSON.stringify(lang)}: ${JSON.stringify(file)},`)
