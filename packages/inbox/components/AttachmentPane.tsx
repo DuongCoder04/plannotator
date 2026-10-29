@@ -56,6 +56,8 @@ import { Icon } from '../icons';
 import { FileName } from './FileName';
 import { useNarrowerThan } from '../narrower';
 import { FullViewBar, type FullViewBarHandle, type ToolbarState } from './FullViewBar';
+import { FullScreenComposer, FullScreenComposerContext, type FullScreenComposerValue } from './FullScreenComposer';
+import { pickComposerMode, setComposerMinimized } from '../fullScreenComposer';
 import { FilePeek, peekSheetHost } from './AttachmentStepper';
 import { FullScreenMore } from './OpenIn';
 import { fileSwipeMode, prefersReducedMotion, useFileSwipe } from '../fileSwipe';
@@ -110,6 +112,15 @@ export const FULL_VIEW_CHIP_MS = 1600;
 
 /** What sits at a file's foot in full screen (an image's or a film's comment row, a phone's "Comment at"): the toolbar, the chips and the toast keep above it. */
 export const FILE_FOOT_ROW = '[data-image-composer], [data-file-foot]';
+
+/**
+ * The file's foot row as drawn: the first FILE_FOOT_ROW that is not hidden (full screen's composer keeps
+ * the comment row drawn but `hidden` while the card is minimized, and the pill is then the foot).
+ */
+export function fileFootRow(section: ParentNode): HTMLElement | null {
+  for (const row of section.querySelectorAll<HTMLElement>(FILE_FOOT_ROW)) if (!row.closest('[hidden]')) return row;
+  return null;
+}
 
 /** Hide / Show tools: the html-annotate scope's existing chord (⌘⇧X), HTML files only, through the file viewer's scope. */
 const TOOLS_CHORD = inboxFileViewerShortcuts.shortcuts.toggleTools.bindings[0]!;
@@ -194,6 +205,13 @@ export interface AttachmentPaneProps {
   onClose: () => void;
   /** Full screen's comments foot: what rides the next Send, and the way to the reply. */
   strip: { picks: number; annotations: number; onWriteReply: () => void };
+  /**
+   * Full screen's composer (approval "inbox-fullscreen-composer"): the thread's
+   * reply, and the file's comment row, in one card floating at the foot of an
+   * image, a film or an HTML page. Null or absent: none (the thread is
+   * archived, or the file is beside the thread).
+   */
+  composer?: FullScreenComposerValue | null;
   /**
    * Bumped each time the person opens a file (its tile, or a link to it in
    * a message): keyboard focus moves into the pane, so a file opened full
@@ -408,6 +426,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const [menuOpen, setMenuOpen] = useState(false);
   /** Full screen (approval "inbox-one-fullscreen"): the file fills the window under one floating toolbar. */
   const full = props.full;
+  /** Full screen's composer: an image, a film and an HTML page draw it (the comment row of the first two goes inside it). */
+  const hasComposer = full && !!props.composer && (kind === 'image' || kind === 'video' || kind === 'html');
   /** The toolbar: showing (pinned), tucked into its corner handle, or out for a moment (revealed). Every opening of full screen starts showing. */
   const [toolbar, setToolbar] = useState<ToolbarState>('pinned');
   const barRef = useRef<FullViewBarHandle>(null);
@@ -545,27 +565,27 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   // An image's or a film's comment row (a phone's "Comment at" button for a film) stays at the file's foot in full screen: the chip and a phone's toolbar sit above it.
   useEffect(() => {
     const section = sectionRef.current;
-    if (!full || !section || (kind !== 'image' && kind !== 'video')) return;
+    if (!full || !section || (kind !== 'image' && kind !== 'video' && !(kind === 'html' && hasComposer))) return;
     const place = () => {
-      const row = section.querySelector<HTMLElement>(FILE_FOOT_ROW);
+      const row = fileFootRow(section);
       section.style.setProperty('--ib-fvfoot', `${row ? Math.round(row.getBoundingClientRect().height) : 0}px`);
     };
     place();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place);
     const mutations = new MutationObserver(() => {
       place();
-      const row = section.querySelector(FILE_FOOT_ROW);
+      const row = fileFootRow(section);
       if (row && observer) observer.observe(row);
     });
     mutations.observe(section, { childList: true, subtree: true });
-    const row = section.querySelector(FILE_FOOT_ROW);
+    const row = fileFootRow(section);
     if (row && observer) observer.observe(row);
     return () => {
       observer?.disconnect();
       mutations.disconnect();
       section.style.removeProperty('--ib-fvfoot');
     };
-  }, [full, attachment.id, kind]);
+  }, [full, attachment.id, kind, hasComposer]);
   const fullViewPeekId = `ib-fvpeek-${useId().replace(/:/g, '')}`;
   /** A phone's position in the Comments sheet's foot: its peek is the bottom sheet, drawn in the Inbox's root. */
   const phonePosRef = useRef<HTMLButtonElement>(null);
@@ -722,7 +742,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
             if (share > 0) {
               if (!pane.hasAttribute('data-dismissing')) {
                 pane.setAttribute('data-dismissing', '');
-                dismissFades.current = Array.from(pane.querySelectorAll<HTMLElement>('.ib-fvdock, .ib-optcap, .ib-imgbar, .ib-imgcompose'));
+                dismissFades.current = Array.from(pane.querySelectorAll<HTMLElement>('.ib-fvdock, .ib-optcap, .ib-imgbar, .ib-imgcompose, .ib-fcomp, .ib-fcomp-pillwrap'));
               }
               pane.style.setProperty('--ib-dismiss', share.toFixed(3));
               const opacity = Math.max(0, 1 - share * 2.5).toFixed(3);
@@ -756,10 +776,24 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   }, [guard]);
   const focusComposer = () => {
     const area = unsavedComposer(sectionRef.current, savedTextRef.current);
-    if (area) {
-      area.focus();
-      area.setSelectionRange(area.value.length, area.value.length);
+    if (!area) return;
+    const focusAt = (field: HTMLTextAreaElement) => {
+      field.focus();
+      field.setSelectionRange(field.value.length, field.value.length);
+    };
+    // The comment row kept hidden in full screen's composer (the card on Reply, or minimized): the card
+    // comes back on its Comment tab, and focus goes to the words once it is drawn.
+    const threadId = props.composer?.threadId;
+    if (threadId && area.closest('[data-fcomp-comment-slot][hidden]')) {
+      pickComposerMode(threadId, 'comment');
+      setComposerMinimized(threadId, false);
+      requestAnimationFrame(() => {
+        const shown = unsavedComposer(sectionRef.current, savedTextRef.current);
+        if (shown) focusAt(shown);
+      });
+      return;
     }
+    focusAt(area);
   };
   const keepWriting = () => {
     steppedFromSheet.current = false;
@@ -976,7 +1010,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
       return 'linked';
     }
     if (document.querySelector(SELF_CLOSING_DRAFTS)) return null;
-    const inField = !!target && isEditableTarget(target) && !!target.closest('[data-image-composer]') && !!sectionRef.current?.contains(target);
+    const inField = !!target && isEditableTarget(target) && !!target.closest('[data-image-composer], [data-fcomp-field]') && !!sectionRef.current?.contains(target);
     if (target && !inField && (isEditableTarget(target) || inOverlay(target))) return null;
     return escapeRung({
       full: true,
@@ -1017,10 +1051,12 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
         announce('Comment closed.');
         return;
       }
-      case 'field':
+      case 'field': {
+        const fromReply = !!document.activeElement?.closest('[data-fcomp-field]');
         sectionRef.current?.focus({ preventScroll: true });
-        announce('Left the comment box.');
+        announce(fromReply ? 'Left the reply box. Your words are kept.' : 'Left the comment box.');
         return;
+      }
       case 'drawer':
         if (fromPage) {
           if (drawerMode) setDrawer(false);
@@ -1239,6 +1275,10 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const isCode = kind === 'code';
   const isImage = kind === 'image';
   const isVideo = kind === 'video';
+  const composerValue = useMemo<FullScreenComposerValue | null>(
+    () => (hasComposer && props.composer ? { ...props.composer, tucked: toolbar !== 'pinned' } : null),
+    [hasComposer, props.composer, toolbar],
+  );
   const videoRef = useRef<VideoAttachmentViewHandle>(null);
   // A PDF, any other file, and a kind this window does not know: offered as a download.
   const isDownload = kind === 'pdf' || kind === 'file' || tooLarge;
@@ -1491,7 +1531,10 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
       data-attachment-pane={attachment.id}
       data-version={effectiveVersion}
       data-full-view={full ? '' : undefined}
+      // Hide (») hides what else floats over the file with the toolbar (inbox.css): the size chip, the composer.
+      data-tools={full ? toolbar : undefined}
     >
+      <FullScreenComposerContext.Provider value={composerValue}>
       {full ? (
         <FullViewBar
           ref={barRef}
@@ -2081,6 +2124,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
           )}
         </div>
       </div>
+      {hasComposer && isHtml && composerValue && <FullScreenComposer value={composerValue} noun={null} comment={null} />}
       {guard ? (
         <div
           className="ib-stepguard"
@@ -2192,6 +2236,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
       <div className="ib-sr" aria-live="polite" data-step-live="">
         {announced}
       </div>
+      </FullScreenComposerContext.Provider>
     </section>
   );
 });

@@ -80,6 +80,9 @@ const PATHS = {
   chevL: 'M15.75 19.5 8.25 12l7.5-7.5',
   // Full screen's toolbar (approval "inbox-one-fullscreen"): » Hide tools (Heroicons chevron-double-right) and the pin that keeps it out (Lucide's pin, as the record draws it).
   chevsR: 'm5.25 4.5 7.5 7.5-7.5 7.5m6-15 7.5 7.5-7.5 7.5',
+  // The full-screen composer (approval "inbox-fullscreen-composer"): its minimize, the same double chevron turned toward the foot, and its pill's way back.
+  chevsD: 'm4.5 5.25 7.5 7.5 7.5-7.5m-15 6 7.5 7.5 7.5-7.5',
+  chevsU: 'm4.5 18.75 7.5-7.5 7.5 7.5m-15-6 7.5-7.5 7.5 7.5',
   pin: 'M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z',
   // Replaced questions (Heroicons outline): arrow-turn-down-right, warning, arrow-down.
   turnDown: 'm16.49 12 3.75 3.75m0 0-3.75 3.75m3.75-3.75H3.74V4.499',

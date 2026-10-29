@@ -70,6 +70,7 @@ import { TidyNote } from './Tidy';
 import { reaskedIn, reaskNoteAgent, reaskOffered, reaskTargets, reaskTooltip } from '../reask';
 import { ChangedNotice, ReplacedQuestionCard, ReplacesLine, StaleGuard, replacedBy, replacementOf, type JumpTarget } from './ReplacedQuestion';
 import { InboxComposerField } from './ComposerField';
+import type { FullScreenComposerValue } from './FullScreenComposer';
 import { ReplyAnswers, SentAnswers, draftAnswerWords, ReplyActions, type ActionRow, type DraftAnswer } from './ReplyAnswers';
 import { actionSavesSettled } from '../actionSaves';
 import { sentAnswersOf, sentReplyParts, type SentAnswerGroup } from '../sentReply';
@@ -1233,6 +1234,13 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const [skipArmed, setSkipArmed] = useState<ReadonlySet<string> | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** When a Send from full screen's composer last went: the card says "Sent to …" for a moment. */
+  const [composerSentAt, setComposerSentAt] = useState<number | null>(null);
+  /**
+   * A Send from full screen's composer is on its way or just went: focus stays in the card (the box-close
+   * effect and the Send leave it be), never in the thread under the file.
+   */
+  const sendingFromComposer = useRef(false);
   const sendKeys = useRef<Map<string, string> | null>(null);
   /**
    * What the last Send that did not finish carried (words, pasted files,
@@ -2377,11 +2385,9 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   };
   /** The Reply button's path, from a key: from a file in full screen, back beside the thread first (the strip's Write a reply). */
   const replyByKey = () => {
-    if (box.open) {
-      textRef.current?.focus();
-      return;
-    }
+    // From a file in full screen, back beside the thread first, even with the box open (the composer opens it behind the file).
     if (file && full) writeReplyFromFile();
+    else if (box.open) textRef.current?.focus();
     else openBox();
   };
   /** The file O opens: its tile shows the O keycap. */
@@ -2506,12 +2512,12 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     if (box.open) textRef.current?.focus();
     // The box closed (Escape, Cancel, a Send that did not go) and took focus with it: the foot's Reply (or Edit
     // draft) has it next. A Send that went gives focus to the reply in the thread instead (send, `focusSent`).
-    else if (!focusSent.current) {
+    else if (!focusSent.current && !sendingFromComposer.current) {
       const active = document.activeElement;
       if (!active || active === document.body || !active.isConnected) {
         requestAnimationFrame(() => {
           const now = document.activeElement;
-          if (focusSent.current || (now && now !== document.body && now.isConnected)) return;
+          if (focusSent.current || sendingFromComposer.current || (now && now !== document.body && now.isConnected)) return;
           sectionRef.current?.querySelector<HTMLElement>('[data-reply-button]')?.focus({ preventScroll: true });
         });
       }
@@ -2716,7 +2722,72 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const focusSent = useRef(false);
   const writeReplyFromFile = () => {
     setFull(false);
+    // The box open already (the full-screen composer opens it): its words stay as they are, and focus goes
+    // back to it where the caret was (as R did with the box open before the composer).
+    // openBox's other resets still apply (a New message, the route choice and an error go).
+    if (boxRef.current.open) {
+      setNewMessage(null);
+      setRoute((current) => ({ ...current, open: false, error: null }));
+      setError(null);
+      requestAnimationFrame(() => textRef.current?.focus());
+    } else openBox();
+  };
+  const focusReplyEnd = () =>
+    requestAnimationFrame(() => {
+      const text = textRef.current;
+      if (!text) return;
+      text.focus();
+      text.setSelectionRange(text.value.length, text.value.length);
+    });
+  /**
+   * From full screen to the thread, on the device's own route: beside the thread where there is room (as
+   * Write the reply goes), else the file closes (a phone's or a stacked window's Back to the thread). A
+   * comment not saved yet in the file is asked about first.
+   */
+  const fileToThread = (then: () => void = () => {}) => {
+    const go = () => {
+      if (phone || fileStacked) onOpenFile(null);
+      else setFull(false);
+      then();
+    };
+    if (paneRef.current) paneRef.current.leave(null, go);
+    else go();
+  };
+  /** The composer's Open in thread: the thread's reply box, with the same words. */
+  const replyInThread = () =>
+    fileToThread(() => {
+      if (boxRef.current.open) focusReplyEnd();
+      else openBox();
+    });
+  /**
+   * The reply's words changed, in the thread's box or in full screen's composer (`behind`: the box opens
+   * behind full screen without taking focus). One draft: the box holds the words and the draft saves them.
+   */
+  const changeReply = (text: string, behind = false) => {
+    // Read-only while a Send is on its way: the words it carries are the words in the box.
+    if (sending) return;
+    // The words changed (or emptied): a Send waiting to be confirmed no longer matches them.
+    const earlier = unconfirmed.get(thread.thread_id);
+    if (earlier && text.trim() !== earlier.words) forgetUnconfirmed(earlier, text.trim() === '' ? 'emptied' : 'edited');
+    if (behind && !boxRef.current.open) restoringRef.current = true;
+    setBox({ open: true, text });
+    replyDraft.save(text);
+  };
+
+  /** The reply box opens behind full screen, without taking focus (full screen's composer writes into it). */
+  const openBehind = () => {
+    if (boxRef.current.open) return;
+    restoringRef.current = true;
     openBox();
+  };
+  /**
+   * Files from full screen's composer (its paperclip, or a drop on the card) are the reply box's files, as
+   * the box's own paperclip and drop take them: the box opens behind full screen and the Send carries them.
+   */
+  const attachFromComposer = (list: FileList, picked: boolean) => {
+    openBehind();
+    (picked && phone ? replyFiles.attach : replyFiles.add)(list);
+    setError(null);
   };
 
   /** Back from the choice to the reply: the draft and its choice kept, focus at the end of the text. */
@@ -2840,11 +2911,17 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     setTagMode('ask');
   };
 
-  const send = async (options: { despiteReplaced?: boolean; routed?: boolean } = {}) => {
+  /**
+   * `stayFull`: the Send is full screen's composer's. It stays in full screen and the card says it went. What
+   * the person must read in the thread first (a replaced pick's guard, where an ended session's reply goes)
+   * takes them there, on the device's route.
+   */
+  const send = async (options: { despiteReplaced?: boolean; routed?: boolean; stayFull?: boolean } = {}) => {
     if (sending) return;
     // A pick was replaced while the person was answering: nothing goes until they have read that.
     if (staleQuestions.length > 0 && !options.despiteReplaced) {
       setGuard(true);
+      if (options.stayFull) fileToThread();
       return;
     }
     // Pasted files still uploading: nothing goes until they are in.
@@ -2862,6 +2939,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       }
       setError(null);
       setRoute((current) => mergeRouteRows({ ...current, open: true, error: null, focus: current.focus + 1 }, asking, live));
+      if (options.stayFull) fileToThread();
       return;
     }
     // The choice's answer: another live session takes the reply (never the
@@ -2871,6 +2949,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         ? (route.rows.find((row) => row.live.session === route.selected && !row.ended)?.live ?? null)
         : null;
     const to = chosen ? { host: chosen.host, session: chosen.session } : undefined;
+    sendingFromComposer.current = options.stayFull === true;
     setSending(true);
     setError(null);
     /** Replies of this Send that went (or were already there, a retry's replays). */
@@ -3030,7 +3109,12 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       }
       done = true;
       // Focus goes to the reply once it is in the thread (not to Reply: the box-close effect leaves it be).
-      focusSent.current = true;
+      // From full screen's composer it stays in the card, which says the reply went.
+      focusSent.current = !options.stayFull;
+      if (options.stayFull) {
+        setComposerSentAt(Date.now());
+        announce(`Sent to ${replyName ?? asker}.`);
+      }
       finishSent(sentUploads, words !== '');
       if (handedReply) {
         const reply = handedReply;
@@ -3044,7 +3128,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           onUndo: () => void undoHandoff(reply.id),
         });
       }
-      setFull(false);
+      if (!options.stayFull) setFull(false);
       await onChanged();
       await reloadFiles();
       // The reply and where it is now sit at the foot of the thread.
@@ -3117,6 +3201,15 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         }
       }
       setSending(false);
+      if (sendingFromComposer.current) {
+        // Back in the card's field once it is drawn (a Send button that went disabled let focus go).
+        requestAnimationFrame(() => {
+          sendingFromComposer.current = false;
+          const active = document.activeElement;
+          if (active && active !== document.body && active.isConnected && !active.closest('[data-fcomp]')) return;
+          document.querySelector<HTMLElement>('[data-fcomp] .ib-fcomp-row > :not([hidden]) textarea, [data-fcomp-pill]')?.focus({ preventScroll: true });
+        });
+      }
     }
   };
 
@@ -3442,6 +3535,44 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   // The error after a failed Send (or Re-ask) sits ABOVE the button row it belongs to (approval
   // "thread-foot-status-right"), in the two states that have one: the reply box and the closed foot.
   const errorAbove = !resolved && !(guard && staleQuestions.length > 0) && newMessage?.kind !== 'compose' && !(route.open && asking);
+  /**
+   * Full screen's composer (approval "inbox-fullscreen-composer"): the thread's reply as the card shows and
+   * sends it. The card has no words of its own: it shows the box's (or, the box closed, the kept draft's) and
+   * writes through `changeReply`, so typing in either is the one draft; Send is this thread's Send.
+   */
+  const composer: FullScreenComposerValue | null =
+    file && shownFull && !resolved
+      ? {
+          threadId: thread.thread_id,
+          phone,
+          reply: {
+            to: replyName ?? asker,
+            value: box.open ? box.text : (replyDraft.conflict ?? replyDraft.draft?.body ?? ''),
+            onChange: (text) => changeReply(text, true),
+            onSend: () => void send({ stayFull: true }),
+            sending,
+            canSend: boxWords !== '' || picksCount > 0 || records.length > 0 || draftActions.length > 0 || (box.open && replyUploads.length > 0),
+            picks: picksCount,
+            annotations: records.length,
+            files: box.open ? replyFiles.files : [],
+            onFiles: (list) => attachFromComposer(list, true),
+            onDropFiles: (list) => attachFromComposer(list, false),
+            onPaste: (event) => {
+              if (!replyFiles.paste(event)) return;
+              openBehind();
+              setError(null);
+            },
+            onRemoveFile: (key) => replyFiles.remove(key),
+            actions: draftActions.length,
+            openQuestions: unanswered.length,
+            conflict: replyDraft.conflict !== null,
+            error,
+            sentAt: composerSentAt,
+            onOpenThread: replyInThread,
+            tags: composerTags,
+          },
+        }
+      : null;
   const errorLine = (
     <div className="ib-error" role="alert" data-foot-error={errorAbove ? 'above' : undefined}>
       {error}
@@ -4457,15 +4588,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 destination="your reply"
                 tags={composerTags}
                 value={box.text}
-                onChange={(text) => {
-                  // Read-only while a Send is on its way: the words it carries are the words in the box.
-                  if (sending) return;
-                  // The words changed (or emptied): a Send waiting to be confirmed no longer matches them.
-                  const earlier = unconfirmed.get(thread.thread_id);
-                  if (earlier && text.trim() !== earlier.words) forgetUnconfirmed(earlier, text.trim() === '' ? 'emptied' : 'edited');
-                  setBox({ open: true, text });
-                  replyDraft.save(text);
-                }}
+                onChange={(text) => changeReply(text)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
                     event.preventDefault();
@@ -4734,6 +4857,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           annotations: records.length,
           onWriteReply: writeReplyFromFile,
         }}
+        composer={composer}
       />
     )}
     </>

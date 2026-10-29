@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from 'react';
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from 'react';
 import { ImageZoomStage, type FitAxis, type ImageZoomStageHandle, type WheelHintGate, type ZoomMode } from '@plannotator/ui/components/ImageZoomStage';
 import { canPanToward } from '@plannotator/ui/components/imageZoom';
 import type { InboxAttachmentState } from '@plannotator/core/inbox-types';
@@ -15,6 +15,7 @@ import { useConfigValue } from '@plannotator/ui/config';
 import { isCommentSubmitKey } from '@plannotator/ui/utils/commentSubmitKey';
 import { markupWords, noteOnto } from '../markup';
 import { DRAWING_SCREEN, KeptMarkup, markupAddedToast, OverWindow, type Notice } from './Markup';
+import { FullScreenComposer, FullScreenComposerContext } from './FullScreenComposer';
 
 /** A fresh annotation id. */
 function newId(): string {
@@ -122,6 +123,8 @@ export function ImageAttachmentView({
   /** The window's toast ("Markup added to your reply · Undo"). */
   onNotice?: Notice;
 }) {
+  /** Full screen's composer (the pane gives it there): the comment row goes inside it. */
+  const composer = useContext(FullScreenComposerContext);
   const [mode, setMode] = useState<ZoomMode>(initialFit ?? 'fit');
   const [scale, setScale] = useState<number | null>(null);
   const enterSavesComment = useConfigValue('enterSavesComment');
@@ -321,6 +324,67 @@ export function ImageAttachmentView({
     if (!redraw) onNotice?.(markupAddedToast(() => removeKept(id)));
   };
 
+  // The comment row: at the image's foot beside the thread, inside the full-screen composer's Comment tab in full screen.
+  const commentCard = (
+    <div className="ib-ccard">
+      {kept && <KeptMarkup image={kept.image} onRedraw={() => setAnnotating(true)} onRemove={() => removeKept(kept.id)} />}
+      {markup && (
+        <Tip content="Your marked-up copy rides this comment">
+          <span className="ib-markup">
+            <img src={getImageSrc(markup.path)} alt="Your marked-up copy" />
+            <button type="button" onClick={() => setMarkup(null)} aria-label="Remove the marked-up copy">
+              <Icon name="x" size={10} />
+            </button>
+          </span>
+        </Tip>
+      )}
+      <textarea
+        ref={textRef}
+        className="ib-ta"
+        rows={1}
+        value={text}
+        placeholder={kept ? 'Note (optional)' : markup ? 'What should change?' : 'Comment on this image…'}
+        aria-label={kept ? `A note with your drawing on ${attachment.name}` : `Comment on ${attachment.name}`}
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={(event) => {
+          if (isCommentSubmitKey(event, enterSavesComment)) {
+            event.preventDefault();
+            event.stopPropagation();
+            void submit();
+            return;
+          }
+          // Escape leaves the field first (approval "inbox-keyboard-shortcuts": one layer per Escape): focus goes
+          // to the file's pane, the words stay; the next Escape is the pane's. Full screen's Escape ladder has
+          // this rung already (AttachmentPane, "Left the comment box."); beside the thread it is this one.
+          if (event.key === 'Escape' && !event.nativeEvent.isComposing && !event.defaultPrevented) {
+            const paneEl = event.currentTarget.closest<HTMLElement>('[data-attachment-pane]');
+            if (!paneEl || paneEl.closest('[data-full-view]')) return;
+            event.preventDefault();
+            event.stopPropagation();
+            paneEl.focus({ preventScroll: true });
+          }
+        }}
+      />
+      <Tip content="Draw on the image (pen, arrow, circle)">
+        <button type="button" className="ib-btn ib-cbtn" onClick={() => setAnnotating(true)} disabled={failed} data-markup-open="" aria-label={markup || kept ? 'Redraw' : 'Mark up'}>
+          <Icon name="pen" size={15} />
+          <span className="ib-cbtn-l" aria-hidden="true">
+            {markup || kept ? 'Redraw' : 'Mark up'}
+          </span>
+        </button>
+      </Tip>
+      <button
+        type="button"
+        className="ib-btn ib-pri ib-csave"
+        onClick={() => void submit()}
+        disabled={saving || (!text.trim() && !markup)}
+        data-image-comment-save=""
+      >
+        {kept ? 'Add note' : 'Comment'}
+      </button>
+    </div>
+  );
+
   return (
     <div className="ib-imgview" data-image-view={attachment.id}>
       <div
@@ -429,66 +493,14 @@ export function ImageAttachmentView({
           )
         )}
       </div>
-      {!readOnly && (
-        <div className="ib-imgcompose" data-image-composer="">
-          <div className="ib-ccard">
-            {kept && <KeptMarkup image={kept.image} onRedraw={() => setAnnotating(true)} onRemove={() => removeKept(kept.id)} />}
-            {markup && (
-              <Tip content="Your marked-up copy rides this comment">
-                <span className="ib-markup">
-                  <img src={getImageSrc(markup.path)} alt="Your marked-up copy" />
-                  <button type="button" onClick={() => setMarkup(null)} aria-label="Remove the marked-up copy">
-                    <Icon name="x" size={10} />
-                  </button>
-                </span>
-              </Tip>
-            )}
-            <textarea
-              ref={textRef}
-              className="ib-ta"
-              rows={1}
-              value={text}
-              placeholder={kept ? 'Note (optional)' : markup ? 'What should change?' : 'Comment on this image…'}
-              aria-label={kept ? `A note with your drawing on ${attachment.name}` : `Comment on ${attachment.name}`}
-              onChange={(event) => setText(event.target.value)}
-              onKeyDown={(event) => {
-                if (isCommentSubmitKey(event, enterSavesComment)) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  void submit();
-                  return;
-                }
-                // Escape leaves the field first (approval "inbox-keyboard-shortcuts": one layer per Escape): focus goes
-                // to the file's pane, the words stay; the next Escape is the pane's. Full screen's Escape ladder has
-                // this rung already (AttachmentPane, "Left the comment box."); beside the thread it is this one.
-                if (event.key === 'Escape' && !event.nativeEvent.isComposing && !event.defaultPrevented) {
-                  const paneEl = event.currentTarget.closest<HTMLElement>('[data-attachment-pane]');
-                  if (!paneEl || paneEl.closest('[data-full-view]')) return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  paneEl.focus({ preventScroll: true });
-                }
-              }}
-            />
-            <Tip content="Draw on the image (pen, arrow, circle)">
-              <button type="button" className="ib-btn ib-cbtn" onClick={() => setAnnotating(true)} disabled={failed} data-markup-open="" aria-label={markup || kept ? 'Redraw' : 'Mark up'}>
-                <Icon name="pen" size={15} />
-                <span className="ib-cbtn-l" aria-hidden="true">
-                  {markup || kept ? 'Redraw' : 'Mark up'}
-                </span>
-              </button>
-            </Tip>
-            <button
-              type="button"
-              className="ib-btn ib-pri ib-csave"
-              onClick={() => void submit()}
-              disabled={saving || (!text.trim() && !markup)}
-              data-image-comment-save=""
-            >
-              {kept ? 'Add note' : 'Comment'}
-            </button>
+      {composer ? (
+        <FullScreenComposer value={composer} noun="image" comment={readOnly ? null : <div className="ib-fcomp-comment" data-image-composer="">{commentCard}</div>} />
+      ) : (
+        !readOnly && (
+          <div className="ib-imgcompose" data-image-composer="">
+            {commentCard}
           </div>
-        </div>
+        )
       )}
       <OverWindow>
         <ImageAnnotator
