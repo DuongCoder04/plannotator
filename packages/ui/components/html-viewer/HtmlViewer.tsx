@@ -148,6 +148,16 @@ const MAX_VIM_COPY_TEXT_LENGTH = 2 * 1024 * 1024;
  */
 export const HTML_VIEWER_SANDBOX = "allow-scripts allow-modals";
 
+/**
+ * The srcdoc frame's `sandbox` attribute: the `sandbox` prop's value (default
+ * `HTML_VIEWER_SANDBOX`) as given, plus `allow-popups` when `hostNavigates`
+ * needs it and the value lacks it.
+ */
+function srcdocSandbox(sandbox: string, hostNavigates: boolean): string {
+  if (!hostNavigates || sandbox.split(/\s+/).includes("allow-popups")) return sandbox;
+  return sandbox.trim() ? `${sandbox} allow-popups` : "allow-popups";
+}
+
 /** Default wait for the bridge's `ready` on the `bridgeScriptUrl` path. */
 export const DEFAULT_BRIDGE_READY_TIMEOUT_MS = 5000;
 
@@ -373,6 +383,17 @@ export interface HtmlViewerProps {
    * still pins. Absent → unchanged.
    */
   hostNavigates?: boolean;
+  /**
+   * The srcdoc frame's whole `sandbox` attribute value, for a host whose
+   * documents must not open dialogs: `"allow-scripts"` keeps a shared page's
+   * `alert`, `confirm` and `prompt` from drawing over the host's origin. Used
+   * as given, except that `hostNavigates` still adds `allow-popups`, which it
+   * needs. Never add `allow-same-origin` beside `allow-scripts`: the page
+   * could then remove its own sandbox. Live-app (`src`) mode has no sandbox
+   * and ignores this. Absent → `HTML_VIEWER_SANDBOX`
+   * (`"allow-scripts allow-modals"`), unchanged.
+   */
+  sandbox?: string;
 }
 
 /**
@@ -429,6 +450,7 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
       bridgeErrorDisplay = "banner",
       onHostDraft,
       hostNavigates = false,
+      sandbox = HTML_VIEWER_SANDBOX,
     },
     ref,
   ) => {
@@ -1295,7 +1317,7 @@ export const HtmlViewer = forwardRef<ViewerHandle, HtmlViewerProps>(
                 same-origin XHR) and no srcdoc. Srcdoc mode is unchanged. */}
             <iframe
               ref={iframeRef}
-              {...(src ? { src } : { srcDoc: srcdoc, sandbox: HTML_VIEWER_SANDBOX + (hostNavigates ? " allow-popups" : "") })}
+              {...(src ? { src } : { srcDoc: srcdoc, sandbox: srcdocSandbox(sandbox, hostNavigates) })}
               style={{
                 width: "100%",
                 height: fullViewport ? "100%" : `${iframeHeight}px`,
