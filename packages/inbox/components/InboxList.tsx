@@ -167,9 +167,9 @@ function BadgeWords({ row, id }: { row: InboxListRow; id: string }) {
 }
 
 /**
- * The agent's mark in a box of its own: a wide row's column just before the time (approval "inbox-row-badges");
- * on a two-line or phone row, line 2's right end, just before the badge and the count (approval
- * "inbox-row-byline", 2026-10-29), so it moves with what follows it rather than holding a column.
+ * The agent's mark in a box of its own: on a wide row a column of its own, before the badge's and the count's
+ * columns (approval "inbox-row-byline", the one-line row); on a two-line or phone row, line 2's right end, just
+ * before the badge and the count (approval "inbox-row-byline", 2026-10-29), so it moves with what follows it.
  */
 function MarkCol({ row, fold }: { row: InboxListRow; fold?: number }) {
   return (
@@ -179,7 +179,7 @@ function MarkCol({ row, fold }: { row: InboxListRow; fold?: number }) {
   );
 }
 
-/** A two-line or phone row shows up to three agents' marks, past that two marks and "+N" (approval "inbox-row-byline"). */
+/** A list row shows up to three agents' marks, past that two marks and "+N" (approval "inbox-row-byline"). */
 const LINE_MARKS = 3;
 
 /**
@@ -195,10 +195,6 @@ function subjectOf(row: InboxListRow): string {
   if (row.section === 'sent' && row.reask_pending) return reaskRowLine(agentName(rowAgent(row)), row.sent?.checked_at ?? null, row.sent?.wakes);
   if (row.section === 'sent' && !row.addressee && !row.delivery) return sentRowLine(agentName(rowAgent(row)), row.sent?.wakes);
   return row.subject ?? '(no subject)';
-}
-
-function countOf(row: InboxListRow): ReactNode {
-  return countState(row) ?? waitCount(row.questions.open, row.questions.actions ?? 0);
 }
 
 /** What the count cell says in place of the open count (a wait, Archived, a draft, Read, …), or null: the open count. */
@@ -220,15 +216,17 @@ function countState(row: InboxListRow): ReactNode | null {
 }
 
 /**
- * The count at the right end of a two-line or phone row's line 2 (approval "inbox-row-byline", 2026-10-29): what
- * waits on the person as `?N`, the question icon and the number (from one question on), its words for a screen
- * reader and in the tooltip; anything else the count cell says (Read, a draft, Undelivered …) in its own words.
+ * The row's count (approval "inbox-row-byline", 2026-10-29): at the right end of a two-line or phone row's line 2,
+ * and in a wide row's count column. What waits on the person is `?N`, the question icon and the number (from one
+ * question on), its words for a screen reader and in the tooltip; anything else the count cell says (Read, a
+ * draft, Undelivered …) in its own words. `cell`: an empty cell when there is nothing to count (a wide row's
+ * column); otherwise nothing.
  */
-function LineCount({ row, tip = false }: { row: InboxListRow; tip?: boolean }) {
+function LineCount({ row, tip = false, cell: always = false }: { row: InboxListRow; tip?: boolean; cell?: boolean }) {
   const state = countState(row);
   if (state) return <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{state}</span>;
   const open = row.questions.open;
-  if (open < 1) return null;
+  if (open < 1) return always ? <span className="ib-c" /> : null;
   const words = waitCount(open, row.questions.actions ?? 0) || '1 question';
   // An action item is always named (approval "inbox-next-actions"): only questions read as `?N`.
   if ((row.questions.actions ?? 0) > 0) return <span className="ib-c">{words}</span>;
@@ -325,16 +323,19 @@ function PinnedWords() {
 
 /**
  * Below this list width the wide row of every project leaves its subject cell
- * too little room (the project, badge and mark columns are fixed at 130px,
- * 48px and 40px), so the list draws the two-line rows instead.
+ * too little room (the project, mark, badge and time columns are fixed at
+ * 170px, 64px, 52px and 76px, the count at least 36px), so the list draws the
+ * two-line rows instead.
  */
 export const WIDE_ROWS_MIN_LIST_WIDTH = 900;
 
 /**
- * One row of the wide list. With every project shown it is six columns:
- * project, badge, subject, count, the agent's mark, time. In one project's list (`filtered`)
- * the project and badge columns are not rendered at all: the badge, when the
- * row has one, leads the subject cell, so a row starts at the list's left edge
+ * One row of the wide list, on one line (approval "inbox-row-byline", the
+ * one-line row). With every project shown it is six columns: the project, the
+ * subject cell (the thread pill, the subject), then right-aligned the agents'
+ * marks, the badge, the count (`?N`) and the time, each in a column of its own
+ * so they line up down the list. In one project's list (`filtered`) the project
+ * column is not rendered at all, so a row starts at the list's left edge
  * instead of after an empty block.
  */
 function WideRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: InboxListRow; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
@@ -358,13 +359,12 @@ function WideRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: 
       {...focus}
     >
       {!filtered && <ClipText className="ib-p" text={row.project.name} />}
-      {!filtered && <span>{badgeEl}</span>}
       <span className="ib-subj">
-        {filtered && badgeEl}
         <SubjectLine row={row} pinned={pinned} />
       </span>
-      <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{countOf(row)}</span>
-      <MarkCol row={row} />
+      <MarkCol row={row} fold={LINE_MARKS} />
+      <span className="ib-bcol">{badgeEl}</span>
+      <LineCount row={row} tip cell />
       <span className="ib-t">
         <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
       </span>

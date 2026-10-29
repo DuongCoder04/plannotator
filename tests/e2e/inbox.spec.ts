@@ -345,16 +345,17 @@ test('a project folder filters the list and the sections still apply', async () 
   await expect(page.getByRole('heading', { level: 1, name: 'billing-svc' })).toBeVisible();
   await expect(page.locator('.ib-band')).toHaveText([/^Stopped on you\s*1$/, /^Waiting on you\s*1$/]);
   // One project: no project column at all, and no empty block where it was. The
-  // subject cell starts where the project label did; a badge, when a row has one,
-  // leads it. The agent's mark has its own column just before the time
-  // (approval "inbox-row-badges"), on one right edge for every row.
+  // subject cell starts where the project label did, badge or not. The agents'
+  // marks, the badge and the count have their own columns before the time
+  // (approval "inbox-row-byline", the one-line row), each on one right edge for every row.
   await expect(page.locator('.ib-row .ib-p')).toHaveCount(0);
   expect(await leftOf(page, `${named} .ib-subj`)).toBe(labelLeft);
-  expect(await leftOf(page, `${stoppedRow} .ib-badge`)).toBe(labelLeft);
-  await expect(page.locator('.ib-row .ib-subj .ib-mk')).toHaveCount(0);
-  const markRight = async (row: string) => Math.round((await page.locator(`${row} .ib-mcol`).boundingBox())!.x + (await page.locator(`${row} .ib-mcol`).boundingBox())!.width);
-  expect(await markRight(named)).toBe(await markRight(stoppedRow));
-  expect(await markRight(named)).toBeLessThanOrEqual(await leftOf(page, `${named} .ib-t`));
+  expect(await leftOf(page, `${stoppedRow} .ib-subj`)).toBe(labelLeft);
+  await expect(page.locator('.ib-row .ib-subj :is(.ib-mk, .ib-badge)')).toHaveCount(0);
+  const rightOf = async (sel: string) => Math.round((await page.locator(sel).boundingBox())!.x + (await page.locator(sel).boundingBox())!.width);
+  for (const cell of ['.ib-mcol', '.ib-bcol', '.ib-c']) expect(await rightOf(`${named} ${cell}`)).toBe(await rightOf(`${stoppedRow} ${cell}`));
+  expect(await rightOf(`${stoppedRow} .ib-bcol .ib-badge`)).toBe(await rightOf(`${stoppedRow} .ib-bcol`));
+  expect(await rightOf(`${named} .ib-c`)).toBeLessThanOrEqual(await leftOf(page, `${named} .ib-t`));
   await shot('1.2-project-filter');
   await side(page).getByRole('button', { name: /^Inbox/ }).click();
   await expect(page.locator('.ib-lbody [data-thread-id]')).toHaveCount(3);

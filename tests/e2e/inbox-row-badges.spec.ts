@@ -7,8 +7,10 @@
  *
  *  - Stopped is a red triangle alone, Holds up an amber triangle and its count;
  *    their accessible text stays "Stopped" and "Holds up 3".
- *  - The agent's mark has its own column just before the time: every mark's
- *    right edge lines up, and every subject cell starts on one left edge.
+ *  - The one-line row (approval "inbox-row-byline"): the project, the subject
+ *    cell, then the agents' marks, the badge, the count and the time, each in
+ *    its own column: every column's right edge lines up down the list, and
+ *    every subject cell starts on one left edge.
  *  - Card A opens on the badge after the tooltip delay, and while the row has
  *    keyboard focus; a click's focus opens nothing.
  *  - Beside an open thread the two-line rows keep the card (approval
@@ -143,7 +145,7 @@ test.afterAll(async () => {
   }
 });
 
-test('desktop: the triangles, their words for a screen reader, and the marks in their own column', async () => {
+test('desktop: the triangles, their words for a screen reader, and the marks, badge and count in their own columns', async () => {
   const { page } = world;
   await page.goto(world.url);
   const stop = page.locator(`.ib-row[data-thread-id="${world.stopped}"] [data-row-badge]`);
@@ -156,29 +158,41 @@ test('desktop: the triangles, their words for a screen reader, and the marks in 
   for (const badge of [stop, hold]) expect((await badge.locator('.ib-sr').boundingBox())!.width).toBeLessThanOrEqual(1);
   await expect(hold.locator('.ib-bn')).toHaveText('3');
   expect((await stop.boundingBox())!.width).toBeLessThanOrEqual(30);
-  // The badge column narrowed: the badge fits in 48 px.
-  expect((await hold.boundingBox())!.width).toBeLessThanOrEqual(48);
+  // The badge fits its 52 px column.
+  expect((await hold.boundingBox())!.width).toBeLessThanOrEqual(52);
   // One accessible name per row, its words short; the card's words as its description.
   const row = page.locator(`.ib-row[data-thread-id="${world.stopped}"]`);
   const described = await row.getAttribute('aria-describedby');
   expect(described).toBeTruthy();
   await expect(page.locator(`[id="${described}"]`)).toHaveText(/^Stopped: The retry worker cannot ship without this\. Also holds up: The retry worker; The admin retry view\.$/);
 
-  // Every mark ends on one right edge, just before the time; every subject cell starts on one left edge.
+  // Left to right after the subject: the marks, the badge, the count, the time, each column on one right edge
+  // down the list (approval "inbox-row-byline", the one-line row); every subject cell starts on one left edge.
   const geometry = await page.evaluate(() =>
-    [...document.querySelectorAll<HTMLElement>('.ib-row')].map((r) => ({
-      mark: r.querySelector('.ib-mcol')!.getBoundingClientRect().right,
-      time: r.querySelector('.ib-t')!.getBoundingClientRect().left,
-      subj: r.querySelector('.ib-subj')!.getBoundingClientRect().left,
-      inSubject: r.querySelector('.ib-subj .ib-mk') !== null,
-    })),
+    [...document.querySelectorAll<HTMLElement>('.ib-row')].map((r) => {
+      const box = (sel: string) => r.querySelector(sel)!.getBoundingClientRect();
+      const badge = r.querySelector('.ib-bcol > [data-row-badge]');
+      return {
+        cells: [...r.children].map((c) => c.className.split(' ')[0]),
+        rights: ['.ib-mcol', '.ib-bcol', '.ib-c', '.ib-t'].map((sel) => Math.round(box(sel).right)),
+        lefts: ['.ib-mcol', '.ib-bcol', '.ib-c', '.ib-t'].map((sel) => box(sel).left),
+        subjRight: box('.ib-subj').right,
+        subj: box('.ib-subj').left,
+        // A badge ends on its column's right edge.
+        badgeEnd: badge ? Math.abs(badge.getBoundingClientRect().right - box('.ib-bcol').right) : 0,
+        inSubject: r.querySelector('.ib-subj :is(.ib-mk, [data-row-badge])') !== null,
+      };
+    }),
   );
   expect(geometry.length).toBeGreaterThanOrEqual(4);
-  expect(new Set(geometry.map((g) => Math.round(g.mark))).size).toBe(1);
+  for (let i = 0; i < 4; i++) expect(new Set(geometry.map((g) => g.rights[i])).size, `column ${i}`).toBe(1);
   expect(new Set(geometry.map((g) => Math.round(g.subj))).size).toBe(1);
   for (const g of geometry) {
+    expect(g.cells.slice(-5)).toEqual(['ib-subj', 'ib-mcol', 'ib-bcol', 'ib-c', 'ib-t']);
     expect(g.inSubject).toBe(false);
-    expect(g.mark).toBeLessThanOrEqual(g.time);
+    expect(g.lefts[0]).toBeGreaterThanOrEqual(g.subjRight);
+    for (let i = 1; i < 4; i++) expect(g.lefts[i]).toBeGreaterThanOrEqual(g.rights[i - 1]! - 0.5);
+    expect(g.badgeEnd).toBeLessThanOrEqual(0.5);
   }
   await shot(page, 'desktop');
   expect(world.errors).toEqual([]);

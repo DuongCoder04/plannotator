@@ -724,13 +724,17 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-group + .ib-group { margin-top: 12px; }
 .ib-band .ib-n { font-weight: 500; color: var(--muted-foreground); }
 .ib-band .ib-ic { margin-left: auto; color: var(--muted-foreground); }
-/* The count column is 96px unless its text is wider ("Answered, not sent"): then it grows, so it never runs into the time. */
-.ib-row { display: grid; grid-template-columns: 130px 48px minmax(0, 1fr) minmax(96px, max-content) 40px 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
-/* One project's list: no project or badge column (InboxList's WideRow); a badge leads the subject cell. */
-.ib-noproj .ib-row { grid-template-columns: minmax(0, 1fr) minmax(96px, max-content) 40px 76px; }
-/* The agent's mark in its own narrow column just before the time (approval "inbox-row-badges"), so every
-   subject starts on one left edge; two agents' marks overlap within it. */
-.ib-row .ib-mcol { display: inline-flex; justify-content: flex-end; align-items: center; min-width: 0; }
+/* The one-line row (approval "inbox-row-byline", 2026-10-29): the project, the subject cell (the thread pill, the
+   subject), then right-aligned the agents' marks, the badge, the count (`?N`) and the time, each in a column of its
+   own so they line up down the list. The count column is 36px unless its words are wider ("Answered, not sent"):
+   then it grows, so it never runs into the time. */
+.ib-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 64px 52px minmax(36px, max-content) 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
+/* One project's list: no project column (InboxList's WideRow). */
+.ib-noproj .ib-row { grid-template-columns: minmax(0, 1fr) 64px 52px minmax(36px, max-content) 76px; }
+/* The agents' marks, the badge and the count, each right-aligned in its column, so every subject starts on one
+   left edge; up to three agents' marks overlap within theirs, past that two and "+N". */
+.ib-row .ib-mcol, .ib-row .ib-bcol { display: inline-flex; justify-content: flex-end; align-items: center; min-width: 0; }
+.ib-row .ib-c.ib-qn { justify-content: flex-end; }
 .ib-row .ib-p { font-weight: 400; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-row.ib-u .ib-s { font-weight: 600; }
 /* The thread chip: it can shrink to its border (flex), and its name keeps its
@@ -753,10 +757,8 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-row .ib-s > .ib-st, .ib-nrow .ib-l2 .ib-s > .ib-st { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @container (max-width: 300px) { .ib-row .ib-att .ib-att-l { display: none; } }
 /* Where the chip would be squeezed to its bare border it is left out: a cell
-   under 160px (after the subject's floor, the marks and the gaps nothing is
-   left for it), or under 300px when a badge leads the cell. */
+   under 160px (after the subject's floor and the gaps nothing is left for it). */
 @container (max-width: 160px) { .ib-row .ib-key { display: none; } }
-@container (max-width: 300px) { .ib-row .ib-badge ~ .ib-key { display: none; } }
 .ib-nrow .ib-att .ib-att-l { display: none; }
 .ib-row .ib-c { color: var(--muted-foreground); font-size: var(--ib-fs-13, 13px); text-align: right; white-space: nowrap; }
 .ib-row .ib-t { color: var(--muted-foreground); font-size: var(--ib-fs-13, 13px); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -811,9 +813,9 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-nrow .ib-l2 > :is(.ib-badge, .ib-c) { flex: none; }
 /* The open count on line 2 (`LineCount`): the question icon and the number, `?2`; its words are for a screen reader. */
 .ib-c.ib-qn { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
-/* Two agents in that box: the scale's 20 px tiles, overlapping 2 px rather than the stack's 5, so the second
+/* Several agents in that box (any list row, the one-line row too): the scale's 20 px tiles, overlapping 2 px rather than the stack's 5, so the second
    tile never covers the first one's glyph (13 px, 3.5 px inside its tile): both marks read whole. */
-:is(.ib-nrow, .ib-mrow) .ib-mcol .ib-tg-stack .ib-mk + .ib-mk { margin-left: -2px; }
+:is(.ib-row, .ib-nrow, .ib-mrow) .ib-mcol .ib-tg-stack .ib-mk + .ib-mk { margin-left: -2px; }
 .ib-nrow .ib-l2 { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--ib-fs-13-5, 13.5px); overflow: hidden; }
 .ib-nrow .ib-l2 .ib-s { color: var(--muted-foreground); }
 .ib-nrow.ib-u .ib-l2 .ib-s { color: var(--foreground); font-weight: 600; }

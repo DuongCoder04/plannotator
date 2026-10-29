@@ -1,11 +1,12 @@
 /**
  * The list's project column. With every project shown a wide row carries the
- * project label and a badge cell before the subject. In one project's list
- * (a sidebar folder) neither cell is rendered, so the row does not start with
- * an empty block: the badge, when the row has one, leads the subject cell, and
- * the agent mark comes next. The failure this catches is the column coming
- * back merely hidden (display: none, an empty span) while the grid still
- * reserves its width. Pixel positions are proved in tests/e2e/inbox.spec.ts.
+ * project label before the subject cell (approval "inbox-row-byline", the
+ * one-line row); the agents' marks, the badge, the count and the time follow
+ * in columns of their own. In one project's list (a sidebar folder) the
+ * project cell is not rendered, so the row does not start with an empty
+ * block. The failure this catches is the column coming back merely hidden
+ * (display: none, an empty span) while the grid still reserves its width.
+ * Pixel positions are proved in tests/e2e/inbox.spec.ts.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
@@ -95,7 +96,7 @@ function rowEl(el: HTMLElement, id: string): HTMLElement {
 }
 
 describe.if(hasDom)('the wide list', () => {
-  test('every project: each row has the project cell and the badge cell before the subject', () => {
+  test('every project: the project, the subject cell, then the marks, the badge, the count and the time in columns', () => {
     const el = render(false);
     expect(el.querySelector('.ib-listcol')!.classList.contains('ib-noproj')).toBe(false);
     for (const id of ['msg_stop', 'msg_hold', 'msg_wait', 'msg_sent']) {
@@ -104,32 +105,33 @@ describe.if(hasDom)('the wide list', () => {
       expect(cells.length).toBe(6);
       expect(cells[0]!.className).toBe('ib-p');
       expect(cells[0]!.textContent).toBe('billing-svc');
-      expect(cells[2]!.className).toBe('ib-subj');
-      // The badge sits in its own column, never inside the subject cell.
-      expect(cells[2]!.querySelector('.ib-badge')).toBeNull();
-      // The agent's mark has its own column just before the time.
-      expect(cells.slice(3).map((c) => c.className)).toEqual(['ib-c', 'ib-mcol', 'ib-t']);
-      expect(cells[2]!.querySelector('.ib-mk')).toBeNull();
+      expect(cells[1]!.className).toBe('ib-subj');
+      // The badge and the marks sit in their own columns, never inside the subject cell; every row has every
+      // cell, empty or not, so the columns line up down the list.
+      expect(cells[1]!.querySelector('.ib-badge, .ib-mk')).toBeNull();
+      expect(cells.slice(2).map((c) => c.className.split(' ')[0])).toEqual(['ib-mcol', 'ib-bcol', 'ib-c', 'ib-t']);
     }
-    expect(rowEl(el, 'msg_stop').children[1]!.querySelector('.ib-badge')!.textContent).toBe('Stopped');
+    expect(rowEl(el, 'msg_stop').children[3]!.querySelector('.ib-badge')!.textContent).toBe('Stopped');
+    // The open count is ?N (from one question on), its words for a screen reader.
+    expect(rowEl(el, 'msg_stop').children[4]!.querySelector('.ib-sr')!.textContent).toBe('1 question');
   });
 
-  test("one project: no project cell and no badge cell; the subject cell starts the row", () => {
+  test("one project: no project cell; the subject cell starts the row", () => {
     const el = render(true);
     expect(el.querySelector('.ib-listcol')!.classList.contains('ib-noproj')).toBe(true);
     expect(el.querySelectorAll('.ib-row .ib-p').length).toBe(0);
     for (const id of ['msg_stop', 'msg_hold', 'msg_wait', 'msg_sent']) {
       const cells = [...rowEl(el, id).children];
-      expect(cells.map((c) => c.className)).toEqual(['ib-subj', 'ib-c', 'ib-mcol', 'ib-t']);
+      expect(cells.map((c) => c.className.split(' ')[0])).toEqual(['ib-subj', 'ib-mcol', 'ib-bcol', 'ib-c', 'ib-t']);
     }
-    // No badge: the subject cell starts with the thread chip or the subject; the mark is in its own column.
+    // The subject cell starts with the thread chip or the subject, badge or not.
     expect(rowEl(el, 'msg_wait').querySelector('.ib-subj')!.firstElementChild!.className).toBe('ib-key');
     expect(rowEl(el, 'msg_sent').querySelector('.ib-subj')!.firstElementChild!.className).toBe('ib-s');
-    // A badge leads the subject cell; its words stay for a screen reader.
+    // The badge keeps its own column; its words stay for a screen reader.
     for (const [id, badge] of [['msg_stop', 'Stopped'], ['msg_hold', 'Holds up 2']] as const) {
-      const subj = rowEl(el, id).querySelector('.ib-subj')!;
-      expect(subj.children[0]!.classList.contains('ib-badge')).toBe(true);
-      expect(subj.children[0]!.textContent).toBe(badge);
+      const r = rowEl(el, id);
+      expect(r.querySelector('.ib-subj .ib-badge')).toBeNull();
+      expect(r.querySelector('.ib-bcol > .ib-badge')!.textContent).toBe(badge);
     }
     // The thread chip and the guided review mark stay in the subject cell.
     const wait = rowEl(el, 'msg_wait').querySelector('.ib-subj')!;
