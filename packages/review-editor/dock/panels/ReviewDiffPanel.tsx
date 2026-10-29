@@ -161,6 +161,8 @@ export const ReviewDiffBody: React.FC<{ filePath: string | null; onKeep?: () => 
         onEditAnnotation={state.onEditAnnotation}
         onSelectAnnotation={state.onSelectAnnotation}
         onDeleteAnnotation={state.onDeleteAnnotation}
+        onExplainAnnotation={state.aiAvailable ? state.onExplainAnnotation : undefined}
+        agentFindingSources={state.agentFindingSources}
         isViewed={state.viewedFiles.has(file.path)}
         isGenerated={state.generatedFiles.has(file.path)}
         isTest={fileKind(file.path, state.generatedFiles) === 'test'}
