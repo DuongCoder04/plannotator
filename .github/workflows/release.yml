@@ -85,6 +85,9 @@ jobs:
   build:
     needs: test
     runs-on: ubuntu-24.04
+    outputs:
+      viewer-js: ${{ steps.viewer-pin.outputs.js }}
+      viewer-css: ${{ steps.viewer-pin.outputs.css }}
     # Build job has NO id-token / attestations permissions. Compilation
     # itself doesn't need OIDC minting — those capabilities live in the
     # separate `attest` job below, which only runs on tag pushes. This
@@ -107,6 +110,16 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # The guides.show viewer pin is generated, not committed (a checkout has
+      # only the fallback pin). Build this commit's viewer and pin it, so the
+      # binaries pin what guides-show-deploy.yml publishes for this tag; the
+      # viewer-pin-live job checks that before anything is released.
+      - name: Pin this commit's guide viewer
+        id: viewer-pin
+        run: |
+          bun run build:viewer-pin
+          jq -r '"js=\(.js)", "css=\(.css)"' apps/guides-show/dist/viewer/manifest.json >> "$GITHUB_OUTPUT"
 
       - name: Build UI
         run: |
@@ -1120,6 +1133,7 @@ jobs:
       - pi-extension-ai-runtime-windows
       - install-script-smoke
       - release-security
+      - viewer-pin-live
     if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs['dry-run'] == 'false'))
     runs-on: ubuntu-24.04
     permissions:
@@ -1200,12 +1214,70 @@ jobs:
             npm-packages/plannotator-dsh.tgz
           sbom-path: release-sbom/${{ needs.release-security.outputs.sbom-name }}
 
+  # The binaries and the npm packages pin the guides.show viewer their own job
+  # built (`bun run build:viewer-pin`); guides-show-deploy.yml publishes this
+  # tag's build on the same push. Nothing else ties the two together, so before
+  # anything is released, guides.show must serve the exact entry files both jobs
+  # pinned. A deploy that failed, lags or built other bytes would otherwise ship
+  # exports that load no viewer. attest, release and npm-publish all wait for
+  # it, so a failed gate attests, releases and publishes nothing. The deploy
+  # normally finishes long before this job starts (this workflow's test job
+  # alone takes longer); the retries cover a slow one. Recovery: deploy
+  # guides.show on the tag, then "Re-run failed jobs".
+  viewer-pin-live:
+    needs:
+      - release-eligibility
+      - build
+      - npm-package
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs['dry-run'] == 'false'))
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: guides.show serves the pinned viewer
+        env:
+          BUILD_JS: ${{ needs.build.outputs.viewer-js }}
+          BUILD_CSS: ${{ needs.build.outputs.viewer-css }}
+          PACKAGE_JS: ${{ needs.npm-package.outputs.viewer-js }}
+          PACKAGE_CSS: ${{ needs.npm-package.outputs.viewer-css }}
+        run: |
+          set -eu
+          for v in BUILD_JS BUILD_CSS PACKAGE_JS PACKAGE_CSS; do
+            if [ -z "${!v}" ]; then
+              echo "$v is empty: a job did not record the viewer it pinned" >&2
+              exit 1
+            fi
+          done
+          if [ "$BUILD_JS" != "$PACKAGE_JS" ] || [ "$BUILD_CSS" != "$PACKAGE_CSS" ]; then
+            echo "the build and npm-package jobs pinned different viewers: $BUILD_JS $BUILD_CSS vs $PACKAGE_JS $PACKAGE_CSS" >&2
+            exit 1
+          fi
+          for f in "$BUILD_JS" "$BUILD_CSS"; do
+            if ! printf '%s\n' "$f" | grep -Eq '^viewer\.[A-Za-z0-9_-]+\.(js|css)$'; then
+              echo "not a viewer entry file: $f" >&2
+              exit 1
+            fi
+            code=000
+            for attempt in $(seq 1 10); do
+              code=$(curl -sS --max-time 20 -o /dev/null -I -w '%{http_code}' "https://guides.show/v1/$f" || true)
+              [ "$code" = 200 ] && break
+              echo "attempt $attempt: https://guides.show/v1/$f answered $code; retrying in 30 s"
+              sleep 30
+            done
+            if [ "$code" != 200 ]; then
+              echo "guides.show does not serve the pinned $f (last answer $code): deploy guides.show for this tag, then rerun" >&2
+              exit 1
+            fi
+            echo "https://guides.show/v1/$f: 200"
+          done
+
   release:
     # Depends on `attest` so the signed provenance and SBOM attestation exist before the
     # GitHub Release is published — otherwise there'd be a window where
     # users could pull the binary and `gh attestation verify` would
     # race-fail. `needs: attest` implicitly requires `build` too.
-    needs: attest
+    needs:
+      - attest
+      - viewer-pin-live
     if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs['dry-run'] == 'false'))
     runs-on: ubuntu-24.04
     permissions:
@@ -1252,6 +1324,9 @@ jobs:
       - pi-extension-ai-runtime-windows
       - install-script-smoke
     runs-on: ubuntu-24.04
+    outputs:
+      viewer-js: ${{ steps.viewer-pin.outputs.js }}
+      viewer-css: ${{ steps.viewer-pin.outputs.css }}
     permissions:
       contents: read
     steps:
@@ -1272,6 +1347,16 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # The OpenCode bundle and the Pi package (vendor.sh) both carry the
+      # viewer pin: pin this commit's viewer build, as the binaries do. The
+      # publish runs with --ignore-scripts, so this step (not prepublishOnly)
+      # is what pins the npm packages.
+      - name: Pin this commit's guide viewer
+        id: viewer-pin
+        run: |
+          bun run build:viewer-pin
+          jq -r '"js=\(.js)", "css=\(.css)"' apps/guides-show/dist/viewer/manifest.json >> "$GITHUB_OUTPUT"
 
       - name: Build packages
         run: |
@@ -1388,6 +1473,7 @@ jobs:
       - release-eligibility
       - npm-package
       - release-security
+      - viewer-pin-live
     if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs['dry-run'] == 'false'))
     runs-on: ubuntu-24.04
     environment: npm-publish

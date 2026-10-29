@@ -5,6 +5,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 rm -rf generated
+# The viewer pin is generated, not committed: make sure one exists (a no-op
+# when it does; a checkout that skipped `bun install` gets the fallback pin).
+bun ../guides-show/build/sync-manifest.ts --if-missing
 mkdir -p generated generated/ai/providers
 
 # Modules that MOVED to @plannotator/core — vendor the real impl from core.
