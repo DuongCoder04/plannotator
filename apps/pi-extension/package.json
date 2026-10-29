@@ -62,7 +62,7 @@
   ],
   "scripts": {
     "build": "cp ../hook/dist/index.html plannotator.html && cp ../hook/dist/review.html review-editor.html && rm -rf diagram-engine && cp -R ../hook/dist/diagram-engine diagram-engine && bash vendor.sh",
-    "prepublishOnly": "cd ../.. && bun run build:pi"
+    "prepublishOnly": "cd ../.. && bun run build:viewer-pin && bun run build:pi"
   },
   "dependencies": {
     "@joplin/turndown-plugin-gfm": "^1.0.68",

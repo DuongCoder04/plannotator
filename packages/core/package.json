@@ -72,6 +72,9 @@
     "**/*.ts",
     "!**/*.test.ts"
   ],
+  "scripts": {
+    "prepack": "bun run --cwd ../.. build:viewer-pin"
+  },
   "dependencies": {},
   "devDependencies": {
     "typescript": "~5.8.2"

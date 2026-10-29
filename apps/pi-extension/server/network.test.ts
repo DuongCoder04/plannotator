@@ -26,7 +26,6 @@ import {
 	openBrowser,
 } from "./network.ts";
 
-const savedEnv: Record<string, string | undefined> = {};
 const envKeys = [
 	"PLANNOTATOR_REMOTE",
 	"PLANNOTATOR_PORT",
@@ -38,6 +37,11 @@ const envKeys = [
 	"PLANNOTATOR_PUBLIC_URL",
 	"PLANNOTATOR_DATA_DIR",
 ];
+// The values this file found (the preload's NO_BROWSER among them). Every
+// test is put back to these, however many times it cleared the env: saving
+// at each clearEnv() would keep a value an earlier loop pass set, and leak
+// it (PLANNOTATOR_BROWSER="Google Chrome") into the files after this one.
+const savedEnv: Record<string, string | undefined> = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
 
 // The advertised URL reads config.json; point it at an empty sandbox, never
 // the developer's real ~/.plannotator.
@@ -45,10 +49,7 @@ const SANDBOX_DATA_DIR = mkdtempSync(join(tmpdir(), "plannotator-pi-network-test
 afterAll(() => rmSync(SANDBOX_DATA_DIR, { recursive: true, force: true }));
 
 function clearEnv() {
-	for (const key of envKeys) {
-		savedEnv[key] = process.env[key];
-		delete process.env[key];
-	}
+	for (const key of envKeys) delete process.env[key];
 	process.env.PLANNOTATOR_DATA_DIR = SANDBOX_DATA_DIR;
 }
 

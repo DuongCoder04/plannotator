@@ -2,7 +2,7 @@
   "name": "plannotator-webview",
   "displayName": "Plannotator",
   "description": "Opens Plannotator plan reviews inside VS Code tabs, and writes and reads Guided Reviews of your changes and pull requests",
-  "version": "0.16.8",
+  "version": "0.17.0",
   "publisher": "backnotprop",
   "license": "MIT",
   "homepage": "https://plannotator.ai",
@@ -542,7 +542,7 @@
     "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.guides.json && tsc --noEmit -p tsconfig.webview.json",
     "typecheck:reader": "tsc --noEmit -p tsconfig.reader.json",
     "vsce-package": "vsce package --no-dependencies",
-    "package": "bun run build && bun run vsce-package",
+    "package": "bun run --cwd ../.. build:viewer-pin && bun run build && bun run vsce-package",
     "clean": "rm -rf ./dist"
   },
   "dependencies": {
