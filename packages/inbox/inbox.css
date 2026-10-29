@@ -590,7 +590,21 @@ button.ib-mut { border-radius: 6px; }
 .pn-inbox .ib-cpill:hover { background: var(--ib-sidectl-hover-s, color-mix(in oklch, var(--muted) 60%, transparent)); }
 .pn-inbox .ib-cpill:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .ib-cpill-ags { display: inline-flex; gap: 3px; flex: none; color: var(--foreground); }
-.ib-cpill-ag { display: block; width: var(--ib-mark-16); height: var(--ib-mark-16); flex: none; }
+.ib-cpill-ag { display: block; width: var(--ib-mark-16); height: var(--ib-mark-16); flex: none; transform-origin: 50% 100%; transform: rotate(0deg); transition: transform 176ms cubic-bezier(0.165, 0.84, 0.44, 1); }
+/* Hover / keyboard focus: the logos tilt apart like a hand of cards (pivot bottom center, rotation only). Inner pair = 0.23 x the 9deg edge. */
+.ib-cpill-ag:is(:nth-child(1), :nth-child(4)) { transition-delay: 20ms; }
+.ib-cpill-ag:nth-child(1) { --ib-tilt: -9deg; }
+.ib-cpill-ag:nth-child(2) { --ib-tilt: -2.07deg; }
+.ib-cpill-ag:nth-child(3) { --ib-tilt: 2.07deg; }
+.ib-cpill-ag:nth-child(4) { --ib-tilt: 9deg; }
+@media (prefers-reduced-motion: no-preference) {
+  .ib-cpill:focus-visible .ib-cpill-ag { transform: rotate(var(--ib-tilt)); transition-duration: 220ms; transition-delay: 0ms; }
+  .ib-cpill:focus-visible .ib-cpill-ag:is(:nth-child(1), :nth-child(4)) { transition-delay: 20ms; }
+}
+@media (prefers-reduced-motion: no-preference) and (hover: hover) {
+  .ib-cpill:hover .ib-cpill-ag { transform: rotate(var(--ib-tilt)); transition-duration: 220ms; transition-delay: 0ms; }
+  .ib-cpill:hover .ib-cpill-ag:is(:nth-child(1), :nth-child(4)) { transition-delay: 20ms; }
+}
 .ib-cpill-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pn-inbox .ib-cpill svg.ib-ic { flex: none; margin-right: -3px; color: var(--muted-foreground); transition: none; }
 .ib-cpill[data-connect-prompt="copied"] svg.ib-ic { color: var(--success); }
