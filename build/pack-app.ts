@@ -41,6 +41,45 @@ addEventListener("error",function(e){if(e.target===entry())check(true)},true);
 addEventListener("vite:preloadError",function(){check(false)});
 })()</script>`;
 
+/** Said when the page's stylesheet or entry script still fails after one retry. */
+export const LOAD_FAILED_MESSAGE = "Plannotator couldn't finish loading.";
+
+/**
+ * The fonts every page draws its first text in. Preloaded from the head so
+ * they arrive with the stylesheet instead of after the app renders: on a slow
+ * link the text would otherwise paint in the fallback font and rewrap.
+ */
+const PRELOADED_FONTS = [/^assets\/inter-latin-wght-normal-[^/]+\.woff2$/, /^assets\/geist-mono-latin-wght-normal-[^/]+\.woff2$/];
+
+/**
+ * First in the head, before anything can paint:
+ *  - The color scheme of the user's saved theme (the `plannotator-theme`
+ *    cookie; dark when there is none, `system` follows the OS). The page's
+ *    stylesheet lands before its entry script has run, and with the browser's
+ *    default scheme the empty page would paint white for that long under a
+ *    dark theme. ThemeProvider takes the value over when it mounts
+ *    (`applyThemeClasses` keeps an inline color-scheme equal to the mode).
+ *  - One retry of the page's own stylesheet or entry script (`core`, read
+ *    from the built page) when its request fails, then a plain line with
+ *    Reload. The entry is retried at its own URL: the lazy chunks import it
+ *    by that URL, and a second URL would evaluate a second copy of the app.
+ *    (A browser that keeps a failed module fetch for the page fails the
+ *    retry at once and shows the line.) Nothing is said when the entry's URL answers 200 with the page:
+ *    that is a server from before the pack, which UPDATED_WHILE_OPEN_SCRIPT
+ *    speaks for. Inline styles only, because the app's CSS may be what
+ *    failed; Canvas and CanvasText follow the scheme set above.
+ */
+function headScript(core: string[]): string {
+  return `<script>(function(){
+var d=document,h=d.documentElement;
+try{var m=(d.cookie.match(/(?:^|; )plannotator-theme=([^;]*)/)||[])[1];m=m?decodeURIComponent(m):"dark";if(m==="system")m=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";h.style.colorScheme=m==="light"?"light":"dark"}catch(e){}
+var core=${JSON.stringify(core)},failed=false;
+function show(){if(d.getElementById("plannotator-load-failed"))return;var p=d.createElement("p");p.id="plannotator-load-failed";p.setAttribute("role","alert");p.style.cssText="position:fixed;top:0;left:0;right:0;margin:0;padding:12px 16px;font:14px/1.5 system-ui,sans-serif;background:Canvas;color:CanvasText;z-index:2147483646";p.appendChild(d.createTextNode(${JSON.stringify(LOAD_FAILED_MESSAGE + ' ')}));var b=d.createElement("button");b.type="button";b.textContent="Reload";b.style.cssText="font:inherit;color:inherit;background:none;border:0;margin:-4px -6px;padding:4px 6px;min-height:28px;text-decoration:underline;cursor:pointer";b.onclick=function(){location.reload()};p.appendChild(b);var st=d.createElement("style");st.textContent="@media (pointer:coarse){#plannotator-load-failed button{min-height:44px;margin-block:-12px}}";p.appendChild(st);(d.body||h).prepend(p)}
+function fail(){if(failed)return;failed=true;var s=d.querySelector('script[type="module"][src^="/assets/"]');if(!s)return show();fetch(s.src,{method:"HEAD",cache:"no-store",redirect:"manual"}).then(function(r){if(!(r.ok&&/^text\\/html/i.test(r.headers.get("content-type")||"")))show()},show)}
+addEventListener("error",function(e){var t=e.target,a=t&&t.tagName==="LINK"?"href":"src",u=t&&t.getAttribute&&t.getAttribute(a);if(!u||!(t.tagName==="LINK"||t.tagName==="SCRIPT"))return;if(t.hasAttribute("data-plannotator-retry"))return fail();if(core.indexOf(u)<0)return;var n=d.createElement(t.tagName);for(var i=0;i<t.attributes.length;i++)n.setAttribute(t.attributes[i].name,t.attributes[i].value);if(a==="href")n.setAttribute(a,u+(u.indexOf("?")<0?"?":"&")+"retry=1");n.setAttribute("data-plannotator-retry","");t.parentNode.insertBefore(n,t.nextSibling)},true);
+})()</script>`;
+}
+
 /**
  * Emit the app as one `index.html` that carries its code-split chunks and
  * assets behind a marker, where vite-plugin-singlefile inlined all of them into
@@ -76,7 +115,23 @@ export function packedApp(): Plugin {
           delete bundle[output.fileName];
         }
         if (!page.source.includes('</head>')) throw new Error('packed-app: index.html has no </head>');
-        page.source = packApp(page.source.replace('</head>', `${UPDATED_WHILE_OPEN_SCRIPT}\n  </head>`), assets);
+        const charset = /<meta charset="UTF-8"\s*\/?>/i.exec(page.source);
+        if (!charset) throw new Error('packed-app: index.html has no <meta charset> to put the head script after');
+        // The page's own stylesheet and entry script, the two requests it cannot render without.
+        const core = [...page.source.matchAll(/<(?:script type="module"[^>]*\ssrc|link rel="stylesheet"[^>]*\shref)="(\/assets\/[^"]+)"/g)].map((m) => m[1]);
+        if (!core.some((u) => u.endsWith('.js')) || !core.some((u) => u.endsWith('.css'))) {
+          throw new Error(`packed-app: expected the entry script and stylesheet in index.html, found ${JSON.stringify(core)}`);
+        }
+        const fonts = PRELOADED_FONTS.map((pattern) => {
+          const name = Object.keys(assets).map((path) => path.slice(1)).find((name) => pattern.test(name));
+          if (!name) throw new Error(`packed-app: no font matching ${pattern} to preload`);
+          return `<link rel="preload" as="font" type="font/woff2" crossorigin href="/${name}">`;
+        });
+        // Right after the charset (which must stay in the first 1024 bytes), before anything that can paint.
+        const head = `\n    ${headScript(core)}\n    ${fonts.join('\n    ')}`;
+        const at = charset.index + charset[0].length;
+        const source = page.source.slice(0, at) + head + page.source.slice(at);
+        page.source = packApp(source.replace('</head>', `${UPDATED_WHILE_OPEN_SCRIPT}\n  </head>`), assets);
       },
     },
   };
