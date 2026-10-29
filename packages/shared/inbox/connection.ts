@@ -845,6 +845,14 @@ export interface InboxReplyCommand {
    * the wake in the plural, while the body still names the one question.
    */
   reask_one?: boolean
+  /**
+   * On the person's Tidy (2026-10-28): the body is the whole wake under its
+   * first line (it opens with the Tidy instruction and lists the session's
+   * threads), so the wake adds no instruction line and names no one thread.
+   * The command is a `message`, so an older connection words it as a New
+   * message and the body still says what it is. Absent on every other command.
+   */
+  tidy?: boolean
 }
 
 /**
@@ -1113,9 +1121,14 @@ export function inboxWakeText(
     reask?: boolean
     reask_items?: unknown
     reask_one?: unknown
+    tidy?: boolean
   },
   toolName: string = INBOX_TOOL_NAME,
 ): string {
+  // Tidy: the body is the wake; it spans threads, so the closing line names none.
+  if (command.tidy === true) {
+    return `Plannotator Inbox: ${(command.subject ?? '').replace(/\s+/g, ' ').trim() || 'Tidy'} (${command.id})\n${command.body}\n\n${inboxWakeClosingLine(null, toolName)}`
+  }
   if (typeof command.ack_of === 'string' && command.ack_of !== '') {
     const ackSubject = (command.subject ?? '').replace(/\s+/g, ' ').trim() || 'a message'
     const thread = wakeThreadId(command.thread_id)
