@@ -22,7 +22,7 @@ import type { RowMenuAction } from '../rowMenu';
 import { rowTimeIso, rowWait } from '../rowDelivery';
 import { UndeliveredBadge, useMinuteClock } from './Undelivered';
 import { TimeWithTick } from './DeliveryTick';
-import { RowBadge, WaitCard, badgeDescription, rowHasBadge } from './RowBadge';
+import { ActionBadge, RowBadge, WaitCard, badgeDescription, rowActionCount, rowHasBadge, shownCount } from './RowBadge';
 import { attachPullToRefresh } from '../pullRefresh';
 import { TidyMenu, type TidyController } from './Tidy';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
@@ -199,10 +199,10 @@ function subjectOf(row: InboxListRow): string {
 }
 
 /**
- * What the count says in words (approval "inbox-row-byline"), or null: the open count (`?N`) or nothing. A two-line
- * or phone row draws `short` in its 124 px slot (option A, 2026-10-29) and says `full` in the tooltip and its name; a
- * wide row draws `long`, the full words (the owner, 2026-10-29: full words in full-width mode). Action items are
- * always named (approval "inbox-next-actions"): "1 action", and "1 action ?1" beside a question, in short.
+ * What the count says in words (approval "inbox-row-byline"), or null: the open counts (`OpenCounts`) or nothing. A
+ * two-line or phone row draws `short` in its 124 px slot (option A, 2026-10-29) and says `full` in the tooltip and its
+ * name; a wide row draws `long`, the full words (the owner, 2026-10-29: full words in full-width mode). Open action
+ * items are no longer words here (approval "inbox-row-action-icon", 2026-10-29): they are the action pill beside `?N`.
  */
 function countWords(row: InboxListRow, now: number): { short: ReactNode; long: ReactNode; full: string } | null {
   const same = (words: string) => ({ short: words, long: words, full: words });
@@ -219,25 +219,7 @@ function countWords(row: InboxListRow, now: number): { short: ReactNode; long: R
   // An older Inbox (no `unsent`): its own words.
   if (row.answered_not_sent) return { short: 'Answered', long: 'Answered, not sent', full: 'Answered, not sent' };
   if (row.section === 'sent' && row.addressee) return same(`To ${agentName(rowAgent(row))}`);
-  const actions = Math.min(row.questions.actions ?? 0, row.questions.open);
-  if (actions < 1) return null;
-  const questions = row.questions.open - actions;
-  const full = waitCount(row.questions.open, actions);
-  return {
-    short: (
-      <>
-        <span className="ib-cst">{`${formatCount(actions)} action${actions === 1 ? '' : 's'}`}</span>
-        {questions > 0 && (
-          <span className="ib-qn">
-            <Icon name="question" size={15} />
-            {formatCount(questions)}
-          </span>
-        )}
-      </>
-    ),
-    long: full,
-    full,
-  };
+  return null;
 }
 
 /**
@@ -272,29 +254,44 @@ function CountWords({ row, tip = false, wide = false }: { row: InboxListRow; tip
 
 /**
  * The row's count (approval "inbox-row-byline", 2026-10-29): at the right end of a two-line or phone row's line 2.
- * What waits on the person is `?N` (`QuestionCount`); anything else in words (`CountWords`).
+ * What waits on the person is the action pill and `?N` (`OpenCounts`); anything else in words (`CountWords`).
  */
 function LineCount({ row, tip = false }: { row: InboxListRow; tip?: boolean }) {
   return (
     <>
       <CountWords row={row} tip={tip} />
+      <OpenCounts row={row} tip={tip} />
+    </>
+  );
+}
+
+/**
+ * What waits on the person, when the row has no words (approval "inbox-row-action-icon", 2026-10-29): the open
+ * action items' pill (`ActionBadge`, A2), then the open questions' `?N` (Q3). Under the alert badge in emphasis.
+ */
+function OpenCounts({ row, tip = false }: { row: InboxListRow; tip?: boolean }) {
+  if (row.questions.open < 1 || countWords(row, 0) !== null) return null;
+  return (
+    <>
+      <ActionBadge row={row} tip={tip} />
       <QuestionCount row={row} tip={tip} />
     </>
   );
 }
 
 /**
- * `?N`, when only questions wait on the person: the question icon and the number (from one question on), its words
- * for a screen reader and in the tooltip. Otherwise nothing.
+ * `?N`, the open questions (action items left out, `ActionBadge` counts those): a speech bubble with a "?" (approval
+ * "inbox-row-action-icon", Q3) and the number, from one question on, in quiet text with no pill; its words for a
+ * screen reader and in the tooltip. Otherwise nothing.
  */
 function QuestionCount({ row, tip = false }: { row: InboxListRow; tip?: boolean }) {
-  const open = row.questions.open;
-  if (open < 1 || countWords(row, 0) !== null) return null;
+  const open = row.questions.open - rowActionCount(row);
+  if (open < 1) return null;
   const words = waitCount(open, 0) || '1 question';
   const cell = (
     <span className="ib-c ib-qn" data-open-count={open}>
-      <Icon name="question" size={15} />
-      <span aria-hidden="true">{formatCount(open)}</span>
+      <Icon name="questionBubble" size={14} className="ib-qbub" />
+      <span aria-hidden="true">{shownCount(open)}</span>
       <span className="ib-sr">{words}</span>
     </span>
   );
@@ -384,9 +381,9 @@ function PinnedWords() {
 
 /**
  * Below this list width the wide row of every project leaves its subject cell
- * too little room (the project, mark, badge and time columns are fixed at
- * 170px, 64px, 52px and 76px, the count at least 36px), so the list draws the
- * two-line rows instead.
+ * too little room (the project, words, mark, badge, open counts and time
+ * columns are fixed at 170px, 124px, 64px, 52px, 84px and 76px), so the list
+ * draws the two-line rows instead.
  */
 export const WIDE_ROWS_MIN_LIST_WIDTH = 900;
 
@@ -401,7 +398,7 @@ export const FULL_WORDS_MIN_LIST_WIDTH = 1150;
  * One row of the wide list, on one line (approval "inbox-row-byline", the
  * one-line row). With every project shown it is six columns: the project, the
  * subject cell (the thread pill, the subject), then right-aligned the agents'
- * marks, the badge, the count (`?N`) and the time, each in a column of its own
+ * marks, the badge, the open counts (the action pill, `?N`) and the time, each in a column of its own
  * so they line up down the list. In one project's list (`filtered`) the project
  * column is not rendered at all, so a row starts at the list's left edge
  * instead of after an empty block.
@@ -431,14 +428,14 @@ function WideRow({ row, selected, filtered, lit, pinned, keys, full, onOpen }: {
         <SubjectLine row={row} pinned={pinned} />
       </span>
       {/* Every column right of the words has a fixed width, so each lines up down the list. The words (a draft,
-          Undelivered, action items …) take the width they need, between the subject and the marks. */}
+          Undelivered, Read …) take the width they need, between the subject and the marks. */}
       <span className="ib-cw">
         <CountWords row={row} wide={full} tip={!full} />
       </span>
       <MarkCol row={row} fold={LINE_MARKS} />
       <span className="ib-bcol">{badgeEl}</span>
       <span className="ib-cq">
-        <QuestionCount row={row} tip />
+        <OpenCounts row={row} tip />
       </span>
       <span className="ib-t">
         <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
