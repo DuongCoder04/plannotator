@@ -16,6 +16,8 @@ import {
   RELEASE_ASSETS_FETCH_INTERVAL_MS,
   RELEASE_ASSETS_FETCH_RETRY_MS,
   RELEASE_CHECK_RETRY_MS,
+  RELEASE_NOTES_PENDING_RETRY_MS,
+  RELEASE_NOTES_YOUNG_MS,
   releaseTagApiUrl,
   writeReleaseNotes,
 } from "./update-check";
@@ -141,6 +143,51 @@ describe("fetchReleaseNotesFor", () => {
     expect((await fetchNotes("0.28.20")).outcome).toBe("fetched");
     expect((await fetchNotes("0.28.20", { now: NOW + RELEASE_ASSETS_FETCH_INTERVAL_MS - 1 })).outcome).toBe("not-due");
     expect(seen.length).toBe(2);
+  });
+
+  // The 0.28.37 bug: CI publishes GitHub's generated body and the written
+  // notes replace it minutes later. An Inbox that asked in between waited a
+  // day, so its "What's new" link never showed for that run.
+  test("a young release answered without a What's New part is asked again after 15 minutes, not a day", async () => {
+    const generated = "## What's Changed\n\n* a PR by someone";
+    const publishedAt = new Date(NOW - 60_000).toISOString();
+    answer = () => Response.json({ tag_name: "v0.28.37", published_at: publishedAt, body: generated });
+    expect((await fetchNotes("0.28.37")).outcome).toBe("fetched");
+    expect(readReleaseNotes("0.28.37", dataDir)!.notes).toBe("");
+    expect((await fetchNotes("0.28.37", { now: NOW + RELEASE_NOTES_PENDING_RETRY_MS - 1 })).outcome).toBe("not-due");
+    expect(seen.length).toBe(1);
+
+    // Still the generated body: asked again on the same quick cadence.
+    expect((await fetchNotes("0.28.37", { now: NOW + RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("fetched");
+    expect((await fetchNotes("0.28.37", { now: NOW + 2 * RELEASE_NOTES_PENDING_RETRY_MS - 1 })).outcome).toBe("not-due");
+    expect(seen.length).toBe(2);
+
+    // The written notes are in now: the next try saves them, and nothing more is asked.
+    answer = () => Response.json({ tag_name: "v0.28.37", published_at: publishedAt, body: bodyFor("0.28.37") });
+    expect((await fetchNotes("0.28.37", { now: NOW + 2 * RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("fetched");
+    expect(readReleaseNotes("0.28.37", dataDir)!.notes).toBe("Notes the person reads.");
+    expect((await fetchNotes("0.28.37", { now: NOW + 3 * RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("present");
+    expect(seen.length).toBe(3);
+  });
+
+  test("a release over 2 days old answered without a What's New part keeps the 24 h back-off", async () => {
+    const publishedAt = new Date(NOW - RELEASE_NOTES_YOUNG_MS).toISOString();
+    answer = () => Response.json({ tag_name: "v0.28.37", published_at: publishedAt, body: "## What's Changed\n" });
+    expect((await fetchNotes("0.28.37")).outcome).toBe("fetched");
+    expect((await fetchNotes("0.28.37", { now: NOW + RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("not-due");
+    expect((await fetchNotes("0.28.37", { now: NOW + RELEASE_ASSETS_FETCH_INTERVAL_MS - 1 })).outcome).toBe("not-due");
+    expect(seen.length).toBe(1);
+    expect((await fetchNotes("0.28.37", { now: NOW + RELEASE_ASSETS_FETCH_INTERVAL_MS })).outcome).toBe("fetched");
+    expect(seen.length).toBe(2);
+  });
+
+  test("the quick retry stops once the release turns 2 days old", async () => {
+    const published = NOW - RELEASE_NOTES_YOUNG_MS + RELEASE_NOTES_PENDING_RETRY_MS;
+    answer = () => Response.json({ tag_name: "v0.28.37", published_at: new Date(published).toISOString(), body: "" });
+    expect((await fetchNotes("0.28.37")).outcome).toBe("fetched");
+    // Due 15 minutes later, when the release is exactly 2 days old: no longer young, so a day.
+    expect((await fetchNotes("0.28.37", { now: NOW + RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("not-due");
+    expect(seen.length).toBe(1);
   });
 
   test("not a version: nothing asked", async () => {

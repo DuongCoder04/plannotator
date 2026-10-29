@@ -1317,10 +1317,22 @@ jobs:
         # existing release behavior. Owner: maintainers; reassess replacement
         # with gh by 2027-08-11.
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        # Left as a draft: the action already creates a draft and uploads
+        # every asset to it (Immutable Releases allow uploads only before
+        # publishing); `draft: true` only skips its final publish. The
+        # releaser publishes it with the written notes in one step
+        # (`gh release edit vX.Y.Z --notes-file RELEASE_NOTES_vX.Y.Z.md
+        # --draft=false --latest`, .agents/skills/release/SKILL.md), so the
+        # public release never carries GitHub's generated body: an Inbox or
+        # auto-update that reads it in the first minutes saves the real
+        # "What's New". Drafts are never `releases/latest`, so nothing
+        # (install.sh, the update check) sees the version before then. The
+        # generated notes stay as the draft's fallback body. The npm jobs do
+        # not need this job and are unaffected.
         with:
           files: artifacts/*
           generate_release_notes: true
-          draft: false
+          draft: true
           prerelease: ${{ contains(github.ref, '-') }}
 
   # PRs and manual dry-runs stop here. This job executes repository build code,

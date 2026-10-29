@@ -11,7 +11,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxUpdate } from "@plannotator/core/inbox-types";
 import { loadConfig, saveConfig } from "@plannotator/shared/config";
-import { readUpdateState, writeReleaseNotes, writeUpdateState, type FetchReleaseResult } from "@plannotator/shared/update-check";
+import {
+  readUpdateState,
+  RELEASE_NOTES_PENDING_RETRY_MS,
+  writeReleaseNotes,
+  writeUpdateState,
+  type FetchReleaseResult,
+} from "@plannotator/shared/update-check";
 import { InboxStore } from "@plannotator/shared/inbox/store";
 import { inboxUsedBefore, startInboxServer, type InboxServer } from "./inbox";
 import { deriveInboxUpdate, failureDetails } from "./inbox-updates";
@@ -542,6 +548,35 @@ describe("What's new for a version installed outside the Inbox (no notes saved)"
     expect(await listUpdated(server)).toBe("0.28.10");
     expect((await (await whatsNew(server, "0.28.10")).json()).notes).toBe("What 0.28.10 brings.");
     expect(tagRequests).toEqual(["0.28.10"]);
+  });
+
+  // The 0.28.37 bug: the Inbox started on the new version while the release
+  // still carried GitHub's generated body; the written notes replaced it 39 s
+  // later, and the link stayed hidden for the whole run (a 24 h back-off).
+  test("asked before the release notes were written: the link shows once the 15-minute retry saves them, without a restart", async () => {
+    let clock = Date.now();
+    const publishedAt = new Date(clock - 60_000).toISOString();
+    let written = false;
+    answer = (version) =>
+      Response.json({
+        tag_name: `v${version}`,
+        published_at: publishedAt,
+        body: written ? `## What's New in v${version}\n\nWhat ${version} brings.\n\n## Install / Update\n` : "## What's Changed\n\n* a PR\n",
+      });
+    const server = await start({
+      updates: { fetchRelease: latest(), now: () => clock, isManaged: () => true, listSessions: () => [], launchInstaller: () => {} },
+    });
+    // The generated body saved no notes: the link goes, and the ticks ask no more for now.
+    expect(await waitFor(() => listUpdated(server), (v) => v === null)).toBeNull();
+    await Bun.sleep(150); // a few health ticks
+    expect(tagRequests).toEqual(["0.28.10"]);
+
+    written = true;
+    clock += RELEASE_NOTES_PENDING_RETRY_MS;
+    // The next health tick asks again, saves the notes, and the list (and the event stream) carry the link.
+    expect(await waitFor(() => listUpdated(server), (v) => v === "0.28.10")).toBe("0.28.10");
+    expect(tagRequests).toEqual(["0.28.10", "0.28.10"]);
+    expect((await (await whatsNew(server, "0.28.10")).json()).notes).toBe("What 0.28.10 brings.");
   });
 
   test("a version this Inbox has no reason to show is never fetched", async () => {
