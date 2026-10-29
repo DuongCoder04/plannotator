@@ -27,7 +27,7 @@
  * /Users/ramos/plannotator/.ops/shots/decision-mode-build/ when that folder's parent exists, else .local/proof/decision-mode/.
  */
 
-import { devices, expect, test, webkit, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { chromium, devices, expect, test, webkit, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -35,6 +35,7 @@ import { deflateSync } from 'node:zlib';
 import { SimAgent, scratchProject } from '../../scripts/inbox-sim';
 import { inboxScratch, removeInboxScratch } from './inbox-scratch';
 import { NO_BROWSER } from '../helpers/no-browser';
+import { finger } from './phone-touch';
 
 const repo = resolve(__dirname, '../..');
 const binary = resolve(process.env.PLANNOTATOR_E2E_BINARY ?? join(repo, '.local/plannotator'));
@@ -467,6 +468,52 @@ test('the contract lines: picture tiles (the picture answers, its zoom never doe
     await own.close();
   }
   expect((await stateOf(INVOICES))?.state).toBe('open');
+
+  // The pictures' viewer on a phone (Chromium, real touches; approval "inbox-image-swipe"): only the picture follows
+  // the finger (the viewer's header and its image area stay put), two quick flicks step twice (the second, while the
+  // first still slides, is not lost), and a drag down closes it. Nothing is answered.
+  const real = await chromium.launch();
+  try {
+    const { defaultBrowserType: _ignored, ...pixel } = devices['Pixel 7'];
+    const context = await real.newContext({ ...pixel, colorScheme: 'light' });
+    const phone = await context.newPage();
+    await phone.goto(world.url);
+    await decideIn(phone, drawers.thread_id);
+    await goToCard(phone, DRAWERS);
+    await card(phone).locator('[data-decision-tiles] [data-question-tile]').nth(0).locator('[data-question-zoom]').tap();
+    const viewer = phone.locator('[data-image-lightbox]');
+    await expect(viewer.locator('[data-lightbox-count]')).toHaveText('1 of 3');
+    await expect(viewer).toHaveAttribute('aria-label', 'A · Total on top, image 1 of 3');
+    const swipeArea = viewer.locator('[data-lightbox-swipe]');
+    const box = (await swipeArea.boundingBox())!;
+    const at = { x: box.x + box.width * 0.75, y: box.y + box.height * 0.45 };
+    const touch = await finger(phone, 'chromium');
+    const header = viewer.locator('[data-lightbox-count]');
+    const headerBefore = await header.boundingBox();
+    // Slow and short of a third: it follows, then springs back.
+    await touch.down(at.x, at.y, -box.width * 0.15, 0);
+    expect(await viewer.locator('[data-lightbox-track]').evaluate((el) => (el as HTMLElement).style.transform)).toMatch(/^translateX\(-\d/);
+    expect(await swipeArea.evaluate((el) => (el as HTMLElement).style.transform)).toBe('');
+    expect(await header.boundingBox()).toEqual(headerBefore);
+    await touch.up();
+    await phone.waitForTimeout(400);
+    await expect(viewer.locator('[data-lightbox-count]')).toHaveText('1 of 3');
+    await touch.down(at.x, at.y, -box.width * 0.3, 0, 3);
+    await touch.up();
+    await touch.down(at.x, at.y, -box.width * 0.3, 0, 3);
+    await touch.up();
+    await expect(viewer.locator('[data-lightbox-count]')).toHaveText('3 of 3');
+    await expect(viewer).toHaveAttribute('aria-label', 'C · Three steps, image 3 of 3');
+    await phone.waitForTimeout(400);
+    await touch.down(box.x + box.width / 2, box.y + box.height * 0.3, 0, box.height * 0.4);
+    await touch.up();
+    await expect(viewer).toHaveCount(0);
+    await expect(phone.locator('[data-decision-mode]')).toBeVisible();
+    await context.close();
+  } finally {
+    await real.close();
+  }
+  expect((await stateOf(DRAWERS))?.state).toBe('open');
 
   await page.goto(world.url);
   await decideIn(page, drawers.thread_id);

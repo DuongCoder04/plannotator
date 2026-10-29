@@ -402,15 +402,19 @@ export const ImageLightbox: React.FC<{
   }, [index]);
   const stepRef = useRef(step);
   stepRef.current = step;
-  // A touch screen's swipe (`swipe`): the image area follows the finger; a box being drawn, Region, or the peek keep the touch.
+  // A touch screen's swipe (`swipe`): heard on the image area, which stays put (so a finger that comes back while the
+  // last step is still sliding is heard), and only the picture follows the finger (`swipeTrackRef`), not the region
+  // strip over it. A box being drawn, Region, or the peek keep the touch. One image alone: a drag down still closes.
   const swipeAreaRef = useRef<HTMLDivElement>(null);
+  const swipeTrackRef = useRef<HTMLDivElement>(null);
   const dimsRef = useRef(dims);
   dimsRef.current = dims;
   const zoomModeRef = useRef(zoomMode);
   zoomModeRef.current = zoomMode;
-  useSwipeStep(swipeAreaRef, {
-    enabled: !!swipe && framed && !(canDraw && tool === 'region') && !peekOpen && !drawerOpen,
+  useSwipeStep(framed ? swipeAreaRef : overlayRef, {
+    enabled: !!swipe && !(canDraw && tool === 'region') && !peekOpen && !drawerOpen,
     canStep: (dir) => stepping && index + dir >= 0 && index + dir < (list?.length ?? 0),
+    move: () => [swipeTrackRef.current],
     onStep: (dir) => stepRef.current(dir),
     wouldAsk: () => pending !== null,
     keeps: (dir) => !stepping || canPanToward(stageRef.current?.visibleBox() ?? null, dimsRef.current?.width ?? 0, dir),
@@ -423,7 +427,10 @@ export const ImageLightbox: React.FC<{
       onDismiss: () => onCloseRef.current(),
       onProgress: (share) => {
         const overlay = overlayRef.current;
-        if (overlay) overlay.style.backgroundColor = share > 0 ? `color-mix(in oklch, var(--background) ${Math.round((1 - share) * 100)}%, transparent)` : '';
+        if (!overlay) return;
+        // The framed viewer's page colour, or the one-image overlay's dark veil, fades with the drag.
+        const veil = framed ? `color-mix(in oklch, var(--background) ${Math.round((1 - share) * 100)}%, transparent)` : `rgb(0 0 0 / ${(0.8 * (1 - share)).toFixed(3)})`;
+        overlay.style.backgroundColor = share > 0 ? veil : '';
       },
     },
   });
@@ -569,22 +576,24 @@ export const ImageLightbox: React.FC<{
         data-image-lightbox=""
         className="fixed inset-0 z-[200] bg-black/80 text-white backdrop-blur-sm outline-none"
       >
-        <ImageZoomStage
-          ref={stageRef}
-          key={src}
-          src={src}
-          alt={alt}
-          label={alt ? `Image: ${alt}` : 'Image'}
-          mode={zoomMode}
-          onModeChange={setZoomMode}
-          inset={{ x: 0.9, y: 0.85 }}
-          onBackgroundTap={onClose}
-          className="absolute inset-0"
-          imageClassName="shadow-2xl"
-          radius={8}
-          stageAttributes={{ 'data-lightbox-stage': zoomMode }}
-          wheelHint={wheelHint}
-        />
+        <div ref={swipeTrackRef} className="absolute inset-0" data-lightbox-track="">
+          <ImageZoomStage
+            ref={stageRef}
+            key={src}
+            src={src}
+            alt={alt}
+            label={alt ? `Image: ${alt}` : 'Image'}
+            mode={zoomMode}
+            onModeChange={setZoomMode}
+            inset={{ x: 0.9, y: 0.85 }}
+            onBackgroundTap={onClose}
+            className="absolute inset-0"
+            imageClassName="shadow-2xl"
+            radius={8}
+            stageAttributes={{ 'data-lightbox-stage': zoomMode }}
+            wheelHint={wheelHint}
+          />
+        </div>
         {alt && (
           <div className="pointer-events-none absolute inset-x-0 bottom-[2.5vh] mx-auto max-w-[90vw] truncate text-center text-sm text-white/70">{alt}</div>
         )}
@@ -750,47 +759,49 @@ export const ImageLightbox: React.FC<{
               </button>
             )}
             <div ref={swipeAreaRef} className="relative min-h-0 min-w-0 flex-1 self-stretch" data-lightbox-swipe={swipe ? '' : undefined}>
-              <ImageZoomStage
-                ref={stageRef}
-                key={`${index}:${current.src}`}
-                src={current.src}
-                alt={current.alt}
-                label={`Image: ${name}`}
-                description={drawing ? 'Region: drag to draw a box and comment on it. Or frame the spot with Actual size and the scroll keys, then press Enter to comment on what is on screen.' : undefined}
-                mode={zoomMode}
-                onModeChange={setZoomMode}
-                onScaleChange={setScale}
-                onImageLoad={setDims}
-                // A single image keeps #2067's tap beside the image to close
-                // (its click swallowed so the page beneath never gets it), in
-                // Move only: in Region a press there may start a box.
-                onBackgroundTap={!stepping && !drawing ? onClose : undefined}
-                onViewChange={regionsOn ? (v, stage, eased) => setView({ view: v, stage, eased }) : undefined}
-                drawing={drawing}
-                onDraw={drawing ? onDraw : undefined}
-                className="absolute inset-0"
-                imageClassName="shadow-xl"
-                stageAttributes={{ 'data-lightbox-stage': zoomMode, ...(regionsOn ? { 'data-region-tool-active': tool } : {}) }}
-                wheelHint={wheelHint}
-              >
-                {regionsOn && (
-                  <RegionBoxLayer
-                    view={view?.view ?? null}
-                    stage={view?.stage ?? null}
-                    eased={view?.eased ?? false}
-                    regions={boxes}
-                    selectedId={selectedId}
-                    draft={draft}
-                    pending={pending ? { box: pending, n: pendingNumber } : null}
-                    interactive={!drawing}
-                    onPick={(id) => {
-                      setDrawerOpen(true);
-                      setSelectedId(id);
-                    }}
-                    pendingRef={setPendingEl}
-                  />
-                )}
-              </ImageZoomStage>
+              <div ref={swipeTrackRef} className="absolute inset-0" data-lightbox-track="">
+                <ImageZoomStage
+                  ref={stageRef}
+                  key={`${index}:${current.src}`}
+                  src={current.src}
+                  alt={current.alt}
+                  label={`Image: ${name}`}
+                  description={drawing ? 'Region: drag to draw a box and comment on it. Or frame the spot with Actual size and the scroll keys, then press Enter to comment on what is on screen.' : undefined}
+                  mode={zoomMode}
+                  onModeChange={setZoomMode}
+                  onScaleChange={setScale}
+                  onImageLoad={setDims}
+                  // A single image keeps #2067's tap beside the image to close
+                  // (its click swallowed so the page beneath never gets it), in
+                  // Move only: in Region a press there may start a box.
+                  onBackgroundTap={!stepping && !drawing ? onClose : undefined}
+                  onViewChange={regionsOn ? (v, stage, eased) => setView({ view: v, stage, eased }) : undefined}
+                  drawing={drawing}
+                  onDraw={drawing ? onDraw : undefined}
+                  className="absolute inset-0"
+                  imageClassName="shadow-xl"
+                  stageAttributes={{ 'data-lightbox-stage': zoomMode, ...(regionsOn ? { 'data-region-tool-active': tool } : {}) }}
+                  wheelHint={wheelHint}
+                >
+                  {regionsOn && (
+                    <RegionBoxLayer
+                      view={view?.view ?? null}
+                      stage={view?.stage ?? null}
+                      eased={view?.eased ?? false}
+                      regions={boxes}
+                      selectedId={selectedId}
+                      draft={draft}
+                      pending={pending ? { box: pending, n: pendingNumber } : null}
+                      interactive={!drawing}
+                      onPick={(id) => {
+                        setDrawerOpen(true);
+                        setSelectedId(id);
+                      }}
+                      pendingRef={setPendingEl}
+                    />
+                  )}
+                </ImageZoomStage>
+              </div>
               {strip && (
                 <div className={`pointer-events-none absolute inset-x-0 z-[3] flex justify-center ${phone ? 'bottom-2.5' : 'top-2.5'}`}>{strip}</div>
               )}

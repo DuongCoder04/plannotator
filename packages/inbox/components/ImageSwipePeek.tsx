@@ -2,14 +2,16 @@ import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { fitViewport, paddingInset, type FitAxis, type ZoomSize } from '@plannotator/ui/components/imageZoom';
 import { readInboxAttachmentKind, type InboxAttachmentState } from '@plannotator/core/inbox-types';
 import { WIDE_IMAGE_RATIO } from '../attachments';
-import { SWIPE_PEEK_GAP, useSwipeProgress, type FileSwipe } from '../fileSwipe';
+import { SWIPE_PEEK_GAP, useSwipePhase, type FileSwipe } from '../fileSwipe';
 import type { AttachmentStep } from '../stepping';
 
 /** Where a neighbour is drawn beside the image: just past either edge, or over it while the step lands. */
 export type PeekPlace = 'previous' | 'next' | 'cover';
 
-/** The stage a picture is drawn on: the image's own stage (`.ib-imgstage`), its size and its padding. */
+/** The stage a picture is drawn on: the image's own stage (`.ib-imgstage`), where it sits in the area, its size and its padding. */
 interface StageBox {
+  left: number;
+  top: number;
   width: number;
   height: number;
   pad: number;
@@ -32,20 +34,25 @@ export function isImageStep(step: AttachmentStep): boolean {
 
 function readStage(area: HTMLElement | null): StageBox | null {
   const stage = area?.querySelector<HTMLElement>('.ib-imgstage');
-  if (!stage) return null;
+  if (!area || !stage) return null;
   const pad = parseFloat(getComputedStyle(stage).paddingTop);
-  return { width: stage.clientWidth, height: stage.clientHeight, pad: Number.isFinite(pad) ? pad : 0 };
+  const at = stage.getBoundingClientRect();
+  const from = area.getBoundingClientRect();
+  return { left: at.left - from.left, top: at.top - from.top, width: stage.clientWidth, height: stage.clientHeight, pad: Number.isFinite(pad) ? pad : 0 };
 }
 
 /**
  * The images beside the one on screen, for a phone's swipe between images
  * (approval "inbox-image-swipe", "Follow the finger"): each neighbour that is
  * an image is drawn whole at its Fit, `SWIPE_PEEK_GAP` past the edge it comes
- * from, inside the swiping area, so it comes in with the finger. Once a step
+ * from, in one layer over the image's stage (`.ib-imgpeeks`) that the swipe
+ * moves with the picture, so it comes in with the finger while the size bar
+ * and the comment box stay put. Once a step
  * lands, the image stepped to stays drawn over the area (`cover`) until the
  * new image is on screen (`swipe.settle`), so nothing blinks between them.
  * Drawn all the time the swipe is on, so the neighbours are loaded before a
- * swipe needs them. Hidden from screen readers (the step is said in the
+ * swipe needs them. It redraws when the swipe's phase changes, never while
+ * the finger moves. Hidden from screen readers (the step is said in the
  * pane's live region).
  */
 export function ImageSwipePeek({
@@ -62,7 +69,7 @@ export function ImageSwipePeek({
   area: RefObject<HTMLElement | null>;
   urlOf: (attachment: InboxAttachmentState) => string;
 }) {
-  const progress = useSwipeProgress(swipe);
+  const progress = useSwipePhase(swipe);
   // The image a committed swipe is bringing in: the cover while the step lands.
   const incoming = useRef<AttachmentStep | null>(null);
   if (progress?.phase === 'slide') incoming.current = steps[index + progress.dir] ?? null;
@@ -73,7 +80,7 @@ export function ImageSwipePeek({
   const swiping = progress !== null;
   const read = () => {
     const next = readStage(area.current);
-    if (next) setStage((was) => (was && was.width === next.width && was.height === next.height && was.pad === next.pad ? was : next));
+    if (next) setStage((was) => (was && was.left === next.left && was.top === next.top && was.width === next.width && was.height === next.height && was.pad === next.pad ? was : next));
   };
   const readRef = useRef(read);
   readRef.current = read;
@@ -97,11 +104,11 @@ export function ImageSwipePeek({
   if (isImage(next) && next.attachment.id !== cover?.attachment.id) shown.push({ step: next, place: 'next' });
   if (!stage || shown.length === 0) return null;
   return (
-    <>
+    <div className="ib-imgpeeks" aria-hidden="true" data-image-peeks="" style={{ left: stage.left, top: stage.top, width: stage.width, height: stage.height }}>
       {shown.map(({ step, place }) => (
         <PeekImage key={step.attachment.id} src={urlOf(step.attachment)} place={place} stage={stage} />
       ))}
-    </>
+    </div>
   );
 }
 
@@ -110,7 +117,7 @@ function PeekImage({ src, place, stage }: { src: string; place: PeekPlace; stage
   const left = place === 'cover' ? 0 : place === 'next' ? `calc(100% + ${SWIPE_PEEK_GAP}px)` : `calc(-100% - ${SWIPE_PEEK_GAP}px)`;
   const box = natural ? peekFit(natural, stage) : null;
   return (
-    <div className="ib-imgpeek" aria-hidden="true" data-image-peek={place} style={{ left, height: stage.height }}>
+    <div className="ib-imgpeek" data-image-peek={place} style={{ left, height: stage.height }}>
       <img
         src={src}
         alt=""

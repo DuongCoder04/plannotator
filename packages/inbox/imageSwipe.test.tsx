@@ -162,15 +162,20 @@ async function render(start: InboxAttachmentState, { set = true, only = false } 
 }
 
 const area = () => host!.querySelector<HTMLElement>('.ib-docarea')!;
+/** The picture on screen (what follows the finger), and the layer the neighbours are drawn in beside it. */
+const picture = () => area().querySelector<HTMLElement>('.ib-imgstage > .ib-zoomstage')!;
+const beside = () => host!.querySelector<HTMLElement>('.ib-imgpeeks');
+/** What stays put while the picture moves: the file area, the image's stage with its size bar, the comment box. */
+const stayingPut = () => [area(), area().querySelector<HTMLElement>('.ib-imgstage')!, area().querySelector<HTMLElement>('.ib-imgbar')!, area().querySelector<HTMLElement>('.ib-imgcompose')!].map((el) => el.style.transform);
 const pane = () => host!.querySelector<HTMLElement>('[data-attachment-pane]')!;
 const pill = () => host!.querySelector<HTMLButtonElement>('[data-full-view-bar] [data-full-view-position]')!;
 const caption = () => host!.querySelector<HTMLElement>('[data-option-caption]');
 const live = () => host!.querySelector('[data-step-live]')!.textContent;
 const peek = (place: string) => host!.querySelector(`.ib-imgpeek[data-image-peek="${place}"]`);
 
-/** The phone's size for the file (happy-dom lays nothing out). */
+/** The phone's size for the file and the body around it, where the swipe is heard (happy-dom lays nothing out). */
 function sized(el: HTMLElement, width = 390, height = 700) {
-  el.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: width, bottom: height, width, height, toJSON: () => ({}) }) as DOMRect;
+  for (const node of [el, el.parentElement!]) node.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: width, bottom: height, width, height, toJSON: () => ({}) }) as DOMRect;
 }
 
 function reducedMotion(on: boolean) {
@@ -290,19 +295,26 @@ test.skipIf(!hasDom)('the image follows the finger with the next image beside it
   expect(peek('previous')).not.toBeNull();
   expect(peek('next')).not.toBeNull();
   await drag(-100, 0, { lift: false, rest: true });
-  expect(area().style.transform).toBe('translateX(-100px)');
+  // Only the picture and the neighbours beside it move (approval mock 2): the size bar and the comment box stay put.
+  expect(picture().style.transform).toBe('translateX(-100px)');
+  expect(beside()!.style.transform).toBe('translateX(-100px)');
+  expect(stayingPut()).toEqual(['', '', '', '']);
   expect(host!.querySelector('[data-file-swipe-card]')).toBeNull();
   await release();
   await settle(SWIPE_SLIDE_MS + 120);
   expect(opened).toEqual([]);
-  expect(area().style.transform).toBe('');
+  expect(picture().style.transform).toBe('');
+  expect(beside()!.style.transform).toBe('');
 
   // Past a third of the width: the image and its neighbour slide a full width and the gap, then the step.
   await drag(-200);
-  expect(area().style.transform).toBe('translateX(-406px)');
+  expect(picture().style.transform).toBe('translateX(-406px)');
+  expect(beside()!.style.transform).toBe('translateX(-406px)');
+  expect(stayingPut()).toEqual(['', '', '', '']);
   await settle(SWIPE_SLIDE_MS + 40);
   expect(opened).toEqual([optC.id]);
-  expect(area().style.transform).toBe('');
+  expect(picture().style.transform).toBe('');
+  expect(beside()!.style.transform).toBe('');
   // The image stepped to stays drawn over the area until the new image is on screen (here it never loads: its timer).
   expect(peek('cover')).not.toBeNull();
   await settle(SWIPE_HANDOFF_MAX_MS + 60);
@@ -315,10 +327,37 @@ test.skipIf(!hasDom)('the image follows the finger with the next image beside it
 
   // At the last choice it resists (a third of the finger's travel) and does not step.
   await drag(-150, 0, { lift: false });
-  expect(area().style.transform).toBe('translateX(-50px)');
+  expect(picture().style.transform).toBe('translateX(-50px)');
+  expect(stayingPut()).toEqual(['', '', '', '']);
   await release();
   await settle(80);
   expect(opened).toEqual([optC.id, optD.id]);
+});
+
+test.skipIf(!hasDom)('a finger that comes back while the step is still sliding lands it at once and starts the next swipe: two quick flicks from B reach D', async () => {
+  stubViews();
+  reducedMotion(false);
+  const { opened } = await render(optB);
+  const flick = async () => {
+    // As a browser runs it: the touchstart lands (and draws) before the finger's moves come.
+    const target = area().querySelector('.ib-imgstage')!;
+    await act(async () => touchEvent(target, 'touchstart', [{ x: 200, y: 300 }]));
+    await act(async () => {
+      touchEvent(target, 'touchmove', [{ x: 170, y: 300 }]);
+      touchEvent(target, 'touchmove', [{ x: 140, y: 300 }]);
+    });
+    await release(target, 140, 300);
+  };
+  await flick();
+  // Still sliding toward C (nothing stepped yet) when the second flick begins.
+  expect(picture().style.transform).toBe('translateX(-406px)');
+  expect(opened).toEqual([]);
+  await flick();
+  // The first step landed as the finger came down; the second slides on from C.
+  expect(opened).toEqual([optC.id]);
+  await settle(SWIPE_SLIDE_MS + 60);
+  expect(opened).toEqual([optC.id, optD.id]);
+  expect(caption()!.getAttribute('data-option-caption')).toBe('D');
 });
 
 test.skipIf(!hasDom)('a drag down closes the viewer the way Back does; short of the line it springs back', async () => {
@@ -327,13 +366,17 @@ test.skipIf(!hasDom)('a drag down closes the viewer the way Back does; short of 
   const { closes } = await render(optB);
   // Short of the line, and the finger stops before it lifts (no flick).
   await drag(2, 80, { lift: false, rest: true });
-  expect(area().style.transform).toBe('translateY(80px)');
+  // The picture follows the finger down; its size bar and comment box stay where they are and fade.
+  expect(picture().style.transform).toBe('translateY(80px)');
+  expect(stayingPut()).toEqual(['', '', '', '']);
   expect(pane().hasAttribute('data-dismissing')).toBe(true);
+  expect(Number(area().querySelector<HTMLElement>('.ib-imgbar')!.style.opacity)).toBeLessThan(1);
   await release();
   await settle(SWIPE_SLIDE_MS + 120);
   expect(closes.count).toBe(0);
-  expect(area().style.transform).toBe('');
+  expect(picture().style.transform).toBe('');
   expect(pane().hasAttribute('data-dismissing')).toBe(false);
+  expect(area().querySelector<HTMLElement>('.ib-imgbar')!.style.opacity).toBe('');
 
   await drag(4, 200);
   await settle(SWIPE_SLIDE_MS + 40);
@@ -345,6 +388,7 @@ test.skipIf(!hasDom)('one image alone: a sideways drag is its own (nothing moves
   reducedMotion(false);
   const { opened, closes } = await render(optB, { set: false, only: true });
   await drag(-200, 0, { lift: false });
+  expect(picture().style.transform).toBe('');
   expect(area().style.transform).toBe('');
   await release();
   await settle(SWIPE_SLIDE_MS + 40);
@@ -361,12 +405,13 @@ test.skipIf(!hasDom)('under reduced motion nothing follows the finger: the step 
   // No neighbour drawn beside the image (nothing slides in).
   expect(peek('next')).toBeNull();
   await drag(-200, 0, { lift: false });
+  expect(picture().style.transform).toBe('');
   expect(area().style.transform).toBe('');
   await release();
   await settle(20);
   expect(opened).toEqual([optC.id]);
   await drag(0, 200, { lift: false });
-  expect(area().style.transform).toBe('');
+  expect(picture().style.transform).toBe('');
   expect(pane().hasAttribute('data-dismissing')).toBe(false);
   await release();
   await settle(20);

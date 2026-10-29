@@ -666,7 +666,12 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const blockedRef = useRef(blocked);
   blockedRef.current = blocked;
   // A phone's swipe over the file (fileSwipe.ts): documents, text, code, PDFs, the download card and images follow the finger.
+  // It is heard on the body around the file (`bodyRef`), which never moves, so a finger that comes back while the last
+  // step is still sliding is heard; what moves is the file area, or for an image only the picture (`swipeMoves`).
   const docAreaRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  /** The controls a drag down fades (the dock, the caption, the size bar, the comment box), found once when it starts. */
+  const dismissFades = useRef<HTMLElement[]>([]);
   const swipeMode = fileSwipeMode(kind, tooLarge);
   // An image (approval "inbox-image-swipe"): a zoomed image or a panorama pans to its edge first, the next image
   // peeks in beside it, and a drag down closes, even with one file.
@@ -678,9 +683,26 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     const neighbour = steps[index + dir];
     return isImageFile && multi && neighbour !== undefined && isImageStep(neighbour) && !prefersReducedMotion() && memory.current.get(neighbour.attachment.id)?.fit !== 'actual';
   };
-  const swipe = useFileSwipe(docAreaRef, {
+  const canStepTo = (dir: 1 | -1) => index + dir >= 0 && index + dir < steps.length;
+  /**
+   * What follows the finger. An image stepping to the image beside it, resisting at an end, or dragged down: only the
+   * picture (and the neighbours drawn beside it), so its size bar and comment box stay put (approval
+   * "inbox-image-swipe", mock 2). Toward a file that is not an image, and for every other file: the whole file area.
+   */
+  const swipeMoves = (gesture: 'step' | 'dismiss', dir: 1 | -1): HTMLElement[] => {
+    const area = docAreaRef.current;
+    if (!area) return [];
+    const picture = isImageFile ? area.querySelector<HTMLElement>('.ib-imgstage > .ib-zoomstage') : null;
+    if (!picture) return [area];
+    if (gesture === 'dismiss') return [picture];
+    if (!peeks(dir) && canStepTo(dir)) return [area];
+    const beside = area.querySelector<HTMLElement>('.ib-imgpeeks');
+    return beside ? [picture, beside] : [picture];
+  };
+  const swipe = useFileSwipe(bodyRef, {
     enabled: swipeOn,
-    canStep: (dir) => index + dir >= 0 && index + dir < steps.length,
+    canStep: canStepTo,
+    move: swipeMoves,
     onStep: (dir) => stepRef.current(dir, 'key'),
     wouldAsk: () => !props.readOnly && unsavedComposer(sectionRef.current, savedTextRef.current) !== null,
     // One image alone has nowhere to step: a sideways drag is the image's own.
@@ -690,15 +712,24 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
       ? {
           can: () => imageEdges.current?.canDismiss() ?? false,
           onDismiss: () => closeRef.current(),
+          // The backdrop fades with the drag (`--ib-dismiss`, registered as not inherited, so the pane's contents are not
+          // restyled on every move) and the controls fade faster, by their own opacity.
           onProgress: (share) => {
             const pane = sectionRef.current;
             if (!pane) return;
             if (share > 0) {
-              pane.setAttribute('data-dismissing', '');
+              if (!pane.hasAttribute('data-dismissing')) {
+                pane.setAttribute('data-dismissing', '');
+                dismissFades.current = Array.from(pane.querySelectorAll<HTMLElement>('.ib-fvdock, .ib-optcap, .ib-imgbar, .ib-imgcompose'));
+              }
               pane.style.setProperty('--ib-dismiss', share.toFixed(3));
+              const opacity = Math.max(0, 1 - share * 2.5).toFixed(3);
+              for (const control of dismissFades.current) control.style.opacity = opacity;
             } else {
               pane.removeAttribute('data-dismissing');
               pane.style.removeProperty('--ib-dismiss');
+              for (const control of dismissFades.current) control.style.opacity = '';
+              dismissFades.current = [];
             }
           },
         }
@@ -1639,7 +1670,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
       ) : (
         <div />
       )}
-      <div className="ib-vbody">
+      <div className="ib-vbody" ref={bodyRef}>
         <div
           ref={docAreaRef}
           className={`ib-docarea${isHtml ? ' ib-html' : ''}`}

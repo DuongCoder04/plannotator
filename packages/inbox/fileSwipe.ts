@@ -58,6 +58,7 @@ export {
   prefersReducedMotion,
   swipeCommits,
   swipeDirOf,
+  useSwipePhase,
   useSwipeProgress,
   type SwipeDir,
   type SwipeProgress,
@@ -90,8 +91,12 @@ export function fileSwipeMode(kind: InboxAttachmentKind, tooLarge: boolean): Fil
 export type FileSwipe = SwipeStep;
 export type FileSwipeOptions = Omit<SwipeStepOptions, 'owners'>;
 
-/** The diagram canvas pans with one finger: it keeps the touch (ui names no Inbox surface, so the pane adds it). */
-const FILE_TOUCH_OWNERS = '[data-diagram-canvas]';
+/**
+ * What keeps a touch in the Inbox beyond ui's list: the diagram canvas pans with one finger (ui names no Inbox
+ * surface, so the pane adds it), and the comments panel beside the file is its own (the pane's swipe listens on
+ * the body around the file).
+ */
+const FILE_TOUCH_OWNERS = '[data-diagram-canvas], .ib-apanel';
 
 /** Why a touch is not the swipe's (ui's `sidewaysOwner`, the diagram canvas included). */
 export function sidewaysOwner(path: readonly EventTarget[], dir: SwipeDir): 'owner' | 'sideways' | null {

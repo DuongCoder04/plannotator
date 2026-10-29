@@ -163,36 +163,39 @@ describe.if(hasDom)('ImageLightbox: names and the swipe', () => {
     { src: '/api/inbox/messages/m/image?src=a', alt: 'Option A', name: 'A · Gmail-style ⋯' },
     { src: '/api/inbox/messages/m/image?src=b', alt: 'Option B', name: 'B · Quiet hover menu' },
   ];
-  async function mountNamed(onClose: () => void, swipe = true) {
+  async function mountNamed(onClose: () => void, swipe = true, images: { src: string; alt: string; name: string }[] = NAMED) {
     const host = document.createElement('div');
     document.body.appendChild(host);
     const root = createRoot(host);
     const { ImageLightbox } = lightboxModule!;
     await act(async () => {
-      root.render(<ImageLightbox src={NAMED[0]!.src} alt={NAMED[0]!.alt} images={NAMED} onClose={onClose} swipe={swipe} />);
+      root.render(<ImageLightbox src={images[0]!.src} alt={images[0]!.alt} images={images} onClose={onClose} swipe={swipe} />);
     });
     cleanups.push(() => root.unmount());
-    const area = host.querySelector<HTMLElement>('[data-lightbox-swipe]') ?? host.querySelector<HTMLElement>('[data-lightbox-stage]')!.parentElement!;
+    // The area the swipe is heard on: the framed viewer's image area, or the one-image overlay.
+    const area = host.querySelector<HTMLElement>('[data-lightbox-swipe]') ?? host.querySelector<HTMLElement>('[data-image-lightbox]')!;
     area.getBoundingClientRect = () => ({ left: 0, top: 0, width: 390, height: 600, right: 390, bottom: 600, x: 0, y: 0, toJSON() {} }) as DOMRect;
     return { host, area };
   }
-  async function finger(area: HTMLElement, dx: number, dy: number) {
+  const fire = (target: EventTarget, type: string, x: number, y: number) => {
+    const event = new Event(type, { bubbles: true, cancelable: true, composed: true });
+    const point = [{ identifier: 1, clientX: x, clientY: y, target }];
+    Object.defineProperty(event, 'touches', { value: type === 'touchend' ? [] : point });
+    Object.defineProperty(event, 'changedTouches', { value: point });
+    target.dispatchEvent(event);
+  };
+  const wait = (ms: number) =>
+    act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, ms));
+    });
+  async function finger(area: HTMLElement, dx: number, dy: number, { lift = true, rest = 260 } = {}) {
     const target = area.querySelector('[data-lightbox-stage]') ?? area;
-    const fire = (type: string, x: number, y: number) => {
-      const event = new Event(type, { bubbles: true, cancelable: true, composed: true });
-      const point = [{ identifier: 1, clientX: x, clientY: y, target }];
-      Object.defineProperty(event, 'touches', { value: type === 'touchend' ? [] : point });
-      Object.defineProperty(event, 'changedTouches', { value: point });
-      target.dispatchEvent(event);
-    };
     await act(async () => {
-      fire('touchstart', 200, 300);
-      for (let i = 1; i <= 6; i++) fire('touchmove', 200 + (dx * i) / 6, 300 + (dy * i) / 6);
-      fire('touchend', 200 + dx, 300 + dy);
+      fire(target, 'touchstart', 200, 300);
+      for (let i = 1; i <= 6; i++) fire(target, 'touchmove', 200 + (dx * i) / 6, 300 + (dy * i) / 6);
+      if (lift) fire(target, 'touchend', 200 + dx, 300 + dy);
     });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 260));
-    });
+    if (lift) await wait(rest);
   }
 
   test('each picture is called by its name, not the last segment of its URL', async () => {
@@ -213,6 +216,48 @@ describe.if(hasDom)('ImageLightbox: names and the swipe', () => {
     await finger(area, -200, 0);
     expect(count()).toBe('2 of 2');
     expect(host.querySelector('[data-lightbox-end-note]')!.textContent).toBe('Last image in this document');
+    await finger(area, 0, 220);
+    expect(closed).toBe(1);
+  });
+
+  test('only the picture follows the finger: the image area (and the region strip over it) stays put', async () => {
+    const { host, area } = await mountNamed(() => {});
+    await finger(area, -120, 0, { lift: false });
+    expect(host.querySelector<HTMLElement>('[data-lightbox-track]')!.style.transform).toBe('translateX(-120px)');
+    expect(area.style.transform).toBe('');
+    await act(async () => fire(area.querySelector('[data-lightbox-stage]')!, 'touchend', 80, 300));
+    await wait(300);
+    expect(host.querySelector<HTMLElement>('[data-lightbox-track]')!.style.transform).toBe('');
+  });
+
+  test('a second flick while the first is still sliding is not lost: two quick flicks step twice', async () => {
+    const THREE = [...NAMED, { src: '/api/inbox/messages/m/image?src=c', alt: 'Option C', name: 'C · Header menu only' }];
+    const { host, area } = await mountNamed(() => {}, true, THREE);
+    const count = () => host.querySelector('[data-lightbox-count]')!.textContent;
+    const flick = async () => {
+      const target = area.querySelector('[data-lightbox-stage]')!;
+      await act(async () => fire(target, 'touchstart', 200, 300));
+      await act(async () => {
+        fire(target, 'touchmove', 170, 300);
+        fire(target, 'touchmove', 140, 300);
+        fire(target, 'touchend', 140, 300);
+      });
+    };
+    await flick();
+    // Still sliding: nothing stepped yet.
+    expect(count()).toBe('1 of 3');
+    await flick();
+    expect(count()).toBe('2 of 3');
+    await wait(260);
+    expect(count()).toBe('3 of 3');
+  });
+
+  test('one picture alone: a drag down still closes; a sideways drag is the picture\'s own', async () => {
+    let closed = 0;
+    const { host, area } = await mountNamed(() => closed++, true, [NAMED[0]!]);
+    await finger(area, -200, 0, { lift: false });
+    expect(host.querySelector<HTMLElement>('[data-lightbox-track]')!.style.transform).toBe('');
+    await act(async () => fire(area.querySelector('[data-lightbox-stage]')!, 'touchend', 0, 300));
     await finger(area, 0, 220);
     expect(closed).toBe(1);
   });

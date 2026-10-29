@@ -71,6 +71,9 @@ const pane = (page: Page) => page.locator('[data-attachment-pane]');
 const pill = (page: Page) => page.locator('[data-full-view-bar] [data-full-view-position]');
 const caption = (page: Page) => page.locator('[data-option-caption]');
 const docArea = (page: Page) => pane(page).locator('.ib-docarea');
+/** The picture on screen: what follows the finger (its size bar and comment box stay put). */
+const picture = (page: Page) => pane(page).locator('.ib-imgstage > .ib-zoomstage');
+const transformOf = (el: HTMLElement | SVGElement) => (el as HTMLElement).style.transform;
 /** Which picture is on screen, by its file name (the pane's name for it). */
 const onScreen = (page: Page) => pane(page).getAttribute('aria-label').then((label) => label?.split(',')[0] ?? null);
 
@@ -115,12 +118,20 @@ for (const phone of [
       await expect(caption(page)).toContainText('Which copy-message design should ship?');
       await shot(page, `${tag}-option-B`);
 
-      // Mid-swipe: the image moves with the finger and C comes in beside it.
+      // Mid-swipe: the image moves with the finger and C comes in beside it; the size bar and the comment box stay put
+      // (approval mock 2).
       const touch = await finger(page, phone.browserName);
       const area = (await docArea(page).boundingBox())!;
       const mid = { x: area.x + area.width * 0.75, y: area.y + area.height * 0.4 };
+      const bar = pane(page).locator('.ib-imgbar');
+      const composer = pane(page).locator('[data-image-composer]');
+      const controlsBefore = [await bar.boundingBox(), await composer.boundingBox()];
       await touch.down(mid.x, mid.y, -area.width * 0.45, 4);
-      expect(await docArea(page).evaluate((el) => (el as HTMLElement).style.transform)).toMatch(/^translateX\(-\d/);
+      expect(await picture(page).evaluate(transformOf)).toMatch(/^translateX\(-\d/);
+      expect(await docArea(page).evaluate(transformOf)).toBe('');
+      expect([await bar.boundingBox(), await composer.boundingBox()]).toEqual(controlsBefore);
+      await expect(bar).toBeInViewport();
+      await expect(composer).toBeInViewport();
       const next = pane(page).locator('.ib-imgpeek[data-image-peek="next"] img');
       await expect(next).toBeVisible();
       expect(await next.getAttribute('src')).toContain('/image');
@@ -130,9 +141,16 @@ for (const phone of [
       expect(await onScreen(page)).toBe('opt-c.png');
       await expect(page.locator('[data-step-live]')).toContainText('Option C of 4: Hover copy icon');
 
-      // On to D, the last: it stays there and says where the other files are.
-      await touch.down(mid.x, mid.y, -area.width * 0.5, 0);
+      // Back to B, then two quick flicks: the second comes while the first is still sliding, and is not lost.
+      await touch.down(area.x + area.width * 0.25, mid.y, area.width * 0.5, 0);
       await touch.up();
+      await expect(caption(page)).toHaveAttribute('data-option-caption', 'B');
+      await page.waitForTimeout(400);
+      await touch.down(mid.x, mid.y, -area.width * 0.3, 0, 3);
+      await touch.up();
+      await touch.down(mid.x, mid.y, -area.width * 0.3, 0, 3);
+      await touch.up();
+      // D, the last: it stays there and says where the other files are.
       await expect(caption(page)).toHaveAttribute('data-option-caption', 'D');
       await expect(caption(page).locator('[data-option-end]')).toHaveText("Last option · the thread's 4 other files are under 4/4");
       await touch.down(mid.x, mid.y, -area.width * 0.5, 0);
@@ -200,7 +218,8 @@ for (const phone of [
       const calmTouch = await finger(calmPage, phone.browserName);
       const calmArea = (await docArea(calmPage).boundingBox())!;
       await calmTouch.down(calmArea.x + calmArea.width * 0.75, calmArea.y + calmArea.height * 0.4, -calmArea.width * 0.5, 0);
-      expect(await docArea(calmPage).evaluate((el) => (el as HTMLElement).style.transform)).toBe('');
+      expect(await picture(calmPage).evaluate(transformOf)).toBe('');
+      expect(await docArea(calmPage).evaluate(transformOf)).toBe('');
       await expect(calmPage.locator('.ib-imgpeek')).toHaveCount(0);
       await calmTouch.up();
       await expect(caption(calmPage)).toHaveAttribute('data-option-caption', 'B');

@@ -156,9 +156,9 @@ const area = () => host!.querySelector<HTMLElement>('.ib-docarea')!;
 const live = () => host!.querySelector('[data-step-live]')!.textContent;
 const card = () => host!.querySelector<HTMLElement>('[data-file-swipe-card]');
 
-/** The phone's width for the file (happy-dom lays nothing out). */
+/** The phone's width for the file and the body around it, where the swipe is heard (happy-dom lays nothing out). */
 function sized(el: HTMLElement, width = 390) {
-  el.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: width, bottom: 700, width, height: 700, toJSON: () => ({}) }) as DOMRect;
+  for (const node of [el, el.parentElement!]) node.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: width, bottom: 700, width, height: 700, toJSON: () => ({}) }) as DOMRect;
 }
 
 function reducedMotion(on: boolean) {
@@ -290,6 +290,28 @@ test.skipIf(!hasDom)('a swipe on a document follows the finger with the "Next ·
   });
   await settle(SWIPE_SLIDE_MS + 60);
   expect(opened).toEqual([plan.id, notes.id]);
+});
+
+test.skipIf(!hasDom)('a finger that comes back while the file is still sliding away is heard: that step lands at once and the next swipe starts from it', async () => {
+  stubViews();
+  reducedMotion(false);
+  const opened = await render(notes);
+  sized(area());
+  await drag(area(), -200, 0);
+  // Still sliding off toward plan.txt; the file is off to the left, so the next finger lands on the body around it.
+  expect(area().style.transform).toBe('translateX(-390px)');
+  expect(opened).toEqual([]);
+  const body = area().parentElement!;
+  await act(async () => touchEvent(body, 'touchstart', [{ x: 200, y: 300 }]));
+  expect(opened).toEqual([plan.id]);
+  expect(area().style.transform).toBe('');
+  await act(async () => {
+    for (let i = 1; i <= 6; i++) touchEvent(body, 'touchmove', [{ x: 200 - (200 * i) / 6, y: 300 }]);
+  });
+  expect(area().style.transform).toBe('translateX(-200px)');
+  await act(async () => touchEvent(body, 'touchend', [{ x: 0, y: 300 }]));
+  await settle(SWIPE_SLIDE_MS + 60);
+  expect(opened).toEqual([plan.id, shot.id]);
 });
 
 test.skipIf(!hasDom)('short of the line it springs back; a vertical scroll and two fingers are left alone', async () => {

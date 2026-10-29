@@ -1719,25 +1719,24 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .ib-swipecard-dir { font-size: var(--ib-fs-11-5, 11.5px); color: var(--muted-foreground); }
 .ib-swipecard-nm { font-size: var(--ib-fs-14, 14px); font-weight: 600; min-width: 0; overflow: hidden; white-space: nowrap; }
 /* A phone's swipe between images (approval "inbox-image-swipe", ImageSwipePeek.tsx): the neighbouring image is drawn
-   whole at its Fit, 16 px past the edge, inside the area that follows the finger (which lets it show past its edge;
-   the body clips it to the screen). Over the image (`cover`) while a step lands. */
+   whole at its Fit, 16 px past the edge, in a layer over the image's stage that moves with the picture (the body clips
+   it to the screen). Over the image (`cover`) while a step lands. The layer sits under the size bar and the
+   "marked-up copy" note (z-index 3), which stay put while the picture moves. */
 .ib-view .ib-vbody:has(> .ib-docarea[data-image-peek]) { overflow: clip; background: color-mix(in oklch, var(--muted) 55%, var(--background)); }
 .ib-docarea[data-image-peek] { overflow: visible; }
+.ib-imgpeeks { position: absolute; left: 0; top: 0; width: 100%; z-index: 2; pointer-events: none; }
 .ib-imgpeek { position: absolute; top: 0; width: 100%; overflow: hidden; pointer-events: none; background: color-mix(in oklch, var(--muted) 55%, var(--background)); }
-.ib-imgpeek[data-image-peek="cover"] { z-index: 5; }
 .ib-imgpeek img { position: absolute; display: block; max-width: none; border-radius: 4px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12), 0 8px 28px rgba(0, 0, 0, 0.14); background: var(--card); }
 /* A drag down on an image closes (the same approval): the image moves with the finger, its backdrop fades, and the
-   toolbar, caption and comment box go first (they never sit see-through over the image). */
+   toolbar, caption and comment box go first (AttachmentPane writes their opacity; they never sit see-through over the
+   image). `--ib-dismiss` is not inherited, so writing it on every move restyles the pane alone, not what is in it. */
+@property --ib-dismiss { syntax: '<number>'; inherits: false; initial-value: 0; }
 .ib-view.ib-full.ib-phone[data-dismissing] { background: transparent; }
-.ib-view.ib-full.ib-phone[data-dismissing]::before { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; background: color-mix(in oklch, var(--muted) 55%, var(--background)); opacity: calc(1 - var(--ib-dismiss, 0)); }
+.ib-view.ib-full.ib-phone[data-dismissing]::before { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; background: color-mix(in oklch, var(--muted) 55%, var(--background)); --ib-dismiss: inherit; opacity: calc(1 - var(--ib-dismiss, 0)); }
 .ib-view.ib-full.ib-phone[data-dismissing] .ib-vbody,
 .ib-view.ib-full.ib-phone[data-dismissing] .ib-docarea,
 .ib-view.ib-full.ib-phone[data-dismissing] .ib-imgstage,
 .ib-view.ib-full.ib-phone[data-dismissing] .ib-imgcompose { background: transparent; }
-.ib-view.ib-full.ib-phone[data-dismissing] .ib-fvdock,
-.ib-view.ib-full.ib-phone[data-dismissing] .ib-optcap,
-.ib-view.ib-full.ib-phone[data-dismissing] .ib-imgbar,
-.ib-view.ib-full.ib-phone[data-dismissing] .ib-imgcompose { opacity: max(0, calc(1 - var(--ib-dismiss, 0) * 2.5)); }
 /* A question's picture choices in full screen (the same approval, "Option caption"): the choice on screen, the
    question, one dot per choice. It stays while the set is open, where the step chip shows (above a phone's toolbar). */
 .ib-optcap { position: absolute; left: 50%; bottom: calc(22px + var(--ib-fvfoot, 0px)); transform: translateX(-50%); z-index: 8; box-sizing: border-box; width: min(420px, calc(100% - 32px)); padding: 11px 14px 12px; border-radius: 12px; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); box-shadow: 0 12px 34px rgba(0, 0, 0, 0.3); pointer-events: none; }

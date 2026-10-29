@@ -107,7 +107,7 @@ export function FilePeek(props: {
   const noun = stepping.noun;
   const header =
     phone && onStep ? (
-      <div className="ib-peekstep" role="group" aria-label="Step through the files" data-peek-step="">
+      <div className="ib-peekstep" role="group" aria-label={`Step through the ${noun}s`} data-peek-step="">
         <button
           type="button"
           className="ib-peekstep-b"
