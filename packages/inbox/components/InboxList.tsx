@@ -22,7 +22,7 @@ import type { RowMenuAction } from '../rowMenu';
 import { rowTimeIso, rowWait } from '../rowDelivery';
 import { UndeliveredBadge, useMinuteClock } from './Undelivered';
 import { TimeWithTick } from './DeliveryTick';
-import { ActionBadge, RowBadge, WaitCard, badgeDescription, rowActionCount, rowHasBadge } from './RowBadge';
+import { ActionBadge, RowBadge, WaitCard, badgeDescription, rowActionCount, rowHasBadge, shownCount } from './RowBadge';
 import { attachPullToRefresh } from '../pullRefresh';
 import { TidyMenu, type TidyController } from './Tidy';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
@@ -291,7 +291,7 @@ function QuestionCount({ row, tip = false }: { row: InboxListRow; tip?: boolean 
   const cell = (
     <span className="ib-c ib-qn" data-open-count={open}>
       <Icon name="questionBubble" size={14} className="ib-qbub" />
-      <span aria-hidden="true">{formatCount(open)}</span>
+      <span aria-hidden="true">{shownCount(open)}</span>
       <span className="ib-sr">{words}</span>
     </span>
   );
@@ -382,7 +382,7 @@ function PinnedWords() {
 /**
  * Below this list width the wide row of every project leaves its subject cell
  * too little room (the project, words, mark, badge, open counts and time
- * columns are fixed at 170px, 124px, 64px, 52px, 84px and 76px), so the list
+ * columns are fixed at 170px, 124px, 64px, 52px, 104px and 76px), so the list
  * draws the two-line rows instead.
  */
 export const WIDE_ROWS_MIN_LIST_WIDTH = 900;
@@ -428,7 +428,7 @@ function WideRow({ row, selected, filtered, lit, pinned, keys, full, onOpen }: {
         <SubjectLine row={row} pinned={pinned} />
       </span>
       {/* Every column right of the words has a fixed width, so each lines up down the list. The words (a draft,
-          Undelivered, action items …) take the width they need, between the subject and the marks. */}
+          Undelivered, Read …) take the width they need, between the subject and the marks. */}
       <span className="ib-cw">
         <CountWords row={row} wide={full} tip={!full} />
       </span>

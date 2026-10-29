@@ -737,17 +737,19 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
    words. The words column is 14% of the row, from 148px to 160px (1440 and wider), where "Draft · Your reply, 2 picks"
    and "Undelivered 23 hours" fit; longer words end in "…" with the full words in the tooltip. The project column
    gives way the same way, 15% from 120px to 170px. The badge column (110px) fits the triangle and "Holds up 12". The
-   open counts (approval "inbox-row-action-icon", 2026-10-29) get 84px: the action pill and `?N` side by side, both
-   two digits ("[□ 12] ?12"). A wide row in a list under 1150px (no `.ib-fullw`) keeps option A: the short words in
+   open counts (approval "inbox-row-action-icon", 2026-10-29) get 104px: the action pill and `?N` side by side, each
+   drawn at most "99+" (`shownCount`), so the widest pair ("[□ 99+] ?99+", 108px at 14px text) runs only into the
+   gap on its left, at every text size, never over the badge. A wide row in a list under 1150px (no `.ib-fullw`) keeps option A: the short words in
    124px and the bare triangle in 52px. */
-.ib-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 124px 64px 52px 84px 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
-.ib-fullw .ib-row { grid-template-columns: clamp(120px, 15%, 170px) minmax(0, 1fr) clamp(148px, 14%, 160px) 64px 110px 84px 76px; }
+.ib-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 124px 64px 52px 104px 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
+.ib-fullw .ib-row { grid-template-columns: clamp(120px, 15%, 170px) minmax(0, 1fr) clamp(148px, 14%, 160px) 64px 110px 104px 76px; }
 /* One project's list: no project column (InboxList's WideRow). */
-.ib-noproj .ib-row { grid-template-columns: minmax(0, 1fr) 124px 64px 52px 84px 76px; }
-.ib-noproj.ib-fullw .ib-row { grid-template-columns: minmax(0, 1fr) clamp(148px, 14%, 160px) 64px 110px 84px 76px; }
+.ib-noproj .ib-row { grid-template-columns: minmax(0, 1fr) 124px 64px 52px 104px 76px; }
+.ib-noproj.ib-fullw .ib-row { grid-template-columns: minmax(0, 1fr) clamp(148px, 14%, 160px) 64px 110px 104px 76px; }
 /* The words, the agents' marks, the badge and the open counts, each right-aligned in its column, so every subject
    starts on one left edge; up to three agents' marks overlap within theirs, past that two and "+N". Open counts
-   wider than their column (three digits) run out to the left, into the gap, never into the time. */
+   wider than their column (both "99+") run out to the left a few pixels into the gap, never over the badge, and
+   never into the time. */
 .ib-row :is(.ib-cw, .ib-mcol, .ib-bcol, .ib-cq) { display: inline-flex; justify-content: flex-end; align-items: center; min-width: 0; }
 .ib-row .ib-cq { gap: 8px; }
 .ib-row .ib-c.ib-qn { justify-content: flex-end; }

@@ -237,6 +237,14 @@ export function rowActionCount(row: InboxListRow): number {
   return Math.max(0, Math.min(row.questions.actions ?? 0, row.questions.open));
 }
 
+/** Past this, a row's open counts draw "99+": both at full length would run out of their column over the badge. */
+export const SHOWN_COUNT_MAX = 99;
+
+/** The number a row's open count draws: "12", or "99+" past 99. The exact count stays in its words and tooltip. */
+export function shownCount(n: number): string {
+  return n > SHOWN_COUNT_MAX ? `${SHOWN_COUNT_MAX}+` : formatCount(n);
+}
+
 /** The action count's words, its accessible name and tooltip: "1 action to do", "2 actions to do". */
 export function actionCountWords(n: number): string {
   return `${formatCount(n)} action${n === 1 ? '' : 's'} to do`;
@@ -257,7 +265,7 @@ export function ActionBadge({ row, tip = false }: { row: InboxListRow; tip?: boo
     <span className="ib-badge ib-bicon ib-b-act" data-action-count={n}>
       <Icon name="todoOpen" size={14} />
       <span className="ib-bn" aria-hidden="true">
-        {formatCount(n)}
+        {shownCount(n)}
       </span>
       {/* Spaced, so the row's name never runs it into the badge's words or the question count's. */}
       <span className="ib-sr">{` ${words} `}</span>

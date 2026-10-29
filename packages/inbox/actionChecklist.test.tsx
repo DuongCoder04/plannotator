@@ -710,7 +710,7 @@ test.skipIf(!hasDom)('the row draws open action items as the box pill and open q
     guide: false,
   });
   const answered = { ...row('msg_e', 2, 1), answered_not_sent: true };
-  const sections: InboxListSection[] = [{ id: 'stopped', label: 'Stopped on you', threads: [row('msg_a', 1, 1), row('msg_b', 3, 1), row('msg_c', 2, 0), row('msg_d', 14, 12), answered] }];
+  const sections: InboxListSection[] = [{ id: 'stopped', label: 'Stopped on you', threads: [row('msg_a', 1, 1), row('msg_b', 3, 1), row('msg_c', 2, 0), row('msg_d', 14, 12), row('msg_f', 256, 128), answered] }];
   const list = (narrow: boolean, phone: boolean) => (
     <SidebarProvider>
       <InboxList title="Inbox" path={null} sections={sections} filtered={false} narrow={narrow} selectedThreadId={null} notice={null} onShowNew={() => {}} onOpen={() => {}} phone={phone} />
@@ -738,6 +738,8 @@ test.skipIf(!hasDom)('the row draws open action items as the box pill and open q
     msg_b: [pill('1', '1 action to do'), q('2', '2 questions')],
     msg_c: [q('2', '2 questions')],
     msg_d: [pill('12', '12 actions to do'), q('2', '2 questions')],
+    // Past 99 the drawn number is "99+" (both at full length would run over a wide row's badge); the words keep it exact.
+    msg_f: [pill('99+', '128 actions to do'), q('99+', '128 questions')],
     msg_e: [],
   };
   const rowOf = (shape: string, id: string) => el.querySelector(`${shape}[data-thread-id="${id}"]`)!;
