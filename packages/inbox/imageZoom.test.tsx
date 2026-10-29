@@ -7,7 +7,7 @@
  * are in attachmentStepping.test.tsx; the real browser proof is
  * tests/e2e/inbox-image-zoom.spec.ts.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  * happy-dom has no layout, so the stage's box and the image's own size are
  * given here.
  */

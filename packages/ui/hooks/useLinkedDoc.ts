@@ -8,7 +8,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { normalizeBrowserPath } from "@plannotator/core/browser-paths";
-import { isDiagramRenderKind } from "@plannotator/core/annotatable";
+import { isDocumentRenderKind } from "@plannotator/core/annotatable";
 import type { Annotation, DocumentRenderAs, ImageAttachment } from "../types";
 import type { ViewerHandle } from "../components/Viewer";
 import type { SidebarTab } from "./useSidebar";
@@ -566,9 +566,10 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
     // App's renderAs === 'html' ? HtmlViewer : Viewer switch flips automatically.
     // A diagram source (.mmd/.dot) keeps the markdown state path — the raw
     // text is the document body — but names its engine so the App renders it
-    // as one diagram instead of parsing it as markdown.
+    // as one diagram instead of parsing it as markdown. AsciiDoc does the same
+    // for its own block parser.
     const docRenderAs: DocumentRenderAs =
-      data.renderAs === 'html' ? 'html' : isDiagramRenderKind(data.renderAs) ? data.renderAs : 'markdown';
+      data.renderAs === 'html' ? 'html' : isDocumentRenderKind(data.renderAs) ? data.renderAs : 'markdown';
     const hostMarkdown = docRenderAs === 'html' || !notifyDocumentLoaded ? undefined : onDocumentLoaded?.(data);
     const nextMarkdown = notifyDocumentLoaded
       ? hostMarkdown ?? cached?.markdown ?? data.markdown ?? ''

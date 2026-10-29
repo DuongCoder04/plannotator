@@ -4,7 +4,11 @@
  * Run: bun test packages/server/remote.test.ts
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { isLocalOnlyAdvertisedUrl } from "@plannotator/shared/advertised-url";
 import { closeServer, occupyConsecutivePorts } from "../../tests/helpers/ports";
 import {
   isAddressInUseError,
@@ -14,6 +18,7 @@ import {
   getServerPorts,
   startBunServerOnAvailablePort,
   buildAdvertisedUrl,
+  getLocalUrlHostname,
   PortInUseError,
 } from "./remote";
 
@@ -26,13 +31,20 @@ const envKeys = [
   "SSH_CONNECTION",
   "PLANNOTATOR_URL_HOST",
   "PLANNOTATOR_PUBLIC_URL",
+  "PLANNOTATOR_DATA_DIR",
 ];
+
+// The advertised URL reads config.json; point it at an empty sandbox, never
+// the developer's real ~/.plannotator.
+const SANDBOX_DATA_DIR = mkdtempSync(join(tmpdir(), "plannotator-remote-test-"));
+afterAll(() => rmSync(SANDBOX_DATA_DIR, { recursive: true, force: true }));
 
 function clearEnv() {
   for (const key of envKeys) {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
+  process.env.PLANNOTATOR_DATA_DIR = SANDBOX_DATA_DIR;
 }
 
 function startTestBunServer(port: number): ReturnType<typeof Bun.serve> {
@@ -320,5 +332,95 @@ describe("buildAdvertisedUrl", () => {
     process.env.PLANNOTATOR_REMOTE = "1";
     process.env.PLANNOTATOR_PUBLIC_URL = "https://plannotator.example.com";
     expect(buildAdvertisedUrl(19432)).toBe("https://plannotator.example.com");
+  });
+
+  test("defaults to localhost with nothing configured", () => {
+    clearEnv();
+    process.env.PLANNOTATOR_REMOTE = "1";
+    process.env.PLANNOTATOR_URL_HOST = "";
+    expect(buildAdvertisedUrl(19432)).toBe("http://localhost:19432");
+  });
+
+  test("a local session ignores the override and advertises localhost", () => {
+    clearEnv();
+    process.env.PLANNOTATOR_URL_HOST = "my-machine.tailnet.ts.net";
+    expect(buildAdvertisedUrl(1234)).toBe("http://localhost:1234");
+  });
+
+  test("appends the runtime port to the override host", () => {
+    clearEnv();
+    process.env.PLANNOTATOR_REMOTE = "1";
+    process.env.PLANNOTATOR_URL_HOST = "my-machine.tailnet.ts.net";
+    expect(buildAdvertisedUrl(19432)).toBe("http://my-machine.tailnet.ts.net:19432");
+  });
+
+  test("a local session honors a localhost subdomain (#2184), and only that shape", () => {
+    clearEnv();
+    process.env.PLANNOTATOR_URL_HOST = "plannotator.localhost";
+    expect(buildAdvertisedUrl(1234)).toBe("http://plannotator.localhost:1234");
+    expect(getLocalUrlHostname()).toBe("plannotator.localhost");
+    process.env.PLANNOTATOR_URL_HOST = "a..localhost";
+    expect(buildAdvertisedUrl(1234)).toBe("http://localhost:1234");
+    expect(getLocalUrlHostname()).toBeUndefined();
+    // Still the bind is loopback.
+    process.env.PLANNOTATOR_URL_HOST = "plannotator.localhost";
+    expect(getServerHostname()).toBe("127.0.0.1");
+  });
+
+  test("a remote session treats a localhost subdomain as unset: localhost, no 'open it on your device'", () => {
+    clearEnv();
+    process.env.PLANNOTATOR_REMOTE = "1";
+    process.env.PLANNOTATOR_URL_HOST = "plannotator.localhost";
+    expect(buildAdvertisedUrl(19432)).toBe("http://localhost:19432");
+    expect(isLocalOnlyAdvertisedUrl(buildAdvertisedUrl(19432))).toBe(true);
+    // A real remote host is still an override.
+    process.env.PLANNOTATOR_URL_HOST = "my-machine.tailnet.ts.net";
+    expect(isLocalOnlyAdvertisedUrl(buildAdvertisedUrl(19432))).toBe(false);
+  });
+
+  test("with nothing configured there is no local name", () => {
+    clearEnv();
+    process.env.PLANNOTATOR_URL_HOST = "";
+    expect(getLocalUrlHostname()).toBeUndefined();
+    process.env.PLANNOTATOR_URL_HOST = "my-machine.tailnet.ts.net";
+    expect(getLocalUrlHostname()).toBeUndefined();
+  });
+
+  test("keeps bracketed IPv6 hosts intact", () => {
+    clearEnv();
+    process.env.PLANNOTATOR_REMOTE = "1";
+    process.env.PLANNOTATOR_URL_HOST = "[fd7a::1]";
+    expect(buildAdvertisedUrl(9999)).toBe("http://[fd7a::1]:9999");
+  });
+
+  test("an invalid host falls back to localhost instead of throwing", () => {
+    clearEnv();
+    process.env.PLANNOTATOR_REMOTE = "1";
+    process.env.PLANNOTATOR_URL_HOST = "https://evil.example/path";
+    expect(buildAdvertisedUrl(1234)).toBe("http://localhost:1234");
+  });
+
+  test("the override never affects the bind hostname", () => {
+    clearEnv();
+    process.env.PLANNOTATOR_URL_HOST = "my-machine.tailnet.ts.net";
+    expect(getServerHostname()).toBe("127.0.0.1");
+    process.env.PLANNOTATOR_REMOTE = "1";
+    expect(getServerHostname()).toBe("0.0.0.0");
+  });
+
+  test("a reverse-proxy public URL wins over the plannotator.localhost switch (#1266 + #2184)", () => {
+    clearEnv();
+    process.env.PLANNOTATOR_REMOTE = "1";
+    process.env.PLANNOTATOR_PORT = "19432-19433";
+    process.env.PLANNOTATOR_URL_HOST = "plannotator.localhost";
+    process.env.PLANNOTATOR_PUBLIC_URL = "https://plannotator.example.com";
+    expect(buildAdvertisedUrl(19432)).toBe("https://plannotator.example.com");
+    // A later port in the range is not fronted by the proxy; the localhost name
+    // still counts as unset remotely, so it falls back to localhost.
+    expect(buildAdvertisedUrl(19433)).toBe("http://localhost:19433");
+    // A local session ignores the proxy URL and honors the switch.
+    delete process.env.PLANNOTATOR_REMOTE;
+    delete process.env.PLANNOTATOR_PORT;
+    expect(buildAdvertisedUrl(1234)).toBe("http://plannotator.localhost:1234");
   });
 });

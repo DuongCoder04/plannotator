@@ -1,7 +1,8 @@
 /**
- * Plannotator CLI for Claude Code, Droid, Codex, Gemini CLI, and Copilot CLI
+ * Plannotator CLI for Claude Code, Droid, Codex, Gemini CLI, Copilot CLI, and
+ * DeepSeek Harness
  *
- * Supports thirteen modes:
+ * Supports fifteen modes:
  *
  * 1. Plan Review (default, no args):
  *    - Spawned by Claude/Gemini/Codex hook entrypoints
@@ -52,16 +53,22 @@
  * 11. OpenCode Last (`plannotator opencode-annotate-last`):
  *    - Internal structured last-message annotation bridge for OpenCode
  *
- * 12. Improve Context (`plannotator improve-context`):
+ * 12. DeepSeek Harness Plan (`plannotator dsh-plan`):
+ *    - Internal bridge mode used by the @plannotator/dsh plugin (apps/dsh-plugin)
+ *    - Reads `{ plan, timeoutSeconds?, cwd? }` from stdin
+ *    - Outputs `{ approved, feedback?, message?, savedPath?, answersOnly? }`,
+ *      with `message` composed from the `dsh` prompt templates (dsh-plan.ts)
+ *
+ * 13. Improve Context (`plannotator improve-context`):
  *    - Spawned by PreToolUse hook on EnterPlanMode
  *    - Reads improvement hook file from ~/.plannotator/hooks/
  *    - Returns additionalContext or silently passes through
  *
- * 13. Uninstall (`plannotator uninstall`):
+ * 14. Uninstall (`plannotator uninstall`):
  *    - Removes recognized installer-owned components across supported hosts
  *    - Preserves local data by default; `--purge` removes known local data
  *
- * 14. Guide tools (`plannotator guide list|export|share|unshare`):
+ * 15. Guide tools (`plannotator guide list|export|share|unshare`):
  *    - List saved Guided Reviews; export one (or a snapshot JSON) as a portable
  *      HTML file whose viewer loads from guides.show; share one as a link on
  *      guides.show (encrypted by default) and remove it again
@@ -182,7 +189,8 @@ import {
   waitForPlanReviewCloseDelay,
   waitForPlanReviewDecision,
 } from "@plannotator/shared/plan-review-lifecycle";
-import { AGENT_CONFIG, type Origin } from "@plannotator/shared/agents";
+import type { Origin } from "@plannotator/shared/agents";
+import { detectOrigin } from "./detect-origin";
 import {
   findDroidSessionLogsByAncestorWalk,
   findDroidSessionLogsForCwd,
@@ -204,6 +212,8 @@ import {
   resolveCodexStopPlan,
 } from "./codex-session";
 import { findCopilotPlanContent, findCopilotSessionByAncestorPids, findCopilotSessionForCwd, getRecentCopilotMessages } from "./copilot-session";
+import { findDshSessionLog, getRecentDshMessages, resolveDshHome } from "./dsh-session";
+import { composeDshPlanOutput, dshPlanTimeoutFeedback, parseDshPlanInput } from "./dsh-plan";
 import { resolveLatestVibePlan } from "./vibe-plan";
 import { findQwenSessionLog, getRecentQwenMessages } from "./qwen-session";
 import { isQwenPlanPermissionRequest, qwenPlanFromEvent, qwenPlanHookOutput } from "./qwen-plan";
@@ -468,6 +478,7 @@ async function handleTailscaleReady(port: number): Promise<void> {
     ({ url } = enableTailscaleServe(port));
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write("To keep working on this computer, run the same command without --tailscale.\n");
     process.exit(
       annotateStartupFailureExitCode({
         requireApproval: requireApprovalFlag,
@@ -859,44 +870,8 @@ const shareBaseUrl = process.env.PLANNOTATOR_SHARE_URL || undefined;
 const pasteApiUrl = process.env.PLANNOTATOR_PASTE_URL || undefined;
 
 // Detect calling agent from environment variables set by agent runtimes.
-// Priority:
-//   PLANNOTATOR_ORIGIN (explicit override, validated against AGENT_CONFIG)
-//   > Amp plugin wrappers (PLANNOTATOR_ORIGIN=amp)
-//   > Droid command wrappers (PLANNOTATOR_ORIGIN=droid)
-//   > Codex (CODEX_THREAD_ID)
-//   > Copilot CLI (COPILOT_CLI)
-//   > OpenCode (OPENCODE)
-//   > Gemini CLI (GEMINI_CLI)
-//   > Qwen Code (QWEN_CODE_SESSION_ID, which Qwen sets for its hooks and its
-//     shell tool; QWEN_CODE=1 is set for the shell tool only). The plan hook
-//     also knows Qwen from its payload (PermissionRequest + exit_plan_mode),
-//     and the extension's hook entry sets PLANNOTATOR_ORIGIN=qwen-code.
-//     Known limit: Qwen exports QWEN_CODE_SESSION_ID to every child, so a
-//     Claude Code started from a Qwen shell reads as Qwen here (and Qwen
-//     started from a Claude shell carries CLAUDECODE, so env alone cannot
-//     tell the nearer host).
-//   > oh-my-pi harness (OMPCODE) — checked last because OMP exports OMPCODE
-//     into every shell it spawns; runtimes launched from an OMP session must
-//     still be detected as themselves. OMPCODE still wins over the terminal
-//     fallback below.
-//
-//   > Mistral Vibe — detected from the pre_tool hook payload (hook_event_name
-//     "pre_tool" + tool_name "exit_plan_mode" is unambiguous vs Claude/Gemini),
-//     so the installer's hook command needs no env prefix. PLANNOTATOR_ORIGIN=
-//     mistral-vibe remains the manual override above.
-//
-// To add a new agent, also add an entry to AGENT_CONFIG in
-// packages/core/agents.ts (see header comment there).
-const originOverride = process.env.PLANNOTATOR_ORIGIN as Origin | undefined;
-const detectedOrigin: Origin =
-  (originOverride && originOverride in AGENT_CONFIG) ? originOverride :
-  process.env.CODEX_THREAD_ID ? "codex" :
-  process.env.COPILOT_CLI ? "copilot-cli" :
-  process.env.OPENCODE ? "opencode" :
-  process.env.GEMINI_CLI ? "gemini-cli" :
-  (process.env.QWEN_CODE_SESSION_ID || process.env.QWEN_CODE === "1") ? "qwen-code" :
-  process.env.OMPCODE ? "oh-my-pi" :
-  "claude-code";
+// The priority chain (and how to add an agent) is documented on detectOrigin.
+const detectedOrigin: Origin = detectOrigin(process.env);
 
 type OpenCodeBridgeAgent = {
   name: string;
@@ -1891,6 +1866,10 @@ if (args[0] === "sessions") {
   const isDroid = detectedOrigin === "droid";
   const isCopilot = detectedOrigin === "copilot-cli";
   const isVibe = detectedOrigin === "mistral-vibe";
+  const isDsh = detectedOrigin === "dsh";
+  // DSH_SHELL is inherited by anything started from a DSH terminal, so only an
+  // explicit PLANNOTATOR_ORIGIN=dsh skips the Copilot ancestor check below.
+  const isExplicitDsh = isDsh && process.env.PLANNOTATOR_ORIGIN === "dsh";
   const isQwen = detectedOrigin === "qwen-code";
 
   // Collect up to N recent assistant messages so the user can pick the right
@@ -1908,7 +1887,7 @@ if (args[0] === "sessions") {
   // earlier branch claims the invocation.
   let copilotLockSessionDir: string | null = null;
   let copilotSessionDir: string | null = null;
-  if (!stdinFlag && !isCodex && !isDroid && !isVibe && !isQwen) {
+  if (!stdinFlag && !isCodex && !isDroid && !isVibe && !isExplicitDsh && !isQwen) {
     copilotLockSessionDir = findCopilotSessionByAncestorPids();
     copilotSessionDir = copilotLockSessionDir ??
       (isCopilot ? findCopilotSessionForCwd(projectRoot) : null);
@@ -1931,6 +1910,26 @@ if (args[0] === "sessions") {
     const text = (await Bun.stdin.text()).trim();
     if (text) {
       lastMessage = { messageId: "stdin", text, lineNumbers: [] };
+    }
+  } else if (isDsh && !copilotLockSessionDir) {
+    // DeepSeek Harness path: DSH_SESSION_ID names the calling agent's session;
+    // its log lives under $DSH_HOME/sessions/<project>/<session>/. Checked
+    // before Codex so PLANNOTATOR_ORIGIN=dsh wins over an inherited
+    // CODEX_THREAD_ID. A Copilot CLI among our ancestors was started from a
+    // DSH terminal and is the real caller, so its lock wins.
+    const dshSessionId = process.env.DSH_SESSION_ID;
+    const dshLog = dshSessionId ? findDshSessionLog(dshSessionId) : null;
+    if (process.env.PLANNOTATOR_DEBUG) {
+      console.error(`[DEBUG] DSH detected, session ID: ${dshSessionId ?? "(none)"}`);
+      console.error(`[DEBUG] DSH selected log: ${dshLog ?? "(none)"}`);
+    }
+    if (dshLog) {
+      recentMessages = getRecentDshMessages(dshLog, RECENT_MESSAGES_LIMIT);
+      lastMessage = recentMessages[0] ?? null;
+    } else {
+      console.error(dshSessionId
+        ? `No DeepSeek Harness session log for DSH_SESSION_ID=${dshSessionId} under ${path.join(resolveDshHome(), "sessions")}.`
+        : "DSH_SESSION_ID is not set: run plannotator last from a DeepSeek Harness agent shell, or pass the message with --stdin.");
     }
   } else if (codexThreadId) {
     // Codex path: find rollout by thread ID
@@ -2280,6 +2279,78 @@ if (args[0] === "sessions") {
     ...(result.agentSwitch && { agentSwitch: result.agentSwitch }),
     ...(result.answersOnly && { answersOnly: true }),
   }));
+  process.exit(0);
+
+} else if (args[0] === "dsh-plan") {
+  // ============================================
+  // DEEPSEEK HARNESS PLAN REVIEW MODE
+  // ============================================
+  //
+  // Internal CLI bridge used by the @plannotator/dsh plugin to answer DSH's
+  // exit_plan_mode review. The stdin/stdout contract and the message
+  // composition live in dsh-plan.ts.
+
+  const parsed = parseDshPlanInput(await Bun.stdin.text());
+  if (!parsed.ok) {
+    console.error(parsed.error);
+    process.exit(1);
+  }
+  const { plan: planContent, timeoutSeconds, cwd: planCwd } = parsed.input;
+  if (planCwd) {
+    try {
+      process.chdir(planCwd);
+    } catch (error) {
+      console.error(`dsh-plan cannot use cwd ${planCwd}: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  }
+
+  const planProject = (await detectProjectName()) ?? "_unknown";
+  const server = await startPlannotatorServer({
+    plan: planContent,
+    origin: "dsh",
+    // The plugin steers the approved-with-notes message dsh-plan composes
+    // into the agent after approving.
+    approvalNotesSupported: true,
+    sharingEnabled,
+    shareBaseUrl,
+    pasteApiUrl,
+    htmlContent: planHtmlContent(),
+    onReady: async (url, isRemote, port) => {
+      await handleServerReady(url, isRemote, port);
+
+      if (isRemote && sharingEnabled) {
+        await writeRemoteShareLink(planContent, shareBaseUrl, "review the plan", "plan only").catch(() => {});
+      }
+    },
+  });
+
+  registerCliSession({
+    pid: process.pid,
+    port: server.port,
+    url: server.url,
+    mode: "plan",
+    project: planProject,
+    startedAt: new Date().toISOString(),
+    label: `plan-${planProject}`,
+  });
+
+  let result: Awaited<ReturnType<typeof server.waitForDecision>>;
+  try {
+    result = await waitForPlanReviewDecision({
+      waitForDecision: server.waitForDecision,
+      timeoutMs: timeoutSeconds === null ? null : timeoutSeconds * 1000,
+      timeoutResult: {
+        approved: false,
+        feedback: dshPlanTimeoutFeedback(timeoutSeconds ?? 0),
+      },
+    });
+    await waitForPlanReviewCloseDelay(1500);
+  } finally {
+    await server.stop();
+  }
+
+  console.log(JSON.stringify(composeDshPlanOutput(result)));
   process.exit(0);
 
 } else if (args[0] === "opencode-review" || args[0] === "opencode-review-directory") {

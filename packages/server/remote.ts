@@ -9,6 +9,7 @@
  */
 
 import { parsePortSelection } from "@plannotator/shared/port-range";
+import { loadConfig, resolveLocalUrlHostname } from "@plannotator/shared/config";
 import { resolveAdvertisedSessionUrl } from "@plannotator/shared/advertised-url";
 
 const DEFAULT_REMOTE_PORT = 19432;
@@ -189,6 +190,16 @@ export async function startBunServerOnAvailablePort<TServer>(
  */
 export function getServerHostname(): string {
   return isRemoteSession() ? "0.0.0.0" : LOOPBACK_HOST;
+}
+
+/**
+ * The localhost subdomain sessions are advertised at (`urlHost:
+ * "plannotator.localhost"`, #2184), or undefined. Servers read it once at
+ * start and hand it to the loopback Host checks of the routes a page calls
+ * (Ask this session, `/api/update`), so a page at that name is "this computer".
+ */
+export function getLocalUrlHostname(): string | undefined {
+  return resolveLocalUrlHostname(loadConfig());
 }
 
 /** Compose the display-only URL advertised for a bound server port. */
