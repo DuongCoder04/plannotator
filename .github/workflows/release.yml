@@ -1320,10 +1320,11 @@ jobs:
         # Left as a draft: the action already creates a draft and uploads
         # every asset to it (Immutable Releases allow uploads only before
         # publishing); `draft: true` only skips its final publish. The
-        # releaser publishes it with the written notes in one step
-        # (`gh release edit vX.Y.Z --notes-file RELEASE_NOTES_vX.Y.Z.md
-        # --draft=false --latest`, .agents/skills/release/SKILL.md), so the
-        # public release never carries GitHub's generated body: an Inbox or
+        # releaser publishes it with the written notes in one step, Phase 4
+        # step 5 of .agents/skills/release/SKILL.md ("Publish the release
+        # with its notes": `gh release edit vX.Y.Z --notes-file
+        # RELEASE_NOTES_vX.Y.Z.md --draft=false --latest`), so the public
+        # release never carries GitHub's generated body: an Inbox or
         # auto-update that reads it in the first minutes saves the real
         # "What's New". Drafts are never `releases/latest`, so nothing
         # (install.sh, the update check) sees the version before then. The
@@ -1334,6 +1335,26 @@ jobs:
           generate_release_notes: true
           draft: true
           prerelease: ${{ contains(github.ref, '-') }}
+
+      # A forgotten publish leaves every CLI, Inbox and install.sh on the
+      # previous version while npm serves this one, with no error anywhere:
+      # say so on the run page and in its summary.
+      - name: Say the release is a draft
+        run: |
+          cmd="gh release edit ${GITHUB_REF_NAME} --notes-file RELEASE_NOTES_${GITHUB_REF_NAME}.md --draft=false --latest"
+          echo "::warning title=Release ${GITHUB_REF_NAME} is a DRAFT::Nobody gets ${GITHUB_REF_NAME} until it is published. Publish it with its notes: ${cmd}"
+          {
+            echo "## ⚠️ Release ${GITHUB_REF_NAME} is a DRAFT"
+            echo
+            echo "Nobody gets ${GITHUB_REF_NAME} (install.sh, auto-update, the Inbox) until it is published, though npm may already serve it."
+            echo "Publish it with its notes (step 5 of \`.agents/skills/release/SKILL.md\`):"
+            echo
+            echo '```bash'
+            echo "${cmd}"
+            echo '```'
+            echo
+            echo "Then check that \`gh release view ${GITHUB_REF_NAME} --json isDraft\` is false."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # PRs and manual dry-runs stop here. This job executes repository build code,
   # so it must never receive an npm token or permission to mint an OIDC token.

@@ -5,7 +5,7 @@
  * per-version throttle, and stored notes without a "What's New" part.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,6 +19,7 @@ import {
   RELEASE_NOTES_PENDING_RETRY_MS,
   RELEASE_NOTES_YOUNG_MS,
   releaseTagApiUrl,
+  updateCheckPaths,
   writeReleaseNotes,
 } from "./update-check";
 
@@ -188,6 +189,45 @@ describe("fetchReleaseNotesFor", () => {
     // Due 15 minutes later, when the release is exactly 2 days old: no longer young, so a day.
     expect((await fetchNotes("0.28.37", { now: NOW + RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("not-due");
     expect(seen.length).toBe(1);
+  });
+
+  test("a process that quits mid-request (its claim never answered) is retried on the quick cadence, not in a day", async () => {
+    const publishedAt = new Date(NOW - 60_000).toISOString();
+    answer = () => Response.json({ tag_name: "v0.28.37", published_at: publishedAt, body: "## What's Changed\n" });
+    expect((await fetchNotes("0.28.37")).outcome).toBe("fetched");
+    // The next try claims, then its process goes away before GitHub answers.
+    void fetchReleaseNotesFor({
+      version: "0.28.37",
+      dataDir,
+      now: () => NOW + RELEASE_NOTES_PENDING_RETRY_MS,
+      enabled: () => true,
+      fetchRelease: () => new Promise<never>(() => {}),
+    });
+    expect(readUpdateState(dataDir).notesFetch?.["0.28.37"]?.attemptedAt).toBe(NOW + RELEASE_NOTES_PENDING_RETRY_MS);
+    // A concurrent process still waits out the claim...
+    expect((await fetchNotes("0.28.37", { now: NOW + 2 * RELEASE_NOTES_PENDING_RETRY_MS - 1 })).outcome).toBe("not-due");
+    // ...and asks again 15 minutes after it, because the claim kept the release's date.
+    answer = () => Response.json({ tag_name: "v0.28.37", published_at: publishedAt, body: bodyFor("0.28.37") });
+    expect((await fetchNotes("0.28.37", { now: NOW + 2 * RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("fetched");
+    expect(readReleaseNotes("0.28.37", dataDir)!.notes).toBe("Notes the person reads.");
+  });
+
+  test("update.log gets one line per version for a body without What's New, not one per retry", async () => {
+    const publishedAt = new Date(NOW - 60_000).toISOString();
+    answer = (path) =>
+      Response.json({ tag_name: path.endsWith("v0.28.38") ? "v0.28.38" : "v0.28.37", published_at: publishedAt, body: "## What's Changed\n" });
+    const pendingLines = (version: string) => {
+      const log = existsSync(updateCheckPaths(dataDir).log) ? readFileSync(updateCheckPaths(dataDir).log, "utf-8") : "";
+      return log.split("\n").filter((line) => line.includes(`release notes for ${version} have no`)).length;
+    };
+    for (let i = 0; i < 4; i++) {
+      expect((await fetchNotes("0.28.37", { now: NOW + i * RELEASE_NOTES_PENDING_RETRY_MS })).outcome).toBe("fetched");
+    }
+    expect(seen.length).toBe(4);
+    expect(pendingLines("0.28.37")).toBe(1);
+    // Another version gets its own line.
+    expect((await fetchNotes("0.28.38")).outcome).toBe("fetched");
+    expect(pendingLines("0.28.38")).toBe(1);
   });
 
   test("not a version: nothing asked", async () => {
