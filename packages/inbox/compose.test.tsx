@@ -269,7 +269,8 @@ test.skipIf(!hasDom)('a live session: a draft saved with nobody in To reopens wi
   await until(() => dialog()?.querySelector('[data-compose-to="choose"]:not([data-loading])') != null, 'To loaded, empty');
   expect(dialog()!.querySelector('[data-compose-send]')?.getAttribute('aria-disabled')).toBe('true');
   await pickTo('ses_live_dom');
-  expect(dialog()!.querySelector('[data-compose-status]')?.textContent).toBe('Claude Code takes it as its next turn.');
+  // With an agent chosen the footer has no status line (no "takes it as its next turn").
+  expect(dialog()!.querySelector('[data-compose-status]')).toBeNull();
   act(() => (dialog()!.querySelector('[data-compose-send]') as HTMLButtonElement).click());
   await until(() => dialog() === null, 'compose closed');
   const send = posted.find((p) => p.path === '/api/inbox/messages')!;
