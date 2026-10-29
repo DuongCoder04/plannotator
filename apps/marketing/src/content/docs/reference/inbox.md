@@ -54,7 +54,7 @@ On Windows, `stop` and `restart` can signal the Inbox only while it answers. If 
 
 Type `/plannotator-inbox` in your agent (Claude Code, OpenCode, Pi, Gemini CLI, Kiro, Mistral Vibe, Droid; `$plannotator-inbox` in Codex; in Amp, **Plannotator: Open Inbox** in the command palette). It opens the Inbox in your browser, starting it if needed, and shows its address. You can also ask your agent where your Inbox is, or run `plannotator inbox --open` in a terminal. Over SSH it opens no browser on the remote machine: it shows the address and how to reach it (forward the port with `ssh -L`, or use `--tailscale`).
 
-Where the agent itself reads the command (Codex, Gemini CLI, Kiro, Mistral Vibe, Droid, and Claude Code or OpenCode without Plannotator's plugin answering it), it also briefs the agent on the Inbox for the rest of the session: ask decisions you are not there for as questions, hand over finished long work with its files, and don't wait for your reply. It starts no new work. Where Plannotator answers the command itself (Claude Code with the plugin, Pi, OpenCode with the plugin, Amp), the agent's Inbox tool already tells it this.
+The command also briefs your agent on the Inbox for the rest of the session: send decisions you are not there for as questions, hand over finished long work with its files, and let your reply come back by itself where the agent's connection brings it (otherwise the agent checks for it when it needs the answer). It starts no new work and resumes none. Where Plannotator answers the command itself (Claude Code with the plugin, Pi, OpenCode with the plugin), you see only the address and the agent gets the briefing unseen, with no extra turn. Amp shows the address only.
 
 ### Your agents are connected for you
 

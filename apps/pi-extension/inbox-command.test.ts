@@ -9,6 +9,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import plannotator from "./index.ts";
+import { INBOX_COMMAND_BRIEFING } from "../../packages/shared/inbox/connection";
 
 const ENV_KEYS = ["PLANNOTATOR_BIN", "PLANNOTATOR_DATA_DIR"] as const;
 const saved: Record<string, string | undefined> = {};
@@ -39,7 +40,11 @@ function fakePlannotator(body: string): { calls: string } {
 	return { calls };
 }
 
+/** What the command sent the session: Pi's `sendMessage` calls, message and options. */
+const sent: Array<[unknown, unknown]> = [];
+
 async function runInboxCommand(): Promise<Array<{ message: string; type: string }>> {
+	sent.length = 0;
 	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
 	const pi = {
 		events: { on: () => undefined, emit: () => undefined },
@@ -55,7 +60,7 @@ async function runInboxCommand(): Promise<Array<{ message: string; type: string 
 		setThinkingLevel: () => undefined,
 		setModel: async () => true,
 		appendEntry: () => undefined,
-		sendMessage: () => undefined,
+		sendMessage: (message: unknown, options: unknown) => void sent.push([message, options]),
 		sendUserMessage: () => undefined,
 	};
 	plannotator(pi as never);
@@ -73,6 +78,10 @@ describe.skipIf(process.platform === "win32")("/plannotator-inbox", () => {
 		expect(notices).toHaveLength(1);
 		expect(notices[0]!.type).toBe("info");
 		expect(notices[0]!.message).toContain("http://localhost:61234/");
+		// The model gets the Inbox briefing hidden, with the next prompt: no turn of its own.
+		expect(sent).toEqual([
+			[{ customType: "plannotator-inbox-briefing", content: INBOX_COMMAND_BRIEFING, display: false }, { deliverAs: "nextTurn" }],
+		]);
 	});
 
 	test("an older plannotator without --open is told to update", async () => {
@@ -81,5 +90,6 @@ describe.skipIf(process.platform === "win32")("/plannotator-inbox", () => {
 		expect(notices).toHaveLength(1);
 		expect(notices[0]!.type).toBe("error");
 		expect(notices[0]!.message).toContain("plannotator update");
+		expect(sent).toEqual([]);
 	});
 });

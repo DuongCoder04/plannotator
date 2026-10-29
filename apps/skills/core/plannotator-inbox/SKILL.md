@@ -31,10 +31,10 @@ The Plannotator Inbox is one window on this computer where you leave the person 
 - send_message's result says whether the person's reply arrives in this session by itself. When it does, do not wait or poll for it: end your turn or go on with other work. When it does not, call wait_for_reply when you need the answer.
 - A decision in the Inbox stays there: when the person writes in the chat, say what waits and link its thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar). Ask in the chat only about something new they raised there that needs no pictures or files, or when they ask.
 - Be proactive about Inbox updates and about replying to the person through the Inbox when you think they would want you to. Don't withhold important updates or decisions, and don't batch updates to send later: proactivity is better than procrastination.
-- Never run `plannotator inbox` just to send: every call starts a stopped Inbox in the background.
+- Never run `plannotator inbox` just to send: send_message starts a stopped Inbox itself, and bare `plannotator inbox` opens the window for the person.
 - Before your first send, run `plannotator inbox --help` and read it: every field, the full question syntax, and how to connect the MCP server.
-- The `plannotator` skill has more.
+- The `plannotator` skill, where you have it, has more.
 
 ## After the address
 
-This command starts no new work. If you were in the middle of a task, carry on with it; otherwise stop there. For the rest of this session, use the Inbox as above: for a decision the person is not here to make, and to hand over long work you finished.
+This command starts no new work and resumes none: do anything else the person asked in the same message, otherwise stop there. For the rest of this session, use the Inbox as above: for a decision the person is not here to make, and to hand over long work you finished.

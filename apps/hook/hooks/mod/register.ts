@@ -685,7 +685,11 @@ export function register(on: On) {
     const instance = await currentMod($)
     if (!instance) return next(e)
     // `/plannotator-inbox`: open the Inbox and say where it is; no review opens.
-    if (!isModCommand(name)) return { text: await instance.openInbox() }
+    // Opened, the model also gets the Inbox briefing as hidden context (no
+    // turn starts; the person sees only the address): people type the command
+    // to teach their agent the Inbox. `context` on a hook's own answer is on
+    // the mod's floor engine (checked in the 2.1.287 binary).
+    if (!isModCommand(name)) return await instance.openInbox(inboxToolName)
     const spec = COMMANDS[name]
     const text = await instance.runCommand(spec.kind, typeof e.args === 'string' ? e.args : '')
     return { text }
