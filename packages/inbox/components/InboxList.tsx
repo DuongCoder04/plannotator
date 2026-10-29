@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { inboxListShortcuts } from '../shortcuts/list.shortcuts';
 import { shortcutAria, useShortcutAria, withShortcut } from '../shortcuts/hint';
 import { inboxSearchShortcuts } from '../search/searchShortcut';
@@ -28,6 +28,7 @@ import { TidyMenu, type TidyController } from './Tidy';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
 import { isComposingKey, keyTarget, modalOpen } from '../shortcuts/guards';
 import { listMoveIndex, listStops, LIST_STOPS, type ListMove } from '../listKeys';
+import { listProjectNames } from '../projectLabels';
 
 export interface InboxListProps {
   title: string;
@@ -36,6 +37,12 @@ export interface InboxListProps {
   sections: readonly InboxListSection[];
   /** One project is shown: its rows drop the project label. */
   filtered: boolean;
+  /**
+   * The projects' folders (the list model's `projects`): a row names its project by its folder,
+   * adding the parent only when two projects in this list share it (`listProjectNames`).
+   * Absent, or a project not in it: the server's name.
+   */
+  projects?: readonly { id: string; root: string; name: string }[];
   /**
    * A thread is open beside the list: a column of its own width (380px, or
    * wider where the person dragged its edge), two-line rows until it is
@@ -406,7 +413,7 @@ export const FULL_WORDS_MIN_LIST_WIDTH = 1150;
  * column is not rendered at all, so a row starts at the list's left edge
  * instead of after an empty block.
  */
-function WideRow({ row, selected, filtered, lit, pinned, keys, full, onOpen }: { row: InboxListRow; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; full: boolean; onOpen: () => void }) {
+function WideRow({ row, project, selected, filtered, lit, pinned, keys, full, onOpen }: { row: InboxListRow; project: string; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; full: boolean; onOpen: () => void }) {
   const [kbd, focus] = useKeyboardFocus(rowHasBadge(row));
   const wordsId = useId();
   const badgeEl = badgeOf(row, kbd, full);
@@ -426,7 +433,7 @@ function WideRow({ row, selected, filtered, lit, pinned, keys, full, onOpen }: {
       aria-describedby={rowHasBadge(row) ? wordsId : undefined}
       {...focus}
     >
-      {!filtered && <ClipText className="ib-p" text={row.project.name} />}
+      {!filtered && <ClipText className="ib-p" text={project} />}
       <span className="ib-subj">
         <SubjectLine row={row} pinned={pinned} />
       </span>
@@ -536,7 +543,7 @@ function RowWithAction({
   );
 }
 
-function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: InboxListRow; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
+function NarrowRow({ row, project, selected, filtered, lit, pinned, keys, onOpen }: { row: InboxListRow; project: string; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
   const [kbd, focus] = useKeyboardFocus(rowHasBadge(row));
   const wordsId = useId();
   const badge = badgeOf(row, kbd);
@@ -559,7 +566,7 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
           at the right. Short of room the project gives way, down to a floor, before the thread's name. */}
       <div className="ib-l1">
         <span className="ib-pw">
-          <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
+          <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : project} />
         </span>
         <ThreadChip row={row} />
         <span className="ib-t">
@@ -591,7 +598,7 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
  * time), then the subject with the agents' marks, the badge and the count at
  * the right end of line 2.
  */
-function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: InboxListRow; filtered: boolean; lit: boolean; menu: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
+function PhoneRow({ row, project, filtered, lit, menu, pinned, keys, onOpen }: { row: InboxListRow; project: string; filtered: boolean; lit: boolean; menu: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
   const wordsId = useId();
   // A phone: the icons only, no card (the thread shows the details).
   const badge = rowHasBadge(row) ? <RowBadge row={row} /> : null;
@@ -613,7 +620,7 @@ function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: Inb
     >
       <span className="ib-m1">
         <span className="ib-pw">
-          <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
+          <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : project} />
         </span>
         {chip && (
           <span className="ib-key">
@@ -719,6 +726,7 @@ export function InboxList(props: InboxListProps) {
   const refreshHintId = useId();
   const resizable = props.narrow && !isMobile;
   const visible = props.sections.filter((s) => s.threads.length > 0);
+  const projectLabels = useMemo(() => listProjectNames(props.sections, props.projects ?? []), [props.sections, props.projects]);
   const lit = (row: InboxListRow) => props.lit?.has(row.thread_id) === true;
   // The row whose right-click menu is open: a muted background, as the project row's.
   const [menuRow, setMenuRow] = useState<string | null>(null);
@@ -881,6 +889,7 @@ export function InboxList(props: InboxListProps) {
                     <ListRow
                       key={row.thread_id}
                       row={row}
+                      project={projectLabels.get(row.project.id) ?? row.project.name}
                       drawn={section.id}
                       // A phone's row has no hover action (a hover on a touch screen is a first tap): Mark read is in the thread's header there.
                       shape={props.phone ? 'phone' : twoLine ? 'narrow' : 'wide'}
@@ -908,6 +917,8 @@ export function InboxList(props: InboxListProps) {
 
 interface ListRowProps {
   row: InboxListRow;
+  /** The row's project as this list names it (`listProjectNames`). */
+  project: string;
   /** The group the row sits in on screen. */
   drawn: InboxSectionId;
   shape: 'wide' | 'narrow' | 'phone';
@@ -935,21 +946,22 @@ interface ListRowProps {
  * list update renders only the rows that changed.
  */
 const ListRow = memo(
-  function ListRow({ row, drawn, shape, full, filtered, selected, lit, onOpen, onMarkRead, onSendNow, menu, pinned, keys }: ListRowProps) {
+  function ListRow({ row, project, drawn, shape, full, filtered, selected, lit, onOpen, onMarkRead, onSendNow, menu, pinned, keys }: ListRowProps) {
     const open = () => onOpen(row);
-    if (shape === 'phone') return <PhoneRow row={row} filtered={filtered} lit={lit} menu={menu} pinned={pinned} keys={keys} onOpen={open} />;
+    if (shape === 'phone') return <PhoneRow row={row} project={project} filtered={filtered} lit={lit} menu={menu} pinned={pinned} keys={keys} onOpen={open} />;
     return (
       <RowWithAction row={row} drawn={drawn} menu={menu} onMarkRead={onMarkRead} onSendNow={onSendNow}>
         {shape === 'narrow' ? (
-          <NarrowRow row={row} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} onOpen={open} />
+          <NarrowRow row={row} project={project} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} onOpen={open} />
         ) : (
-          <WideRow row={row} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} full={full} onOpen={open} />
+          <WideRow row={row} project={project} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} full={full} onOpen={open} />
         )}
       </RowWithAction>
     );
   },
   (a, b) =>
     a.shape === b.shape &&
+    a.project === b.project &&
     a.full === b.full &&
     a.drawn === b.drawn &&
     a.filtered === b.filtered &&

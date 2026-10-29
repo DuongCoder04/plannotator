@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { InboxHealth, InboxListRow, InboxRestartAgents } from '@plannotator/core/inbox-types';
 import { restartAgentsDescription, restartAgentsLabel, restartAgentsOf } from '../restartAgents';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
@@ -10,6 +10,7 @@ import { Icon } from '../icons';
 import { useSidebar } from '../shell/sidebar';
 import { usePhone } from '../phone';
 import { shownProjects, type ProjectAction } from '../projectMenu';
+import { shortProjectNames } from '../projectLabels';
 import { ProjectRow } from './ProjectRow';
 import { PinnedRow, type PinnedAction } from './PinnedRow';
 import { useInboxTheme } from '../theme';
@@ -146,7 +147,12 @@ export function Sidebar(props: SidebarProps) {
   const phone = usePhone();
   // A project with nothing in the list leaves the sidebar (automatic hiding); the one the list shows stays until the person leaves it.
   const held = props.page === 'inbox' ? props.projectId : null;
-  const shown = shownProjects(props.projects, held);
+  // Each project by its folder's name, the parent added only when two projects shown here share it (shortProjectNames).
+  const shown = useMemo(() => {
+    const list = shownProjects(props.projects, held);
+    const names = shortProjectNames(list);
+    return list.map((project) => ({ ...project, name: names.get(project.id) ?? project.name }));
+  }, [props.projects, held]);
   const pins = props.pins ?? [];
   // One scroll area holds Pinned and Projects (no limit on pins: a long Pinned section scrolls with the projects).
   const [projsRef, moreProjects] = useMoreBelow<HTMLDivElement>(`${shown.length}:${pins.length}`);

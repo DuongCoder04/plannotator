@@ -97,6 +97,7 @@ import { movePin, unpinnedWhere } from './pins';
 import type { PinnedAction } from './components/PinnedRow';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 import { newBatchId, projectAllArchived, projectBatchToast, projectsWithReadable, type ProjectAction } from './projectMenu';
+import { shortProjectNames } from './projectLabels';
 import { lookBoundary } from './folding';
 import { latestAgentSeq } from './seenOnSight';
 import { isPhone, isTouchPhone, trackKeyboard, usePhone } from './phone';
@@ -3694,10 +3695,12 @@ function Inbox() {
         {!fileOpen && !fromCard && (
         <InboxList
           scope={route.project}
-          title={filterProject?.name ?? 'Inbox'}
+          // One project's list: its folder's name (shortProjectNames), the path beside it.
+          title={filterProject ? (shortProjectNames([filterProject]).get(filterProject.id) ?? filterProject.name) : 'Inbox'}
           path={filterProject ? tildePath(filterProject.root, settings?.home) : null}
           sections={filterSections(shown, route.project)}
           filtered={filterProject !== null}
+          projects={projects}
           // A stacked thread covers the list, which keeps its own width (and scroll) under it.
           narrow={route.thread !== null && !stack.thread}
           selectedThreadId={route.thread}
