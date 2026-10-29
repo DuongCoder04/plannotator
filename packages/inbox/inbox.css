@@ -3397,10 +3397,24 @@ dialog.ib-cp::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-cp-foot, .ib-cp-ask { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 10px 12px 10px 10px; border-top: 1px solid var(--ib-line); flex: none; flex-wrap: wrap; }
 .ib-cp-foot .ib-sp, .ib-cp-ask .ib-sp { flex: 1; }
 .ib-cp-ask { background: var(--ib-band); font-size: var(--ib-fs-13-5, 13.5px); font-weight: 550; padding-left: 16px; border-radius: 0 0 10px 10px; }
-/* The reply box's attach button (a phone only): the compose paperclip's look, a 44 px target. */
-.pn-inbox .ib-rattach { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; border-radius: 9px; color: var(--muted-foreground); cursor: pointer; position: relative; }
-.pn-inbox .ib-rattach:hover, .pn-inbox .ib-rattach:focus-within { background: var(--muted); color: var(--foreground); }
-.pn-inbox .ib-rattach:has(input:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
+/* The reply box's paperclip (approval "inbox-reply-attach"): first in the box's toolbar, left of the chips. On a phone
+   36 px with a 44 px tap area (the ::after), so phone and desktop put it in the same place. */
+.pn-inbox .ib-rclip { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 28px; height: 26px; border-radius: 6px; color: var(--muted-foreground); cursor: pointer; position: relative; }
+.pn-inbox .ib-rclip:hover, .pn-inbox .ib-rclip:focus-within { background: var(--muted); color: var(--foreground); }
+.pn-inbox .ib-rclip:has(input:focus-visible) { outline: 2px solid var(--ring); outline-offset: 1px; }
+@media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
+  .pn-inbox .ib-rclip { width: 36px; height: 36px; border-radius: 8px; }
+  .pn-inbox .ib-rclip::after { content: ''; position: absolute; inset: -4px; }
+}
+/* Files dragged over the reply box: a dashed outline and "Drop to attach" over the box. */
+.ib-rbox { position: relative; }
+.pn-inbox .ib-rbox[data-drop-over] { border-style: dashed; border-color: var(--primary); box-shadow: 0 0 0 4px color-mix(in oklch, var(--primary) 22%, transparent); }
+.ib-rdrop { position: absolute; inset: 0; z-index: 5; border-radius: 7px; display: flex; align-items: center; justify-content: center; gap: 8px; background: color-mix(in srgb, color-mix(in srgb, var(--card) 88%, var(--primary)) 88%, transparent); color: var(--primary); font-weight: 600; font-size: var(--ib-fs-13-5, 13.5px); pointer-events: none; }
+/* Files dragged anywhere over the thread: the whole pane is the target ("Drop to attach to your reply"). */
+.ib-panedrop { position: absolute; inset: 8px; z-index: 60; display: flex; align-items: center; justify-content: center; border: 2px dashed color-mix(in oklch, var(--primary) 60%, transparent); border-radius: 12px; background: color-mix(in srgb, color-mix(in srgb, var(--card) 90%, var(--primary)) 74%, transparent); backdrop-filter: blur(1.5px); pointer-events: none; }
+.ib-panedrop-card { display: inline-flex; align-items: center; gap: 12px; padding: 14px 18px; border-radius: 10px; background: var(--popover); color: var(--foreground); border: 1px solid var(--border); box-shadow: 0 8px 24px -8px rgb(0 0 0 / 0.25); font-size: var(--ib-fs-14, 14px); }
+.ib-panedrop-card > svg { color: var(--primary); flex: none; }
+.ib-panedrop-sub { display: block; margin-top: 2px; font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); font-weight: 400; }
 .pn-inbox .ib-cp-clip { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 7px; color: var(--muted-foreground); cursor: pointer; position: relative; }
 .pn-inbox .ib-cp-clip:hover, .pn-inbox .ib-cp-clip:focus-within { background: var(--muted); color: var(--foreground); }
 /* The Board chip (approval "inbox-compose-board-chip", v3): at the right of the Thread row; on = the primary colour, never a caption. */
