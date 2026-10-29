@@ -238,6 +238,13 @@ export interface TailscaleSettings {
 /** Split (old beside new) or Unified (one column): the diff layout code review and guided reviews share. */
 export type InboxDiffStyle = 'split' | 'unified';
 
+/** Settings → General's cookie switch (SettingsModel.cookie_host). */
+export interface InboxCookieHost {
+  on: boolean;
+  env: string | null;
+  url_host: string | null;
+}
+
 export interface SettingsModel {
   serverSession: string;
   /** Absent from an Inbox that predates "Over your tailnet". */
@@ -277,6 +284,13 @@ export interface SettingsModel {
   experimental?: InboxExperimentalSettings;
   /** The Board (config.json `inboxBoard`): off unless the person turned it on. Absent from an Inbox before the switch (the Board is then always there). */
   board?: { on: boolean };
+  /**
+   * Settings → General: "Open Plannotator at plannotator.localhost" (#2184): config.json
+   * `urlHost: "plannotator.localhost"`. `env` is PLANNOTATOR_URL_HOST and `url_host`
+   * another config.json `urlHost`; either locks it. Absent through the tailnet
+   * and from an older Inbox.
+   */
+  cookie_host?: InboxCookieHost;
   /** The onboarding tour (config.json `inboxTour`): started, finished, skipped. Absent from an Inbox that predates it. */
   tour?: InboxTourState;
   /** Settings → Prompts: the Inbox reminder and the plan, review and annotate prompts. Absent from an older Inbox. */
@@ -515,6 +529,13 @@ export function pageServerSession(): string | null {
   return pageSession;
 }
 
+/**
+ * What a tag in the reply box does (approval "inbox-tag-handoff", A2): `ask`,
+ * today's tag (this one reply); `add`, the session joins the thread; `handoff`,
+ * it takes the thread over.
+ */
+export type TagMode = 'ask' | 'add' | 'handoff';
+
 async function post<T>(path: string, body: Record<string, unknown>): Promise<T> {
   return readJson<T>(
     await fetch(path, {
@@ -690,6 +711,7 @@ export const inboxApi = {
   settings: () => get<SettingsModel>('/api/inbox/settings'),
   /** Decision mode (experimental): every decision waiting on the person, in queue order. 404 while the feature is off. */
   decisions: () => get<InboxDecisionsModel>('/api/inbox/decisions'),
+  saveCookieHost: (on: boolean) => post<{ cookie_host: InboxCookieHost }>('/api/inbox/settings', { cookie_host: on }),
   saveExperimental: (change: { decision_mode: boolean }) =>
     post<{ experimental: InboxExperimentalSettings }>('/api/inbox/settings', { experimental: change }),
   /** The Board on or off (Settings → Capabilities): agents get the card action from their next session. */
@@ -775,7 +797,7 @@ export const inboxApi = {
       /** Files pasted into the reply box (upload ids): attachments on this reply. */
       uploads?: string[];
       /** The sessions the person tagged with `@` (approval "inbox-tag-agents"): each one gets this reply too. */
-      tags?: { host?: string | null; session: string; label?: string }[];
+      tags?: { host?: string | null; session: string; label?: string; mode?: TagMode }[];
       /**
        * This reply carries the reply box's words: their draft goes (approval "inbox-reply-drafts"),
        * named by the `updated_at` they were saved as, so a newer draft from another window stays.
@@ -797,6 +819,8 @@ export const inboxApi = {
       ...result,
       questions: questionsOnly(result.questions),
     })),
+  /** Take a hand-off back inside its Undo window (approval "inbox-tag-handoff"): the reply goes as an Ask instead. */
+  undoHandoff: (messageId: string) => post<{ message: InboxMessageWire }>(`/api/inbox/messages/${encodeURIComponent(messageId)}/handoff/undo`, {}),
   resolve: (messageId: string, resolved: boolean) =>
     post<unknown>(`/api/inbox/messages/${encodeURIComponent(messageId)}/resolve`, { resolved }),
   health: () => get<InboxHealth>('/api/inbox/health'),

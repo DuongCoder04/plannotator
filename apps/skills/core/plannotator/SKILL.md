@@ -85,6 +85,7 @@ Targets:
 - Markdown and text files: `.md`, `.mdx`, `.txt`.
 - Plain-text config and data files, rendered as text: `.yaml`, `.yml`, `.json`, `.jsonc`, `.json5`, `.toml`, `.ini`, `.cfg`, `.conf`, `.properties`, `.csv`, `.tsv`, `.log`, `.xml`, `.env.example`. `.env` itself is deliberately refused (it commonly holds secrets, and annotate history copies file contents). Source-code files belong to `plannotator review`, not annotate.
 - Diagram sources, opened in the full diagram viewer (zoom, pan, popout, click a node/edge/cluster to comment): `.mmd`, `.mermaid` (Mermaid) and `.dot`, `.gv` (Graphviz). The file is the whole diagram — no fence needed — and comments carry the part's id plus its real file line.
+- AsciiDoc files: `.adoc`, `.asciidoc`.
 - HTML files (`.html`, `.htm`): rendered as the raw page by default; `--markdown` converts to markdown instead. `--render-html` is accepted for compatibility; raw rendering is already the default.
 - URLs (`https://...`): fetched and converted via Jina Reader by default; `--no-jina` uses plain fetch plus Turndown instead.
 - Running local apps: a loopback `http://localhost:PORT/` URL whose probe returns HTML opens in live-app mode (annotate the real running page). `--app` forces live mode and fails loudly when it cannot apply; `--static` forces the classic conversion pipeline. Non-loopback URLs always use the conversion pipeline.
@@ -211,7 +212,7 @@ plannotator improve-context
 - `update` installs the newest release now (the install script, with the choices from the last install); `--check` only reports whether one exists. Run it only when the person asks you to update Plannotator: it replaces the binary. Exit 0 up to date or updated, 1 failed, 2 usage, 130 interrupted.
 - `uninstall` removes Plannotator-installed components (`--purge` also deletes local data; `--yes` is required without a TTY; `--dry-run` previews).
 - `improve-context` and `install-runtime` are internal integration commands (hook plumbing and managed runtime install). Never run `improve-context` directly; `plannotator install-runtime agent-terminal` exists for reinstalling the optional annotate-terminal runtime and is normally run by the installer.
-- Additional host-internal subcommands (the `opencode-*` and `copilot-plan` family) are invoked by their plugins, not by you.
+- Additional host-internal subcommands (the `opencode-*` family, `copilot-plan` and `dsh-plan`) are invoked by their plugins, not by you.
 
 ## Environment variables that change behavior
 
@@ -219,7 +220,7 @@ plannotator improve-context
 | --- | --- |
 | `PLANNOTATOR_REMOTE=1` | Force remote mode (fixed port 19432, wide bind) for SSH/devcontainer sessions; `0` forces local. Unset means SSH auto-detection. |
 | `PLANNOTATOR_PORT` | Fix the port instead of a random one. |
-| `PLANNOTATOR_ORIGIN` | Override agent-origin detection (`claude-code`, `codex`, `opencode`, `pi`, `oh-my-pi`, `amp`, `droid`, `copilot-cli`, `gemini-cli`, `kiro-cli`, `mistral-vibe`, `qwen-code`). Set it when launching Plannotator from a wrapper the detection cannot see through. |
+| `PLANNOTATOR_ORIGIN` | Override agent-origin detection (`claude-code`, `codex`, `opencode`, `pi`, `oh-my-pi`, `amp`, `droid`, `copilot-cli`, `gemini-cli`, `kiro-cli`, `mistral-vibe`, `qwen-code`, `dsh`). Set it when launching Plannotator from a wrapper the detection cannot see through. |
 | `PLANNOTATOR_AI=disabled` | Disable Ask AI and agent-launched review surfaces in the UI. |
 | `PLANNOTATOR_SHARE=disabled` | Disable URL sharing, including guide share links. |
 | `PLANNOTATOR_DATA_DIR` | Move the data directory (default `~/.plannotator`): plans, history, drafts, config. |

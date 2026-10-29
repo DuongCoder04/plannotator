@@ -144,7 +144,8 @@ test.skipIf(!hasDom)('desktop warning: one line (icon, lead, detail), Reply and 
   expect(toast.querySelector('.ib-tlead')?.textContent).toBe('Marked read');
   expect(toast.querySelector('.ib-tdetail')?.textContent).toBe('Claude Code was stopped');
   // Reply, Undo, and the × last (owner, 2026-10-20: a toast can be closed early).
-  expect(buttons(toast)).toEqual(['Reply', 'UndoZ', '']);
+  expect(buttons(toast)).toEqual(['Reply', 'Undo', '']);
+  expect(toast.querySelector('[data-toast-undo] kbd')?.getAttribute('data-keycap')).toBe('Z');
   expect([...toast.querySelectorAll('button')].at(-1)?.getAttribute('aria-label')).toBe('Dismiss');
   // The Z hint is for the eye; the button's name stays "Undo" and it says its key.
   const undo = toast.querySelector('[data-toast-undo]') as HTMLButtonElement;

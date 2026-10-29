@@ -88,25 +88,16 @@ function render(filtered: boolean, narrow = false): HTMLElement {
   return host;
 }
 
-/**
- * A phone row's lines. `chips`: line 3 (what the thread holds, ended by the agent's mark), or null when the row
- * has no line 3; `subjectEnd`: what ends the subject's line ('mark' when the row has no line 3).
- */
-function lines(el: HTMLElement, id: string): { l1: string[]; subject: string; subjectEnd: string | null; chips: string[] | null } {
+/** A phone row's lines: line 1, the subject's line, and the line under it (`chips`, the agent's mark as 'mark'). */
+function lines(el: HTMLElement, id: string): { l1: string[]; subject: string; chips: string[] } {
   const r = el.querySelector<HTMLElement>(`.ib-mrow[data-thread-id="${id}"]`);
   expect(r).not.toBeNull();
-  const [m1, second, m3] = [...r!.children].filter((c) => !c.classList.contains('ib-sr')) as HTMLElement[];
-  expect(m1!.className).toBe('ib-m1');
+  const [m1, m2, m3, ...rest] = [...r!.children].filter((c) => !c.classList.contains('ib-sr')) as HTMLElement[];
+  expect([m1!.className, m2!.className, m3!.className]).toEqual(['ib-m1', 'ib-m2', 'ib-m3']);
+  expect(rest).toEqual([]);
   const named = (c: Element) => (c.className === 'ib-mcol' ? 'mark' : c.textContent ?? '');
   const l1 = [...m1!.children].map((c) => (c.className === 'ib-mcol' ? 'mark' : `${c.className}:${c.textContent}`));
-  if (second!.className === 'ib-m2end') {
-    const [m2, end] = [...second!.children] as HTMLElement[];
-    expect(m2!.className).toBe('ib-m2');
-    expect(m3).toBeUndefined();
-    return { l1, subject: m2!.textContent ?? '', subjectEnd: end ? named(end) : null, chips: null };
-  }
-  expect(second!.className).toBe('ib-m2');
-  return { l1, subject: second!.textContent ?? '', subjectEnd: null, chips: m3 ? [...m3.children].map(named) : null };
+  return { l1, subject: m2!.textContent ?? '', chips: [...m3!.children].map(named) };
 }
 
 describe.if(hasDom)('the list on a phone', () => {
@@ -120,23 +111,21 @@ describe.if(hasDom)('the list on a phone', () => {
     }
   });
 
-  test('where and when on the first line, the subject on its own line, what the thread holds after it, ended by the mark', () => {
+  test('where and when on the first line, the subject on its own line, then a line led by the badge and the mark', () => {
     const el = render(false);
     expect(lines(el, 'msg_stop')).toEqual({
-      // The owner's pick (h): line 1 is the project and the time only; the agent's mark ends line 3.
+      // Line 1 is the project and the time only; the agent's mark leads line 3, after the badge (approval "inbox-row-mark-left").
       l1: ['ib-p:payments-reconciliation-service-v2', expect.stringMatching(/^ib-t:/)],
       subject: 'Subject msg_stop',
-      subjectEnd: null,
-      chips: ['Stopped', '2 questions', 'mark'],
+      chips: ['Stopped', 'mark', '2 questions'],
     });
-    // The long thread name and the guided review mark ride the third line; nothing shares the subject's line.
-    expect(lines(el, 'msg_wait').chips).toEqual(['refund-webhooks-and-the-long-running-reconciliation-job', '2 questions', 'Guided review', 'mark']);
-    // A Sent row says where the reply is, and has nothing to list after it: the mark ends the subject's line.
+    // No badge: the mark starts the line; the long thread name and the guided review mark ride it, the count ends it; nothing shares the subject's line.
+    expect(lines(el, 'msg_wait').chips).toEqual(['mark', 'refund-webhooks-and-the-long-running-reconciliation-job', 'Guided review', '2 questions']);
+    // A Sent row says where the reply is; its agent's mark still leads the line under it.
     expect(lines(el, 'msg_sent')).toEqual({
       l1: ['ib-p:payments-reconciliation-service-v2', expect.stringMatching(/^ib-t:/)],
       subject: 'Saved for Pi. It sees it when it next reads this thread.',
-      subjectEnd: 'mark',
-      chips: null,
+      chips: ['mark'],
     });
   });
 

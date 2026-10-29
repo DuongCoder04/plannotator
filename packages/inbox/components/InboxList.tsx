@@ -1,4 +1,7 @@
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { inboxListShortcuts } from '../shortcuts/list.shortcuts';
+import { shortcutAria, withShortcut } from '../shortcuts/hint';
+import { inboxThreadShortcuts } from '../shortcuts/thread.shortcuts';
 import type { InboxListRow, InboxListSection } from '@plannotator/core/inbox-types';
 import { threadChipName } from '../threadChip';
 import { agentName, formatCount, shortTime, waitCount } from '../format';
@@ -20,6 +23,9 @@ import { UndeliveredBadge } from './Undelivered';
 import { TimeWithTick } from './DeliveryTick';
 import { RowBadge, WaitCard, badgeDescription, rowHasBadge } from './RowBadge';
 import { attachPullToRefresh } from '../pullRefresh';
+import { useShortcutScope } from '@plannotator/ui/shortcuts';
+import { isComposingKey, keyTarget, modalOpen } from '../shortcuts/guards';
+import { listMoveIndex, listStops, LIST_STOPS, type ListMove } from '../listKeys';
 
 export interface InboxListProps {
   title: string;
@@ -111,7 +117,7 @@ function RowMark({ row }: { row: InboxListRow }) {
  */
 function useKeyboardFocus(enabled: boolean): [
   boolean,
-  { onFocus: (e: FocusEvent<HTMLElement>) => void; onBlur: () => void; onKeyDown: (e: KeyboardEvent<HTMLElement>) => void },
+  { onFocus: (e: FocusEvent<HTMLElement>) => void; onBlur: () => void; onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => void },
 ] {
   const [on, setOn] = useState(false);
   return [
@@ -155,9 +161,9 @@ function BadgeWords({ row, id }: { row: InboxListRow; id: string }) {
 }
 
 /**
- * The agent's mark in a box of its own (approval "inbox-row-badges", and the owner's pick (h) of 2026-10-27):
- * a wide row's column just before the time; the end of a two-line row's second line; the end of a phone
- * row's last line. Each box ends on the row's right edge, so every mark lines up.
+ * The agent's mark in a box of its own: a wide row's column just before the time (approval "inbox-row-badges");
+ * on a two-line row it leads line 2, and on a phone row the line under the subject, after the badge when the
+ * row has one (approval "inbox-row-mark-left", 2026-10-28), so a row without a badge starts with its agent.
  */
 function MarkCol({ row }: { row: InboxListRow }) {
   return (
@@ -355,7 +361,27 @@ function RowWithAction({
   // A reply waiting on a busy agent that can take it now: Send now, on hover and keyboard focus as Mark read.
   const sendNow = onSendNow && !offer && row.delivery?.send_now === true && rowWait(row.delivery) !== null;
   return (
-    <div className="ib-rw" data-row={row.thread_id} data-menu={menu ? '' : undefined}>
+    <div
+      className="ib-rw"
+      data-row={row.thread_id}
+      data-menu={menu ? '' : undefined}
+      onKeyDown={(event) => {
+        // Tab from the row onto its action (focus fix 1): the action shows only while the row has keyboard focus,
+        // and focus leaves the row before it reaches the action, so the browser's own Tab finds it gone and drops
+        // focus on the page. The wrapper holds it shown (`data-action-focus`) while focus moves; Shift+Tab back is
+        // the browser's.
+        if (event.key !== 'Tab' || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+        if (!(event.target instanceof HTMLElement) || !event.target.matches('[data-thread-id]')) return;
+        const wrapper = event.currentTarget;
+        const action = wrapper.querySelector<HTMLElement>(':scope > .ib-ract');
+        if (!action) return;
+        event.preventDefault();
+        wrapper.setAttribute('data-action-focus', '');
+        action.addEventListener('blur', () => wrapper.removeAttribute('data-action-focus'), { once: true });
+        action.focus();
+        if (document.activeElement !== action) wrapper.removeAttribute('data-action-focus');
+      }}
+    >
       {children}
       {sendNow && (
         <Tip content={`Send now: put your reply into ${agentName(rowAgent(row))}'s running turn without waiting for it to end`}>
@@ -375,7 +401,7 @@ function RowWithAction({
         </Tip>
       )}
       {offer && (
-        <Tip content={`Mark read (E): out of the top until ${agentName(rowAgent(row))} writes again`}>
+        <Tip content={withShortcut(`Mark read: out of the top until ${agentName(rowAgent(row))} writes again`, { scope: inboxThreadShortcuts, action: 'markRead' })}>
           <button
             type="button"
             className="ib-ract"
@@ -423,11 +449,11 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
         </span>
       </div>
-      {/* Line 2: the badge, the thread's name and the subject, then the agent's mark at the bottom right. */}
+      {/* Line 2 (approval "inbox-row-mark-left"): the badge, the agent's mark, the thread's name, the subject. */}
       <div className="ib-l2">
         {badge}
-        <SubjectLine row={row} pinned={pinned} />
         <MarkCol row={row} />
+        <SubjectLine row={row} pinned={pinned} />
       </div>
       {pinned && <PinnedWords />}
     </button>
@@ -439,9 +465,9 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
 /**
  * A row on a phone, read like a mail app's: where and when on the first line
  * (the project, or the agent in one project's list, and the time), the subject
- * on up to two lines, then what the thread holds (the badge, the thread's
- * name, the question count, the guided review mark) on one line ended by the
- * agent's mark. With nothing for that line, the mark ends the subject's last line.
+ * on up to two lines, then a line led by the badge and the agent's mark
+ * (approval "inbox-row-mark-left"), with what the thread holds after them (the
+ * thread's name, the guided review mark, then the question count at the line's end).
  */
 function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: InboxListRow; filtered: boolean; lit: boolean; menu: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
   const wordsId = useId();
@@ -471,34 +497,24 @@ function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: Inb
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
         </span>
       </span>
-      {badge || chip || count || guide ? (
-        <>
-          <span className="ib-m2" dir="auto">{subjectOf(row)}</span>
-          {/* One line where it fits: the guided review label, then the thread's name (down to a floor) give way before the line wraps. */}
-          <span className="ib-m3">
-            {badge}
-            {chip && (
-              <span className="ib-key">
-                <span className="ib-keyt" dir="auto">{chip}</span>
-              </span>
-            )}
-            {count && <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{count}</span>}
-            {guide && (
-              <span className="ib-att" data-guide-mark="" role="img" aria-label="Guided review">
-                <Icon name="book" size={13} />
-                <span className="ib-att-l">Guided review</span>
-              </span>
-            )}
-            <MarkCol row={row} />
+      <span className="ib-m2" dir="auto">{subjectOf(row)}</span>
+      {/* One line where it fits: the guided review label, then the thread's name (down to a floor) give way before the line wraps. */}
+      <span className="ib-m3">
+        {badge}
+        <MarkCol row={row} />
+        {chip && (
+          <span className="ib-key">
+            <span className="ib-keyt" dir="auto">{chip}</span>
           </span>
-        </>
-      ) : (
-        // Nothing for a third line: the mark ends the subject's last line instead of taking a line of its own.
-        <span className="ib-m2end">
-          <span className="ib-m2" dir="auto">{subjectOf(row)}</span>
-          <MarkCol row={row} />
-        </span>
-      )}
+        )}
+        {guide && (
+          <span className="ib-att" data-guide-mark="" role="img" aria-label="Guided review">
+            <Icon name="book" size={13} />
+            <span className="ib-att-l">Guided review</span>
+          </span>
+        )}
+        {count && <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{count}</span>}
+      </span>
       {pinned && <PinnedWords />}
     </button>
     <BadgeWords row={row} id={wordsId} />
@@ -511,6 +527,29 @@ export function InboxList(props: InboxListProps) {
   // Another project on a phone: the list starts at its top. The list itself stays mounted (its Quiet fold and,
   // across a resize past the phone width, its scroll are kept).
   const bodyRef = useRef<HTMLDivElement>(null);
+  // ↑ ↓ Home End move focus between the rows (listKeys.ts), only while a row or the Quiet band has it.
+  const listKey = (move: ListMove) => ({
+    when: (event: KeyboardEvent) => {
+      if (event.defaultPrevented || isComposingKey(event) || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || modalOpen()) return false;
+      const target = keyTarget(event);
+      const body = bodyRef.current;
+      return !!(target && body?.contains(target) && target.matches(LIST_STOPS));
+    },
+    handle: (event: KeyboardEvent) => {
+      const body = bodyRef.current;
+      if (!body) return;
+      const stops = listStops(body);
+      const at = listMoveIndex(stops.length, stops.indexOf(keyTarget(event) as HTMLElement), move);
+      const next = at === null ? null : stops[at];
+      if (!next) return;
+      next.focus({ preventScroll: true });
+      next.scrollIntoView?.({ block: 'nearest' });
+    },
+  });
+  useShortcutScope({
+    scope: inboxListShortcuts,
+    handlers: { next: listKey('next'), previous: listKey('previous'), first: listKey('first'), last: listKey('last') },
+  });
   const shownScope = useRef(props.scope ?? null);
   useLayoutEffect(() => {
     const scope = props.scope ?? null;
@@ -559,7 +598,7 @@ export function InboxList(props: InboxListProps) {
   const sectionOf = (threadId: string) => props.sections.find((section) => section.threads.some((r) => r.thread_id === threadId))?.id ?? null;
   const onRowAction = props.onRowAction;
   // Shift+F10 opens a row's menu (the context-menu key too), named on each row for assistive technology.
-  const rowKeys = onRowAction ? 'Shift+F10' : undefined;
+  const rowKeys = onRowAction ? shortcutAria({ scope: inboxListShortcuts, action: 'rowMenu' }) : undefined;
   // The row callbacks keep one identity for the list's life (they call the latest props), so a row whose
   // data did not change is not rendered again when the list is (ListRow is memoized on its row's content).
   const latest = useRef(props);

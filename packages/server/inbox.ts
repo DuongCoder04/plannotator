@@ -77,11 +77,14 @@ import {
   type InboxMessage,
   type InboxProject,
   type InboxProjectRepo,
+  type InboxTag,
 } from "@plannotator/core/inbox-types";
 import { checkServerSession, createServerSessionNonce, INBOX_SERVER_SESSION_MISMATCH_ERROR, serverSessionMismatchBody } from "@plannotator/core/server-session";
 import {
   INBOX_TOOL_HOSTS,
+  cookieHostState,
   loadConfig,
+  saveCookieHost,
   parseAutoUpdateEnv,
   parseExperimentalEnv,
   resolveExperimental,
@@ -116,6 +119,7 @@ import {
   INBOX_BRIDGE_EVENT_PATH,
   INBOX_BRIDGE_POLL_MAX_MS,
   INBOX_BRIDGE_POLL_PATH,
+  inboxHandedAwayLine,
   inboxReaskItemsOf,
   INBOX_MAX_REQUEST_BYTES,
   INBOX_SEND_NOW_POLL_FIELD,
@@ -505,6 +509,10 @@ const ERROR_STATUS: Record<string, number> = {
   tag_needs_update: 409,
   // Tags: the session is known, but as another agent than the tag says.
   tag_host_mismatch: 409,
+  // Add or Hand off (approval "inbox-tag-handoff"): a session that is not woken, the thread's own owner, a hand-off already sent.
+  mode_needs_live: 409,
+  already_owner: 409,
+  handoff_settled: 409,
   // Compose: a new thread the person starts (packages/server/inbox-compose.ts).
   already_delivered: 409,
   not_addressed: 422,
@@ -527,6 +535,9 @@ const ERROR_STATUS: Record<string, number> = {
   tailscale_env_decides: 409,
   // Settings → Capabilities → Experimental, while PLANNOTATOR_EXPERIMENTAL decides.
   experimental_env_decides: 409,
+  // Settings → General → "Open Plannotator at plannotator.localhost" (#2184): locked by the env var or another urlHost.
+  cookie_host_env_decides: 409,
+  cookie_host_url_host_in_use: 409,
   tailscale_unavailable: 409,
   local_only: 403,
 };
@@ -714,6 +725,22 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     const timer = setTimeout(() => {
       setAsideTimers.delete(timer);
       settleAcks();
+    }, setAsideDelayMs + 50);
+    (timer as { unref?: () => void }).unref?.();
+    setAsideTimers.add(timer);
+  };
+  // A hand-off (approval "inbox-tag-handoff", A2): held for the same Undo window, then handed to the new owner and the former one.
+  const settleHandoffs = () => {
+    try {
+      store.settleHandoffs(setAsideDelayMs);
+    } catch (error) {
+      process.stderr.write(`Inbox: a hand-off was not settled: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  };
+  const scheduleHandoffSettle = () => {
+    const timer = setTimeout(() => {
+      setAsideTimers.delete(timer);
+      settleHandoffs();
     }, setAsideDelayMs + 50);
     (timer as { unref?: () => void }).unref?.();
     setAsideTimers.add(timer);
@@ -1589,6 +1616,28 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   };
 
   /**
+   * "Open Plannotator at plannotator.localhost" (#2184): config.json `urlHost:
+   * "plannotator.localhost"`, shared with plan review, code review and
+   * annotate. `env` is PLANNOTATOR_URL_HOST when set and `url_host` another
+   * config.json `urlHost`: either locks the switch. Applies from the next start.
+   */
+  const cookieHostWire = () => {
+    const state = cookieHostState();
+    return { on: state.on, env: state.env ?? null, url_host: state.urlHost ?? null };
+  };
+
+  /** Save the cookie switch. `validateOnly`: check the input and write nothing. */
+  const saveCookieHostSwitch = (input: unknown, validateOnly = false) => {
+    if (typeof input !== "boolean") throw new InboxError("validation_error", "cookie_host: must be a boolean.", { field: "cookie_host" });
+    if (validateOnly) return cookieHostWire();
+    const { outcome } = saveCookieHost(input);
+    if (outcome === "env") throw new InboxError("cookie_host_env_decides", "PLANNOTATOR_URL_HOST decides this setting.", { cookie_host: cookieHostWire() });
+    if (outcome === "url_host") throw new InboxError("cookie_host_url_host_in_use", "config.json already sets urlHost; it is not replaced.", { cookie_host: cookieHostWire() });
+    if (outcome === "failed") throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
+    return cookieHostWire();
+  };
+
+  /**
    * Experimental features (config.json `experimental`, PLANNOTATOR_EXPERIMENTAL
    * wins): each switch, and whether the env var decides it. Read on every
    * request, so a switch applies at once.
@@ -1681,6 +1730,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     sound: soundState(),
     /** Settings → About: update notices and automatic updates. */
     updates: updatesState(),
+    /** Settings → General: "Open Plannotator at plannotator.localhost" (#2184); only for a page on this computer. */
+    ...(via === "local" ? { cookie_host: cookieHostWire() } : {}),
     /** Plannotator's appearance (config.json `theme`), shared with plan review; null when never chosen. */
     theme: themeState(),
     /** The window's text size in px (config.json `inboxTextSize`), 14 unless chosen. */
@@ -1889,6 +1940,61 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   const hostAgentName = (host: string | null | undefined, fallback = "another agent"): string =>
     host && Object.hasOwn(INBOX_HOST_NAMES, host) ? INBOX_HOST_NAMES[host]! : fallback;
   /**
+   * The reply route's `tags`, with each one's mode from the reply box's line
+   * (approval "inbox-tag-handoff", A2): none is an Ask (today's tag), `add`
+   * joins the session to the thread, `handoff` hands it the thread (at most
+   * one). Each is resolved by `tagTargets` first (its refusals unchanged);
+   * Add and Hand off reach a live, woken session only. A hand-off to the
+   * session that owns the thread already is refused (`already_owner`).
+   */
+  const tagModes = (
+    messageId: string,
+    value: unknown,
+  ): { tags: InboxTag[]; handoff?: NonNullable<Parameters<typeof store.sendReply>[1]["handoff"]> } => {
+    const resolved = live.tagTargets(value);
+    const list = value as Record<string, unknown>[];
+    const modeOf = (session: string) => {
+      const mode = list.find((item) => item && item.session === session)?.mode;
+      if (mode === undefined || mode === null || mode === "ask") return "ask";
+      if (mode === "add" || mode === "handoff") return mode;
+      throw new InboxError("validation_error", "tags: mode is ask, add or handoff.", { field: "tags" });
+    };
+    const handoffs = resolved.filter((tag) => modeOf(tag.session) === "handoff");
+    if (handoffs.length > 1) throw new InboxError("validation_error", "tags: a reply hands the thread to one session at most.", { field: "tags" });
+    for (const tag of resolved) {
+      if (modeOf(tag.session) !== "ask" && (!tag.wakes || !tag.host)) {
+        throw new InboxError(
+          "mode_needs_live",
+          "Add and Hand off reach a live session only: a session you picked reads the Inbox through MCP. Nothing was sent. Send it as an Ask instead.",
+          { sessions: [tag.session] },
+        );
+      }
+    }
+    const tags = resolved.filter((tag) => modeOf(tag.session) !== "handoff").map((tag) => (modeOf(tag.session) === "add" ? { ...tag, joined: true } : tag));
+    const target = handoffs[0];
+    if (!target) return { tags };
+    const message = store.message(messageId);
+    if (!message) throw new InboxError("message_not_found", `No message ${messageId}.`);
+    const owner = store.threadOwner(message.thread_id);
+    if (owner?.session === target.session) throw new InboxError("already_owner", "That session owns this thread already: nothing was sent.");
+    return {
+      tags,
+      handoff: {
+        to: { host: target.host!, session: target.session },
+        label: target.label ?? null,
+        // The former owner reads by its agent and this thread's project in the person's lines ("Claude Code (plannotator)").
+        from: owner
+          ? {
+              host: owner.host,
+              session: owner.session,
+              wakes: live.wakesTagged(owner.session),
+              label: `${hostAgentName(owner.host, "An agent")} (${store.project(message.project_id)?.name ?? "this project"})`,
+            }
+          : null,
+      },
+    };
+  };
+  /**
    * `sendNow`: the polling connection said it can deliver into a running turn;
    * only then does a Send now reply carry `now`. `session`: the polling
    * session, when the reply may tag it (approval "inbox-tag-agents"): a
@@ -1897,6 +2003,20 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
    */
   const replyCommand = (reply: InboxMessage, sendNow = false, session: string | null = null): InboxReplyCommand => {
     const tag = session && !store.isOwner(reply, session) ? (reply.tags?.find((t) => t.session === session) ?? null) : null;
+    // The former owner of a handed-off thread: the notice alone (its body, so an older connection still says it).
+    if (tag?.handed_away) {
+      const to = hostAgentName(reply.to?.host);
+      return {
+        type: "reply",
+        id: reply.id,
+        thread_id: reply.thread_id,
+        reply_to: reply.reply_to,
+        subject: store.threadSubject(reply.thread_id),
+        body: inboxHandedAwayLine(to),
+        url: threadPageUrl(baseUrl, reply.thread_id),
+        handed_away: { to },
+      };
+    }
     if (tag) {
       return {
         type: reply.to && !reply.reply_to ? "message" : "reply",
@@ -1907,11 +2027,15 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         body: inboxBodyForAgent(reply),
         url: threadPageUrl(baseUrl, reply.thread_id),
         tagged: { owner: hostAgentName(store.recipientOf(reply)?.host) },
+        // Added to the thread ("Add instead"): it works alongside the owner.
+        ...(tag.joined ? { added: true } : {}),
         ...(tag.deliver_now_at && sendNow ? { now: true } : {}),
       };
     }
-    const alsoTagged = (reply.tags ?? []).map((t) => hostAgentName(t.host));
-    return { ...ownerCommand(reply, sendNow), ...(alsoTagged.length > 0 ? { also_tagged: alsoTagged } : {}) };
+    const alsoTagged = (reply.tags ?? []).filter((t) => !t.handed_away).map((t) => hostAgentName(t.host));
+    // Handed this thread ("Hand off instead"): the wake says it is this session's now.
+    const handedFrom = reply.handoff && !reply.handoff.undone_at && reply.to ? { handoff: { from: hostAgentName(reply.handoff.from?.host) } } : {};
+    return { ...ownerCommand(reply, sendNow), ...handedFrom, ...(alsoTagged.length > 0 ? { also_tagged: alsoTagged } : {}) };
   };
   const ownerCommand = (reply: InboxMessage, sendNow: boolean): InboxReplyCommand => {
     // A reply the person sent to another session because the one that asked
@@ -2626,9 +2750,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           body.tour === undefined &&
           body.prompts === undefined &&
           body.board === undefined &&
+          body.cookie_host === undefined &&
           !updateSwitches
         ) {
-          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, experimental, tour, prompts, board, update_check or auto_update is required.");
+          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, experimental, tour, prompts, board, update_check, auto_update or cookie_host is required.");
         }
         // The Board changes what agents on this computer are offered (the card tool): changed only here.
         if (body.board !== undefined && via === "tailnet") return localOnly();
@@ -2636,6 +2761,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (updateSwitches && via === "tailnet") return localOnly();
         // The reminder goes to every agent session on this computer: changed only here, like Settings → Agents.
         if (body.prompts !== undefined && via === "tailnet") return localOnly();
+        // The address this computer's browser opens: never from a page that came through the tailnet.
+        if (body.cookie_host !== undefined && via === "tailnet") return localOnly();
         const promptsChange = body.prompts === undefined ? undefined : parseInboxPromptsChange(body.prompts);
         let tailscaleChange: { on: boolean; replaceExposed: boolean } | undefined;
         if (body.tailscale !== undefined) {
@@ -2667,7 +2794,11 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (body.experimental !== undefined) saveExperimental(body.experimental, true);
         if (body.tour !== undefined) saveTour(body.tour, true);
         if (body.board !== undefined) saveBoard(body.board, true);
+        if (body.cookie_host !== undefined) saveCookieHostSwitch(body.cookie_host, true);
         const tailnet = tailscaleChange === undefined ? tailscale.state() : tailscale.set(tailscaleChange.on, { via, replaceExposed: tailscaleChange.replaceExposed });
+        // After the tailnet change, so a tailnet refusal saves nothing; the cookie switch can be
+        // refused too (the env var, another urlHost), so it comes before the other saves.
+        const cookieHost = body.cookie_host === undefined ? undefined : saveCookieHostSwitch(body.cookie_host);
         const notifications = body.notifications === undefined ? notificationsState() : saveNotifications(body.notifications);
         const sound = body.sound === undefined ? soundState() : saveSound(body.sound);
         const inboxTool = body.inbox_tool === undefined ? inboxToolState() : saveInboxTool(body.inbox_tool);
@@ -2680,7 +2811,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         const tour = body.tour === undefined ? tourState() : saveTour(body.tour);
         const board = body.board === undefined ? { on: boardOn() } : saveBoard(body.board);
         if (promptsChange) saveInboxPromptsChange(promptsChange);
-        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle, experimental, tour, board, prompts: promptsState(via) });
+        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle, experimental, tour, board, prompts: promptsState(via), ...(via === "local" ? { cookie_host: cookieHost ?? cookieHostWire() } : {}) });
       }
       // The one-time sound dialog: the page asks to show it, and only the first ask ever gets `show: true`.
       if (path === "/api/inbox/sound/dialog") {
@@ -2999,6 +3130,15 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       const guide = await inboxGuideRoute(req, path, store, serverSession);
       if (guide) return guide;
 
+      // Undo a hand-off inside its window (approval "inbox-tag-handoff"): the reply goes as an Ask instead.
+      const handoffUndo = /^\/api\/inbox\/messages\/([A-Za-z0-9_]+)\/handoff\/undo$/.exec(path);
+      if (handoffUndo) {
+        if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+        const body = await readBody(req);
+        if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
+        return json({ message: store.undoHandoff(handoffUndo[1]!) });
+      }
+
       const messageMatch = /^\/api\/inbox\/messages\/([A-Za-z0-9_]+)\/(picks|reply|reask|resolve)$/.exec(path);
       if (messageMatch) {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
@@ -3025,8 +3165,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
             // with a connection that understands tags, or an MCP agent the Inbox knows; any other
             // is refused before anything is written. A replay answers what it wrote, as it was.
             const tagKey = typeof body.idempotency_key === "string" ? body.idempotency_key.trim() : "";
-            const tags =
-              body.tags === undefined || body.tags === null || (tagKey && store.replyByKey(messageId, tagKey)) ? undefined : live.tagTargets(body.tags);
+            const tagged =
+              body.tags === undefined || body.tags === null || (tagKey && store.replyByKey(messageId, tagKey)) ? undefined : tagModes(messageId, body.tags);
+            const tags = tagged?.tags;
+            const handoff = tagged?.handoff;
             // Files the person pasted into the reply box: their uploads become
             // attachments on the reply, exactly as compose's become a thread's.
             // A replay answers the reply it wrote before anything is copied
@@ -3043,6 +3185,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
                 ...(attachments.length > 0 ? { attachments } : {}),
                 ...(to === undefined ? {} : { to }),
                 ...(tags && tags.length > 0 ? { tags } : {}),
+                ...(handoff ? { handoff } : {}),
                 words: typeof body.words === "string" ? body.words : undefined,
                 questions: (body.questions as never) ?? [],
                 idempotency_key: body.idempotency_key as string,
@@ -3068,6 +3211,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
               const threadId = store.message(messageId)?.thread_id;
               if (threadId && store.clearSentReplyDraft(threadId, body.clear_draft)) for (const listener of draftListeners) listener(threadId);
             }
+            // A hand-off waits out its Undo window, then goes to both sessions.
+            if (!result.replayed && result.reply.handoff) scheduleHandoffSettle();
             if (result.replayed) removeInboxAttachmentFiles(store.dir, attachments);
             // Sent: the uploads are the reply's attachments now.
             else if (attachments.length > 0) removeInboxUploads(store.dir, uploads.filter((id): id is string => typeof id === "string"));
@@ -3115,7 +3260,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
 
       if (path === "/" && (req.method === "GET" || req.method === "HEAD")) {
         // One origin: notification permission is per origin (inbox-canonical.ts).
-        const canonical = inboxCanonicalRedirect(req, url, port, via);
+        const canonical = inboxCanonicalRedirect(req, url, baseUrl, via);
         if (canonical) return canonical;
         const page = options.htmlContent ?? NOT_BUILT_PAGE;
         // A page load (or a refresh) asks for a new release when the answer is
@@ -3288,6 +3433,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // An action item's Done a stop interrupted inside its Undo window.
     settleActions();
     if (store.actionsPending() > 0) scheduleActionSettle();
+    // A hand-off a stop interrupted inside its Undo window.
+    settleHandoffs();
+    if (store.handoffsPending() > 0) scheduleHandoffSettle();
   }, 0);
 
   let stopped = false;

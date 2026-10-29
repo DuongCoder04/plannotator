@@ -171,9 +171,13 @@ export function isCheckDue(state: AutoUpdateState, now: number): boolean {
   return now - last >= AUTO_UPDATE_INTERVAL_MS;
 }
 
-/** Live sessions that belong to some other Plannotator process. */
+/**
+ * Live sessions that belong to some other Plannotator process. A server inside
+ * a host's process (`host`, OpenCode) does not run the binary, so it never
+ * holds an update back.
+ */
 export function otherOpenSessions(sessions: SessionInfo[], ownPid: number): SessionInfo[] {
-  return sessions.filter((s) => s.pid !== ownPid);
+  return sessions.filter((s) => s.pid !== ownPid && !s.host);
 }
 
 export function deriveAutoUpdateNotice(
@@ -1239,12 +1243,12 @@ export function getUpdateAdvert(
 export function handleUpdateRoute(
   req: Request,
   url: URL,
-  ctx: { port: number | null | undefined; exposed: boolean; serverSession: string },
+  ctx: { port: number | null | undefined; exposed: boolean; serverSession: string; localHostname?: string | null },
 ): Promise<Response> | null {
   if (url.pathname !== "/api/update") return null;
   return (async () => {
     if (req.method !== "POST") return Response.json({ error: "Use POST." }, { status: 405 });
-    if (!isLoopbackHostHeader(req.headers.get("host"), ctx.port)) {
+    if (!isLoopbackHostHeader(req.headers.get("host"), ctx.port, ctx.localHostname)) {
       return Response.json({ error: "Update answers only this computer.", code: "forbidden_host" }, { status: 403 });
     }
     if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {

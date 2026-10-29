@@ -27,6 +27,7 @@ import type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, ThemeConfig } f
 import { isFaviconStyle, type FaviconStyle } from './favicon';
 import { isAnnotateAgentTerminalSide, type AnnotateAgentTerminalSide } from './agent-terminal';
 import { parseAgentSwitchConfig, agentSwitchConfigValue, type AgentSwitchConfigValue } from './agent-switch';
+import { isLocalhostSubdomain } from './loopback-host';
 import { INBOX_TOOL_NAME, inboxReminderCustomText, inboxReminderFor } from './inbox/connection';
 export type { DefaultDiffType, DiffLineBgIntensity, DiffOptions, ThemeConfig, FaviconStyle };
 
@@ -51,7 +52,8 @@ export type PromptRuntime =
   | "gemini-cli"
   | "oh-my-pi"
   | "mistral-vibe"
-  | "qwen-code";
+  | "qwen-code"
+  | "dsh";
 
 interface PromptSectionConfig {
   [key: string]: string | Partial<Record<PromptRuntime, PromptSectionOverrides>> | undefined;
@@ -564,14 +566,18 @@ export interface PlannotatorConfig {
    */
   packageChanges?: { card?: boolean; lookup?: boolean };
   /**
-   * Display-only hostname for advertised session URLs (issue #657). Lets a
-   * remote-mode user hand out a reachable link (e.g. a Tailscale MagicDNS
-   * name or tailnet IP) instead of localhost. Host only — the port is chosen
-   * at runtime and always appended. Never affects which interface the server
-   * binds; that stays governed by PLANNOTATOR_REMOTE. Applied only in remote
-   * sessions: a local session binds loopback, so the override is ignored
-   * (localhost is advertised) with a once-per-process stderr warning.
-   * Mirrors the PLANNOTATOR_URL_HOST env var, which takes precedence.
+   * Full HTTP(S) reverse-proxy origin for remote sessions; range: first port only.
+   * Never changes binding; PLANNOTATOR_PUBLIC_URL overrides the config value.
+   * Paths, credentials, queries, and fragments are rejected. Ignored in local
+   * sessions, and it wins over urlHost (including plannotator.localhost) on
+   * the port it fronts.
+   */
+  publicUrl?: string;
+  /**
+   * Host-only override with runtime port; used when publicUrl does not apply.
+   * PLANNOTATOR_URL_HOST overrides the config value. Local sessions accept
+   * localhost and *.localhost names only (`plannotator.localhost` isolates
+   * preference cookies, #2184); remote sessions ignore those names.
    */
   urlHost?: string;
   /**
@@ -930,7 +936,12 @@ export function detectGitUser(cwd?: string): string | null {
  * Build the serverConfig payload for API responses.
  * Reads config.json fresh each call so the response reflects the latest file on disk.
  */
-export function getServerConfig(gitUser: string | null, agentToolIntegration?: string | null): {
+export function getServerConfig(
+  gitUser: string | null,
+  agentToolIntegration?: string | null,
+  /** `cookieHost`: advertise the cookie switch (local sessions only: never remote mode or `--tailscale`). */
+  options: { cookieHost?: boolean } = {},
+): {
   displayName?: string;
   diffOptions?: DiffOptions;
   theme?: ThemeConfig;
@@ -952,6 +963,7 @@ export function getServerConfig(gitUser: string | null, agentToolIntegration?: s
   agentToolHost?: AgentToolHost;
   agentToolEnabled?: boolean;
   packageChanges: { card: boolean; lookup: boolean; lookupEnv?: false };
+  cookieHost?: CookieHostState;
 } {
   const cfg = loadConfig();
   const packageLookupEnv = parsePackageLookupEnv();
@@ -997,6 +1009,8 @@ export function getServerConfig(gitUser: string | null, agentToolIntegration?: s
       lookup: resolvePackageLookup(cfg),
       ...(packageLookupEnv === false && { lookupEnv: false as const }),
     },
+    // Settings' "Open Plannotator at plannotator.localhost" (#2184), only where the server says it is local.
+    ...(options.cookieHost === true && { cookieHost: cookieHostState(cfg) }),
   };
 }
 
@@ -1644,6 +1658,49 @@ export function resolveGuideShareUrl(config: PlannotatorConfig, env: NodeJS.Proc
   return DEFAULT_GUIDE_SHARE_URL;
 }
 
+/** Validate a public reverse-proxy URL as an HTTP(S) origin without a path. */
+export function isValidPublicUrl(value: string): boolean {
+  const publicUrl = value.trim();
+  if (!/^https?:\/\/[^\s/?#\\]+\/?$/i.test(publicUrl) || !URL.canParse(publicUrl)) {
+    return false;
+  }
+  const url = new URL(publicUrl);
+  return (url.protocol === "http:" || url.protocol === "https:")
+    && url.username === ""
+    && url.password === ""
+    && (url.pathname === "" || url.pathname === "/")
+    && url.search === ""
+    && url.hash === "";
+}
+
+const warnedInvalidPublicUrls = new Set<string>();
+
+/**
+ * Resolve the full public origin advertised for a reverse-proxied remote session.
+ *
+ * Priority (highest wins):
+ *   PLANNOTATOR_PUBLIC_URL env var  →  config.publicUrl  →  undefined
+ *
+ * Valid values are normalized to an origin, so a trailing slash and default
+ * port do not leak into the displayed link. Invalid values warn once and fall
+ * back to urlHost or localhost at the caller.
+ */
+export function resolvePublicUrl(config: PlannotatorConfig): string | undefined {
+  const envVal = process.env.PLANNOTATOR_PUBLIC_URL;
+  const raw = envVal !== undefined ? envVal : config.publicUrl;
+  if (typeof raw !== "string") return undefined;
+  const publicUrl = raw.trim();
+  if (publicUrl === "") return undefined;
+  if (isValidPublicUrl(publicUrl)) return new URL(publicUrl).origin;
+  if (!warnedInvalidPublicUrls.has(publicUrl)) {
+    warnedInvalidPublicUrls.add(publicUrl);
+    process.stderr.write(
+      `[plannotator] Warning: invalid public URL ${JSON.stringify(publicUrl)} — expected an HTTP(S) origin with no credentials, path, query, or fragment; using the advertised host or localhost\n`,
+    );
+  }
+  return undefined;
+}
+
 // Bare hostname or IPv4: letters/digits/dots/hyphens, no leading/trailing
 // dot or hyphen. Covers MagicDNS names ("my-machine.tailnet.ts.net").
 const URL_HOST_HOSTNAME_RE = /^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/;
@@ -1664,8 +1721,8 @@ const warnedInvalidUrlHosts = new Set<string>();
 /**
  * Resolve the display-only hostname used in advertised session URLs.
  * Returns undefined when unset (callers advertise localhost). An empty (but
- * set) env var suppresses the config key. Callers apply this only to remote
- * sessions; local sessions ignore it (see buildAdvertisedUrl).
+ * set) env var suppresses the config key. Local sessions accept localhost
+ * names only; remote sessions accept any valid host (see buildAdvertisedUrl).
  *
  * Priority (highest wins):
  *   PLANNOTATOR_URL_HOST env var  →  config.urlHost  →  undefined
@@ -1693,6 +1750,106 @@ export function resolveUrlHost(config: PlannotatorConfig): string | undefined {
     );
   }
   return undefined;
+}
+
+/**
+ * The localhost subdomain sessions are advertised at (#2184), lower-cased, or
+ * undefined when the resolved url host is unset or anything else (`localhost`,
+ * a tailnet name, an IP). The one subdomain the loopback Host checks accept
+ * besides the plain loopback names (isLoopbackHostHeader's `localName`).
+ */
+export function resolveLocalUrlHostname(config: PlannotatorConfig): string | undefined {
+  const host = resolveUrlHost(config);
+  return host !== undefined && isLocalhostSubdomain(host) ? host.toLowerCase() : undefined;
+}
+
+/** The name Settings' "Open Plannotator at plannotator.localhost" switch writes as `urlHost`. */
+export const ISOLATED_COOKIE_HOST = "plannotator.localhost";
+
+/**
+ * The cookie switch as Settings shows it: `on` is the effective value
+ * (config.json, or PLANNOTATOR_URL_HOST when set). `env` is the env var's
+ * value when it is set (empty included, which hides config.json's), and
+ * locks the switch. `urlHost` is config.json's `urlHost` when it holds
+ * anything other than ISOLATED_COOKIE_HOST (a tailnet name, `auto`, an IP):
+ * the switch is locked and never writes over it.
+ */
+export interface CookieHostState {
+  on: boolean;
+  env?: string;
+  urlHost?: string;
+}
+
+function otherConfigUrlHost(config: PlannotatorConfig): string | undefined {
+  const raw = (config as Record<string, unknown>).urlHost;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "string") return JSON.stringify(raw);
+  const host = raw.trim();
+  if (host === "" || host.toLowerCase() === ISOLATED_COOKIE_HOST) return undefined;
+  return host;
+}
+
+export function cookieHostState(config: PlannotatorConfig = loadConfig(), env: NodeJS.ProcessEnv = process.env): CookieHostState {
+  const envValue = env.PLANNOTATOR_URL_HOST;
+  if (envValue !== undefined) return { on: envValue.trim().toLowerCase() === ISOLATED_COOKIE_HOST, env: envValue };
+  const urlHost = otherConfigUrlHost(config);
+  if (urlHost !== undefined) return { on: false, urlHost };
+  const raw = config.urlHost;
+  return { on: typeof raw === "string" && raw.trim().toLowerCase() === ISOLATED_COOKIE_HOST };
+}
+
+export type CookieHostSaveOutcome = "saved" | "env" | "url_host" | "failed";
+
+/**
+ * Turn the cookie switch on (write `urlHost: "plannotator.localhost"`) or off
+ * (remove `urlHost`). Refused while PLANNOTATOR_URL_HOST is set (`env`) and
+ * when config.json holds another `urlHost` (`url_host`), which is checked
+ * under the config lock, so a value written meanwhile is never replaced.
+ */
+export function saveCookieHost(on: boolean, env: NodeJS.ProcessEnv = process.env): { outcome: CookieHostSaveOutcome; state: CookieHostState } {
+  if (env.PLANNOTATOR_URL_HOST !== undefined) return { outcome: "env", state: cookieHostState(loadConfig(), env) };
+  let lockPath: string | null = null;
+  let locked = false;
+  let outcome: CookieHostSaveOutcome = "failed";
+  try {
+    mkdirSync(getConfigDir(), { recursive: true });
+    lockPath = getConfigLockPath();
+    locked = acquireConfigLock(lockPath);
+    const read = readConfigForSave(getConfigPath());
+    if (!read.ok) {
+      process.stderr.write(`[plannotator] Warning: not saving config.json because ${read.reason}; the settings in it are kept.\n`);
+    } else if (otherConfigUrlHost(read.config) !== undefined) {
+      outcome = "url_host";
+    } else {
+      const next: Record<string, unknown> = { ...read.config };
+      if (on) next.urlHost = ISOLATED_COOKIE_HOST;
+      else delete next.urlHost;
+      writeConfigAtomic(getConfigPath(), JSON.stringify(next, null, 2) + "\n");
+      outcome = "saved";
+    }
+  } catch (e) {
+    process.stderr.write(`[plannotator] Warning: failed to write config.json: ${e}\n`);
+  } finally {
+    if (locked && lockPath) releaseConfigLock(lockPath);
+  }
+  return { outcome, state: cookieHostState(loadConfig(), env) };
+}
+
+/**
+ * `cookieHost` on POST /api/config (plan, review and annotate servers, both
+ * runtimes): undefined when the body does not name it, else the answer.
+ * `exposed` (remote mode, a `--tailscale` session) refuses it: the switch is
+ * for the browser on this computer, and those sessions do not advertise it.
+ */
+export function cookieHostConfigWrite(value: unknown, exposed: boolean): { status: number; body: Record<string, unknown> } | undefined {
+  if (value === undefined) return undefined;
+  if (exposed) return { status: 403, body: { error: "This setting can be changed only on this computer.", code: "cookie_host_local_only" } };
+  if (typeof value !== "boolean") return { status: 400, body: { error: "cookieHost: must be a boolean." } };
+  const { outcome, state } = saveCookieHost(value);
+  if (outcome === "saved") return { status: 200, body: { ok: true, cookieHost: state } };
+  if (outcome === "env") return { status: 409, body: { error: "PLANNOTATOR_URL_HOST decides this setting.", code: "cookie_host_env_decides", cookieHost: state } };
+  if (outcome === "url_host") return { status: 409, body: { error: "config.json already sets urlHost; it is not replaced.", code: "cookie_host_url_host_in_use", cookieHost: state } };
+  return { status: 500, body: { error: "config.json could not be saved; nothing changed.", cookieHost: state } };
 }
 
 /**
