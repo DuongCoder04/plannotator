@@ -7,7 +7,16 @@ import type { AnnotateAgentTerminalSide } from '@plannotator/core/agent-terminal
 import type { Origin } from '@plannotator/core/agents';
 import type { DiffLineBgIntensity } from '@plannotator/core/config-types';
 import type { TokenHoverDelay } from '@plannotator/core/token-hover';
-import { configStore, useConfigValue, setReviewPanelView, setReviewDefaultDiffType, setReviewAutoViewed } from '../config';
+import {
+  configStore,
+  useConfigValue,
+  setReviewPanelView,
+  setReviewDefaultDiffType,
+  getProviderReviewDefaultDiffType,
+  setProviderReviewDefaultDiffType,
+  setReviewAutoViewed,
+  type VcsReviewSettingsDescriptor,
+} from '../config';
 import { setWebMcpToolsEnabled, useWebMcpToolsEnabled } from '../webmcp/preference';
 import { DIAGRAM_SHADOW_OPTIONS } from '../utils/diagramShadow';
 import { markLookAndFeelChoiceResolved } from '../utils/lookAndFeelAnnouncement';
@@ -100,7 +109,7 @@ import {
 import { requestVimDocumentFocus } from '../hooks/useVimDocumentFocus';
 import { AnalysisLayerToggle } from './AnalysisLayerToggle';
 
-type SettingsTab = 'general' | 'theme' | 'git' | 'display' | 'analysis' | 'saving' | 'labels' | 'vim' | 'shortcuts' | 'ai' | 'files' | 'obsidian' | 'bear' | 'octarine' | 'notion' | 'comments' | 'hooks' | 'experimental';
+type SettingsTab = 'general' | 'theme' | 'review' | 'display' | 'analysis' | 'saving' | 'labels' | 'vim' | 'shortcuts' | 'ai' | 'files' | 'obsidian' | 'bear' | 'octarine' | 'notion' | 'comments' | 'hooks' | 'experimental';
 
 interface SettingsProps {
   taterMode: boolean;
@@ -168,8 +177,8 @@ interface SettingsProps {
    *  readable Error, which the row shows. */
   onAgentToolChange?: (enabled: boolean) => Promise<void>;
   /** Current session is a local git review where since-base ISN'T offered
-   *  (base ref unresolvable) — the Git tab shows a note that the Git-status
-   *  preference can't take effect in THIS repo. */
+   *  (base ref unresolvable) — the Review tab's Git section shows a note that
+   *  the Git-status preference can't take effect in THIS repo. */
   sinceBaseUnavailable?: boolean;
   /** The host is rendering its compact touch shell (review only). Display
    *  settings that the compact shell overrides for the session are hidden
@@ -255,7 +264,20 @@ const DEFAULT_DIFF_TYPE_OPTIONS = [
   { value: 'merge-base' as const, label: 'Committed changes (PR view)', description: "Everything you've committed on this branch" },
   { value: 'all' as const, label: 'All Files (HEAD)', description: "Every tracked file at HEAD, shown as additions" },
 ];
-
+// Labels match the jj diff picker (getJjContext in packages/shared/jj-core.ts).
+const JJ_DEFAULT_DIFF_TYPE_OPTIONS = [
+  { value: 'jj-current', label: 'Current change', description: 'Only the working-copy change (@)' },
+  { value: 'jj-last', label: 'Last change', description: 'The change just before the working copy (@-)' },
+  { value: 'jj-line', label: 'Line of work', description: 'Every change on your line of work since it left trunk' },
+  { value: 'jj-evolog', label: 'Evolution diff', description: 'How the current change has evolved' },
+  { value: 'jj-all', label: 'All files', description: 'Every file at the working copy, shown as additions' },
+] as const;
+const JJ_REVIEW_DEFAULTS: VcsReviewSettingsDescriptor = {
+  id: 'jj',
+  label: 'Jujutsu',
+  defaultDiffType: 'jj-current',
+  diffOptions: JJ_DEFAULT_DIFF_TYPE_OPTIONS.map(({ value, label, description }) => ({ id: value, label, description })),
+};
 const AGENT_TERMINAL_SIDE_OPTIONS: { value: AnnotateAgentTerminalSide; label: string }[] = [
   { value: 'left', label: 'Left' },
   { value: 'right', label: 'Right' },
@@ -544,16 +566,56 @@ function ReviewAnalysisTab({ packageChangesSetting }: { packageChangesSetting?: 
   );
 }
 
-const GitTab: React.FC<{ sinceBaseUnavailable?: boolean }> = ({ sinceBaseUnavailable }) => {
+/** One radio card list for a saved default diff (Git or Jujutsu). */
+function DefaultDiffChoices<T extends string>({ options, value, onChange }: {
+  options: ReadonlyArray<{ value: T; label: string; description: string }>;
+  value: string;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="space-y-2" role="radiogroup">
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          role="radio"
+          aria-checked={value === opt.value}
+          onClick={() => onChange(opt.value)}
+          className={`w-full flex items-start gap-3 p-3 rounded-lg border transition-colors text-left ${
+            value === opt.value
+              ? 'border-primary bg-primary/5'
+              : 'border-border hover:border-muted-foreground/30 hover:bg-muted/50'
+          }`}
+        >
+          <div className={`mt-0.5 w-4 h-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${
+            value === opt.value ? 'border-primary' : 'border-muted-foreground/40'
+          }`}>
+            {value === opt.value && (
+              <div className="w-2 h-2 rounded-full bg-primary" />
+            )}
+          </div>
+          <div>
+            <div className="text-sm font-medium">{opt.label}</div>
+            <div className="text-xs text-muted-foreground">{opt.description}</div>
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const REVIEW_SECTION_HEADING = 'text-xs font-semibold uppercase tracking-wider text-muted-foreground';
+
+const ReviewTab: React.FC<{ sinceBaseUnavailable?: boolean }> = ({ sinceBaseUnavailable }) => {
   const defaultDiffType = useConfigValue('defaultDiffType');
+  useConfigValue('reviewDefaults');
+  const jjDefaultDiffType = getProviderReviewDefaultDiffType(JJ_REVIEW_DEFAULTS);
   const reviewPanelView = useConfigValue('reviewPanelView');
   const reviewAutoViewed = useConfigValue('reviewAutoViewed');
   return (
     <div className="space-y-5">
       <div className="space-y-2">
-        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Viewed files
-        </div>
+        <div className={REVIEW_SECTION_HEADING}>Viewed files</div>
         {/* Never write `reviewAutoViewed` directly — setReviewAutoViewed also
             consumes the first-time notice, since an explicit toggle is proof
             the reviewer already found the switch. */}
@@ -564,67 +626,71 @@ const GitTab: React.FC<{ sinceBaseUnavailable?: boolean }> = ({ sinceBaseUnavail
           description="Mark a file viewed when you scroll past it or move on to another file. Files you un-view stay un-viewed, and files that change on refresh become un-viewed."
         />
       </div>
-      <div className="space-y-2">
-        <div>
-          <div className="text-sm font-medium">Default review view</div>
-          <div className="text-xs text-muted-foreground">Which panel a code review opens in</div>
-          {/* This is a GLOBAL preference — never hide the options because the
-              CURRENT repo can't serve them; just say so. Without this note,
-              picking Git status on a repo whose base ref doesn't resolve
-              silently falls back to Tree and the setting looks broken. */}
-          {sinceBaseUnavailable && (
-            <div className="text-xs text-warning mt-1">
-              Git status view isn't available in this repository (its base branch
-              couldn't be resolved) — reviews here open in Tree. The preference
-              still applies in repositories where it works.
-            </div>
-          )}
+
+      <div className="border-t border-border" />
+
+      <section className="space-y-4" aria-labelledby="settings-review-git">
+        <div id="settings-review-git" className={REVIEW_SECTION_HEADING}>Git</div>
+        <div className="space-y-2">
+          <div>
+            <div className="text-sm font-medium">Default review view</div>
+            <div className="text-xs text-muted-foreground">Which panel a code review opens in</div>
+            {/* This is a GLOBAL preference — never hide the options because the
+                CURRENT repo can't serve them; just say so. Without this note,
+                picking Git status on a repo whose base ref doesn't resolve
+                silently falls back to Tree and the setting looks broken. */}
+            {sinceBaseUnavailable && (
+              <div className="text-xs text-warning mt-1">
+                Git status view isn't available in this repository (its base branch
+                couldn't be resolved) — reviews here open in Tree. The preference
+                still applies in repositories where it works.
+              </div>
+            )}
+          </div>
+          {/* No Commits option here: the Commits view is session-only (entered
+              via the panel toggle) and is never the opening view. */}
+          <SegmentedControl
+            options={[
+              { value: 'sections' as const, label: 'Git status' },
+              { value: 'tree' as const, label: 'Tree' },
+            ]}
+            value={reviewPanelView}
+            onChange={setReviewPanelView}
+          />
         </div>
-        {/* No Commits option here: the Commits view is session-only (entered
-            via the panel toggle) and is never the opening view. */}
-        <SegmentedControl
-          options={[
-            { value: 'sections' as const, label: 'Git status' },
-            { value: 'tree' as const, label: 'Tree' },
-          ]}
-          value={reviewPanelView}
-          onChange={setReviewPanelView}
-        />
-      </div>
-      <div className="space-y-2">
-      <div>
-        <div className="text-sm font-medium">Default Diff View</div>
-        <div className="text-xs text-muted-foreground">Which changes to show when you open a code review</div>
-      </div>
-      <div className="space-y-2">
-        {DEFAULT_DIFF_TYPE_OPTIONS.map((opt) => (
-          <button
-            key={opt.value}
-            type="button"
-            // Coupling (sections ⟺ since-base) lives in the shared setter —
-            // never write the pair by hand (see config/reviewView).
-            onClick={() => setReviewDefaultDiffType(opt.value)}
-            className={`w-full flex items-start gap-3 p-3 rounded-lg border transition-colors text-left ${
-              defaultDiffType === opt.value
-                ? 'border-primary bg-primary/5'
-                : 'border-border hover:border-muted-foreground/30 hover:bg-muted/50'
-            }`}
-          >
-            <div className={`mt-0.5 w-4 h-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center ${
-              defaultDiffType === opt.value ? 'border-primary' : 'border-muted-foreground/40'
-            }`}>
-              {defaultDiffType === opt.value && (
-                <div className="w-2 h-2 rounded-full bg-primary" />
-              )}
-            </div>
-            <div>
-              <div className="text-sm font-medium">{opt.label}</div>
-              <div className="text-xs text-muted-foreground">{opt.description}</div>
-            </div>
-          </button>
-        ))}
-      </div>
-      </div>
+        <div className="space-y-2">
+          <div>
+            <div className="text-sm font-medium">Default diff view</div>
+            <div className="text-xs text-muted-foreground">Which changes to show when you open a code review</div>
+          </div>
+          {/* Coupling (sections ⟺ since-base) lives in the shared setter —
+              never write the pair by hand (see config/reviewView). */}
+          <DefaultDiffChoices
+            options={DEFAULT_DIFF_TYPE_OPTIONS}
+            value={defaultDiffType}
+            onChange={(value) => setReviewDefaultDiffType(value)}
+          />
+        </div>
+      </section>
+
+      <div className="border-t border-border" />
+
+      <section className="space-y-4" aria-labelledby="settings-review-jj">
+        <div id="settings-review-jj" className={REVIEW_SECTION_HEADING}>Jujutsu</div>
+        <div className="space-y-2">
+          <div>
+            <div className="text-sm font-medium">Default diff view</div>
+            <div className="text-xs text-muted-foreground">Which changes to show when you open a review in a Jujutsu repository</div>
+          </div>
+          {/* Its own saved value: Git modes mean nothing in a jj repo, and jj has
+              no Git status view, so nothing here is coupled to the Git half. */}
+          <DefaultDiffChoices
+            options={JJ_DEFAULT_DIFF_TYPE_OPTIONS}
+            value={jjDefaultDiffType}
+            onChange={(value) => setProviderReviewDefaultDiffType('jj', value)}
+          />
+        </div>
+      </section>
     </div>
   );
 };
@@ -1314,7 +1380,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
       t.push({ id: 'labels', label: 'Labels' });
     }
     if (mode === 'review') {
-      t.push({ id: 'git', label: 'Git' });
+      t.push({ id: 'review', label: 'Review' });
       t.push({ id: 'display', label: 'Editor' });
       t.push({ id: 'analysis', label: 'Analysis' });
       t.push({ id: 'comments', label: 'Comments' });
@@ -2007,9 +2073,9 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                 {/* === THEME TAB === */}
                 {activeTab === 'theme' && <ThemeTab onPreview={() => { setShowDialog(false); setThemePreview(true); }} />}
 
-                {/* === GIT TAB === */}
-                {activeTab === 'git' && mode === 'review' && (
-                  <GitTab sinceBaseUnavailable={sinceBaseUnavailable} />
+                {/* === REVIEW TAB === */}
+                {activeTab === 'review' && mode === 'review' && (
+                  <ReviewTab sinceBaseUnavailable={sinceBaseUnavailable} />
                 )}
 
                 {/* === DISPLAY TAB === */}
