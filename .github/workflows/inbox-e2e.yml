@@ -24,6 +24,8 @@ name: Inbox window e2e
 # Pi mirrors of the same scenarios.
 
 on:
+  # Manual runs on a branch, e.g. a stacked PR whose base is not main.
+  workflow_dispatch:
   pull_request:
     branches:
       - main
@@ -56,6 +58,8 @@ on:
       - 'packages/editor/**'
       - 'packages/guide-viewer/**'
       - 'packages/review-editor/**'
+      - 'packages/shared/repo-files.ts'
+      - 'packages/server/review*.ts'
       - 'packages/server/guide/**'
       - 'packages/core/guide*'
       - 'apps/hook/server/index.ts'
@@ -111,6 +115,8 @@ on:
       - 'packages/editor/**'
       - 'packages/guide-viewer/**'
       - 'packages/review-editor/**'
+      - 'packages/shared/repo-files.ts'
+      - 'packages/server/review*.ts'
       - 'packages/server/guide/**'
       - 'packages/core/guide*'
       - 'apps/hook/server/index.ts'

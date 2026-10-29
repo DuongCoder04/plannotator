@@ -1,4 +1,5 @@
 import type { UpdateCheckSetting } from '@plannotator/ui/hooks/useUpdateCheckSetting';
+import type { CookieHostSetting } from '@plannotator/ui/hooks/useCookieHostSetting';
 import React from 'react';
 import type { Origin } from '@plannotator/shared/agents';
 import type { UpdateInfo } from '@plannotator/ui/hooks/useUpdateCheck';
@@ -121,6 +122,8 @@ interface AppHeaderProps {
   /** Present when the server advertises the auto-update setting; Settings shows its switch. */
   autoUpdateSetting?: { env?: boolean };
   updateCheckSetting?: UpdateCheckSetting;
+  /** "Open Plannotator at plannotator.localhost" (#2184); Settings shows its row when present. */
+  cookieHostSetting?: CookieHostSetting;
   /** The `plannotator` agent tool switch (parseAgentToolSetting of serverConfig); Settings shows its row. */
   agentToolSetting?: AgentToolSetting;
   onAgentToolChange?: (enabled: boolean) => Promise<void>;
@@ -223,6 +226,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
   gitUser,
   autoUpdateSetting,
   updateCheckSetting,
+  cookieHostSetting,
   agentToolSetting,
   onAgentToolChange,
   agentTerminalAvailable,
@@ -499,6 +503,7 @@ export const AppHeader = React.memo<AppHeaderProps>(({
             gitUser={gitUser}
             autoUpdateSetting={autoUpdateSetting}
             updateCheckSetting={updateCheckSetting}
+            cookieHostSetting={cookieHostSetting}
             agentToolSetting={agentToolSetting}
             onAgentToolChange={onAgentToolChange}
             agentTerminalAvailable={agentTerminalAvailable}

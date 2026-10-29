@@ -24,7 +24,7 @@ import { createPiRefCards, handleRefCards, type RefRunner } from "./ref-cards.ts
 import { createRequestHostGuard } from "./request-host-guard.ts";
 import { refuseCrossOriginWrite } from "./request-origin-guard.ts";
 import { createReviewDraftSession, localGitDraftTargetKey, localReviewDraftKeys, prDraftTargetKey, type ReviewDraftKeys } from "../generated/review-draft.ts";
-import { agentSwitchConfigToSave, agentToolSaveFailed, loadConfig, saveConfig, detectGitUser, getServerConfig, parsePackageChangesConfig, parseReviewAnalysisConfig, resolveAIEnabled, resolvePackageLookup, resolveSharingEnabled, resolveClaudeSandbox, resolveCursorSandbox, resolveFeedbackHistory, resolveGuideHistory, resolveGuideShareUrl, resolveGitRemoteCheck, resolveReviewProgress } from "../generated/config.ts";
+import { agentSwitchConfigToSave, agentToolSaveFailed, cookieHostConfigWrite, loadConfig, saveConfig, detectGitUser, getServerConfig, parsePackageChangesConfig, parseReviewAnalysisConfig, resolveAIEnabled, resolvePackageLookup, resolveSharingEnabled, resolveClaudeSandbox, resolveCursorSandbox, resolveFeedbackHistory, resolveGuideHistory, resolveGuideShareUrl, resolveGitRemoteCheck, resolveReviewProgress } from "../generated/config.ts";
 import { currentPiHost } from "../pi-host.ts";
 import { appendFeedbackRecord, countChangedFiles, deriveFeedbackProject, type FeedbackDecision, type FeedbackReviewTarget } from "../generated/feedback-archive.ts";
 import { isFaviconStyle, type FaviconStyle } from "../generated/favicon.ts";
@@ -82,7 +82,27 @@ import {
 	parseWorktreeDiffType,
 	resolveBaseBranch,
 	validateFilePath,
+	listGitSideFiles,
+	readDiffSideBytes,
+	compareRepoPaths,
+	type RepoFileListing,
 } from "../generated/review-core.ts";
+import {
+	REPO_FILE_ENDPOINT,
+	REPO_FILES_ENDPOINT,
+	REPO_FILES_STREAM_ENDPOINT,
+	createRepoListingCache,
+	diffFileStates,
+	findRepoOnDiskChanges,
+	gitIgnoredEntries,
+	gitLiveSignature,
+	repoLiveMode,
+	handleRepoFileRequest,
+	handleRepoFilesRequest,
+	type RepoFileRead,
+	type RepoFilesUnavailable,
+} from "../generated/repo-files.ts";
+import { createReviewRepoWatch } from "./review-repo-watch.ts";
 import {
 	REVIEW_IMAGE_ENDPOINT,
 	REVIEW_IMAGE_READ_CONCURRENCY,
@@ -147,6 +167,7 @@ import {
 	fetchPRContext,
 	fetchPRFileContent,
 	fetchPRFileBytes,
+	fetchPRTree,
 	fetchPRList,
 	fetchPRStack,
 	fetchPRViewedFiles,
@@ -215,6 +236,7 @@ import {
 	extractChangedFiles,
 } from "../generated/code-nav.ts";
 import { readFileCapped, readRepoFile, repoFileErrorBody, REPO_FILE_ERROR_STATUS } from "../generated/repo-file.ts";
+import { readRepoWorkingTreeFile } from "../generated/repo-files-node.ts";
 import {
 	createDefaultSemanticDiffRuntime,
 	getSemanticDiffAvailability,
@@ -242,6 +264,7 @@ import {
 	getVcsDiffFingerprint,
 	getVcsFileContentsForDiff,
 	getVcsFileBytesForDiff,
+	listVcsFiles,
 	jjRuntime,
 	resolveVcsCwd,
 	resolveAvailableDiffType,
@@ -346,6 +369,10 @@ export interface ReviewServerResult {
 }
 
 export async function startReviewServer(options: {
+	/** Tests only: how many paths All files sends whole before serving one folder at a time. */
+	repoFilesLazyThreshold?: number;
+	/** Tests only: how often a polled live listing looks (default `REPO_LIVE_POLL_MS`). */
+	repoLivePollMs?: number;
 	/** Tests: run the hover cards' `gh` / `glab` through this instead of the real ones (ref-cards.ts). */
 	refRunner?: RefRunner;
 	/** "Ask this session": the in-process bridge to the Pi session that opened this review. */
@@ -666,6 +693,12 @@ export async function startReviewServer(options: {
 	// order — only the LATEST capture may write the baseline, otherwise a stale
 	// fingerprint would make /api/diff/fresh report stale forever.
 	let fingerprintGeneration = 0;
+	// All files (the review tree's whole repository): one listing per snapshot,
+	// dropped when the snapshot changes or the disk does (live listings).
+	const repoListing = createRepoListingCache();
+	const repoWatch = createReviewRepoWatch();
+	// When the diff on screen was taken: files modified after it are "changed on disk".
+	let snapshotCapturedAt = Date.now();
 	let pendingFingerprintCapture: Promise<string | null> | null = null;
 	const fileContentFingerprintProbes = new SingleFlight<string | null>();
 	const callFlowService = new CallFlowService();
@@ -703,6 +736,8 @@ export async function startReviewServer(options: {
 		workspaceRoot: workspace?.root,
 	}, reviewRuntime.runGit);
 	const captureDiffFingerprint = (knownFingerprint?: string, knownDraftTarget?: string | null): void => {
+		snapshotCapturedAt = Date.now();
+		repoListing.invalidate();
 		progressSnapshot = captureProgress();
 		if (knownDraftTarget !== undefined) localDraftTarget = knownDraftTarget;
 		// A fingerprint capture marks a committed review-view change. Stop work
@@ -1923,6 +1958,61 @@ export async function startReviewServer(options: {
 	// it is offered wherever /api/file-content can read one (never a static
 	// patch). Its images (/api/review-markdown-image) follow imagePreviewSupported.
 	const markdownPreviewSupported = !isStaticPatchMode;
+	// All files capability advert (mirrors packages/server/review.ts).
+	const repoFilesSupported = !isStaticPatchMode && sessionVcsType !== "p4";
+	// --- All files: the repository at the diff's new side (mirrors review.ts) ---
+	const repoFilesUnavailable = (): RepoFilesUnavailable | null => {
+		if (isStaticPatchMode) return { reason: "static-patch", message: "A patch file has no repository to list." };
+		if (sessionVcsType === "p4") return { reason: "unsupported", message: "All files is not available for Perforce reviews." };
+		if (!isPRMode && !workspace && !hasLocalAccess) {
+			return { reason: "unsupported", message: "This review has no repository to list." };
+		}
+		return null;
+	};
+	// A PR review uses its local checkout once ready; while a --local clone is
+	// still being made the platform's tree API answers instead (mirrors review.ts).
+	const prListingCwd = async (): Promise<string | "pending" | null> => {
+		const pool = options.worktreePool;
+		if (pool && prMeta) {
+			const entry = pool.get(prMeta.url);
+			if (entry?.ready) return entry.path;
+			if (prRef) return "pending";
+		}
+		return ensurePRCallFlowCwd();
+	};
+	const loadRepoListing = async (): Promise<RepoFileListing | null> => {
+		const prCwd = isPRMode && prMeta && !workspace ? await prListingCwd() : null;
+		const source = prCwd === "pending" ? "platform" : "local";
+		return repoListing.get(`${currentSnapshotId()}:${source}`, async () => {
+			if (workspace) return workspace.listFiles();
+			if (isPRMode && prMeta) {
+				const meta = prMeta;
+				if (prCwd && prCwd !== "pending") return listGitSideFiles(reviewRuntime, { kind: "commit", rev: meta.headSha, cwd: prCwd });
+				if (!prRef) return null;
+				const tree = await fetchPRTree(prRef, meta.headSha);
+				if (!tree) return null;
+				return {
+					paths: [...tree.paths].sort(compareRepoPaths),
+					revision: { kind: "commit", label: meta.headSha.slice(0, 7) },
+					live: false,
+					truncated: tree.truncated || undefined,
+				};
+			}
+			if (!hasLocalAccess) return null;
+			return listVcsFiles(currentDiffType as DiffType, currentBase, options.gitContext?.cwd);
+		});
+	};
+	const readListedRepoFile = async (path: string, maxBytes: number): Promise<RepoFileRead> => {
+		if (workspace) return workspace.getFileBytes(path, undefined, "new", maxBytes);
+		if (isPRMode && prMeta) {
+			const prCwd = await prListingCwd();
+			if (prCwd && prCwd !== "pending") return readDiffSideBytes(reviewRuntime, { kind: "object", rev: prMeta.headSha, path }, maxBytes, prCwd);
+			if (!prRef) return { kind: "unavailable" };
+			// Capped and as bytes, so a binary file is said to be one.
+			return fetchPRFileBytes(prRef, prMeta.headSha, path, maxBytes);
+		}
+		return getVcsFileBytesForDiff(currentDiffType as DiffType, currentBase, path, undefined, "new", maxBytes, options.gitContext?.cwd);
+	};
 	// Hashed off the request path, so `/api/diff` finds it ready.
 	const diagramEngineAssets = createDiagramEngineAssets(options.diagramEngine);
 	diagramEngineAssets.warm();
@@ -2585,6 +2675,7 @@ export async function startReviewServer(options: {
 				serverSession,
 				imagePreviewSupported,
 				markdownPreviewSupported,
+				repoFilesSupported,
 				// Session-constant, read once by the page at mount.
 				diagramEngine: await diagramEngineAssets.advert(),
 				...sourceKindAdvert,
@@ -2625,7 +2716,7 @@ export async function startReviewServer(options: {
 				...(servedError && { error: servedError }),
 				semanticDiff: await getSemanticDiffAdvert(servedDiffType as DiffType),
 				callFlow: await getCallFlowAdvert(servedDiffType as DiffType),
-				serverConfig: getServerConfig(gitUser, currentPiHost()),
+				serverConfig: getServerConfig(gitUser, currentPiHost(), { cookieHost: !isRemoteSession() }),
 				...piUpdateAdvert(options.origin),
 			});
 		} else if (url.pathname === "/api/fetch-base" && req.method === "POST") {
@@ -2932,6 +3023,7 @@ export async function startReviewServer(options: {
 						serverSession,
 						imagePreviewSupported,
 						markdownPreviewSupported,
+						repoFilesSupported,
 						...sourceKindAdvert,
 						diffType: currentDiffType,
 						diffOptions: workspace.diffOptions,
@@ -3093,6 +3185,7 @@ export async function startReviewServer(options: {
 					serverSession,
 					imagePreviewSupported,
 					markdownPreviewSupported,
+					repoFilesSupported,
 					...sourceKindAdvert,
 					diffType: currentDiffType,
 					// Echo the base the server actually used. resolveBaseBranch
@@ -3160,6 +3253,7 @@ export async function startReviewServer(options: {
 						serverSession,
 						imagePreviewSupported,
 						markdownPreviewSupported,
+						repoFilesSupported,
 						...sourceKindAdvert,
 						prDiffScope: currentPRDiffScope,
 						...(layerPatchIncomplete ? { prPatchIncomplete: true, prPatchUpgradeAvailable: layerUpgradeAvailable } : {}),
@@ -3232,6 +3326,7 @@ export async function startReviewServer(options: {
 						serverSession,
 						imagePreviewSupported,
 						markdownPreviewSupported,
+						repoFilesSupported,
 						...sourceKindAdvert,
 						prDiffScope: currentPRDiffScope,
 						...(layerPatchIncomplete ? { prPatchIncomplete: true, prPatchUpgradeAvailable: layerUpgradeAvailable } : {}),
@@ -3278,6 +3373,7 @@ export async function startReviewServer(options: {
 					serverSession,
 					imagePreviewSupported,
 					markdownPreviewSupported,
+					repoFilesSupported,
 					...sourceKindAdvert,
 					prDiffScope: currentPRDiffScope,
 					semanticDiff: await getSemanticDiffAdvert(),
@@ -3369,6 +3465,7 @@ export async function startReviewServer(options: {
 					serverSession,
 					imagePreviewSupported,
 					markdownPreviewSupported,
+					repoFilesSupported,
 					...sourceKindAdvert,
 					prMetadata: pr.metadata,
 					// The new PR's checkout (null while warming) so Open-in re-roots
@@ -3616,6 +3713,60 @@ export async function startReviewServer(options: {
 			if (requestAbort.signal.aborted) return;
 			res.writeHead(result.status, result.headers);
 			res.end(result.body ?? undefined);
+		} else if (url.pathname === REPO_FILES_ENDPOINT && req.method === "GET") {
+			const result = await handleRepoFilesRequest({
+				params: url.searchParams,
+				unavailable: repoFilesUnavailable(),
+				isCurrentSnapshot: (snapshot) => snapshot === currentSnapshotId(),
+				loadListing: loadRepoListing,
+				loadOnDisk: (listing) =>
+					listing.root
+						? findRepoOnDiskChanges(reviewRuntime, listing.root, diffFileStates(currentPatch), snapshotCapturedAt)
+						: Promise.resolve(null),
+				lazyThreshold: options.repoFilesLazyThreshold,
+			});
+			json(res, result.body, result.status);
+		} else if (url.pathname === REPO_FILES_STREAM_ENDPOINT && req.method === "GET") {
+			const snapshot = url.searchParams.get("snapshot");
+			if (!snapshot) {
+				json(res, { error: "Missing snapshot", reason: "bad-request" }, 400);
+				return;
+			}
+			const unavailable = repoFilesUnavailable();
+			if (unavailable) {
+				json(res, { error: unavailable.message, reason: unavailable.reason }, 400);
+				return;
+			}
+			if (snapshot !== currentSnapshotId()) {
+				json(res, { error: "Diff snapshot is stale; refresh first", reason: "stale" }, 409);
+				return;
+			}
+			const listing = await loadRepoListing();
+			if (!listing?.live || !listing.root) {
+				json(res, { error: "This listing does not change while the review is open", reason: "not-live" }, 400);
+				return;
+			}
+			const root = listing.root;
+			const liveWorkspace = workspace;
+			await repoWatch.stream(res, root, {
+				mode: repoLiveMode(listing, { workspace: !!liveWorkspace, lazyThreshold: options.repoFilesLazyThreshold }),
+				signature: liveWorkspace
+					? async () => (await liveWorkspace.listFiles())?.paths.join("\n") ?? null
+					: () => gitLiveSignature(reviewRuntime, root),
+				ignored: liveWorkspace ? undefined : () => gitIgnoredEntries(reviewRuntime, root),
+				onChange: () => repoListing.invalidate(),
+				pollMs: options.repoLivePollMs,
+			});
+		} else if (url.pathname === REPO_FILE_ENDPOINT && req.method === "GET") {
+			const result = await handleRepoFileRequest({
+				params: url.searchParams,
+				unavailable: repoFilesUnavailable(),
+				isCurrentSnapshot: (snapshot) => snapshot === currentSnapshotId(),
+				loadListing: loadRepoListing,
+				read: readListedRepoFile,
+				readWorkingTree: readRepoWorkingTreeFile,
+			});
+			json(res, result.body, result.status);
 		} else if (url.pathname === "/api/file-content" && req.method === "GET") {
 			// No working tree behind a static patch: the patch IS the whole content
 			// of the session, so there is nothing to expand into.
@@ -3810,9 +3961,13 @@ export async function startReviewServer(options: {
 					toSave.packageChanges = packageChangesConfig;
 				}
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
+				// The cookie switch (#2184): its own write, which never replaces another urlHost;
+				// refused in remote mode.
+				const cookieHostWrite = cookieHostConfigWrite((body as { cookieHost?: unknown }).cookieHost, isRemoteSession());
+				if (cookieHostWrite && cookieHostWrite.status !== 200) return json(res, cookieHostWrite.body, cookieHostWrite.status);
 				if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return json(res, { error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, 500);
 				if (agentToolSaveFailed(toSave)) return json(res, { error: "Could not save the setting to config.json." }, 500);
-				json(res, { ok: true });
+				json(res, cookieHostWrite ? cookieHostWrite.body : { ok: true });
 			} catch {
 				json(res, { error: "Invalid request" }, 400);
 			}
@@ -4195,6 +4350,7 @@ export async function startReviewServer(options: {
 				agentJobs.killAll();
 				callFlowService.cancelAll();
 				aiRuntime?.dispose();
+				repoWatch.closeAll();
 			} finally {
 				// Before closeAllConnections, or a session-closed just sent is lost.
 				externalAnnotations.endStreams();
