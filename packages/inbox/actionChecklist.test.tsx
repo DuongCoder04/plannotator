@@ -715,11 +715,16 @@ test.skipIf(!hasDom)('the row says "1 action", or "1 action ?1" beside a questio
       <InboxList title="Inbox" path={null} sections={sections} filtered={false} narrow={false} selectedThreadId={null} notice={null} onShowNew={() => {}} onOpen={() => {}} phone={false} />
     </SidebarProvider>,
   );
-  // The short form drawn (approval "inbox-row-byline", option A), the full words for a screen reader.
+  // A wide row draws the full words (the owner, 2026-10-29), read as they are: no hidden copy.
+  const wide = (id: string) => {
+    const cell = el.querySelector(`.ib-row[data-thread-id="${id}"] .ib-cw > .ib-c`)!;
+    return { drawn: cell.querySelector('.ib-cs')!.textContent, hidden: cell.querySelector('[aria-hidden="true"]') !== null, sr: cell.querySelector('.ib-sr') !== null };
+  };
+  expect(wide('msg_a')).toEqual({ drawn: '1 action item', hidden: false, sr: false });
+  expect(wide('msg_b')).toEqual({ drawn: '1 question, 1 action item', hidden: false, sr: false });
+  // Beside a thread (approval "inbox-row-byline", option A): the short form drawn, the full words for a screen
+  // reader; an action item keeps its words at line 2's end, never `?N`.
   const words = (cell: Element | null) => ({ short: cell!.querySelector('.ib-cst')!.textContent, questions: cell!.querySelector('.ib-qn')?.textContent ?? null, full: cell!.querySelector('.ib-sr')!.textContent, hidden: cell!.querySelector('.ib-cs')!.getAttribute('aria-hidden') });
-  expect(words(el.querySelector('[data-thread-id="msg_a"] .ib-c'))).toEqual({ short: '1 action', questions: null, full: '1 action item', hidden: 'true' });
-  expect(words(el.querySelector('[data-thread-id="msg_b"] .ib-c'))).toEqual({ short: '1 action', questions: '1', full: '1 question, 1 action item', hidden: 'true' });
-  // Beside a thread (approval "inbox-row-byline") too: an action item keeps its words at line 2's end, never `?N`.
   rerender(
     <SidebarProvider>
       <InboxList title="Inbox" path={null} sections={sections} filtered={false} narrow selectedThreadId={null} notice={null} onShowNew={() => {}} onOpen={() => {}} phone={false} />

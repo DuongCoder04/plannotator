@@ -210,9 +210,24 @@ const card = () =>
   }) ?? null;
 
 describe.if(hasDom)('the badges in the list', () => {
-  test('a triangle alone and a triangle with its count; the words stay for a screen reader', () => {
+  test('a wide row: the triangle and its words, "Stopped" and "Holds up 3", drawn (the owner, 2026-10-29)', () => {
     const el = mount();
+    const stop = el.querySelector<HTMLElement>('.ib-row[data-thread-id="msg_stop"] [data-row-badge]')!;
+    expect(stop.querySelector('svg.ib-tri')).not.toBeNull();
+    expect(stop.classList.contains('ib-bwords')).toBe(true);
+    expect(stop.textContent).toBe('Stopped');
+    expect(stop.querySelector('.ib-sr')).toBeNull();
+    expect(stop.querySelector('.ib-bw')!.textContent).toBe('Stopped');
+    const hold = el.querySelector<HTMLElement>('.ib-row[data-thread-id="msg_hold"] [data-row-badge]')!;
+    expect(hold.textContent).toBe('Holds up 3');
+    expect(hold.querySelector('.ib-sr')).toBeNull();
+    expect(hold.querySelector('.ib-bw')!.textContent).toBe('Holds up 3');
+  });
+
+  test('a two-line row: a triangle alone and a triangle with its count; the words stay for a screen reader', () => {
+    const el = mount({ narrow: true });
     const stop = el.querySelector<HTMLElement>('[data-thread-id="msg_stop"] [data-row-badge]')!;
+    expect(stop.classList.contains('ib-bwords')).toBe(false);
     expect(stop.dataset.rowBadge).toBe('stopped');
     expect(stop.classList.contains('ib-b-stop')).toBe(true);
     expect(stop.querySelector('svg.ib-tri')).not.toBeNull();

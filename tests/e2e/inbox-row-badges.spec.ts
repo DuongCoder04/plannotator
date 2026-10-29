@@ -147,7 +147,7 @@ test.afterAll(async () => {
   }
 });
 
-test('desktop: the triangles, their words for a screen reader, and the marks, badge and count in their own columns', async () => {
+test('desktop: the triangles with their words, and the marks, badge and count in their own columns', async () => {
   const { page } = world;
   await page.goto(world.url);
   const stop = page.locator(`.ib-row[data-thread-id="${world.stopped}"] [data-row-badge]`);
@@ -155,13 +155,16 @@ test('desktop: the triangles, their words for a screen reader, and the marks, ba
   await expect(stop).toHaveText('Stopped');
   await expect(hold).toHaveText('Holds up 3');
   await expect(stop.locator('svg.ib-tri')).toBeVisible();
-  // Drawn: the triangle alone; the triangle and "3". The words are visually hidden.
-  // The words' box is the visually hidden one (1 px, clipped); the drawn text is the count alone.
-  for (const badge of [stop, hold]) expect((await badge.locator('.ib-sr').boundingBox())!.width).toBeLessThanOrEqual(1);
-  await expect(hold.locator('.ib-bn')).toHaveText('3');
-  expect((await stop.boundingBox())!.width).toBeLessThanOrEqual(30);
-  // The badge fits its 52 px column.
-  expect((await hold.boundingBox())!.width).toBeLessThanOrEqual(52);
+  // Full width (the owner, 2026-10-29): the triangle, then the badge's words drawn, as before approval
+  // "inbox-row-badges" ("Stopped", "Holds up 3"); whole, inside the 110 px badge column.
+  for (const [badge, words] of [[stop, 'Stopped'], [hold, 'Holds up 3']] as const) {
+    await expect(badge.locator('.ib-bw')).toHaveText(words);
+    await expect(badge.locator('.ib-bw')).toBeVisible();
+    await expect(badge.locator('.ib-sr')).toHaveCount(0);
+    const fit = await badge.evaluate((b) => ({ width: b.getBoundingClientRect().width, whole: b.scrollWidth <= b.clientWidth + 0.5 }));
+    expect(fit.whole, words).toBe(true);
+    expect(fit.width, words).toBeLessThanOrEqual(110);
+  }
   // One accessible name per row, its words short; the card's words as its description.
   const row = page.locator(`.ib-row[data-thread-id="${world.stopped}"]`);
   const described = await row.getAttribute('aria-describedby');
@@ -432,54 +435,81 @@ test('a small phone (320, 360): the subject gives way first; the marks, the badg
 });
 
 // Last, so its threads change no test above.
-test('desktop, rows whose count has words (a draft, Undelivered, action items): every column still lines up; hover keeps the marks', async () => {
+test('desktop, rows whose count has words (a draft, Undelivered, action items): the full words, every column lined up at 1440 and 900, the subject the widest; beside a thread the short forms', async () => {
   const { page } = world;
   const deploy = scratchProject(world.src, 'deploy-app');
   const claude = world.agents[0]!;
   const action = [':::action', 'Approve the production deploy on Vercel', 'The build passed every check.', '', 'Stopped: the release cannot go out until it is approved', ':::'].join('\n');
   const one = await claude.send({ project_path: deploy, subject: 'Approve the deploy', thread: 'prod-deploy', body: action });
   const both = await claude.send({ project_path: deploy, subject: 'Deploy and a name', thread: 'release-name', body: [action, '', ':::question', 'Call it 4.2 or 5.0?', '', '- [ ] 4.2', '- [ ] 5.0', ':::'].join('\n') });
-  // A draft and a reply waiting on a busy agent, put on two rows the server sent: each needs a live session or the
-  // window's own reply box to arise for real (tests/e2e/inbox-undelivered.spec.ts, inbox-replaced.spec.ts).
+  // A draft and replies waiting on a busy agent (14 minutes, and 1,500: stuck overnight, review D1), put on rows the
+  // server sent: each needs a live session or the window's own reply box to arise for real
+  // (tests/e2e/inbox-undelivered.spec.ts, inbox-replaced.spec.ts).
+  const waitFor = (min: number) => ({ kind: 'reply', state: 'queued', reason: 'working', send_now: false, message_id: 'msg_waiting', at: null, host: 'claude-code', name: 'Claude Code', waiting_since: new Date(Date.now() - min * 60_000).toISOString(), steerable: false, auto_send_at: null });
   await page.route('**/api/inbox/threads?archived=exclude', async (route) => {
     const response = await route.fetch();
     const model = (await response.json()) as { sections: { threads: Record<string, unknown>[] }[] };
     for (const row of model.sections.flatMap((s) => s.threads)) {
       if (row.thread_id === world.news) row.unsent = { reply_at: new Date().toISOString(), picks: 2, comments: 3 };
-      if (row.thread_id === world.pair)
-        row.delivery = { kind: 'reply', state: 'queued', reason: 'working', send_now: false, message_id: 'msg_waiting', at: null, host: 'claude-code', name: 'Claude Code', waiting_since: new Date(Date.now() - 14 * 60_000).toISOString(), steerable: false, auto_send_at: null };
+      if (row.thread_id === world.pair) row.delivery = waitFor(14);
+      if (row.thread_id === world.long) row.delivery = waitFor(1500);
     }
     await route.fulfill({ response, json: model });
   });
+  // The full words in a row's name (a draft's "·" is not read: "Draft Your reply, …").
+  const named = (full: RegExp) => new RegExp(full.source.slice(1, -1).replace(' · ', ' (?:· )?'));
+  // [row, the two-line row's short form, the wide row's full words (also the row's name)]
+  const expected: [string, RegExp, RegExp][] = [
+    [one.thread_id as string, /^1 action$/, /^1 action item$/],
+    [both.thread_id as string, /^1 action1$/, /^1 question, 1 action item$/],
+    [world.news, /^Draft$/, /^Draft · Your reply, 2 picks, 3 comments$/],
+    [world.pair, /^Undelivered 1[45]m$/, /^Undelivered 1[45] min$/],
+    [world.long, /^Undelivered 1d$/, /^Undelivered 1 day$/],
+  ];
   try {
+    // Full width (the owner, 2026-10-29): the full words, drawn and read as they are. At 1440 and at the 900 px
+    // list (the narrowest wide list) every column lines up, and the subject has the widest column.
+    for (const viewport of [1440, 1148]) {
+      await page.setViewportSize({ width: viewport, height: 900 });
+      await page.goto(world.url);
+      for (const [id, , full] of expected) {
+        const row = page.locator(`.ib-row[data-thread-id="${id}"]`);
+        const words = row.locator('.ib-cw > .ib-c > .ib-cs');
+        await expect(words).toHaveText(full);
+        await expect(words).toBeVisible();
+        await expect(row.locator('.ib-cw > .ib-c > [aria-hidden="true"], .ib-cw .ib-sr')).toHaveCount(0);
+        await expect(row).toHaveAccessibleName(named(full));
+      }
+      const layout = await page.evaluate(() => ({
+        list: document.querySelector('.ib-lbody')!.clientWidth,
+        rows: [...document.querySelectorAll<HTMLElement>('.ib-row')].map((r) => {
+          const box = (sel: string) => r.querySelector(sel)!.getBoundingClientRect();
+          const pill = r.querySelector('.ib-cw [data-undelivered]')?.getBoundingClientRect();
+          return {
+            id: r.dataset.threadId,
+            rights: ['.ib-subj', '.ib-cw', '.ib-mcol', '.ib-bcol', '.ib-cq', '.ib-t'].map((sel) => Math.round(box(sel).right)),
+            subj: Math.round(box('.ib-subj').left),
+            subjWidth: box('.ib-subj').width,
+            others: Math.max(...['.ib-p', '.ib-cw', '.ib-mcol', '.ib-bcol', '.ib-cq', '.ib-t'].map((sel) => box(sel).width)),
+            // The Undelivered pill itself, not just its slot (review D1): inside its column, clear of the marks.
+            pill: pill ? pill.left >= box('.ib-cw').left - 0.5 && pill.right <= box('.ib-cw').right + 0.5 && pill.right <= box('.ib-mcol').left : null,
+          };
+        }),
+      }));
+      const where = `at ${viewport}px (a ${layout.list} px list)`;
+      expect(layout.list, where).toBeGreaterThanOrEqual(900);
+      if (viewport < 1440) expect(layout.list, where).toBeLessThan(920);
+      expect(layout.rows.length).toBeGreaterThanOrEqual(9);
+      for (let i = 0; i < 6; i++) expect(new Set(layout.rows.map((g) => g.rights[i])).size, `column ${i} ${where}: ${JSON.stringify(layout.rows)}`).toBe(1);
+      expect(new Set(layout.rows.map((g) => g.subj)).size).toBe(1);
+      for (const g of layout.rows) {
+        expect(g.subjWidth, `the subject is the widest column ${where}`).toBeGreaterThan(g.others);
+        if (g.pill !== null) expect(g.pill, `${g.id}: the pill stays in its column ${where}`).toBe(true);
+      }
+    }
+    // Hover: the action covers the time and ?N; the marks and the badge stay.
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(world.url);
-    // The short form shows (approval "inbox-row-byline", option A); the full words are the row's name.
-    const expected: [string, RegExp, RegExp][] = [
-      [one.thread_id as string, /^1 action$/, /1 action item/],
-      [both.thread_id as string, /^1 action1$/, /1 question, 1 action item/],
-      [world.news, /^Draft$/, /Draft · Your reply, 2 picks, 3 comments/],
-      [world.pair, /^Undelivered \d+m$/, /Undelivered \d+ min/],
-    ];
-    for (const [id, short, full] of expected) {
-      const row = page.locator(`.ib-row[data-thread-id="${id}"]`);
-      await expect(row.locator('.ib-cw > .ib-c > .ib-cs')).toHaveText(short);
-      await expect(row.locator('.ib-cw > .ib-c > .ib-cs')).toBeVisible();
-      await expect(row).toHaveAccessibleName(full);
-    }
-    await expect(page.locator(`.ib-row[data-thread-id="${both.thread_id}"] .ib-cs > .ib-qn svg`)).toBeVisible();
-    const geometry = await page.evaluate(() =>
-      [...document.querySelectorAll<HTMLElement>('.ib-row')].map((r) => {
-        const box = (sel: string) => r.querySelector(sel)!.getBoundingClientRect();
-        return { id: r.dataset.threadId, rights: ['.ib-subj', '.ib-cw', '.ib-mcol', '.ib-bcol', '.ib-cq', '.ib-t'].map((sel) => Math.round(box(sel).right)), subj: Math.round(box('.ib-subj').left) };
-      }),
-    );
-    expect(geometry.length).toBeGreaterThanOrEqual(8);
-    // Every column's right edge, the subject's and the words' included, is one down the list, words or not: the
-    // words never take the subject's room.
-    for (let i = 0; i < 6; i++) expect(new Set(geometry.map((g) => g.rights[i])).size, `column ${i}: ${JSON.stringify(geometry)}`).toBe(1);
-    expect(new Set(geometry.map((g) => g.subj)).size).toBe(1);
-    // Hover: the action covers the time and ?N; the marks and the badge stay.
     const stopped = page.locator(`.ib-row[data-thread-id="${world.stopped}"]`);
     await stopped.locator('.ib-subj').hover();
     await expect(page.locator(`.ib-rw[data-row="${world.stopped}"] .ib-ract`)).toBeVisible();
@@ -488,19 +518,52 @@ test('desktop, rows whose count has words (a draft, Undelivered, action items): 
     await page.mouse.move(5, 5);
     await shot(page, 'desktop-words');
 
-    // Beside a thread (the 380 px list): the short form ends line 2 in at most 124 px, and the subject keeps its
-    // room (the full "Draft · Your reply, 2 picks, 3 comments" would leave it a sliver).
+    // One project's list under 900 px keeps the wide row but not the full words: the short forms in their 124 px
+    // column, so the subject keeps its room (tests/e2e/inbox-guides.spec.ts measures it with a long thread name).
+    const projects = (await (await page.request.get(`${world.url}api/inbox/projects`)).json()).projects as { id: string; name: string }[];
+    await page.setViewportSize({ width: 1000, height: 900 });
+    await page.goto(`${world.url}#project=${projects.find((p) => p.name === 'deploy-app')!.id}`);
+    await expect.poll(() => page.locator('.ib-lbody').evaluate((el) => el.clientWidth)).toBeLessThan(900);
+    for (const [id, short] of expected.slice(0, 2)) {
+      const row = page.locator(`.ib-row[data-thread-id="${id}"]`);
+      await expect(row.locator('.ib-cw .ib-cs')).toHaveText(short);
+      await expect(row.locator('.ib-cfull, .ib-bwords')).toHaveCount(0);
+      expect(await row.locator('.ib-cw').evaluate((c) => c.getBoundingClientRect().width)).toBeLessThanOrEqual(124.5);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    // Beside a thread (the 380 px list): the short form (approval "inbox-row-byline", option A) ends line 2 in at
+    // most 124 px, the Undelivered pill whole inside it, and the subject keeps its room (the full "Draft · Your
+    // reply, 2 picks, 3 comments" would leave it a sliver).
     await page.goto(`${world.url}#thread=${world.stopped}`);
     await expect(page.locator(`.ib-nrow[data-thread-id="${world.news}"] [data-draft-label]`)).toHaveText('Draft');
-    for (const [id, short] of expected) {
+    await expect(page.locator(`.ib-nrow[data-thread-id="${both.thread_id}"] .ib-cs > .ib-qn svg`)).toBeVisible();
+    for (const [id, short, full] of expected) {
+      await expect(page.locator(`.ib-nrow[data-thread-id="${id}"]`)).toHaveAccessibleName(named(full));
       const line = await page.locator(`.ib-nrow[data-thread-id="${id}"] .ib-l2`).evaluate((l) => {
         const words = l.querySelector(':scope > .ib-c')!;
         const subject = l.querySelector<HTMLElement>('.ib-s .ib-st')!;
-        return { short: words.querySelector('.ib-cs')!.textContent, last: l.lastElementChild === words, wordsWidth: words.getBoundingClientRect().width, subject: subject.getBoundingClientRect().width, whole: subject.scrollWidth <= subject.clientWidth + 0.5, line: l.getBoundingClientRect().width };
+        const pill = words.querySelector<HTMLElement>('[data-undelivered]');
+        const text = pill?.querySelector<HTMLElement>('.ib-bwt');
+        const lr = l.getBoundingClientRect();
+        return {
+          short: words.querySelector('.ib-cs')!.textContent,
+          last: l.lastElementChild === words,
+          wordsWidth: words.getBoundingClientRect().width,
+          pill: pill ? { width: pill.getBoundingClientRect().width, inside: pill.getBoundingClientRect().right <= lr.right + 0.5, whole: text!.scrollWidth <= text!.clientWidth + 0.5 } : null,
+          subject: subject.getBoundingClientRect().width,
+          whole: subject.scrollWidth <= subject.clientWidth + 0.5,
+          line: lr.width,
+        };
       });
       expect(line.short, id).toMatch(short);
       expect(line.last, id).toBe(true);
       expect(line.wordsWidth, id).toBeLessThanOrEqual(124.5);
+      if (line.pill) {
+        expect(line.pill.width, `${id}: the pill fits the slot`).toBeLessThanOrEqual(124.5);
+        expect(line.pill.inside, `${id}: the pill ends inside line 2`).toBe(true);
+        expect(line.pill.whole, `${id}: the pill's words are whole`).toBe(true);
+      }
       // Whole, or cut no shorter than 120 px.
       if (!line.whole) expect(line.subject, `${id}: the subject keeps its room in a ${line.line} px line`).toBeGreaterThanOrEqual(120);
     }

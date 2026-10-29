@@ -409,7 +409,7 @@ test('a pick is saved at once and the agent reads it through read_thread', async
   await expect(row).toHaveAccessibleName(/Draft · 2 picks/);
   await shot('3.1-answered-not-sent');
 
-  // The row's "Draft" (its words column, 124px) must end before the time's
+  // The row's draft words (a wide row's words column) must end before the time's
   // begins: in every project and in one,
   // at full and narrower widths (every project below 900px of list draws the
   // two-line row, whose count ends line 2 instead, inside the line). Measured on the text itself (a
@@ -427,7 +427,7 @@ test('a pick is saved at once and the agent reads it through read_thread', async
       // A two-line row's count ends line 2 (approval "inbox-row-byline"), under the time: it must end inside that line.
       const l2 = el.querySelector('.ib-l2');
       const lineEnd = l2 ? Math.round(l2.getBoundingClientRect().right - count.right) : null;
-      return { shape: el.className.split(' ')[0], text: el.querySelector('.ib-c .ib-cs')!.textContent, full: el.querySelector('.ib-c .ib-sr')!.textContent, gap: time.left - count.right, sameLine: Math.abs(count.top - time.top) < 4, lineEnd, last: l2 ? l2.lastElementChild === el.querySelector('.ib-c') : null };
+      return { shape: el.className.split(' ')[0], list: el.closest('.ib-lbody')!.clientWidth, text: el.querySelector('.ib-c .ib-cs')!.textContent, full: el.querySelector('.ib-c')!.getAttribute('data-count-words'), gap: time.left - count.right, sameLine: Math.abs(count.top - time.top) < 4, lineEnd, last: l2 ? l2.lastElementChild === el.querySelector('.ib-c') : null };
     });
   for (const [folder, narrowShape] of [[/^Inbox/, 'ib-nrow'], [/^billing-svc(?: \d+)?$/, 'ib-row']] as const) {
     await side(page).getByRole('button', { name: folder }).click();
@@ -448,7 +448,9 @@ test('a pick is saved at once and the agent reads it through read_thread', async
         }, where)
         .toBe(true);
       const measured = await textGap();
-      expect(measured.text).toBe('Draft');
+      // A wide row in a list of 900px or more draws the full words (the owner, 2026-10-29); a two-line row, and one
+      // project's wide row in a narrower list, "Draft" (option A).
+      expect(measured.text).toBe(measured.shape === 'ib-row' && measured.list >= 900 ? 'Draft · 2 picks' : 'Draft');
       expect(measured.full).toBe('Draft · 2 picks');
       if (measured.shape === 'ib-row') {
         expect(measured.sameLine).toBe(true);

@@ -372,13 +372,15 @@ test.skipIf(!hasDom)('the list says "Draft" ("Draft · Your reply", "Draft · 1 
   const saved = await loopback(`/api/inbox/threads/${world.waiting}/draft`, 'POST', JSON.stringify({ body: 'Pagefind.', base: null }));
   expect(saved.status).toBe(200);
   const el = await renderApp('');
-  // The short form drawn (approval "inbox-row-byline", option A); the full words for a screen reader.
+  // The full words (`data-count-words`); the row draws them on a wide row, "Draft" on a two-line or phone row
+  // (approval "inbox-row-byline", option A).
   const label = (id: string) => el.querySelector(`[data-thread-id="${id}"] [data-draft-label]`)?.textContent?.replace(/\s+/g, ' ').trim();
-  const full = (id: string) => el.querySelector(`[data-thread-id="${id}"] .ib-c .ib-sr`)?.textContent;
+  const full = (id: string) => el.querySelector(`[data-thread-id="${id}"] .ib-c`)?.getAttribute('data-count-words');
+  const drawn = (id: string) => (el.querySelector(`.ib-row[data-thread-id="${id}"] .ib-cfull`) ? full(id) ?? undefined : 'Draft');
   await until(() => full(world.waiting) === 'Draft · Your reply', 'the waiting row');
-  expect(label(world.waiting)).toBe('Draft');
+  expect(label(world.waiting)).toBe(drawn(world.waiting));
   expect(full(world.picked)).toBe('Draft · 1 pick');
-  expect(label(world.picked)).toBe('Draft');
+  expect(label(world.picked)).toBe(drawn(world.picked));
   const nav = el.querySelector('[data-drafts-nav]')!;
   const replies = (JSON.parse((await loopback('/api/inbox/drafts')).text) as { replies: { thread_id: string }[] }).replies;
   expect(replies.map((r) => r.thread_id)).toContain(world.waiting);

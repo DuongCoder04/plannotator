@@ -293,11 +293,11 @@ test('waiting on a busy agent: "Undelivered N min" on the row (blue / grey), Sen
   await page.goto(`${world.url}`);
   const heroRow = page.locator(`.ib-lbody [data-thread-id="${hero.thread}"]`).first();
   const stuckRow = page.locator(`.ib-lbody [data-thread-id="${stuck.thread}"]`).first();
-  // The short form drawn (approval "inbox-row-byline", option A); the full words in the row's name.
-  await expect(heroRow.locator('[data-undelivered]')).toHaveText('Undelivered 3m');
-  await expect(heroRow.locator('.ib-c .ib-sr')).toHaveText('Undelivered 3 min');
+  // A wide row (1440) draws the full words (the owner, 2026-10-29), read as they are.
+  await expect(heroRow.locator('[data-undelivered]')).toHaveText('Undelivered 3 min');
+  await expect(heroRow.locator('.ib-c .ib-sr')).toHaveCount(0);
   await expect(heroRow.locator('[data-undelivered]')).not.toHaveAttribute('data-stuck', /.*/);
-  await expect(stuckRow.locator('[data-undelivered]')).toHaveText('Undelivered 3m');
+  await expect(stuckRow.locator('[data-undelivered]')).toHaveText('Undelivered 3 min');
   await expect(stuckRow.locator('[data-undelivered]')).toHaveAttribute('data-stuck', '');
   // The badge is the count's cell: the row reads it in its name.
   await expect(heroRow).toContainText('Undelivered 3 min');

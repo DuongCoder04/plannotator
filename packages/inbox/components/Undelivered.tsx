@@ -10,7 +10,7 @@
  */
 import { useEffect, useState } from 'react';
 import type { DeliveryLine, RestartNote } from '../deliveryLine';
-import { undeliveredLabel, undeliveredWords } from '../deliveryLine';
+import { undeliveredLabel, undeliveredShort, undeliveredWords } from '../deliveryLine';
 import { Icon } from '../icons';
 import { StuckReason } from './RestartNote';
 import { Tip } from './Tip';
@@ -33,21 +33,17 @@ export function useMinuteClock(active: boolean): number {
 type Wait = NonNullable<DeliveryLine['wait']>;
 
 /**
- * The row's badge, in place of the count: blue while it can go in now, grey when it cannot. It says the short form,
- * "Undelivered 3m" (approval "inbox-row-byline", option A); the row (InboxList's `CountWords`) keeps the clock and
- * puts "Undelivered 3 min" in the tooltip and the row's name.
+ * The row's badge, in place of the count: blue while it can go in now, grey when it cannot. On a two-line or phone
+ * row it says the short form, "Undelivered 3m", "2h", "1d" (approval "inbox-row-byline", option A), and the row
+ * (InboxList's `CountWords`, which keeps the clock) puts "Undelivered 3 min" in the tooltip and its name; on a wide
+ * row (`full`) the full words.
  */
-export function UndeliveredBadge({ wait, now }: { wait: Wait; now: number }) {
+export function UndeliveredBadge({ wait, now, full = false }: { wait: Wait; now: number; full?: boolean }) {
   return (
     <span className="ib-badge ib-b-wait" data-undelivered="" data-stuck={wait.steerable ? undefined : ''}>
-      {undeliveredShort(undeliveredLabel(wait.since, now))}
+      <span className="ib-bwt">{full ? undeliveredLabel(wait.since, now) : undeliveredShort(wait.since, now)}</span>
     </span>
   );
-}
-
-/** "Undelivered 3 min" as the row's short form: "Undelivered 3m". */
-export function undeliveredShort(label: string): string {
-  return label.replace(/ (\d+) min$/, ' $1m');
 }
 
 /** "Undelivered 3 min · Claude Code is working · goes in by itself in 2 min", with its own clock. */

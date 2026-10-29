@@ -149,11 +149,11 @@ function useKeyboardFocus(enabled: boolean): [
   ];
 }
 
-/** The row's badge with its hover card (wide and two-line rows), or null. */
-function badgeOf(row: InboxListRow, kbd: boolean): ReactNode {
+/** The row's badge with its hover card (wide and two-line rows), or null. `words`: the triangle and its words (a wide row). */
+function badgeOf(row: InboxListRow, kbd: boolean, words = false): ReactNode {
   if (!rowHasBadge(row)) return null;
   const card = <WaitCard row={row} agent={agentName(rowAgent(row))} mark={<RowMark row={row} />} time={shortTime(rowTimeIso(row))} />;
-  return <RowBadge row={row} card={card} open={kbd} />;
+  return <RowBadge row={row} card={card} open={kbd} words={words} />;
 }
 
 /** The badge card's words for a screen reader, beside the row (the row names it in `aria-describedby`). */
@@ -198,30 +198,30 @@ function subjectOf(row: InboxListRow): string {
 }
 
 /**
- * What the count says in words (approval "inbox-row-byline", option A, 2026-10-29), or null: the open count (`?N`)
- * or nothing. `short` is what the row draws, in its 124 px slot; `full` is said in the tooltip and the row's name.
- * Action items are always named (approval "inbox-next-actions"): "1 action", and "1 action ?1" beside a question.
+ * What the count says in words (approval "inbox-row-byline"), or null: the open count (`?N`) or nothing. A two-line
+ * or phone row draws `short` in its 124 px slot (option A, 2026-10-29) and says `full` in the tooltip and its name; a
+ * wide row draws `long`, the full words (the owner, 2026-10-29: full words in full-width mode). Action items are
+ * always named (approval "inbox-next-actions"): "1 action", and "1 action ?1" beside a question, in short.
  */
-function countWords(row: InboxListRow, now: number): { short: ReactNode; full: string } | null {
+function countWords(row: InboxListRow, now: number): { short: ReactNode; long: ReactNode; full: string } | null {
+  const same = (words: string) => ({ short: words, long: words, full: words });
   // A reply waiting on a busy agent (approval "inbox-busy-agent-reply"): how long, in place of the count.
   const wait = rowWait(row.delivery);
-  if (wait) return { short: <UndeliveredBadge wait={wait} now={now} />, full: undeliveredLabel(wait.since, now) };
+  if (wait) return { short: <UndeliveredBadge wait={wait} now={now} />, long: <UndeliveredBadge wait={wait} now={now} full />, full: undeliveredLabel(wait.since, now) };
   // A Quiet row says why it is there: archived (resolved), or marked read.
-  if (inboxRowArchived(row)) return { short: 'Archived', full: 'Archived' };
+  if (inboxRowArchived(row)) return same('Archived');
   // What the person has not sent (approval "inbox-reply-drafts"): "Draft", and "Draft · Your reply, 2 picks" in full.
-  if (row.unsent && inboxHasUnsent(row.unsent)) return { short: <DraftLabel unsent={row.unsent} short />, full: `Draft · ${unsentWords(rowUnsent(row.unsent))}` };
+  if (row.unsent && inboxHasUnsent(row.unsent)) return { short: <DraftLabel unsent={row.unsent} short />, long: <DraftLabel unsent={row.unsent} />, full: `Draft · ${unsentWords(rowUnsent(row.unsent))}` };
   // Marked read with 👍 Looks good: the row says so in place of "Read".
-  if (row.section === 'quiet' && (row.read_at ?? null) !== null && row.ack) return { short: `👍 ${row.ack.label}`, full: `👍 ${row.ack.label}` };
-  if (row.section === 'quiet' && (row.read_at ?? null) !== null) return { short: 'Read', full: 'Read' };
+  if (row.section === 'quiet' && (row.read_at ?? null) !== null && row.ack) return same(`👍 ${row.ack.label}`);
+  if (row.section === 'quiet' && (row.read_at ?? null) !== null) return same('Read');
   // An older Inbox (no `unsent`): its own words.
-  if (row.answered_not_sent) return { short: 'Answered', full: 'Answered, not sent' };
-  if (row.section === 'sent' && row.addressee) {
-    const to = `To ${agentName(rowAgent(row))}`;
-    return { short: to, full: to };
-  }
+  if (row.answered_not_sent) return { short: 'Answered', long: 'Answered, not sent', full: 'Answered, not sent' };
+  if (row.section === 'sent' && row.addressee) return same(`To ${agentName(rowAgent(row))}`);
   const actions = Math.min(row.questions.actions ?? 0, row.questions.open);
   if (actions < 1) return null;
   const questions = row.questions.open - actions;
+  const full = waitCount(row.questions.open, actions);
   return {
     short: (
       <>
@@ -234,20 +234,32 @@ function countWords(row: InboxListRow, now: number): { short: ReactNode; full: s
         )}
       </>
     ),
-    full: waitCount(row.questions.open, actions),
+    long: full,
+    full,
   };
 }
 
 /**
- * The count in words (`countWords`): the short form drawn, the full words for a screen reader and, with `tip`, in
- * the tooltip; nothing when the count is `?N` or there is none.
+ * The count in words (`countWords`), nothing when the count is `?N` or there is none. A two-line or phone row draws
+ * the short form, its full words for a screen reader and, with `tip`, in the tooltip. A wide row (`wide`) draws the
+ * full words in its words column; cut there, they are the tooltip too.
  */
-function CountWords({ row, tip = false }: { row: InboxListRow; tip?: boolean }) {
+function CountWords({ row, tip = false, wide = false }: { row: InboxListRow; tip?: boolean; wide?: boolean }) {
   const now = useMinuteClock(rowWait(row.delivery) !== null);
   const words = countWords(row, now);
   if (!words) return null;
+  const quiet = row.section === 'quiet' ? ' ib-qlabel' : '';
+  if (wide) {
+    return (
+      <Tip content={words.full} when={(cell) => cell.scrollWidth > cell.clientWidth + 0.5 || [...cell.querySelectorAll('.ib-cst, .ib-draft-l')].some((t) => t.scrollWidth > t.clientWidth + 0.5)}>
+        <span className={`ib-c ib-cwords ib-cfull${quiet}`} data-count-words={words.full}>
+          <span className="ib-cs">{typeof words.long === 'string' ? <span className="ib-cst">{words.long}</span> : words.long}</span>
+        </span>
+      </Tip>
+    );
+  }
   const cell = (
-    <span className={`ib-c ib-cwords${row.section === 'quiet' ? ' ib-qlabel' : ''}`} data-count-words={words.full}>
+    <span className={`ib-c ib-cwords${quiet}`} data-count-words={words.full}>
       <span className="ib-cs" aria-hidden="true">
         {typeof words.short === 'string' ? <span className="ib-cst">{words.short}</span> : words.short}
       </span>
@@ -386,10 +398,10 @@ export const WIDE_ROWS_MIN_LIST_WIDTH = 900;
  * column is not rendered at all, so a row starts at the list's left edge
  * instead of after an empty block.
  */
-function WideRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: InboxListRow; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
+function WideRow({ row, selected, filtered, lit, pinned, keys, full, onOpen }: { row: InboxListRow; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; full: boolean; onOpen: () => void }) {
   const [kbd, focus] = useKeyboardFocus(rowHasBadge(row));
   const wordsId = useId();
-  const badgeEl = badgeOf(row, kbd);
+  const badgeEl = badgeOf(row, kbd, full);
   const sent = row.section === 'sent';
   return (
     <>
@@ -413,7 +425,7 @@ function WideRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: 
       {/* Every column right of the words has a fixed width, so each lines up down the list. The words (a draft,
           Undelivered, action items …) take the width they need, between the subject and the marks. */}
       <span className="ib-cw">
-        <CountWords row={row} tip />
+        <CountWords row={row} wide={full} tip={!full} />
       </span>
       <MarkCol row={row} fold={LINE_MARKS} />
       <span className="ib-bcol">{badgeEl}</span>
@@ -678,6 +690,9 @@ export function InboxList(props: InboxListProps) {
   // dragged past the wide rows' width), and in the full list for every
   // project (one project's wide row fits any width).
   const twoLine = narrowList && (props.narrow || !props.filtered);
+  // The full words on a wide row (the owner, 2026-10-29: full words in full-width mode) need a list of at least
+  // 900px; one project's wide row in a narrower list keeps the short forms and the bare triangles (option A).
+  const fullWords = !twoLine && !narrowList;
   // The column beside a thread gets the sidebar's resize edge, except on a phone.
   const { isMobile, open: sidebarDocked } = useSidebar();
   // New message in the header: a phone always has it (its CSS draws it); a wider window only while the
@@ -718,7 +733,7 @@ export function InboxList(props: InboxListProps) {
     <section
       ref={listRef}
       id={columnId}
-      className={`ib-listcol${props.narrow ? ' ib-narrow' : ''}${resizable ? ' ib-resizable' : ''}${props.filtered ? ' ib-noproj' : ''}`}
+      className={`ib-listcol${props.narrow ? ' ib-narrow' : ''}${resizable ? ' ib-resizable' : ''}${props.filtered ? ' ib-noproj' : ''}${fullWords ? ' ib-fullw' : ''}`}
       aria-label={props.title}
     >
       <div className="ib-lhead">
@@ -840,6 +855,7 @@ export function InboxList(props: InboxListProps) {
                       drawn={section.id}
                       // A phone's row has no hover action (a hover on a touch screen is a first tap): Mark read is in the thread's header there.
                       shape={props.phone ? 'phone' : twoLine ? 'narrow' : 'wide'}
+                      full={fullWords}
                       filtered={props.filtered}
                       selected={row.thread_id === props.selectedThreadId}
                       lit={lit(row)}
@@ -866,6 +882,8 @@ interface ListRowProps {
   /** The group the row sits in on screen. */
   drawn: InboxSectionId;
   shape: 'wide' | 'narrow' | 'phone';
+  /** A wide row in a list at least 900px wide: the full words and the badge's words. */
+  full: boolean;
   filtered: boolean;
   selected: boolean;
   lit: boolean;
@@ -888,7 +906,7 @@ interface ListRowProps {
  * list update renders only the rows that changed.
  */
 const ListRow = memo(
-  function ListRow({ row, drawn, shape, filtered, selected, lit, onOpen, onMarkRead, onSendNow, menu, pinned, keys }: ListRowProps) {
+  function ListRow({ row, drawn, shape, full, filtered, selected, lit, onOpen, onMarkRead, onSendNow, menu, pinned, keys }: ListRowProps) {
     const open = () => onOpen(row);
     if (shape === 'phone') return <PhoneRow row={row} filtered={filtered} lit={lit} menu={menu} pinned={pinned} keys={keys} onOpen={open} />;
     return (
@@ -896,13 +914,14 @@ const ListRow = memo(
         {shape === 'narrow' ? (
           <NarrowRow row={row} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} onOpen={open} />
         ) : (
-          <WideRow row={row} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} onOpen={open} />
+          <WideRow row={row} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} full={full} onOpen={open} />
         )}
       </RowWithAction>
     );
   },
   (a, b) =>
     a.shape === b.shape &&
+    a.full === b.full &&
     a.drawn === b.drawn &&
     a.filtered === b.filtered &&
     a.selected === b.selected &&

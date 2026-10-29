@@ -725,13 +725,20 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-band .ib-n { font-weight: 500; color: var(--muted-foreground); }
 .ib-band .ib-ic { margin-left: auto; color: var(--muted-foreground); }
 /* The one-line row (approval "inbox-row-byline", 2026-10-29): the project, the subject cell (the thread pill, the
-   subject), then right-aligned the agents' marks, the badge, `?N` and the time, each in a fixed column of its own so
-   they line up down the list in every row. The count in words, short ("Draft", "Undelivered 14m", "1 action"), has
-   its own fixed 124px column between the subject and the marks (approval "inbox-row-byline", option A), so every
-   subject has the same room. `?N` gets 44px: `?128` fits. */
+   subject), then right-aligned the count in words, the agents' marks, the badge, `?N` and the time, each in a column
+   of its own so they line up down the list in every row, and every subject has the same room. Every row's tracks
+   depend only on the list's width (no row's content sizes them), so they line up though each row is its own grid.
+   The owner's call of 2026-10-29: full-width rows say the full words. The words column is 14% of the row, from 148px
+   (a 900px list) to 160px (1440 and wider), where "1 question, 1 action item", "Draft · Your reply, 2 picks" and
+   "Undelivered 23 hours" fit; longer words end in "…" with the full words in the tooltip. The project column gives
+   way the same way, 15% from 120px to 170px, so the subject keeps the widest column at 900px. The badge column
+   (110px) fits the triangle and "Holds up 12"; `?N` gets 44px: `?128` fits. One project's wide row in a list under
+   900px (no `.ib-fullw`) keeps option A: the short words in 124px and the bare triangle in 52px. */
 .ib-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 124px 64px 52px 44px 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
+.ib-fullw .ib-row { grid-template-columns: clamp(120px, 15%, 170px) minmax(0, 1fr) clamp(148px, 14%, 160px) 64px 110px 44px 76px; }
 /* One project's list: no project column (InboxList's WideRow). */
 .ib-noproj .ib-row { grid-template-columns: minmax(0, 1fr) 124px 64px 52px 44px 76px; }
+.ib-noproj.ib-fullw .ib-row { grid-template-columns: minmax(0, 1fr) clamp(148px, 14%, 160px) 64px 110px 44px 76px; }
 /* The words, the agents' marks, the badge and `?N`, each right-aligned in its column, so every subject starts on
    one left edge; up to three agents' marks overlap within theirs, past that two and "+N". A `?N` wider than its
    column (four digits) runs out to the left, into the gap, never into the time. */
@@ -821,6 +828,15 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-cwords > .ib-cs { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; white-space: nowrap; }
 .ib-cs > .ib-cst { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .ib-cs > .ib-qn { display: inline-flex; align-items: center; gap: 4px; flex: none; font-variant-numeric: tabular-nums; }
+/* A wide row's full words fill its words column; past it they end in "…" (the draft's words too). */
+.ib-row .ib-c.ib-cwords.ib-cfull { max-width: 100%; }
+.ib-cfull > .ib-cs > .ib-draft-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The Undelivered pill never spills from its slot (review D1): its age is in minutes, hours or days, and words
+   past the slot end in "…" inside the pill. */
+.ib-cs > .ib-badge.ib-b-wait { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.ib-b-wait > .ib-bwt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A wide row's badge says its words (the owner, 2026-10-29): the triangle, then "Stopped" or "Holds up 3". */
+.ib-badge.ib-bicon.ib-bwords { gap: 5px; padding: 0 8px 0 7px; }
 /* The open count on line 2 (`LineCount`): the question icon and the number, `?2`; its words are for a screen reader. */
 .ib-c.ib-qn { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
 /* Several agents in that box (any list row, the one-line row too): the scale's 20 px tiles, overlapping 2 px rather than the stack's 5, so the second
