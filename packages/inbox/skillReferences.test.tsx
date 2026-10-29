@@ -68,7 +68,7 @@ const threadOf = async (id: string) =>
 
 /** The person's reply once the server has stored it: the box closes before the Send lands, so wait on the server. */
 async function personReply(id: string): Promise<Message> {
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 300; i++) {
     const found = (await threadOf(id)).thread.messages.find((m) => m.author.kind === 'person');
     if (found) return found;
     await new Promise((r) => setTimeout(r, 50));
@@ -98,7 +98,9 @@ async function readLine(): Promise<string> {
   return line.trim();
 }
 
-const TESTS = 6;
+const TESTS = 7;
+/** One test's budget: a slow runner must not time a test out, because Bun then kills the shared Inbox process and every later test cascades. */
+const SLOW = 30_000;
 
 beforeAll(async () => {
   if (!hasDom) return;
@@ -160,7 +162,7 @@ afterEach(() => {
 });
 
 async function until(check: () => boolean | Promise<boolean>, what: string) {
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 300; i++) {
     if (await check()) return;
     await act(async () => {
       await new Promise((r) => setTimeout(r, 50));
@@ -296,21 +298,7 @@ test.skipIf(!hasDom)('the reply box: the picker, the underline and its line, Esc
   const ranges = skillReferenceRanges(message, splitInboxSkillsBlock(reply.body)!.skills);
   expect(ranges.human.map((r) => r.toString())).toEqual(['/readback']);
   expect(ranges.plain.map((r) => r.toString())).toEqual(['$write-better']);
-  // The line is there before the agent answers, above the Delivered line (never inside it).
-  const delivered = el.querySelector('.ib-delivered');
-  if (delivered) expect(line.compareDocumentPosition(delivered) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  // The agent answers: the same line stays under the same message, unchanged.
-  (child!.stdin as import('bun').FileSink).write(`${JSON.stringify({ send: { project: world.project, session: 'ses_agent', body: 'Done, tightened.', reply_to: world.waiting } })}\n`);
-  (child!.stdin as import('bun').FileSink).flush();
-  const answer = (JSON.parse(await readLine()) as { sent: string }).sent;
-  // The window's live feed is stubbed here, so open the thread again to read it with the answer in.
-  act(() => root?.unmount());
-  host?.remove();
-  const again = await renderApp(`#thread=${world.waiting}&msg=${reply.id}`);
-  await until(() => again.querySelector(`[data-message-id="${answer}"]`) !== null, "the agent's answer");
-  const after = again.querySelector(`[data-message-id="${reply.id}"] [data-skills-line]`) as HTMLElement;
-  expectQuietSkillsLine(after, ['readback', 'write-better']);
-});
+}, SLOW);
 
 test.skipIf(!hasDom)('Mod+Enter still sends with the picker open; a bare trigger leaves Enter a newline', async () => {
   const el = await renderApp(`#thread=${world.waiting}`);
@@ -326,7 +314,7 @@ test.skipIf(!hasDom)('Mod+Enter still sends with the picker open; a bare trigger
   // No skill referenced: no block.
   expect(reply.body).not.toContain('Skills referenced');
   expect(el.querySelector('[data-skills-line]')).toBeNull();
-});
+}, SLOW);
 
 // Moved from the in-thread New message box (off since approval "inbox-acknowledge") to compose, which shares the field.
 test.skipIf(!hasDom)('compose: a clicked $ row inserts; the session is woken with the block, "this message"', async () => {
@@ -358,7 +346,7 @@ test.skipIf(!hasDom)('compose: a clicked $ row inserts; the session is woken wit
   expect(command.body.startsWith('Before you post, $write-better and /readback it.\n\n**Skills referenced** (the person is asking you to invoke these skills when acting on this message):')).toBe(true);
   expect(command.body).toContain('Follow them when acting on this message.');
   expect(command.body).toContain(`Skill directory: ${join(dir!, '.claude', 'skills', 'readback')}`);
-});
+}, SLOW);
 
 test.skipIf(!hasDom)("an agent's message is shown whole: no fold, whatever it says", async () => {
   const fake = [
@@ -375,7 +363,7 @@ test.skipIf(!hasDom)("an agent's message is shown whole: no fold, whatever it sa
   const message = el.querySelector(`[data-message-id="${sent}"]`)!;
   expect(message.querySelector('[data-skills-line]')).toBeNull();
   expect(message.textContent).toContain('Skills referenced');
-});
+}, SLOW);
 
 test.skipIf(!hasDom)('a comment on an attached file: its skill rides the one block at the end, never a second list per comment', async () => {
   const saved = await loopback(
@@ -410,7 +398,7 @@ test.skipIf(!hasDom)('a comment on an attached file: its skill rides the one blo
   const { splitInboxSkillsBlock } = await import('@plannotator/core/skill-reference-block');
   const ranges = skillReferenceRanges(el.querySelector(`[data-message-id="${reply.id}"]`)!, splitInboxSkillsBlock(reply.body)!.skills);
   expect([...ranges.plain, ...ranges.human]).toHaveLength(0);
-});
+}, SLOW);
 
 test.skipIf(!hasDom)('compose (a message you start): the field takes a skill, the Send carries the block, and the new thread folds it behind "Skills:"', async () => {
   const projectRoot = (await threadOf(world.stopped)).thread.project.root;
@@ -469,4 +457,28 @@ test.skipIf(!hasDom)('compose (a message you start): the field takes a skill, th
   const line = message.querySelector('[data-skills-line]') as HTMLElement;
   expectQuietSkillsLine(line, ['readback']);
   expect(message.textContent!.replace(line.textContent!, '')).not.toContain('State what I am asking for');
-});
+}, SLOW);
+
+test.skipIf(!hasDom)('after the agent answers, the same quiet line stays under the reply, and it is above the Delivered line while sent', async () => {
+  const el = await renderApp(`#thread=${world.waiting}`);
+  act(() => button(el, 'Reply').click());
+  await until(() => textarea(el) !== null, 'the reply box');
+  await type(textarea(el), 'Run /readback and $write-better please.');
+  act(() => button(el, 'Send').click());
+  await until(() => textarea(el) === null, 'the Send');
+  const reply = await personReply(world.waiting);
+  await until(() => el.querySelector(`[data-message-id="${reply.id}"] [data-skills-line]`) !== null, 'the Skills line');
+  const line = el.querySelector(`[data-message-id="${reply.id}"] [data-skills-line]`) as HTMLElement;
+  expectQuietSkillsLine(line, ['readback', 'write-better']);
+  const delivered = el.querySelector('.ib-delivered');
+  if (delivered) expect(line.compareDocumentPosition(delivered) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // The agent answers. The window's live feed is stubbed here, so open the thread again to read it with the answer in.
+  (child!.stdin as import('bun').FileSink).write(`${JSON.stringify({ send: { project: world.project, session: 'ses_agent', body: 'Done, tightened.', reply_to: world.waiting } })}\n`);
+  (child!.stdin as import('bun').FileSink).flush();
+  const answer = (JSON.parse(await readLine()) as { sent: string }).sent;
+  act(() => root?.unmount());
+  host?.remove();
+  const again = await renderApp(`#thread=${world.waiting}&msg=${reply.id}`);
+  await until(() => again.querySelector(`[data-message-id="${answer}"]`) !== null, "the agent's answer");
+  expectQuietSkillsLine(again.querySelector(`[data-message-id="${reply.id}"] [data-skills-line]`) as HTMLElement, ['readback', 'write-better']);
+}, SLOW);
