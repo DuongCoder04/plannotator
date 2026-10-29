@@ -16,6 +16,7 @@ import { RefMark, markLabel } from './RefMark';
 import { useCardMarks } from './useCardMarks';
 import { NewCardDialog, type NewCardInput } from './NewCardDialog';
 import { BoardIntro, useCopyBoardPrompt } from './BoardIntro';
+import { TidyMenu, type TidyController } from '../components/Tidy';
 import { ProjectFilter } from './ProjectFilter';
 import { projectNames } from '../search/model';
 import {
@@ -82,6 +83,8 @@ export interface BoardPageProps {
   onCreateThread: (card: InboxCardWire, session: string | null, opener: HTMLElement) => void;
   /** Read the lane cards' marks (their linked PR's or issue's state). False on a page opened over the tailnet (and in tests that do not serve them). */
   marks?: boolean;
+  /** Tidy (2026-10-28): the header's ⋮ menu (Tidy, Refresh). Absent: no menu. */
+  tidy?: TidyController;
   /**
    * The project the Board shows (`#board&project=prj_…`, the list's own key), or null for every card.
    * Lanes, counts, Shipped, Icebox and the agents' drops all follow it.
@@ -439,7 +442,7 @@ export function BoardPage(props: BoardPageProps) {
 
   return (
     <section ref={pageRef} className="ib-bpage" aria-labelledby={titleId} data-board-page="" data-board-view={phone ? 'phone' : view} data-card-open={open ? '' : undefined}>
-      <div className="ib-bhead">
+      <div className="ib-bhead" data-narrow={narrowHead && !phone ? '' : undefined}>
         <SidebarTrigger />
         {view !== 'lanes' && !phone ? (
           <>
@@ -492,6 +495,9 @@ export function BoardPage(props: BoardPageProps) {
           </nav>
         )}
         {(view === 'lanes' || phone) && <NewCardButton disabled={props.projects.length === 0 && !(live && live.length > 0)} phone={phone} onOpen={() => openCreate('backlog')} />}
+        {props.tidy && (view === 'lanes' || phone) && (
+          <TidyMenu tidy={props.tidy} phone={phone} className="ib-bhead-more" onRefresh={() => props.onChanged()} />
+        )}
       </div>
       {(phone || narrowHead) && filter && <div className="ib-bfbar">{filter}</div>}
       {model && drops.length > 0 && view !== 'icebox' && (
