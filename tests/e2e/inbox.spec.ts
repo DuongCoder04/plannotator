@@ -346,16 +346,17 @@ test('a project folder filters the list and the sections still apply', async () 
   await expect(page.getByRole('heading', { level: 1, name: 'billing-svc' })).toBeVisible();
   await expect(page.locator('.ib-band')).toHaveText([/^Stopped on you\s*1$/, /^Waiting on you\s*1$/]);
   // One project: no project column at all, and no empty block where it was. The
-  // subject cell starts where the project label did; a badge, when a row has one,
-  // leads it. The agent's mark has its own column just before the time
-  // (approval "inbox-row-badges"), on one right edge for every row.
+  // subject cell starts where the project label did, badge or not. The agents'
+  // marks, the badge and the count have their own columns before the time
+  // (approval "inbox-row-byline", the one-line row), each on one right edge for every row.
   await expect(page.locator('.ib-row .ib-p')).toHaveCount(0);
   expect(await leftOf(page, `${named} .ib-subj`)).toBe(labelLeft);
-  expect(await leftOf(page, `${stoppedRow} .ib-badge`)).toBe(labelLeft);
-  await expect(page.locator('.ib-row .ib-subj .ib-mk')).toHaveCount(0);
-  const markRight = async (row: string) => Math.round((await page.locator(`${row} .ib-mcol`).boundingBox())!.x + (await page.locator(`${row} .ib-mcol`).boundingBox())!.width);
-  expect(await markRight(named)).toBe(await markRight(stoppedRow));
-  expect(await markRight(named)).toBeLessThanOrEqual(await leftOf(page, `${named} .ib-t`));
+  expect(await leftOf(page, `${stoppedRow} .ib-subj`)).toBe(labelLeft);
+  await expect(page.locator('.ib-row .ib-subj :is(.ib-mk, .ib-badge)')).toHaveCount(0);
+  const rightOf = async (sel: string) => Math.round((await page.locator(sel).boundingBox())!.x + (await page.locator(sel).boundingBox())!.width);
+  for (const cell of ['.ib-cw', '.ib-mcol', '.ib-bcol', '.ib-cq']) expect(await rightOf(`${named} ${cell}`)).toBe(await rightOf(`${stoppedRow} ${cell}`));
+  expect(await rightOf(`${stoppedRow} .ib-bcol .ib-badge`)).toBe(await rightOf(`${stoppedRow} .ib-bcol`));
+  expect(await rightOf(`${named} .ib-cq`)).toBeLessThanOrEqual(await leftOf(page, `${named} .ib-t`));
   await shot('1.2-project-filter');
   await side(page).getByRole('button', { name: /^Inbox/ }).click();
   await expect(page.locator('.ib-lbody [data-thread-id]')).toHaveCount(3);
@@ -401,16 +402,18 @@ test('a pick is saved at once and the agent reads it through read_thread', async
   await expect(page.locator('.ib-pfoot [data-draft-foot]')).toHaveText('Draft, 2 picks');
   await expect(page.locator('.ib-pfoot').getByRole('button', { name: 'Send' })).toBeVisible();
   await expect(page.locator('.ib-pfoot').getByRole('button', { name: 'Edit draft' })).toBeVisible();
-  // Answered, not sent: it waits only for Send. The row says "Draft · 2 picks".
+  // Answered, not sent: it waits only for Send. The row says "Draft" (approval "inbox-row-byline", option A), and
+  // "Draft · 2 picks" in its name.
   const row = page.locator(`.ib-nrow[data-thread-id="${world.threads.stopped}"]`);
   await expect(row).toHaveAttribute('data-section', 'new');
-  await expect(row.locator('[data-draft-label]')).toHaveText('Draft · 2 picks');
+  await expect(row.locator('[data-draft-label]')).toHaveText('Draft');
+  await expect(row).toHaveAccessibleName(/Draft · 2 picks/);
   await shot('3.1-answered-not-sent');
 
-  // "Draft · 2 picks" is wider than the wide row's 96px count column, and
-  // its text must end before the time's begins: in every project and in one,
+  // The row's draft words (a wide row's words column) must end before the time's
+  // begins: in every project and in one,
   // at full and narrower widths (every project below 900px of list draws the
-  // two-line row, which must hold the same). Measured on the text itself (a
+  // two-line row, whose count ends line 2 instead, inside the line). Measured on the text itself (a
   // Range), since overflowing text spills past its cell's box.
   const wide = page.locator(`.ib-lbody [data-thread-id="${world.threads.stopped}"]`);
   const textGap = () =>
@@ -420,9 +423,12 @@ test('a pick is saved at once and the agent reads it through read_thread', async
         range.selectNodeContents(cell);
         return range.getBoundingClientRect();
       };
-      const count = rect(el.querySelector('.ib-c')!);
+      const count = rect(el.querySelector('.ib-c .ib-cs')!);
       const time = rect(el.querySelector('.ib-t')!);
-      return { shape: el.className.split(' ')[0], text: el.querySelector('.ib-c')!.textContent, gap: time.left - count.right, sameLine: Math.abs(count.top - time.top) < 4 };
+      // A two-line row's count ends line 2 (approval "inbox-row-byline"), under the time: it must end inside that line.
+      const l2 = el.querySelector('.ib-l2');
+      const lineEnd = l2 ? Math.round(l2.getBoundingClientRect().right - count.right) : null;
+      return { shape: el.className.split(' ')[0], list: document.querySelector('.ib-lbody')!.clientWidth, text: el.querySelector('.ib-c .ib-cs')!.textContent, full: el.querySelector('.ib-c')!.getAttribute('data-count-words'), gap: time.left - count.right, sameLine: Math.abs(count.top - time.top) < 4, lineEnd, last: l2 ? l2.lastElementChild === el.querySelector('.ib-c') : null };
     });
   for (const [folder, narrowShape] of [[/^Inbox/, 'ib-nrow'], [/^billing-svc(?: \d+)?$/, 'ib-row']] as const) {
     await side(page).getByRole('button', { name: folder }).click();
@@ -443,9 +449,18 @@ test('a pick is saved at once and the agent reads it through read_thread', async
         }, where)
         .toBe(true);
       const measured = await textGap();
-      expect(measured.text).toBe('Draft · 2 picks');
-      expect(measured.sameLine).toBe(true);
-      expect(measured.gap, `count runs into the time ${where}`).toBeGreaterThanOrEqual(8);
+      // A wide row in a list of 1150px or more draws the full words (the owner, 2026-10-29); a two-line row, and one
+      // project's wide row in a narrower list, "Draft" (option A).
+      expect(measured.text).toBe(measured.shape === 'ib-row' && measured.list >= 1150 ? 'Draft · 2 picks' : 'Draft');
+      expect(measured.full).toBe('Draft · 2 picks');
+      if (measured.shape === 'ib-row') {
+        expect(measured.sameLine).toBe(true);
+        expect(measured.gap, `count runs into the time ${where}`).toBeGreaterThanOrEqual(8);
+      } else {
+        expect(measured.sameLine, `the count sits on line 2 ${where}`).toBe(false);
+        expect(measured.last, `the count ends line 2 ${where}`).toBe(true);
+        expect(measured.lineEnd!, `the count runs past line 2 ${where}`).toBeGreaterThanOrEqual(0);
+      }
     }
   }
   await page.setViewportSize({ width: 1440, height: 900 });

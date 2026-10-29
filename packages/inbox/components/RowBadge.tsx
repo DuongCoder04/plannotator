@@ -196,17 +196,24 @@ export function WaitCard({ row, agent, mark, time }: { row: InboxListRow; agent:
 /**
  * The badge. `card` (the wide and two-line rows): the hover card, opened on
  * hover and, through `open`, while the row has keyboard focus. Without it (a
- * phone) the icons only.
+ * phone) the icons only. `words` (a wide row, the owner's call of 2026-10-29: the
+ * full words in full-width mode): the triangle, then the badge's own words as
+ * they read before approval "inbox-row-badges", "Stopped" and "Holds up 3".
  */
-export function RowBadge({ row, card, open = false }: { row: InboxListRow; card?: ReactNode; open?: boolean }) {
+export function RowBadge({ row, card, open = false, words: shown = false }: { row: InboxListRow; card?: ReactNode; open?: boolean; words?: boolean }) {
   const words = badgeWords(row);
   if (!words) return null;
   const stopped = row.section === 'stopped';
+  const label = shown ? 'ib-bw' : 'ib-sr';
   const badge = (
-    <span className={`ib-badge ib-bicon ${stopped ? 'ib-b-stop' : 'ib-b-hold'}`} data-row-badge={stopped ? 'stopped' : 'holds'}>
+    <span className={`ib-badge ib-bicon${shown ? ' ib-bwords' : ''} ${stopped ? 'ib-b-stop' : 'ib-b-hold'}`} data-row-badge={stopped ? 'stopped' : 'holds'}>
       <TriangleIcon />
       {stopped ? (
-        <span className="ib-sr">Stopped</span>
+        <span className={label}>Stopped</span>
+      ) : shown ? (
+        <span className="ib-bw">
+          Holds up <span className="ib-bn">{row.questions.holds_up.length}</span>
+        </span>
       ) : (
         <>
           <span className="ib-sr">Holds up </span>
