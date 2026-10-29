@@ -125,6 +125,7 @@ packages/inbox/skipNote.test.tsx
 packages/inbox/picksWhileComposing.test.tsx
 packages/inbox/projectMenu.test.tsx
 packages/inbox/rowMenu.test.tsx
+packages/inbox/copyMessage.test.tsx
 packages/inbox/pinnedThreads.test.tsx
 packages/inbox/fileBack.test.tsx
 packages/inbox/archived.test.tsx
