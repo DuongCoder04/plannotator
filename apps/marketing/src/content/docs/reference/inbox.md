@@ -54,6 +54,8 @@ On Windows, `stop` and `restart` can signal the Inbox only while it answers. If 
 
 Type `/plannotator-inbox` in your agent (Claude Code, OpenCode, Pi, Gemini CLI, Kiro, Mistral Vibe, Droid; `$plannotator-inbox` in Codex; in Amp, **Plannotator: Open Inbox** in the command palette). It opens the Inbox in your browser, starting it if needed, and shows its address. You can also ask your agent where your Inbox is, or run `plannotator inbox --open` in a terminal. Over SSH it opens no browser on the remote machine: it shows the address and how to reach it (forward the port with `ssh -L`, or use `--tailscale`).
 
+The command also briefs your agent on the Inbox for the rest of the session: send decisions you are not there for as questions, hand over finished long work with its files, and let your reply come back by itself where the agent's connection brings it (otherwise the agent checks for it when it needs the answer). It starts no new work and resumes none. Where Plannotator answers the command itself (Claude Code with the plugin, Pi, OpenCode with the plugin), you see only the address and the agent gets the briefing unseen, with no extra turn. Amp shows the address only.
+
 ### Your agents are connected for you
 
 When you run `plannotator inbox` (not `--background`, which is how agents start it), it connects the agents it finds on this computer that are not connected yet, and says which on the terminal:
@@ -222,17 +224,6 @@ Restart OpenCode. On OpenCode 2 a reply is queued into the session as its own tu
 
 You can open one Pi session twice (`pi -c` or `--session`), or run two OpenCode 2 servers on one database. Then only one process delivers a reply: the one you used last. On Pi, typing in a window or the agent calling the inbox tool there moves replies to that window. On OpenCode 2, only the agent calling the inbox tool moves them, because the plugin does not see what you type (checked on OpenCode 2.0.19). The process that holds replies checks in every 5 seconds. If it quits, another process takes over at once, and if it crashes, after about 20 seconds. A reply is delivered once either way.
 
-### Grok Build: a session the Inbox runs
-
-Grok Build has no way to be woken from outside, so the Inbox can run it for you. In **New message**, open **To** and pick **New Grok Build session** in one of your projects. Your message is the session's first turn, and every reply in that thread is another turn.
-
-- Under each of your messages, a line says what happened: "Starting Grok Build…", "Grok Build is working · 0:42" with **Stop** and **Show activity** (the tools it ran and what it said), then "Done · 1:12".
-- Grok Build answers in the thread. If it ends a turn without writing to the Inbox, its last words are posted as its answer.
-- When it asks permission, the request shows as a card with all of Grok's own options, the thread moves to **Stopped on you**, and you get a notification. It waits until you answer or press **Stop**. Grok's own settings decide what it asks about; calls to the Inbox's own tools are allowed without asking.
-- It runs with your Grok Build settings and model, in the project's folder. Grok Build updates itself when it starts.
-- The thread's foot shows the command that opens the session in Grok's own terminal app (`grok -r <id>`). Close it there before you reply in the Inbox: two programs writing one session is not detected.
-- Turn it off in **Settings → Agents → Run in the Inbox**.
-
 ## The inbox tool setting
 
 The `plannotator_inbox` tool is one tool. Its actions are the Inbox's MCP tools (listed below). It files messages under the project of the agent's working folder; an agent working in another folder (a notes folder, say) can pass `project_path` to name the repository or folder the message is about. Pi and OpenCode add it only when both of these are true at session start:
@@ -392,7 +383,7 @@ Everything lives under `~/.plannotator/inbox/` (or `$PLANNOTATOR_DATA_DIR/inbox/
 | `pins.json` | The threads pinned to the sidebar, in their order. Never seen by an agent or search; a phone reads them with the list |
 | `recent-searches.json` | Your last six searches, written only when you open a result. **Clear** in the search box empties it |
 | `claims/`, `leases/` and `connection-tools.json` | Bookkeeping for the Pi and OpenCode connections |
-| `acp/sessions.json` | The Grok Build sessions the Inbox runs: each one's folder, Grok's own session id, and how each turn ended. Owner-only. What a turn did (its tools and text) is kept in memory only |
+| `acp/sessions.json` | Left by Plannotator 0.28.34 to 0.28.36, which could run Grok Build sessions itself. No longer read; you can delete it |
 
 The Inbox stores the files agents attached as they were when sent, the messages and your replies. It sets no size limits. To free space, use **Delete thread** or **Delete project** in **Settings**, which also remove sent files that nothing else uses. Your choices for the inbox tool, notifications and the tailnet are kept in `~/.plannotator/config.json` (`inboxTool`, `inboxReminder`, `prompts.inbox`, `inboxNotifications`, `inboxSound`, `inboxBoard`, `inboxTailscale`, `inboxTailscaleAllow`, `inboxRun`).
 

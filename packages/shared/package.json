@@ -20,6 +20,7 @@
     "./review-core": "./review-core.ts",
     "./review-image": "./review-image.ts",
     "./repo-files": "./repo-files.ts",
+    "./fuzzy-path": "./fuzzy-path.ts",
     "./repo-files-node": "./repo-files-node.ts",
     "./review-markdown-image": "./review-markdown-image.ts",
     "./package-metadata": "./package-metadata.ts",
