@@ -31,10 +31,11 @@ import type {
   InboxPromptsSettings,
 } from '@plannotator/core/inbox-types';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
+import { FEEDBACK_UNAVAILABLE } from '@plannotator/core/product-feedback';
 import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
 import type { RecipientConnection } from './deliveryLine';
 import { parseRestartAgents } from './restartAgents';
-import type { InboxRestartAgents } from '@plannotator/core/inbox-types';
+import type { InboxRestartAgents, InboxTidyPlan, InboxTidyRun } from '@plannotator/core/inbox-types';
 import type { InboxSearchAnswer, InboxSearchFrom, InboxSearchGroupId, InboxSearchStatus } from '@plannotator/core/inbox-search';
 import type {
   InboxAgentId,
@@ -48,6 +49,7 @@ import type {
   InboxMessageWire,
   InboxNoteAgentId,
   InboxNotifyReach,
+  InboxProjectRepo,
   InboxWindowPermission,
 } from '@plannotator/core/inbox-types';
 
@@ -181,7 +183,12 @@ export interface UpdateDetails {
   command: string;
   plugin_command: string | null;
   sessions: { mode: string; project: string; label: string; started_at: string }[];
-  failure: { exit_code: number; log: string } | null;
+  /** `tls` (exit 75 only): the download failed at TLS. Absent from an older Inbox. */
+  /**
+   * `release_first` (macOS, `untrusted` only): the release page before the install command.
+   * `prepare` (exit 75): downloaded, but the temp folder could not hold it; the plain reason.
+   */
+  failure: { exit_code: number; log: string; tls?: 'untrusted' | 'revoked'; release_first?: true; prepare?: string } | null;
   log: string;
   snoozed_until: string | null;
 }
@@ -230,6 +237,13 @@ export interface TailscaleSettings {
 /** Split (old beside new) or Unified (one column): the diff layout code review and guided reviews share. */
 export type InboxDiffStyle = 'split' | 'unified';
 
+/** Settings → General's cookie switch (SettingsModel.cookie_host). */
+export interface InboxCookieHost {
+  on: boolean;
+  env: string | null;
+  url_host: string | null;
+}
+
 export interface SettingsModel {
   serverSession: string;
   /** Absent from an Inbox that predates "Over your tailnet". */
@@ -269,6 +283,13 @@ export interface SettingsModel {
   experimental?: InboxExperimentalSettings;
   /** The Board (config.json `inboxBoard`): off unless the person turned it on. Absent from an Inbox before the switch (the Board is then always there). */
   board?: { on: boolean };
+  /**
+   * Settings → General: "Open Plannotator at plannotator.localhost" (#2184): config.json
+   * `urlHost: "plannotator.localhost"`. `env` is PLANNOTATOR_URL_HOST and `url_host`
+   * another config.json `urlHost`; either locks it. Absent through the tailnet
+   * and from an older Inbox.
+   */
+  cookie_host?: InboxCookieHost;
   /** The onboarding tour (config.json `inboxTour`): started, finished, skipped. Absent from an Inbox that predates it. */
   tour?: InboxTourState;
   /** Settings → Prompts: the Inbox reminder and the plan, review and annotate prompts. Absent from an older Inbox. */
@@ -485,6 +506,16 @@ async function getWithin<T>(path: string, timeoutMs: number): Promise<T> {
   }
 }
 
+/** An action item mark as the window sends it; `quiet`: a note typed under the marked row. */
+type ActionMarkBody = { outcome: 'done' | 'cant'; note?: string | null; quiet?: boolean };
+
+function actionMarkBody(mark: ActionMarkBody | null, staged: boolean): Record<string, unknown> {
+  return {
+    ...(mark ? { outcome: mark.outcome, ...(mark.note ? { note: mark.note } : {}), ...(mark.quiet ? { note_only: true } : {}) } : { outcome: null }),
+    ...(staged ? { staged: true } : {}),
+  };
+}
+
 /** The serverSession every POST carries; set from the first list read. */
 let pageSession: string | null = null;
 
@@ -497,6 +528,13 @@ export function pageServerSession(): string | null {
   return pageSession;
 }
 
+/**
+ * What a tag in the reply box does (approval "inbox-tag-handoff", A2): `ask`,
+ * today's tag (this one reply); `add`, the session joins the thread; `handoff`,
+ * it takes the thread over.
+ */
+export type TagMode = 'ask' | 'add' | 'handoff';
+
 async function post<T>(path: string, body: Record<string, unknown>): Promise<T> {
   return readJson<T>(
     await fetch(path, {
@@ -505,6 +543,36 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<T> 
       body: JSON.stringify(pageSession ? { ...body, serverSession: pageSession } : body),
     }),
   );
+}
+
+/** The window waits this long for the Feedback send: the Inbox answers within FEEDBACK_TIMEOUT_MS (8 s), this only covers an Inbox that does not answer. */
+export const FEEDBACK_WINDOW_TIMEOUT_MS = 10_000;
+
+/**
+ * The Feedback dialog's Send. Fails with an Error whose message the dialog
+ * shows as it is: the Worker's refusal or a validation line from the Inbox,
+ * else (Inbox or service unreachable, too slow, failing) the one plain line
+ * FEEDBACK_UNAVAILABLE. Never a raw network or status message.
+ */
+async function sendFeedback(input: { message: string; category: 'bug' | 'idea' | 'other' | null; contact: string | null }): Promise<{ ok: true }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FEEDBACK_WINDOW_TIMEOUT_MS);
+  const body = { message: input.message, ...(input.category ? { category: input.category } : {}), ...(input.contact ? { contact: input.contact } : {}) };
+  try {
+    const response = await fetch('/api/inbox/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(pageSession ? { ...body, serverSession: pageSession } : body),
+      signal: controller.signal,
+    });
+    return await readJson<{ ok: true }>(response);
+  } catch (cause) {
+    // The Inbox's own words: a validation line (400) or the send's outcome (502 feedback_not_sent).
+    if (cause instanceof InboxApiError && (cause.status < 500 || cause.code === 'feedback_not_sent')) throw cause;
+    throw new Error(FEEDBACK_UNAVAILABLE);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** config.json `theme`: the mode and the palette for each half (ThemeConfig in @plannotator/core/config-types). */
@@ -615,6 +683,8 @@ export function saveRecentSearch(input: { q: string } | { clear: true }): Promis
 }
 
 export const inboxApi = {
+  /** Keep a ```html fence's page and get the URL of its sandboxed document (approval "inbox-inline-html"). */
+  embed: (html: string) => post<{ id: string; url: string }>('/api/inbox/embeds', { html }),
   /** The global skills the composers' `/` and `$` picker lists (raw entries; ui's catalog layer normalizes them). */
   skills: () => get<{ skills?: unknown }>('/api/inbox/skills'),
   /** One human-only skill's SKILL.md, read when the person sends a message that references it. */
@@ -640,6 +710,17 @@ export const inboxApi = {
   settings: () => get<SettingsModel>('/api/inbox/settings'),
   /** Decision mode (experimental): every decision waiting on the person, in queue order. 404 while the feature is off. */
   decisions: () => get<InboxDecisionsModel>('/api/inbox/decisions'),
+  /** Tidy: who it would ask in the list's (or the Board's) scope, and the last run. */
+  tidy: (project: string | null, surface: 'list' | 'board') => {
+    const query = new URLSearchParams(surface === 'board' ? { surface } : {});
+    if (project) query.set('project', project);
+    const qs = query.toString();
+    return get<InboxTidyPlan>(`/api/inbox/tidy${qs ? `?${qs}` : ''}`);
+  },
+  /** Tidy: ask these sessions. A replay of the key answers the run it wrote. */
+  startTidy: (input: { sessions: readonly string[]; idempotency_key: string; project: string | null; surface: 'list' | 'board' }) =>
+    post<{ run: InboxTidyRun | null; asked: string[] }>('/api/inbox/tidy', { ...input, sessions: [...input.sessions] }),
+  saveCookieHost: (on: boolean) => post<{ cookie_host: InboxCookieHost }>('/api/inbox/settings', { cookie_host: on }),
   saveExperimental: (change: { decision_mode: boolean }) =>
     post<{ experimental: InboxExperimentalSettings }>('/api/inbox/settings', { experimental: change }),
   /** The Board on or off (Settings → Capabilities): agents get the card action from their next session. */
@@ -680,14 +761,30 @@ export const inboxApi = {
     }).then((result) => ({ ...result, questions: questionsOnly(result.questions) })),
   /**
    * An action item's Done (with an optional note) or Can't do it (with the reason),
-   * or its Undo (`null`): sent to the agent once the Undo window passes.
+   * or taking it back (`null`). `staged` (the thread's checklist; approval
+   * "inbox-action-items-in-reply"): it waits in the reply draft and goes with the
+   * Send (`reply`'s `actions`). Without it (decision mode): sent to the agent once
+   * the Undo window passes. A `quiet` mark (a note typed under the marked row)
+   * goes as `note_only`: it never marks again an item taken back meanwhile.
    * Answers the message's action items.
    */
-  markAction: (messageId: string, key: string, mark: { outcome: 'done' | 'cant'; note?: string | null } | null) =>
-    post<{ questions: InboxQuestion[] }>(
-      `/api/inbox/messages/${encodeURIComponent(messageId)}/actions/${encodeURIComponent(key)}`,
-      mark ? { outcome: mark.outcome, ...(mark.note ? { note: mark.note } : {}) } : { outcome: null },
-    ).then((result) => ({ actions: result.questions.filter(isActionRecord) })),
+  markAction: (messageId: string, key: string, mark: ActionMarkBody | null, staged = false) =>
+    post<{ questions: InboxQuestion[] }>(`/api/inbox/messages/${encodeURIComponent(messageId)}/actions/${encodeURIComponent(key)}`, actionMarkBody(mark, staged)).then(
+      (result) => ({ actions: result.questions.filter(isActionRecord) }),
+    ),
+  /**
+   * A staged mark's note as the page goes (a reload, a closed tab) inside its
+   * typing pause: a keepalive request, as reply drafts do, so the note is not lost.
+   */
+  markActionOnLeave: (messageId: string, key: string, mark: ActionMarkBody | null) => {
+    const body = actionMarkBody(mark, true);
+    void fetch(`/api/inbox/messages/${encodeURIComponent(messageId)}/actions/${encodeURIComponent(key)}`, {
+      method: 'POST',
+      keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pageSession ? { ...body, serverSession: pageSession } : body),
+    }).catch(() => {});
+  },
   reply: (
     messageId: string,
     input: {
@@ -704,10 +801,12 @@ export const inboxApi = {
        * `message_id`) another of the same session. A Send never skips anything else.
        */
       skip?: { message_id?: string; key: string }[];
+      /** The action items whose Done or Can't do it waits in the draft (approval "inbox-action-items-in-reply"); one on another message of the same session names it. */
+      actions?: { message_id?: string; key: string }[];
       /** Files pasted into the reply box (upload ids): attachments on this reply. */
       uploads?: string[];
       /** The sessions the person tagged with `@` (approval "inbox-tag-agents"): each one gets this reply too. */
-      tags?: { host?: string | null; session: string; label?: string }[];
+      tags?: { host?: string | null; session: string; label?: string; mode?: TagMode }[];
       /**
        * This reply carries the reply box's words: their draft goes (approval "inbox-reply-drafts"),
        * named by the `updated_at` they were saved as, so a newer draft from another window stays.
@@ -729,6 +828,8 @@ export const inboxApi = {
       ...result,
       questions: questionsOnly(result.questions),
     })),
+  /** Take a hand-off back inside its Undo window (approval "inbox-tag-handoff"): the reply goes as an Ask instead. */
+  undoHandoff: (messageId: string) => post<{ message: InboxMessageWire }>(`/api/inbox/messages/${encodeURIComponent(messageId)}/handoff/undo`, {}),
   resolve: (messageId: string, resolved: boolean) =>
     post<unknown>(`/api/inbox/messages/${encodeURIComponent(messageId)}/resolve`, { resolved }),
   health: () => get<InboxHealth>('/api/inbox/health'),
@@ -775,6 +876,11 @@ export const inboxApi = {
   saveSound: (change: { enabled?: boolean; volume?: number }) => post<{ sound: InboxSoundSettings }>('/api/inbox/settings', { sound: change }),
   /** Ask to show the one-time sound dialog: `show` is true for the first page that ever asks after an update, and only that one. */
   claimSoundDialog: () => post<{ show: boolean; sound: InboxSoundSettings }>('/api/inbox/sound/dialog', {}),
+  /**
+   * The sidebar's Feedback dialog: the person's words go to the feedback Worker through this Inbox's server
+   * (packages/server/inbox-feedback.ts), which adds the version and the OS name and nothing else.
+   */
+  sendFeedback: (input: { message: string; category: 'bug' | 'idea' | 'other' | null; contact: string | null }) => sendFeedback(input),
   /** Plannotator's appearance, written to config.json `theme` (shared with plan review). */
   saveTheme: (theme: InboxThemeConfig) => post<{ theme: InboxThemeConfig | null }>('/api/inbox/settings', { theme }),
   /** The onboarding tour: each `true` stamps now (started, finished, skipped); `notify_again` sets the first thread's ask. */
@@ -847,8 +953,8 @@ export const inboxApi = {
   /** The opened card's edits: title, notes; a link (a thread, an issue or PR); sent to an agent (the thread just started). */
   editCard: (id: string, change: { op: 'edit'; title?: string; notes?: string | null } | { op: 'link'; thread_id?: string; ref?: string } | { op: 'send'; thread_id: string }) =>
     post<{ card: InboxCardWire }>(`/api/inbox/cards/${encodeURIComponent(id)}`, change),
-  /** The opened card: the card and its history, newest first. */
-  card: (id: string) => get<{ card: InboxCardWire; history: InboxCardHistoryEntry[] }>(`/api/inbox/cards/${encodeURIComponent(id)}`),
+  /** The opened card: the card and its history, newest first, and its project's repo (absent from an older Inbox). */
+  card: (id: string) => get<{ card: InboxCardWire; history: InboxCardHistoryEntry[]; repo?: InboxProjectRepo | null }>(`/api/inbox/cards/${encodeURIComponent(id)}`),
   /** The opened card's links, resolved now (read only). */
   cardRefs: (id: string) => get<{ refs: { ref: InboxCardRef; result: ForgeRefCardResult }[] }>(`/api/inbox/cards/${encodeURIComponent(id)}/refs`),
   /** The person opened the Board: the look runs through the cursor of the read it showed (the server clamps it). */

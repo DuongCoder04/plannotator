@@ -12,7 +12,7 @@
  * reorders the list while the thread stays open, and that one Send is one
  * reply when one session wrote the thread.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { act } from 'react';
@@ -319,25 +319,28 @@ test.skipIf(!hasDom)('E marks the open thread read; a stopped thread warns with 
   expect((await questionStates(ids.stopped)).map((q) => q.state)).toEqual(['open', 'open']);
 });
 
-test.skipIf(!hasDom)('the header leads with Mark read; Archive sits beside the close at the right, only the hairline between them', async () => {
+test.skipIf(!hasDom)('the header leads with Mark read; Archive, then ⋯ More, sit beside the close at the right, only the hairline before it', async () => {
   // Owner, 2026-10-16: "the archive button needs to move next to the close button. Mark read should be the furthest."
-  // The hairline between them is approval "inbox-thread-artifacts" (2026-10-23): icons at the right, then | and the close.
+  // The hairline is approval "inbox-thread-artifacts" (2026-10-23): icons at the right, then | and the close.
+  // ⋯ More (the copy menu) after Archive is design record "inbox-copy-message", option B (2026-10-28).
   const el = await renderApp(`#thread=${ids.stopped}`);
   await until(() => el.querySelector('section.ib-pane .ib-phead [data-mark-read]') !== null, 'the header');
   const head = el.querySelector('section.ib-pane .ib-phead')!;
   const buttons = [...head.querySelectorAll('button')];
   const markRead = head.querySelector('[data-mark-read]')!;
   const archive = head.querySelector('[data-archive]')!;
+  const more = head.querySelector('[data-thread-more]')!;
   const close = head.querySelector('button[aria-label="Close the thread"]');
-  // DOM order is the tab order: Mark read first, Archive then the close last.
+  // DOM order is the tab order: Mark read first, Archive, ⋯ More, then the close last.
   expect(buttons[0]).toBe(markRead as HTMLButtonElement);
+  expect(archive.nextElementSibling === more).toBe(true);
   if (close) {
     expect(buttons.at(-1) === close).toBe(true);
-    expect(archive.nextElementSibling?.className).toBe('ib-vsep');
-    expect(archive.nextElementSibling?.nextElementSibling === close).toBe(true);
+    expect(more.nextElementSibling?.className).toBe('ib-vsep');
+    expect(more.nextElementSibling?.nextElementSibling === close).toBe(true);
     expect(head.querySelectorAll('.ib-vsep').length).toBe(1);
   } else {
-    expect(buttons.at(-1) === archive).toBe(true);
+    expect(buttons.at(-1) === more).toBe(true);
     expect(head.querySelectorAll('.ib-vsep').length).toBe(0);
   }
   expect(archive.getAttribute('aria-label')).toBe('Archive the thread');

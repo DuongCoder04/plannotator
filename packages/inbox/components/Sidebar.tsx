@@ -18,7 +18,9 @@ import { ProjectTip } from './ProjectRow';
 import { Tip } from './Tip';
 import { CheckFailingRow, UpdateButton } from './Updates';
 import type { UpdateCheckFailing } from '../api';
-import { openSearchAriaKeys, openSearchHint } from '../search/searchShortcut';
+import { inboxSearchShortcuts } from '../search/searchShortcut';
+import { ShortcutHint, useShortcutAria, withShortcut } from '../shortcuts/hint';
+import { inboxAppShortcuts } from '../shortcuts/app.shortcuts';
 
 export interface SidebarProps {
   page: 'inbox' | 'settings' | 'whats-new' | 'drafts' | 'board';
@@ -83,6 +85,8 @@ export interface SidebarProps {
   onInbox: () => void;
   onProject: (projectId: string) => void;
   onSettings: () => void;
+  /** The keyboard button beside light and dark: the shortcut map (ShortcutMap.tsx). Absent, or on a phone: no button. */
+  onShortcuts?: () => void;
   onUpdate: () => void;
   onWhatsNew: (version: string) => void;
   /**
@@ -102,6 +106,8 @@ export interface SidebarProps {
   mcpCommand?: readonly string[] | null;
   /** The foot's Copy prompt pill (default true). The onboarding tour's sidebar leaves it out: it is for the person's own agents. */
   connectPrompt?: boolean;
+  /** Opens the Feedback dialog (components/FeedbackDialog.tsx): the row above Settings. Absent: no row. */
+  onFeedback?: () => void;
 }
 
 /**
@@ -136,6 +142,7 @@ export function Sidebar(props: SidebarProps) {
   const restartAgents = props.restartAgents ?? restartAgentsOf(undefined, props.restartClaudeCode);
   const firstRun = props.projects.length === 0;
   const { setOpenMobile } = useSidebar();
+  const searchKeys = useShortcutAria({ scope: inboxSearchShortcuts, action: 'openSearch' });
   const phone = usePhone();
   // A project with nothing in the list leaves the sidebar (automatic hiding); the one the list shows stays until the person leaves it.
   const held = props.page === 'inbox' ? props.projectId : null;
@@ -210,7 +217,7 @@ export function Sidebar(props: SidebarProps) {
           className="ib-sp-entry"
           data-open-search=""
           aria-haspopup="dialog"
-          aria-keyshortcuts={openSearchAriaKeys()}
+          aria-keyshortcuts={searchKeys}
           onClick={(event) => {
             const opener = event.currentTarget;
             // On a phone the sheet closes first; the search sheet takes the screen.
@@ -220,10 +227,8 @@ export function Sidebar(props: SidebarProps) {
         >
           <Icon name="search" />
           Search
-          {/* The Inbox's one shortcut (search/searchShortcut.ts); the button's aria-keyshortcuts names it for a screen reader. */}
-          <kbd className="ib-kbd ib-sp-hint" aria-hidden="true" data-search-hint="">
-            {openSearchHint()}
-          </kbd>
+          {/* ⌘K / Ctrl K (search/searchShortcut.ts); the button's aria-keyshortcuts names it, and `/`, for a screen reader. */}
+          <ShortcutHint scope={inboxSearchShortcuts} action="openSearch" className="ib-kbd ib-sp-hint" />
         </button>
         {props.onCompose && (
           <Tip content="New message">
@@ -377,7 +382,7 @@ export function Sidebar(props: SidebarProps) {
         </div>
       </div>
       <div className="ib-side-foot">
-        {/* Copy prompt first, then the Update button or "What's new in X", then the Settings row. */}
+        {/* Copy prompt first, then the Update button or "What's new in X", then Feedback and the Settings row. */}
         {props.connectPrompt !== false && <CopyConnectPrompt mcpCommand={props.mcpCommand ?? null} />}
         <UpdateButton
           update={props.update}
@@ -390,17 +395,24 @@ export function Sidebar(props: SidebarProps) {
           <CheckFailingRow failing={props.checkFailing} onOpen={pick(props.onCheckFailing)} />
         )}
         {restartAgents.total > 0 && props.onRestartSessions && <RestartSessionsRow agents={restartAgents} onOpen={pick(props.onRestartSessions)} />}
+        {props.onFeedback && (
+          <button type="button" className="ib-nav" aria-haspopup="dialog" data-feedback-nav="" onClick={pick(props.onFeedback)}>
+            <Icon name="comment" />
+            Feedback
+          </button>
+        )}
         {/* Two controls side by side, never one inside the other: the row opens Settings, the icon flips light and dark. */}
         <div className="ib-setrow">
           <button
             type="button"
-            className={`ib-nav${props.page === 'settings' ? ' ib-on' : ''}`}
+            className={`ib-nav${props.page === 'settings' ? ' ib-on' : ''}${props.onShortcuts && !phone ? ' ib-has-keys' : ''}`}
             onClick={pick(props.onSettings)}
             aria-current={props.page === 'settings' ? 'page' : undefined}
           >
             <Icon name="settings" />
             Settings
           </button>
+          {props.onShortcuts && !phone && <KeysButton onPress={props.onShortcuts} />}
           <ThemeToggle />
         </div>
       </div>
@@ -505,6 +517,18 @@ function CopyConnectPrompt({ mcpCommand }: { mcpCommand: readonly string[] | nul
  * goes back to matching the system). A click here never opens Settings and
  * never closes the phone sheet or the peek.
  */
+/** The shortcut map's button, left of light and dark (approval "inbox-keyboard-shortcuts"). */
+function KeysButton({ onPress }: { onPress: () => void }) {
+  const keys = useShortcutAria({ scope: inboxAppShortcuts, action: 'openMap' });
+  return (
+    <Tip content={withShortcut('Keyboard shortcuts', { scope: inboxAppShortcuts, action: 'openMap' })}>
+      <button type="button" className="ib-keys-tg" aria-label="Keyboard shortcuts" aria-haspopup="dialog" aria-keyshortcuts={keys} onClick={onPress} data-shortcut-map-button="">
+        <Icon name="keyboard" />
+      </button>
+    </Tip>
+  );
+}
+
 function ThemeToggle() {
   const { shown, flip } = useInboxTheme();
   const next = shown === 'dark' ? 'light' : 'dark';

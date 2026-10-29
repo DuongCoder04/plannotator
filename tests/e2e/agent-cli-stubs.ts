@@ -9,8 +9,9 @@
  *
  * Two uses:
  *
- *  - The Playwright `globalSetup` of tests/e2e/playwright.config.ts (and the
- *    thread parity config): one folder of stubs first on the runner's PATH,
+ *  - The Playwright global setup: tests/e2e/global-setup.ts runs it for
+ *    playwright.config.ts, and the thread parity config names it as its
+ *    `globalSetup`. One folder of stubs first on the runner's PATH,
  *    which every worker inherits, so a spec that passes the runner's PATH on
  *    finds a stub before any real agent CLI. When the run ends, any stub that
  *    was called fails the run: a spec reached for an agent CLI and would have

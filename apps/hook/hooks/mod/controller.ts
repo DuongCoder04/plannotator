@@ -11,7 +11,7 @@ import { BRIDGE_HOST, BRIDGE_MODES, bridgeBaseUrl, createBridge, type BridgeEnd,
 import { deliveryFor, legacyResult, parseHostResult, type HostResultRecord, type SessionKind } from './delivery'
 import type { Host, HttpResult } from './host'
 import { InboxLink } from './inbox'
-import type { InboxToolInfo } from './inbox-contract'
+import { inboxCommandBriefing, type InboxToolInfo } from './inbox-contract'
 import {
   aliveArgv,
   CLAIM_EXIT,
@@ -24,6 +24,7 @@ import {
   fileIn,
   INBOX_OPEN_TIMEOUT_MS,
   inboxOpenAnswer,
+  inboxOpened,
   inboxOpenArgv,
   isSeveralFilePaths,
   launchArgv,
@@ -327,6 +328,8 @@ export class PlannotatorMod {
   /** ExitPlanMode calls passed through as the approved plan, by tool_use_id. */
   private passing = new Map<string, PendingApproval>()
   private planVersion = 0
+  /** The session root, read once: names the plan history project (see planHistoryRoot). */
+  private historyRoot: Promise<string | null> | null = null
   /**
    * The CLI has no `claude-mod-plan` (it is older than the plugin): every
    * ExitPlanMode of this session takes Claude Code's own flow, and the
@@ -826,11 +829,18 @@ export class PlannotatorMod {
   // --- Commands ------------------------------------------------------------
 
   /** `/plannotator-inbox`: open the person's Inbox (starting it detached when stopped) and say its address. */
-  async openInbox(): Promise<string> {
+  /**
+   * `/plannotator-inbox`'s answer: the address for the person and, once the
+   * Inbox opened, the Inbox briefing for the model as the command's hidden
+   * `context` (no turn starts). `toolName` is `plannotator_inbox` as this
+   * session registered it, when it did.
+   */
+  async openInbox(toolName?: string | null): Promise<{ text: string; context?: string[] }> {
     const result = await this.host
       .run(inboxOpenArgv(), { env: { PLANNOTATOR_DATA_DIR: this.session.dataDir }, timeoutMs: INBOX_OPEN_TIMEOUT_MS })
       .catch((error: unknown) => ({ exitCode: -1, stdout: '', stderr: error instanceof Error ? error.message : String(error) }))
-    return inboxOpenAnswer(result)
+    const text = inboxOpenAnswer(result)
+    return inboxOpened(result) ? { text, context: [inboxCommandBriefing(toolName ?? undefined)] } : { text }
   }
 
   /** `/plannotator-review`, `/plannotator-annotate`, `/plannotator-last`: open and return at once. */
@@ -1221,7 +1231,9 @@ export class PlannotatorMod {
     if (this.classicPlanReview) return { pass: true }
     const version = this.planVersion + 1
     const subject = subjectFor('plan', '', version)
-    const stdin = (dir: string) => JSON.stringify({ plan, planFilePath, revisionFile: fileIn(dir, 'revision') })
+    const projectRoot = await this.planHistoryRoot()
+    const stdin = (dir: string) =>
+      JSON.stringify({ plan, planFilePath, revisionFile: fileIn(dir, 'revision'), ...(projectRoot ? { projectRoot } : {}) })
     const started = await this.launch('plan', ['plannotator', 'claude-mod-plan'], subject, stdin, {
       version,
       revisionSeq: 0,
@@ -1245,6 +1257,20 @@ export class PlannotatorMod {
     }
     this.host.toast(planWaitingStatus(version))
     return { deny: waitingDenyText(version, started.url) }
+  }
+
+  /**
+   * The session's root (`$.session.root()`), read once per session: the CLI
+   * also looks for the plan's history chain under its project, besides its
+   * cwd's (which a shell `cd` moves), so a resubmit from another repository
+   * keeps its version chain (#2197). Null when the engine cannot say.
+   */
+  private planHistoryRoot(): Promise<string | null> {
+    this.historyRoot ??= (async () => {
+      const root = this.session.root ? await this.session.root().catch(() => null) : null
+      return root && root.startsWith('/') ? root : null
+    })()
+    return this.historyRoot
   }
 
   private async revisePlan(open: LiveLaunch & { version: number }, plan: string): Promise<{ deny: string }> {

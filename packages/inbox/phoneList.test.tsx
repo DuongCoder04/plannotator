@@ -7,7 +7,7 @@
  * sat under the count and the time. Pixel geometry is proved in WebKit and
  * Chromium by tests/e2e/inbox-mobile.spec.ts.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act } from 'react';
@@ -88,17 +88,16 @@ function render(filtered: boolean, narrow = false): HTMLElement {
   return host;
 }
 
-function lines(el: HTMLElement, id: string): { l1: string[]; subject: string; chips: string[] | null } {
+/** A phone row's lines: line 1, the subject's line, and the line under it (`chips`, the agent's mark as 'mark'). */
+function lines(el: HTMLElement, id: string): { l1: string[]; subject: string; chips: string[] } {
   const r = el.querySelector<HTMLElement>(`.ib-mrow[data-thread-id="${id}"]`);
   expect(r).not.toBeNull();
-  const [m1, m2, m3] = [...r!.children] as HTMLElement[];
-  expect(m1!.className).toBe('ib-m1');
-  expect(m2!.className).toBe('ib-m2');
-  return {
-    l1: [...m1!.children].map((c) => (c.className === 'ib-mk' ? 'mark' : `${c.className}:${c.textContent}`)),
-    subject: m2!.textContent ?? '',
-    chips: m3 ? [...m3.children].map((c) => c.textContent ?? '') : null,
-  };
+  const [m1, m2, m3, ...rest] = [...r!.children].filter((c) => !c.classList.contains('ib-sr')) as HTMLElement[];
+  expect([m1!.className, m2!.className, m3!.className]).toEqual(['ib-m1', 'ib-m2', 'ib-m3']);
+  expect(rest).toEqual([]);
+  const named = (c: Element) => (c.className === 'ib-mcol' ? 'mark' : c.textContent ?? '');
+  const l1 = [...m1!.children].map((c) => (c.className === 'ib-mcol' ? 'mark' : `${c.className}:${c.textContent}`));
+  return { l1, subject: m2!.textContent ?? '', chips: [...m3!.children].map(named) };
 }
 
 describe.if(hasDom)('the list on a phone', () => {
@@ -112,26 +111,27 @@ describe.if(hasDom)('the list on a phone', () => {
     }
   });
 
-  test('who and when on the first line, the subject on its own line, what the thread holds after it', () => {
+  test('where and when on the first line, the subject on its own line, then a line led by the badge and the mark', () => {
     const el = render(false);
     expect(lines(el, 'msg_stop')).toEqual({
-      l1: ['mark', 'ib-p:payments-reconciliation-service-v2', expect.stringMatching(/^ib-t:/)],
+      // Line 1 is the project and the time only; the agent's mark leads line 3, after the badge (approval "inbox-row-mark-left").
+      l1: ['ib-p:payments-reconciliation-service-v2', expect.stringMatching(/^ib-t:/)],
       subject: 'Subject msg_stop',
-      chips: ['Stopped', '2 questions'],
+      chips: ['Stopped', 'mark', '2 questions'],
     });
-    // The long thread name and the guided review mark ride the third line, which wraps; nothing shares the subject's line.
-    expect(lines(el, 'msg_wait').chips).toEqual(['refund-webhooks-and-the-long-running-reconciliation-job', '2 questions', 'Guided review']);
-    // A Sent row says where the reply is, and has nothing to list after it.
+    // No badge: the mark starts the line; the long thread name and the guided review mark ride it, the count ends it; nothing shares the subject's line.
+    expect(lines(el, 'msg_wait').chips).toEqual(['mark', 'refund-webhooks-and-the-long-running-reconciliation-job', 'Guided review', '2 questions']);
+    // A Sent row says where the reply is; its agent's mark still leads the line under it.
     expect(lines(el, 'msg_sent')).toEqual({
-      l1: ['mark', 'ib-p:payments-reconciliation-service-v2', expect.stringMatching(/^ib-t:/)],
+      l1: ['ib-p:payments-reconciliation-service-v2', expect.stringMatching(/^ib-t:/)],
       subject: 'Saved for Pi. It sees it when it next reads this thread.',
-      chips: null,
+      chips: ['mark'],
     });
   });
 
   test("one project's list names the agent where the project was", () => {
     const el = render(true);
-    expect(lines(el, 'msg_stop').l1[1]).toBe('ib-p:Claude Code');
-    expect(lines(el, 'msg_sent').l1[1]).toBe('ib-p:Pi');
+    expect(lines(el, 'msg_stop').l1[0]).toBe('ib-p:Claude Code');
+    expect(lines(el, 'msg_sent').l1[0]).toBe('ib-p:Pi');
   });
 });

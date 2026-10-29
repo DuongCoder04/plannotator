@@ -31,6 +31,8 @@ import { ThreadNameChip } from './ThreadNameChip';
 import { useComposeSessions } from './useComposeSessions';
 import { InboxComposerField, type CaretMenuOptions } from '../components/ComposerField';
 import { Tip } from '../components/Tip';
+import { ShortcutHint, useShortcutAria } from '../shortcuts/hint';
+import { inboxThreadShortcuts } from '../shortcuts/thread.shortcuts';
 import { INBOX_MESSAGE_SKILL_AUDIENCE, inboxSkillsBlock, withSkillsBlock } from '../skills';
 import {
   NOTHING_SENT_NO_AGENT,
@@ -139,8 +141,6 @@ function BoardChip(props: { on: boolean; onToggle: () => void }) {
     </Tip>
   );
 }
-
-const isMac = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 
 export function ComposeDialog(props: ComposeDialogProps) {
   const { request, phone, current, lastSent, home, transport } = props;
@@ -426,6 +426,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
   };
 
   const sendable = !!target;
+  const sendKeys = useShortcutAria({ scope: inboxThreadShortcuts, action: 'send' });
   // While the sessions are read, neither Save draft nor a dead To: a neutral "Looking…" state.
   const loading = !model;
   // Save draft only for something written: an empty compose offers none (a phone shows the disabled Send instead).
@@ -775,16 +776,14 @@ export function ComposeDialog(props: ComposeDialogProps) {
               type="button"
               className={`ib-btn ib-pri${sendable ? '' : ' ib-dis'}`}
               aria-disabled={!sendable || undefined}
-              aria-keyshortcuts={isMac() ? 'Meta+Enter' : 'Control+Enter'}
+              aria-keyshortcuts={sendKeys}
               onClick={() => void send()}
               disabled={busy !== null}
               data-compose-send=""
             >
               <Icon name="send" size={15} />
               Send
-              <kbd className="ib-kbd" aria-hidden="true">
-                {isMac() ? '⌘↵' : 'Ctrl ↵'}
-              </kbd>
+              <ShortcutHint scope={inboxThreadShortcuts} action="send" />
             </button>
           )}
         </div>

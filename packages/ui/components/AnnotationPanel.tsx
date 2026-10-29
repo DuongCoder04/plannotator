@@ -3,6 +3,7 @@ import { AnnotationType, type Annotation, type Block, type CodeAnnotation, type 
 import type { MentionSource } from '../utils/mentions';
 import { useMentionAutocomplete } from '../hooks/useMentionAutocomplete';
 import { MentionAutocompleteMenu, mentionActiveOptionId } from './MentionAutocomplete';
+import { buildSectionRefIndex, parseSectionRefs } from '../utils/sectionRefs';
 import { isCurrentUser } from '../utils/identity';
 import { ImageThumbnail } from './ImageThumbnail';
 import { EditorAnnotationCard } from './EditorAnnotationCard';
@@ -129,6 +130,8 @@ interface PanelProps {
   editorAnnotations?: EditorAnnotation[];
   onDeleteEditorAnnotation?: (id: string) => void;
   onClose?: () => void;
+  /** Navigate the document to a heading anchor, for `#Heading` references in comment text. */
+  onNavigateAnchor?: (hash: string) => void;
   /** Copy the full feedback payload. May resolve a success boolean; resolving
     *  `false` suppresses the "Copied" flash. A void resolution (existing hosts)
     *  is treated as success, preserving the original behavior. */
@@ -222,7 +225,16 @@ interface PanelProps {
    * the frame in `renderCardHeader`) turns them off per card. Absent: both
    * drawn, exactly as before.
    */
-  cardParts?: (annotation: Annotation) => { quote?: boolean; images?: boolean };
+  cardParts?: (annotation: Annotation) => { quote?: boolean; images?: boolean; text?: boolean };
+  /**
+   * Optional: the host's own body for a plan-annotation card, drawn where the
+   * comment text goes, inside the card (a click on it selects the card). The
+   * Inbox draws a drawing that has no words as its picture, with `cardParts`
+   * `text: false` (its stored text is a stand-in for the agent, not the
+   * person's words: not drawn, and the edit box starts empty). Absent:
+   * nothing extra, exactly as before.
+   */
+  renderCardBody?: (annotation: Annotation) => React.ReactNode;
   /**
    * Comments on part of an image (`imageRegion`, #2100) draw a crop of their
    * box in place of the quote; this turns an image's src as written into a
@@ -236,6 +248,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   emptyHint = 'Select text to annotate',
   isOpen,
   annotations,
+  blocks,
   onSelect,
   onDelete,
   onEdit,
@@ -272,8 +285,15 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
   title = 'Annotations',
   titleNote,
   cardParts,
+  renderCardBody,
   imageRegionSrc,
+  onNavigateAnchor,
 }) => {
+  // `#Heading` links in comment text; nothing is parsed unless the host can navigate.
+  const sectionRefs = useMemo(
+    () => (onNavigateAnchor ? buildSectionRefIndex(blocks) : undefined),
+    [blocks, onNavigateAnchor],
+  );
   const regionCards = useMemo(
     () => ({ numbers: imageRegionNumbers(annotations), thumbSrc: imageRegionSrc }),
     [annotations, imageRegionSrc],
@@ -538,8 +558,11 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                             footer={group.isCurrent ? renderCardFooter?.(annotation) : undefined}
                             header={group.isCurrent ? renderCardHeader?.(annotation) : undefined}
                             parts={group.isCurrent ? cardParts?.(annotation) : undefined}
+                            body={group.isCurrent ? renderCardBody?.(annotation) : undefined}
                             mentionSource={mentionSource}
                             unanchored={group.isCurrent ? (unanchoredIds?.has(annotation.id) ?? false) : false}
+                            sectionRefs={group.isCurrent ? sectionRefs : undefined}
+                            onNavigateAnchor={onNavigateAnchor}
                           />
                         );
                         return isReply ? (
@@ -644,6 +667,8 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                   >
                     <AnnotationCard
                       annotation={entry.annotation}
+                      sectionRefs={sectionRefs}
+                      onNavigateAnchor={onNavigateAnchor}
                       isSelected={selectedId === entry.annotation.id}
                       isMe={isCurrentUser(entry.annotation.author)}
                       onSelect={() => onSelect(entry.annotation.id)}
@@ -653,6 +678,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                       footer={renderCardFooter?.(entry.annotation)}
                       header={renderCardHeader?.(entry.annotation)}
                   parts={cardParts?.(entry.annotation)}
+                  body={renderCardBody?.(entry.annotation)}
                       mentionSource={mentionSource}
                       unanchored={unanchoredIds?.has(entry.annotation.id) ?? false}
                     />
@@ -661,6 +687,8 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                 <AnnotationCard
                   key={entry.annotation.id}
                   annotation={entry.annotation}
+                  sectionRefs={sectionRefs}
+                  onNavigateAnchor={onNavigateAnchor}
                   isSelected={selectedId === entry.annotation.id}
                   isMe={isCurrentUser(entry.annotation.author)}
                   onSelect={() => onSelect(entry.annotation.id)}
@@ -670,6 +698,7 @@ export const AnnotationPanel: React.FC<PanelProps> = ({
                   footer={renderCardFooter?.(entry.annotation)}
                   header={renderCardHeader?.(entry.annotation)}
                   parts={cardParts?.(entry.annotation)}
+                  body={renderCardBody?.(entry.annotation)}
                   mentionSource={mentionSource}
                   unanchored={unanchoredIds?.has(entry.annotation.id) ?? false}
                 />
@@ -920,6 +949,44 @@ const DirectEditsCard: React.FC<{
   );
 };
 
+/** Comment text, with each `#Heading text` as a link that scrolls to that heading. */
+const AnnotationText: React.FC<{
+  text: string;
+  className: string;
+  sectionRefs?: Map<string, string>;
+  onNavigateAnchor?: (hash: string) => void;
+}> = ({ text, className, sectionRefs, onNavigateAnchor }) => {
+  const parts = React.useMemo(
+    () => (sectionRefs && onNavigateAnchor ? parseSectionRefs(text, sectionRefs) : [text]),
+    [text, sectionRefs, onNavigateAnchor],
+  );
+
+  return (
+    <p className={className}>
+      {parts.map((part, i) =>
+        typeof part === 'string' ? (
+          part
+        ) : (
+          <a
+            key={i}
+            href={`#${part.anchor}`}
+            className="rounded-sm font-medium text-primary underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            onClick={(e) => {
+              // The host scrolls; the card's own onSelect would scroll to the
+              // annotation instead, and the URL hash stays as it was.
+              e.preventDefault();
+              e.stopPropagation();
+              onNavigateAnchor!(`#${part.anchor}`);
+            }}
+          >
+            {part.label}
+          </a>
+        ),
+      )}
+    </p>
+  );
+};
+
 /**
  * The plan-annotation card's edit box.
  *
@@ -1018,10 +1085,16 @@ const AnnotationCard: React.FC<{
   /** The annotation has no live location in the document (host-reported). */
   unanchored?: boolean;
   /** Built-in parts to draw (see `cardParts`). */
-  parts?: { quote?: boolean; images?: boolean };
-}> = ({ annotation, isSelected, isMe, onSelect, onDelete, onEdit, readOnly = false, footer, header, mentionSource, unanchored = false, parts }) => {
+  parts?: { quote?: boolean; images?: boolean; text?: boolean };
+  /** Host body, drawn where the comment text goes (see `renderCardBody`). */
+  body?: React.ReactNode;
+  sectionRefs?: Map<string, string>;
+  onNavigateAnchor?: (hash: string) => void;
+}> = ({ annotation, isSelected, isMe, onSelect, onDelete, onEdit, readOnly = false, footer, header, mentionSource, unanchored = false, parts, body, sectionRefs, onNavigateAnchor }) => {
+  // `text: false`: the stored text is the host's stand-in, never the person's words; the edit box starts empty.
+  const shownText = parts?.text === false ? '' : annotation.text || '';
   const [isEditing, setIsEditing] = useState(false);
-  const [editText, setEditText] = useState(annotation.text || '');
+  const [editText, setEditText] = useState(shownText);
   // A comment on part of an image (#2100): numbered like its box, with the
   // crop, file, size and line in place of the quote.
   const regionCards = useContext(RegionCardContext);
@@ -1031,13 +1104,13 @@ const AnnotationCard: React.FC<{
   // Update editText when annotation.text changes
   useEffect(() => {
     if (!isEditing) {
-      setEditText(annotation.text || '');
+      setEditText(shownText);
     }
-  }, [annotation.text, isEditing]);
+  }, [shownText, isEditing]);
 
   const handleStartEdit = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setEditText(annotation.text || '');
+    setEditText(shownText);
     setIsEditing(true);
   };
 
@@ -1054,7 +1127,7 @@ const AnnotationCard: React.FC<{
   };
 
   const handleCancelEdit = () => {
-    setEditText(annotation.text || '');
+    setEditText(shownText);
     setIsEditing(false);
   };
 
@@ -1163,9 +1236,12 @@ const AnnotationCard: React.FC<{
         isEditing ? (
           editComposer
         ) : (
-          <p className="whitespace-pre-wrap [overflow-wrap:anywhere] text-[13px] leading-relaxed text-foreground/90">
-            {annotation.text}
-          </p>
+          <AnnotationText
+            text={annotation.text || ''}
+            className="whitespace-pre-wrap [overflow-wrap:anywhere] text-[13px] leading-relaxed text-foreground/90"
+            sectionRefs={sectionRefs}
+            onNavigateAnchor={onNavigateAnchor}
+          />
         )
       ) : (
         <>
@@ -1185,13 +1261,17 @@ const AnnotationCard: React.FC<{
             isEditing ? (
               editComposer
             ) : (
-              annotation.text && (
-                <p className="whitespace-pre-wrap [overflow-wrap:anywhere] text-[13px] leading-relaxed text-foreground/90">
-                  {annotation.text}
-                </p>
+              shownText && (
+                <AnnotationText
+                  text={shownText}
+                  className="whitespace-pre-wrap [overflow-wrap:anywhere] text-[13px] leading-relaxed text-foreground/90"
+                  sectionRefs={sectionRefs}
+                  onNavigateAnchor={onNavigateAnchor}
+                />
               )
             )
           )}
+          {body != null && body !== false && body}
         </>
       )}
 

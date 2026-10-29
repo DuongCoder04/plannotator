@@ -416,13 +416,14 @@ async function currentMod($: Engine): Promise<PlannotatorMod | null> {
       sessionId,
       dataDir: settings.dataDir,
       interactive: true,
+      cwd: async () => String(await $.session.cwd()),
+      // The session's root (where it started; a shell cd does not move it): its
+      // `claude --resume` folder, and where a plan's history chain is also looked for (#2197).
+      root: async () => String(await $.session.root()),
       ...(inboxTools
         ? {
             inboxTools,
             ...(inboxToolName ? { inboxToolName } : {}),
-            cwd: async () => String(await $.session.cwd()),
-            // The session's root (where it started; a shell cd does not move it): its `claude --resume` folder.
-            root: async () => String(await $.session.root()),
           }
         : {}),
     })
@@ -684,7 +685,16 @@ export function register(on: On) {
     const instance = await currentMod($)
     if (!instance) return next(e)
     // `/plannotator-inbox`: open the Inbox and say where it is; no review opens.
-    if (!isModCommand(name)) return { text: await instance.openInbox() }
+    // Opened, the model also gets the Inbox briefing as hidden context (no
+    // turn starts; the person sees only the address): people type the command
+    // to teach their agent the Inbox. `context` on a hook's own answer is on
+    // the mod's floor engine (checked in the 2.1.287 binary). Known gap: the
+    // command the mod registers itself (`immediate: true`, only where no skill
+    // holds the name) typed while Claude works runs on the mid-turn path,
+    // which shows the text and drops `context` (2.1.287 through 2.1.312): the
+    // person gets the address, the model no briefing. The installer's skill
+    // holds the name, so a queued command takes the normal path.
+    if (!isModCommand(name)) return await instance.openInbox(inboxToolName)
     const spec = COMMANDS[name]
     const text = await instance.runCommand(spec.kind, typeof e.args === 'string' ? e.args : '')
     return { text }
