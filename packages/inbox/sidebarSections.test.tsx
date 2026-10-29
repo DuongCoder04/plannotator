@@ -169,6 +169,7 @@ test.skipIf(!hasDom)('a closed Pinned counts the pins waiting on the person; ope
   click(header('pinned'));
   click(header('projects'));
   // Stopped, Holds and the question count: 3. The news dot and the quiet thread are not on the person.
+  // "N waiting on you" is pinned on purpose: it is the header's accessible name for a screen reader.
   expect(header('pinned').querySelector('.ib-n')!.textContent).toBe('3 waiting on you');
   expect(header('pinned').textContent).toContain('Pinned');
   expect(header('projects').querySelector('.ib-n')).toBeNull();
@@ -219,6 +220,20 @@ test.skipIf(!hasDom)('Unpin in a closed section: focus goes to the next row on s
   await unpinFromMenu('t_quiet', [], { onPinAction });
   expect(document.querySelector('[data-sidebar-section="pinned"]')).toBeNull();
   expect(document.activeElement?.hasAttribute('data-inbox-nav')).toBe(true);
+});
+
+test.skipIf(!hasDom)('the focused current row going away under a closed header (Escape closed the thread) moves focus to that header, not the page', () => {
+  storage.setItem(SIDEBAR_CLOSED_COOKIE, 'pinned,projects');
+  draw({ openThreadId: 't_hold', projectId: 'prj_b' });
+  act(() => document.querySelector<HTMLElement>('[data-pinned-row="t_hold"]')!.focus());
+  draw({ openThreadId: null, projectId: 'prj_b' });
+  expect(pinIds()).toEqual([]);
+  expect(document.activeElement).toBe(header('pinned'));
+  // The project the list showed, left by Back: the Projects header.
+  act(() => document.querySelector<HTMLElement>('.ib-proj')!.focus());
+  draw({ openThreadId: null, projectId: null });
+  expect(projectNames()).toEqual([]);
+  expect(document.activeElement).toBe(header('projects'));
 });
 
 test.skipIf(!hasDom)("the onboarding tour's sidebar ignores the cookie: Projects is open with the tour's project", () => {

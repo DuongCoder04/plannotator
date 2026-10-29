@@ -218,12 +218,36 @@ export function Sidebar(props: SidebarProps) {
     const active = document.activeElement;
     if (!active || active === document.body || !active.isConnected) inboxRef.current?.focus({ preventScroll: true });
   });
+  /**
+   * The section that last held keyboard focus in this sidebar. A closed section's one row (the open pinned
+   * thread, the project the list shows) goes when it stops being current (Escape closed the thread, Back left
+   * the project): focus then moves to that section's header, never the page. Runs after Unpin's and Archive
+   * all's own fallbacks, which move focus first.
+   */
+  const asideRef = useRef<HTMLElement>(null);
+  const focusedIn = useRef<SidebarSection | null>(null);
+  useEffect(() => {
+    const track = (event: FocusEvent) => {
+      const target = event.target instanceof Element && asideRef.current?.contains(event.target) ? event.target : null;
+      focusedIn.current = target?.closest('[data-pinned-section]') ? 'pinned' : target?.closest('.ib-projs') ? 'projects' : null;
+    };
+    document.addEventListener('focusin', track);
+    return () => document.removeEventListener('focusin', track);
+  }, []);
+  useLayoutEffect(() => {
+    const section = focusedIn.current;
+    if (!section || !sections.closed(section)) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    focusedIn.current = null;
+    asideRef.current?.querySelector<HTMLElement>(`[data-sidebar-section="${section}"]`)?.focus({ preventScroll: true });
+  });
   const pick = (go: () => void) => () => {
     setOpenMobile(false);
     go();
   };
   return (
-    <aside className="ib-side" aria-label="Inbox navigation">
+    <aside ref={asideRef} className="ib-side" aria-label="Inbox navigation">
       <div className="ib-brand">
         <TaterMark />
         <b>Plannotator</b>

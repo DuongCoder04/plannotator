@@ -15,7 +15,7 @@ import type { InboxToastModel } from './Toast';
  * head line (shown on hover, keyboard focus or while its menu is open, the
  * sidebar ⋯'s rule; always on a phone): Copy message, Copy link to message,
  * then Copy thread. A right-click on the head line opens the same menu (not
- * on a phone). The thread header's ⋯ holds Copy thread, Copy link and Copy
+ * on a phone). The thread header's ⋯ holds Pin thread, Copy thread, Copy link and Copy
  * thread ID. Base UI carries the keys (arrows, Home/End, type-ahead, Escape
  * and Tab close, focus back to ⋯); no new shortcut. The look is the project
  * menu's (`.ib-pm`); on a phone, its bottom sheet with a title.
@@ -128,9 +128,13 @@ export function MessageMenu(props: CopyMenuHost & { message: InboxMessageWire; h
   );
 }
 
-/** The thread header's ⋯ More: Copy thread, then Copy link and Copy thread ID (a phone's only way to them). */
-export function ThreadMore(props: CopyMenuHost) {
-  const { thread, phone } = props;
+/**
+ * The thread header's ⋯ More: Pin thread (Unpin thread while pinned) first, in its own group, as the row menu
+ * leads with it (only when the Inbox keeps pins: `pin` is absent on an older one, and a phone's way to pin
+ * is here, it has no row menu); then Copy thread, Copy link and Copy thread ID (a phone's only way to them).
+ */
+export function ThreadMore(props: CopyMenuHost & { pin?: { pinned: boolean; onToggle: () => void } }) {
+  const { thread, phone, pin } = props;
   const copies = useCopies(props);
   const { ref, portal } = usePortal<HTMLButtonElement>();
   return (
@@ -147,6 +151,15 @@ export function ThreadMore(props: CopyMenuHost) {
             <div className="ib-pm-title" dir="auto" aria-hidden="true">
               {thread.subject ?? '(no subject)'}
             </div>
+            {pin && (
+              <>
+                <Menu.Item className="ib-pmi" label={pin.pinned ? 'Unpin thread' : 'Pin thread'} onClick={pin.onToggle} data-thread-pin-item="">
+                  <Icon name={pin.pinned ? 'pinOff' : 'pin'} size={15} />
+                  {pin.pinned ? 'Unpin thread' : 'Pin thread'}
+                </Menu.Item>
+                <Menu.Separator className="ib-pm-sep" />
+              </>
+            )}
             <Menu.Item className="ib-pmi" label="Copy thread" onClick={() => copies.thread()} data-copy-item="thread">
               <Icon name="stack" size={15} />
               Copy thread
