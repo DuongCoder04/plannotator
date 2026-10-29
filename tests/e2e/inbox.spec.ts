@@ -353,9 +353,9 @@ test('a project folder filters the list and the sections still apply', async () 
   expect(await leftOf(page, `${stoppedRow} .ib-subj`)).toBe(labelLeft);
   await expect(page.locator('.ib-row .ib-subj :is(.ib-mk, .ib-badge)')).toHaveCount(0);
   const rightOf = async (sel: string) => Math.round((await page.locator(sel).boundingBox())!.x + (await page.locator(sel).boundingBox())!.width);
-  for (const cell of ['.ib-mcol', '.ib-bcol', '.ib-c']) expect(await rightOf(`${named} ${cell}`)).toBe(await rightOf(`${stoppedRow} ${cell}`));
+  for (const cell of ['.ib-cw', '.ib-mcol', '.ib-bcol', '.ib-cq']) expect(await rightOf(`${named} ${cell}`)).toBe(await rightOf(`${stoppedRow} ${cell}`));
   expect(await rightOf(`${stoppedRow} .ib-bcol .ib-badge`)).toBe(await rightOf(`${stoppedRow} .ib-bcol`));
-  expect(await rightOf(`${named} .ib-c`)).toBeLessThanOrEqual(await leftOf(page, `${named} .ib-t`));
+  expect(await rightOf(`${named} .ib-cq`)).toBeLessThanOrEqual(await leftOf(page, `${named} .ib-t`));
   await shot('1.2-project-filter');
   await side(page).getByRole('button', { name: /^Inbox/ }).click();
   await expect(page.locator('.ib-lbody [data-thread-id]')).toHaveCount(3);

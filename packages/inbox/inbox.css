@@ -725,15 +725,17 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-band .ib-n { font-weight: 500; color: var(--muted-foreground); }
 .ib-band .ib-ic { margin-left: auto; color: var(--muted-foreground); }
 /* The one-line row (approval "inbox-row-byline", 2026-10-29): the project, the subject cell (the thread pill, the
-   subject), then right-aligned the agents' marks, the badge, the count (`?N`) and the time, each in a column of its
-   own so they line up down the list. The count column is 36px unless its words are wider ("Answered, not sent"):
-   then it grows, so it never runs into the time. */
-.ib-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 64px 52px minmax(36px, max-content) 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
+   subject), then right-aligned the agents' marks, the badge, `?N` and the time, each in a fixed column of its own so
+   they line up down the list in every row. Count words (a draft, Undelivered, "1 action item", Read …) have their
+   own column between the subject and the marks: it takes the width the words need (none when there are none), so
+   long words shorten the subject, never move a column. `?N` gets 44px: `?128` fits. */
+.ib-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) auto 64px 52px 44px 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
 /* One project's list: no project column (InboxList's WideRow). */
-.ib-noproj .ib-row { grid-template-columns: minmax(0, 1fr) 64px 52px minmax(36px, max-content) 76px; }
-/* The agents' marks, the badge and the count, each right-aligned in its column, so every subject starts on one
-   left edge; up to three agents' marks overlap within theirs, past that two and "+N". */
-.ib-row .ib-mcol, .ib-row .ib-bcol { display: inline-flex; justify-content: flex-end; align-items: center; min-width: 0; }
+.ib-noproj .ib-row { grid-template-columns: minmax(0, 1fr) auto 64px 52px 44px 76px; }
+/* The words, the agents' marks, the badge and `?N`, each right-aligned in its column, so every subject starts on
+   one left edge; up to three agents' marks overlap within theirs, past that two and "+N". A `?N` wider than its
+   column (four digits) runs out to the left, into the gap, never into the time. */
+.ib-row :is(.ib-cw, .ib-mcol, .ib-bcol, .ib-cq) { display: inline-flex; justify-content: flex-end; align-items: center; min-width: 0; }
 .ib-row .ib-c.ib-qn { justify-content: flex-end; }
 .ib-row .ib-p { font-weight: 400; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-row.ib-u .ib-s { font-weight: 600; }
@@ -2402,8 +2404,12 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
 .pn-inbox .ib-ract:hover { background: var(--ib-ract-hover-s, color-mix(in oklch, var(--muted) 60%, var(--card))); }
 .pn-inbox { --ib-ract-hover-s: var(--ib-soft-hover) color-mix(in oklch, var(--muted) 40%, var(--card)); }
 .ib-rw:hover .ib-ract, .ib-rw:has(:focus-visible) .ib-ract, .ib-rw[data-action-focus] .ib-ract { display: inline-flex; }
-.ib-rw:hover:has(.ib-ract) .ib-row :is(.ib-t, .ib-c, .ib-mcol), .ib-rw:has(:focus-visible):has(.ib-ract) .ib-row :is(.ib-t, .ib-c, .ib-mcol) { visibility: hidden; }
-.ib-rw:hover:has(.ib-ract) .ib-nrow .ib-l1 .ib-t, .ib-rw:has(:focus-visible):has(.ib-ract) .ib-nrow .ib-l1 .ib-t { visibility: hidden; }
+/* The action covers a one-line row's time and `?N` columns only: the words, the marks and the badge stay. */
+.ib-rw:hover:has(.ib-ract) .ib-row :is(.ib-t, .ib-cq), .ib-rw:has(:focus-visible):has(.ib-ract) .ib-row :is(.ib-t, .ib-cq) { visibility: hidden; }
+/* On a two-line row the action covers line 1's right end. The hidden time holds the action's width (its padding,
+   border, icon and gap, 41px, and its label, at the same text size as the time), so the project and then the pill
+   give way and end with "…" before it, never cut mid-word under it. */
+.ib-rw:hover:has(.ib-ract) .ib-nrow .ib-l1 .ib-t, .ib-rw:has(:focus-visible):has(.ib-ract) .ib-nrow .ib-l1 .ib-t { visibility: hidden; min-width: calc(41px + 5.6em); }
 /* Beside a thread the action sits on line 1, no taller than that line (14 px text at its normal leading, plus
    the 6 px between the action's top and line 2's), so at any text size it never reaches line 2's marks and count. */
 .pn-inbox .ib-rw .ib-nrow ~ .ib-ract { top: 8px; transform: none; height: min(26px, calc(var(--ib-fs-14, 14px) * 1.2 + 6px)); }

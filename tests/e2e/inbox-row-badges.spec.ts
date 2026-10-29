@@ -42,6 +42,8 @@ const proofDir = resolve(process.env.PLANNOTATOR_ROW_BADGES_SHOTS ?? join(resolv
 
 interface World {
   url: string;
+  /** Where the scratch projects live. */
+  src: string;
   agents: SimAgent[];
   context: BrowserContext;
   page: Page;
@@ -132,7 +134,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
   });
-  world = { url, agents: [claude, opencode, pi, codex], context, page, errors, stopped: stopped.thread_id as string, holding: holding.thread_id as string, long: long.thread_id as string, news: news.thread_id as string, pair: named.thread_id as string, guided: guided.thread_id as string };
+  world = { url, src: join(root, 'src'), agents: [claude, opencode, pi, codex], context, page, errors, stopped: stopped.thread_id as string, holding: holding.thread_id as string, long: long.thread_id as string, news: news.thread_id as string, pair: named.thread_id as string, guided: guided.thread_id as string };
 });
 
 test.afterAll(async () => {
@@ -174,8 +176,8 @@ test('desktop: the triangles, their words for a screen reader, and the marks, ba
       const badge = r.querySelector('.ib-bcol > [data-row-badge]');
       return {
         cells: [...r.children].map((c) => c.className.split(' ')[0]),
-        rights: ['.ib-mcol', '.ib-bcol', '.ib-c', '.ib-t'].map((sel) => Math.round(box(sel).right)),
-        lefts: ['.ib-mcol', '.ib-bcol', '.ib-c', '.ib-t'].map((sel) => box(sel).left),
+        rights: ['.ib-mcol', '.ib-bcol', '.ib-cq', '.ib-t'].map((sel) => Math.round(box(sel).right)),
+        lefts: ['.ib-mcol', '.ib-bcol', '.ib-cq', '.ib-t'].map((sel) => box(sel).left),
         subjRight: box('.ib-subj').right,
         subj: box('.ib-subj').left,
         // A badge ends on its column's right edge.
@@ -188,7 +190,7 @@ test('desktop: the triangles, their words for a screen reader, and the marks, ba
   for (let i = 0; i < 4; i++) expect(new Set(geometry.map((g) => g.rights[i])).size, `column ${i}`).toBe(1);
   expect(new Set(geometry.map((g) => Math.round(g.subj))).size).toBe(1);
   for (const g of geometry) {
-    expect(g.cells.slice(-5)).toEqual(['ib-subj', 'ib-mcol', 'ib-bcol', 'ib-c', 'ib-t']);
+    expect(g.cells.slice(-6)).toEqual(['ib-subj', 'ib-cw', 'ib-mcol', 'ib-bcol', 'ib-cq', 'ib-t']);
     expect(g.inSubject).toBe(false);
     expect(g.lefts[0]).toBeGreaterThanOrEqual(g.subjRight);
     for (let i = 1; i < 4; i++) expect(g.lefts[i]).toBeGreaterThanOrEqual(g.rights[i - 1]! - 0.5);
@@ -334,6 +336,17 @@ test('beside an open thread: the project, the pill and the time on line 1; the s
   expect(l1.projectCut).toBe(true);
   expect(l1.timeWhole).toBe(true);
   expect(Math.abs(l1.timeEnd)).toBeLessThanOrEqual(0.5);
+  // On hover the action covers line 1's right end: the pill gives way and ends before it, never under it.
+  await page.locator(`.ib-nrow[data-thread-id="${world.long}"] .ib-l2`).hover();
+  await expect(page.locator(`.ib-rw[data-row="${world.long}"] .ib-ract`)).toBeVisible();
+  const cover = await page.locator(`.ib-rw[data-row="${world.long}"]`).evaluate((rw) => {
+    const key = rw.querySelector<HTMLElement>('.ib-l1 .ib-key')!;
+    const name = key.querySelector<HTMLElement>('.ib-keyt')!;
+    return { keyRight: key.getBoundingClientRect().right, actionLeft: rw.querySelector('.ib-ract')!.getBoundingClientRect().left, cut: name.scrollWidth > name.clientWidth };
+  });
+  expect(cover.keyRight).toBeLessThanOrEqual(cover.actionLeft);
+  expect(cover.cut).toBe(true);
+  await page.mouse.move(5, 5);
   await shot(page, 'beside-thread');
   await page.keyboard.press('Shift');
   await narrow.focus();
@@ -416,4 +429,56 @@ test('a small phone (320, 360): the subject gives way first; the marks, the badg
   } finally {
     await own.close();
   }
+});
+
+// Last, so its threads change no test above.
+test('desktop, rows whose count has words (a draft, Undelivered, action items): every column still lines up; hover keeps the marks', async () => {
+  const { page } = world;
+  const deploy = scratchProject(world.src, 'deploy-app');
+  const claude = world.agents[0]!;
+  const action = [':::action', 'Approve the production deploy on Vercel', 'The build passed every check.', '', 'Stopped: the release cannot go out until it is approved', ':::'].join('\n');
+  const one = await claude.send({ project_path: deploy, subject: 'Approve the deploy', thread: 'prod-deploy', body: action });
+  const both = await claude.send({ project_path: deploy, subject: 'Deploy and a name', thread: 'release-name', body: [action, '', ':::question', 'Call it 4.2 or 5.0?', '', '- [ ] 4.2', '- [ ] 5.0', ':::'].join('\n') });
+  // A draft and a reply waiting on a busy agent, put on two rows the server sent: each needs a live session or the
+  // window's own reply box to arise for real (tests/e2e/inbox-undelivered.spec.ts, inbox-replaced.spec.ts).
+  await page.route('**/api/inbox/threads?archived=exclude', async (route) => {
+    const response = await route.fetch();
+    const model = (await response.json()) as { sections: { threads: Record<string, unknown>[] }[] };
+    for (const row of model.sections.flatMap((s) => s.threads)) {
+      if (row.thread_id === world.news) row.unsent = { reply_at: new Date().toISOString(), picks: 2, comments: 3 };
+      if (row.thread_id === world.pair)
+        row.delivery = { kind: 'reply', state: 'queued', reason: 'working', send_now: false, message_id: 'msg_waiting', at: null, host: 'claude-code', name: 'Claude Code', waiting_since: new Date(Date.now() - 14 * 60_000).toISOString(), steerable: false, auto_send_at: null };
+    }
+    await route.fulfill({ response, json: model });
+  });
+  try {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(world.url);
+    const words = (id: string) => page.locator(`.ib-row[data-thread-id="${id}"] .ib-cw > .ib-c`);
+    await expect(words(one.thread_id as string)).toHaveText('1 action item');
+    await expect(words(both.thread_id as string)).toHaveText('1 question, 1 action item');
+    await expect(words(world.news)).toHaveText(/^Draft/);
+    await expect(words(world.pair)).toHaveText(/^Undelivered/);
+    const geometry = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>('.ib-row')].map((r) => {
+        const box = (sel: string) => r.querySelector(sel)!.getBoundingClientRect();
+        return { id: r.dataset.threadId, rights: ['.ib-cw', '.ib-mcol', '.ib-bcol', '.ib-cq', '.ib-t'].map((sel) => Math.round(box(sel).right)), subj: Math.round(box('.ib-subj').left) };
+      }),
+    );
+    expect(geometry.length).toBeGreaterThanOrEqual(8);
+    // Every column's right edge, the words' included, is one down the list, words or not.
+    for (let i = 0; i < 5; i++) expect(new Set(geometry.map((g) => g.rights[i])).size, `column ${i}: ${JSON.stringify(geometry)}`).toBe(1);
+    expect(new Set(geometry.map((g) => g.subj)).size).toBe(1);
+    // Hover: the action covers the time and ?N; the marks and the badge stay.
+    const stopped = page.locator(`.ib-row[data-thread-id="${world.stopped}"]`);
+    await stopped.locator('.ib-subj').hover();
+    await expect(page.locator(`.ib-rw[data-row="${world.stopped}"] .ib-ract`)).toBeVisible();
+    const shown = await stopped.evaluate((r) => Object.fromEntries(['.ib-mcol', '.ib-bcol', '.ib-cq', '.ib-t'].map((sel) => [sel, getComputedStyle(r.querySelector(sel)!).visibility])));
+    expect(shown).toEqual({ '.ib-mcol': 'visible', '.ib-bcol': 'visible', '.ib-cq': 'hidden', '.ib-t': 'hidden' });
+    await page.mouse.move(5, 5);
+    await shot(page, 'desktop-words');
+  } finally {
+    await page.unroute('**/api/inbox/threads?archived=exclude');
+  }
+  expect(world.errors).toEqual([]);
 });

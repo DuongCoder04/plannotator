@@ -216,20 +216,38 @@ function countState(row: InboxListRow): ReactNode | null {
 }
 
 /**
- * The row's count (approval "inbox-row-byline", 2026-10-29): at the right end of a two-line or phone row's line 2,
- * and in a wide row's count column. What waits on the person is `?N`, the question icon and the number (from one
- * question on), its words for a screen reader and in the tooltip; anything else the count cell says (Read, a
- * draft, Undelivered …) in its own words. `cell`: an empty cell when there is nothing to count (a wide row's
- * column); otherwise nothing.
+ * The row's count in words, or nothing: a state (Read, a draft, Undelivered …), or open action items, which are
+ * always named (approval "inbox-next-actions"). Only open questions alone read as `?N` (`QuestionCount`).
  */
-function LineCount({ row, tip = false, cell: always = false }: { row: InboxListRow; tip?: boolean; cell?: boolean }) {
+function CountWords({ row }: { row: InboxListRow }) {
   const state = countState(row);
   if (state) return <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{state}</span>;
+  const actions = row.questions.actions ?? 0;
+  if (row.questions.open < 1 || actions < 1) return null;
+  return <span className="ib-c">{waitCount(row.questions.open, actions)}</span>;
+}
+
+/**
+ * The row's count (approval "inbox-row-byline", 2026-10-29): at the right end of a two-line or phone row's line 2.
+ * What waits on the person is `?N` (`QuestionCount`); anything else in words (`CountWords`).
+ */
+function LineCount({ row, tip = false }: { row: InboxListRow; tip?: boolean }) {
+  return (
+    <>
+      <CountWords row={row} />
+      <QuestionCount row={row} tip={tip} />
+    </>
+  );
+}
+
+/**
+ * `?N`, when only questions wait on the person: the question icon and the number (from one question on), its words
+ * for a screen reader and in the tooltip. Otherwise nothing.
+ */
+function QuestionCount({ row, tip = false }: { row: InboxListRow; tip?: boolean }) {
   const open = row.questions.open;
-  if (open < 1) return always ? <span className="ib-c" /> : null;
-  const words = waitCount(open, row.questions.actions ?? 0) || '1 question';
-  // An action item is always named (approval "inbox-next-actions"): only questions read as `?N`.
-  if ((row.questions.actions ?? 0) > 0) return <span className="ib-c">{words}</span>;
+  if (open < 1 || countState(row) || (row.questions.actions ?? 0) > 0) return null;
+  const words = waitCount(open, 0) || '1 question';
   const cell = (
     <span className="ib-c ib-qn" data-open-count={open}>
       <Icon name="question" size={15} />
@@ -362,9 +380,16 @@ function WideRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: 
       <span className="ib-subj">
         <SubjectLine row={row} pinned={pinned} />
       </span>
+      {/* Every column right of the words has a fixed width, so each lines up down the list. The words (a draft,
+          Undelivered, action items …) take the width they need, between the subject and the marks. */}
+      <span className="ib-cw">
+        <CountWords row={row} />
+      </span>
       <MarkCol row={row} fold={LINE_MARKS} />
       <span className="ib-bcol">{badgeEl}</span>
-      <LineCount row={row} tip cell />
+      <span className="ib-cq">
+        <QuestionCount row={row} tip />
+      </span>
       <span className="ib-t">
         <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
       </span>

@@ -309,7 +309,10 @@ test('waiting on a busy agent: "Undelivered N min" on the row (blue / grey), Sen
   await heroRow.hover();
   const action = page.locator(`[data-row="${hero.thread}"] > [data-row-send-now]`);
   await expect(action).toBeVisible();
-  await expect(heroRow.locator('.ib-c')).toBeHidden();
+  // "Undelivered 3 min" sits left of the marks (approval "inbox-row-byline", the one-line row), clear of the
+  // action, so it stays on screen beside Send now.
+  await expect(heroRow.locator('.ib-c')).toBeVisible();
+  expect((await heroRow.locator('.ib-c').boundingBox())!.x + (await heroRow.locator('.ib-c').boundingBox())!.width).toBeLessThanOrEqual((await action.boundingBox())!.x);
   await shot(page, 'list-hover', sentGroup);
   await stuckRow.hover();
   await expect(page.locator(`[data-row="${stuck.thread}"] > [data-row-send-now]`)).toHaveCount(0);

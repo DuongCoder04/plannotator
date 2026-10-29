@@ -482,8 +482,8 @@ test('a long thread name plus the Guided review mark never pushes a row out of s
             listOverflow: body.scrollWidth - body.clientWidth,
             rowOverflow: el.scrollWidth - el.clientWidth,
             lineRight: line.right,
-            // What the subject line must end before: the count column, or the row's own edge.
-            limit: wideRow ? box('.ib-c').left : el.getBoundingClientRect().right,
+            // What the subject line must end before: the count words' column, or the row's own edge.
+            limit: wideRow ? box('.ib-cw').left : el.getBoundingClientRect().right,
             // What the chip must end before: its own line's end (the wide row's subject cell), or line 1's time.
             keyLimit: wideRow ? line.right : box('.ib-t').left,
             keyRight: box('.ib-key').right,

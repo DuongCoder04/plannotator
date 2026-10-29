@@ -102,18 +102,18 @@ describe.if(hasDom)('the wide list', () => {
     for (const id of ['msg_stop', 'msg_hold', 'msg_wait', 'msg_sent']) {
       const r = rowEl(el, id);
       const cells = [...r.children];
-      expect(cells.length).toBe(6);
+      expect(cells.length).toBe(7);
       expect(cells[0]!.className).toBe('ib-p');
       expect(cells[0]!.textContent).toBe('billing-svc');
       expect(cells[1]!.className).toBe('ib-subj');
       // The badge and the marks sit in their own columns, never inside the subject cell; every row has every
       // cell, empty or not, so the columns line up down the list.
       expect(cells[1]!.querySelector('.ib-badge, .ib-mk')).toBeNull();
-      expect(cells.slice(2).map((c) => c.className.split(' ')[0])).toEqual(['ib-mcol', 'ib-bcol', 'ib-c', 'ib-t']);
+      expect(cells.slice(2).map((c) => c.className.split(' ')[0])).toEqual(['ib-cw', 'ib-mcol', 'ib-bcol', 'ib-cq', 'ib-t']);
     }
-    expect(rowEl(el, 'msg_stop').children[3]!.querySelector('.ib-badge')!.textContent).toBe('Stopped');
+    expect(rowEl(el, 'msg_stop').children[4]!.querySelector('.ib-badge')!.textContent).toBe('Stopped');
     // The open count is ?N (from one question on), its words for a screen reader.
-    expect(rowEl(el, 'msg_stop').children[4]!.querySelector('.ib-sr')!.textContent).toBe('1 question');
+    expect(rowEl(el, 'msg_stop').children[5]!.querySelector('.ib-sr')!.textContent).toBe('1 question');
   });
 
   test("one project: no project cell; the subject cell starts the row", () => {
@@ -122,7 +122,7 @@ describe.if(hasDom)('the wide list', () => {
     expect(el.querySelectorAll('.ib-row .ib-p').length).toBe(0);
     for (const id of ['msg_stop', 'msg_hold', 'msg_wait', 'msg_sent']) {
       const cells = [...rowEl(el, id).children];
-      expect(cells.map((c) => c.className.split(' ')[0])).toEqual(['ib-subj', 'ib-mcol', 'ib-bcol', 'ib-c', 'ib-t']);
+      expect(cells.map((c) => c.className.split(' ')[0])).toEqual(['ib-subj', 'ib-cw', 'ib-mcol', 'ib-bcol', 'ib-cq', 'ib-t']);
     }
     // The subject cell starts with the thread chip or the subject, badge or not.
     expect(rowEl(el, 'msg_wait').querySelector('.ib-subj')!.firstElementChild!.className).toBe('ib-key');
