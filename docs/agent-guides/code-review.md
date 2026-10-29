@@ -555,6 +555,7 @@ Ask AI providers are detected independently from installed/authenticated local C
 | `gemini-cli` | no dedicated provider; fallback to saved/server default |
 | `mistral-vibe` | no dedicated provider; fallback to saved/server default |
 | `qwen-code` | `qwen-sdk` |
+| `dsh` | no dedicated provider; fallback to saved/server default |
 
 Automatic resolution is session-only and never writes a preference. Explicit per-origin choices are persisted in cookies, so a user can override the automatic match for one agent without changing the default for another.
 

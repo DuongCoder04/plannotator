@@ -10,7 +10,7 @@
  *                        in packages/shared/agents.ts. Supported values:
  *                        "claude-code", "amp", "droid", "kiro-cli", "mistral-vibe",
  *                        "opencode", "codex", "copilot-cli", "gemini-cli", "pi", "oh-my-pi",
- *                        "qwen-code".
+ *                        "qwen-code", "dsh".
  */
 
 import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";

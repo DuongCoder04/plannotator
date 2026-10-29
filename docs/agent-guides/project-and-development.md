@@ -30,6 +30,11 @@ plannotator/
 │   │   ├── .factory-plugin/plugin.json
 │   │   ├── commands/             # Slash command entrypoints
 │   │   └── lib/                  # Shared command wrapper helpers
+│   ├── dsh-plugin/               # DeepSeek Harness plugin (@plannotator/dsh): plan review only; review/annotate/last come from the shared skills in ~/.agents/skills
+│   │   ├── index.ts              # Cordis plugin entry (`name` + `apply`); prepends a `user-questions/request` listener
+│   │   ├── plan-review.ts        # Answers exit_plan_mode's plan-review question via `plannotator dsh-plan`; anything else, or any failure, goes to DSH's own card
+│   │   ├── cli.ts                # Finds the plannotator binary; runs the `dsh-plan` round trip (abort kills the child)
+│   │   └── cordis.patch.yml      # The bundle patch row DSH's plugin manager applies on install
 │   ├── marketing/                # Marketing site, docs, and blog (plannotator.ai)
 │   │   └── astro.config.mjs      # Astro 5 static site with content collections
 │   ├── vibe/                     # Mistral Vibe integration source (consumed by scripts/install.sh; auto-detected via $VIBE_HOME, default ~/.vibe)
@@ -247,6 +252,8 @@ These are the flags `.github/workflows/release.yml` compiles with; without the `
 **Release trust gate.** `release.yml` runs `scripts/check-bun-runtime-trust.ts` over every compiled binary before upload. A binary fails when its embedded Bun is below 1.4.4, when it holds emSign ECC Root CA - G3 (as PEM, DER or public key), or when it lacks the blocked-key check (oven-sh/bun#46300; marker `addBlockedSPKIForTesting`). The script reads bytes only, so the Linux builder also checks the darwin and Windows binaries. Raise `MIN_BUN_VERSION` there together with the workflow pins.
 
 **Patched dependency.** `patches/@opencode-ai%2Fsdk@1.19.3.patch` (root `patchedDependencies`) makes the SDK's SSE abort handler catch `reader.cancel()`. On Bun 1.4 that promise rejects once the aborted fetch has errored the body, and the unhandled rejection ends the process: every OpenCode Ask AI answer or Stop aborts the event stream. `packages/ai/providers/opencode-sdk.test.ts` ("through the real client") fails without it. A new SDK version needs the patch carried over (`bun patch @opencode-ai/sdk`) until upstream catches the promise.
+
+**Release versions:** a release bumps 9 version files together, `apps/dsh-plugin/package.json` (`@plannotator/dsh`) among them; `scripts/check-release-version.mjs` lists them and fails on a mismatch. The full procedure is [`.agents/skills/release/SKILL.md`](../../.agents/skills/release/SKILL.md). `bun run build` also builds the DeepSeek Harness plugin (`build:dsh`), whose type check and tests run in the release workflow's `test` job with everything else.
 
 Running only `build:opencode` will copy stale HTML files.
 
