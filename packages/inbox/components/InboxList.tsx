@@ -382,7 +382,7 @@ function PinnedWords() {
 /**
  * Below this list width the wide row of every project leaves its subject cell
  * too little room (the project, words, mark, badge, open counts and time
- * columns are fixed at 170px, 124px, 64px, 52px, 104px and 76px), so the list
+ * columns are fixed at 170px, 124px, 64px, 52px, 84px and 76px), so the list
  * draws the two-line rows instead.
  */
 export const WIDE_ROWS_MIN_LIST_WIDTH = 900;
