@@ -681,7 +681,7 @@ test.skipIf(!hasDom)("Copy is named by its visible words, and its result is said
   expect(['Command copied.', "Couldn't copy the command."]).toContain(status.textContent!);
 });
 
-test.skipIf(!hasDom)('the row says "1 action item", or "1 question, 1 action item", as plain text', () => {
+test.skipIf(!hasDom)('the row says "1 action", or "1 action ?1" beside a question; "1 action item", "1 question, 1 action item" in full', () => {
   expect(waitCount(1, 1)).toBe('1 action item');
   expect(waitCount(2, 1)).toBe('1 question, 1 action item');
   expect(waitCount(3, 1)).toBe('2 questions, 1 action item');
@@ -715,16 +715,17 @@ test.skipIf(!hasDom)('the row says "1 action item", or "1 question, 1 action ite
       <InboxList title="Inbox" path={null} sections={sections} filtered={false} narrow={false} selectedThreadId={null} notice={null} onShowNew={() => {}} onOpen={() => {}} phone={false} />
     </SidebarProvider>,
   );
-  const count = (id: string) => el.querySelector(`[data-thread-id="${id}"] .ib-c`)?.textContent;
-  expect(count('msg_a')).toBe('1 action item');
-  expect(count('msg_b')).toBe('1 question, 1 action item');
+  // The short form drawn (approval "inbox-row-byline", option A), the full words for a screen reader.
+  const words = (cell: Element | null) => ({ short: cell!.querySelector('.ib-cst')!.textContent, questions: cell!.querySelector('.ib-qn')?.textContent ?? null, full: cell!.querySelector('.ib-sr')!.textContent, hidden: cell!.querySelector('.ib-cs')!.getAttribute('aria-hidden') });
+  expect(words(el.querySelector('[data-thread-id="msg_a"] .ib-c'))).toEqual({ short: '1 action', questions: null, full: '1 action item', hidden: 'true' });
+  expect(words(el.querySelector('[data-thread-id="msg_b"] .ib-c'))).toEqual({ short: '1 action', questions: '1', full: '1 question, 1 action item', hidden: 'true' });
   // Beside a thread (approval "inbox-row-byline") too: an action item keeps its words at line 2's end, never `?N`.
   rerender(
     <SidebarProvider>
       <InboxList title="Inbox" path={null} sections={sections} filtered={false} narrow selectedThreadId={null} notice={null} onShowNew={() => {}} onOpen={() => {}} phone={false} />
     </SidebarProvider>,
   );
-  expect(el.querySelector('.ib-nrow[data-thread-id="msg_a"] .ib-l2 > .ib-c')!.textContent).toBe('1 action item');
-  expect(el.querySelector('.ib-nrow[data-thread-id="msg_b"] .ib-l2 > .ib-c')!.textContent).toBe('1 question, 1 action item');
-  expect(el.querySelector('.ib-nrow .ib-qn')).toBeNull();
+  expect(words(el.querySelector('.ib-nrow[data-thread-id="msg_a"] .ib-l2 > .ib-c'))).toEqual({ short: '1 action', questions: null, full: '1 action item', hidden: 'true' });
+  expect(words(el.querySelector('.ib-nrow[data-thread-id="msg_b"] .ib-l2 > .ib-c'))).toEqual({ short: '1 action', questions: '1', full: '1 question, 1 action item', hidden: 'true' });
+  expect(el.querySelector('.ib-nrow .ib-c.ib-qn')).toBeNull();
 });

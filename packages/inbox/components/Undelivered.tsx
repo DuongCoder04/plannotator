@@ -32,14 +32,22 @@ export function useMinuteClock(active: boolean): number {
 
 type Wait = NonNullable<DeliveryLine['wait']>;
 
-/** The row's badge, in place of the count: blue while it can go in now, grey when it cannot. */
-export function UndeliveredBadge({ wait }: { wait: Wait }) {
-  const now = useMinuteClock(true);
+/**
+ * The row's badge, in place of the count: blue while it can go in now, grey when it cannot. It says the short form,
+ * "Undelivered 3m" (approval "inbox-row-byline", option A); the row (InboxList's `CountWords`) keeps the clock and
+ * puts "Undelivered 3 min" in the tooltip and the row's name.
+ */
+export function UndeliveredBadge({ wait, now }: { wait: Wait; now: number }) {
   return (
     <span className="ib-badge ib-b-wait" data-undelivered="" data-stuck={wait.steerable ? undefined : ''}>
-      {undeliveredLabel(wait.since, now)}
+      {undeliveredShort(undeliveredLabel(wait.since, now))}
     </span>
   );
+}
+
+/** "Undelivered 3 min" as the row's short form: "Undelivered 3m". */
+export function undeliveredShort(label: string): string {
+  return label.replace(/ (\d+) min$/, ' $1m');
 }
 
 /** "Undelivered 3 min · Claude Code is working · goes in by itself in 2 min", with its own clock. */

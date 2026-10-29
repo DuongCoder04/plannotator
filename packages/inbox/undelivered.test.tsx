@@ -142,14 +142,17 @@ const rowEl = (el: HTMLElement, id: string) => el.querySelector<HTMLElement>(`[d
 const badge = (el: HTMLElement, id: string) => rowEl(el, id).querySelector<HTMLElement>('[data-undelivered]');
 
 for (const shape of ['wide', 'narrow', 'phone'] as const) {
-  test.skipIf(!hasDom)(`${shape} row: "Undelivered N min" in place of the count, blue where it can go in now, grey where it cannot`, () => {
+  test.skipIf(!hasDom)(`${shape} row: "Undelivered Nm" in place of the count, blue where it can go in now, grey where it cannot`, () => {
     const el = renderList(SECTIONS, { phone: shape === 'phone', narrow: shape === 'narrow' });
-    expect(badge(el, CAN.thread_id)!.textContent).toBe('Undelivered 3 min');
+    // The short form drawn (approval "inbox-row-byline", option A).
+    expect(badge(el, CAN.thread_id)!.textContent).toBe('Undelivered 3m');
     expect(badge(el, CAN.thread_id)!.hasAttribute('data-stuck')).toBe(false);
-    expect(badge(el, STUCK.thread_id)!.textContent).toBe('Undelivered 12 min');
+    expect(badge(el, STUCK.thread_id)!.textContent).toBe('Undelivered 12m');
     expect(badge(el, STUCK.thread_id)!.hasAttribute('data-stuck')).toBe(true);
-    // In the count's cell: the row's name reads it.
-    expect(badge(el, CAN.thread_id)!.closest('.ib-c')).not.toBeNull();
+    // In the count's cell, hidden from a screen reader: the row's name reads the full words.
+    const cell = badge(el, CAN.thread_id)!.closest('.ib-c')!;
+    expect(badge(el, CAN.thread_id)!.closest('[aria-hidden="true"]')).not.toBeNull();
+    expect(cell.querySelector('.ib-sr')!.textContent).toBe('Undelivered 3 min');
     // An older Inbox sends no wait: no badge.
     expect(badge(el, QUEUED_OLD.thread_id)).toBeNull();
   });

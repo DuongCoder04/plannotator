@@ -401,14 +401,16 @@ test('a pick is saved at once and the agent reads it through read_thread', async
   await expect(page.locator('.ib-pfoot [data-draft-foot]')).toHaveText('Draft, 2 picks');
   await expect(page.locator('.ib-pfoot').getByRole('button', { name: 'Send' })).toBeVisible();
   await expect(page.locator('.ib-pfoot').getByRole('button', { name: 'Edit draft' })).toBeVisible();
-  // Answered, not sent: it waits only for Send. The row says "Draft · 2 picks".
+  // Answered, not sent: it waits only for Send. The row says "Draft" (approval "inbox-row-byline", option A), and
+  // "Draft · 2 picks" in its name.
   const row = page.locator(`.ib-nrow[data-thread-id="${world.threads.stopped}"]`);
   await expect(row).toHaveAttribute('data-section', 'new');
-  await expect(row.locator('[data-draft-label]')).toHaveText('Draft · 2 picks');
+  await expect(row.locator('[data-draft-label]')).toHaveText('Draft');
+  await expect(row).toHaveAccessibleName(/Draft · 2 picks/);
   await shot('3.1-answered-not-sent');
 
-  // "Draft · 2 picks" is wider than the wide row's 96px count column, and
-  // its text must end before the time's begins: in every project and in one,
+  // The row's "Draft" (its words column, 124px) must end before the time's
+  // begins: in every project and in one,
   // at full and narrower widths (every project below 900px of list draws the
   // two-line row, whose count ends line 2 instead, inside the line). Measured on the text itself (a
   // Range), since overflowing text spills past its cell's box.
@@ -420,12 +422,12 @@ test('a pick is saved at once and the agent reads it through read_thread', async
         range.selectNodeContents(cell);
         return range.getBoundingClientRect();
       };
-      const count = rect(el.querySelector('.ib-c')!);
+      const count = rect(el.querySelector('.ib-c .ib-cs')!);
       const time = rect(el.querySelector('.ib-t')!);
       // A two-line row's count ends line 2 (approval "inbox-row-byline"), under the time: it must end inside that line.
       const l2 = el.querySelector('.ib-l2');
       const lineEnd = l2 ? Math.round(l2.getBoundingClientRect().right - count.right) : null;
-      return { shape: el.className.split(' ')[0], text: el.querySelector('.ib-c')!.textContent, gap: time.left - count.right, sameLine: Math.abs(count.top - time.top) < 4, lineEnd, last: l2 ? l2.lastElementChild === el.querySelector('.ib-c') : null };
+      return { shape: el.className.split(' ')[0], text: el.querySelector('.ib-c .ib-cs')!.textContent, full: el.querySelector('.ib-c .ib-sr')!.textContent, gap: time.left - count.right, sameLine: Math.abs(count.top - time.top) < 4, lineEnd, last: l2 ? l2.lastElementChild === el.querySelector('.ib-c') : null };
     });
   for (const [folder, narrowShape] of [[/^Inbox/, 'ib-nrow'], [/^billing-svc(?: \d+)?$/, 'ib-row']] as const) {
     await side(page).getByRole('button', { name: folder }).click();
@@ -446,7 +448,8 @@ test('a pick is saved at once and the agent reads it through read_thread', async
         }, where)
         .toBe(true);
       const measured = await textGap();
-      expect(measured.text).toBe('Draft · 2 picks');
+      expect(measured.text).toBe('Draft');
+      expect(measured.full).toBe('Draft · 2 picks');
       if (measured.shape === 'ib-row') {
         expect(measured.sameLine).toBe(true);
         expect(measured.gap, `count runs into the time ${where}`).toBeGreaterThanOrEqual(8);

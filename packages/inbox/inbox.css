@@ -726,12 +726,12 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-band .ib-ic { margin-left: auto; color: var(--muted-foreground); }
 /* The one-line row (approval "inbox-row-byline", 2026-10-29): the project, the subject cell (the thread pill, the
    subject), then right-aligned the agents' marks, the badge, `?N` and the time, each in a fixed column of its own so
-   they line up down the list in every row. Count words (a draft, Undelivered, "1 action item", Read …) have their
-   own column between the subject and the marks: it takes the width the words need (none when there are none), so
-   long words shorten the subject, never move a column. `?N` gets 44px: `?128` fits. */
-.ib-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) auto 64px 52px 44px 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
+   they line up down the list in every row. The count in words, short ("Draft", "Undelivered 14m", "1 action"), has
+   its own fixed 124px column between the subject and the marks (approval "inbox-row-byline", option A), so every
+   subject has the same room. `?N` gets 44px: `?128` fits. */
+.ib-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 124px 64px 52px 44px 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
 /* One project's list: no project column (InboxList's WideRow). */
-.ib-noproj .ib-row { grid-template-columns: minmax(0, 1fr) auto 64px 52px 44px 76px; }
+.ib-noproj .ib-row { grid-template-columns: minmax(0, 1fr) 124px 64px 52px 44px 76px; }
 /* The words, the agents' marks, the badge and `?N`, each right-aligned in its column, so every subject starts on
    one left edge; up to three agents' marks overlap within theirs, past that two and "+N". A `?N` wider than its
    column (four digits) runs out to the left, into the gap, never into the time. */
@@ -813,6 +813,14 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-nrow .ib-l2 .ib-s { flex: 0 1 auto; min-width: 0; white-space: nowrap; }
 .ib-nrow .ib-l2 .ib-mcol { display: inline-flex; flex: none; align-items: center; margin-left: auto; }
 .ib-nrow .ib-l2 > :is(.ib-badge, .ib-c) { flex: none; }
+/* The count in words (`CountWords`; approval "inbox-row-byline", option A, 2026-10-29): the short form, "Draft",
+   "Undelivered 14m", "1 action", "1 action ?1", in a slot of at most 124px (a wide row's column) on every row, so
+   it never takes the subject's room. Longer words ("To Claude Code (another session)") end in "…"; the full words
+   are the tooltip's and the row's name. */
+.ib-c.ib-cwords { display: inline-flex; justify-content: flex-end; align-items: center; max-width: 124px; min-width: 0; flex: none; }
+.ib-cwords > .ib-cs { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; white-space: nowrap; }
+.ib-cs > .ib-cst { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ib-cs > .ib-qn { display: inline-flex; align-items: center; gap: 4px; flex: none; font-variant-numeric: tabular-nums; }
 /* The open count on line 2 (`LineCount`): the question icon and the number, `?2`; its words are for a screen reader. */
 .ib-c.ib-qn { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
 /* Several agents in that box (any list row, the one-line row too): the scale's 20 px tiles, overlapping 2 px rather than the stack's 5, so the second

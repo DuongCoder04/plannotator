@@ -5,7 +5,7 @@ import { inboxThreadShortcuts } from '../shortcuts/thread.shortcuts';
 import type { InboxListRow, InboxListSection } from '@plannotator/core/inbox-types';
 import { threadChipName } from '../threadChip';
 import { agentName, formatCount, shortTime, waitCount } from '../format';
-import { reaskRowLine, sentRowLine } from '../deliveryLine';
+import { reaskRowLine, sentRowLine, undeliveredLabel } from '../deliveryLine';
 import { sentRecipientsWords } from '../tags';
 import { TagStack } from './TagPicker';
 import { Tip } from './Tip';
@@ -15,11 +15,11 @@ import { SidebarTrigger, useSidebar } from '../shell/sidebar';
 import { offersRowMarkRead } from '../markRead';
 import { useNarrowerThan } from '../narrower';
 import { inboxHasUnsent, inboxRowArchived, type InboxSectionId } from '@plannotator/core/inbox-types';
-import { DraftLabel } from './DraftLabel';
+import { DraftLabel, rowUnsent, unsentWords } from './DraftLabel';
 import { ThreadRowMenu } from './RowMenu';
 import type { RowMenuAction } from '../rowMenu';
 import { rowTimeIso, rowWait } from '../rowDelivery';
-import { UndeliveredBadge } from './Undelivered';
+import { UndeliveredBadge, useMinuteClock } from './Undelivered';
 import { TimeWithTick } from './DeliveryTick';
 import { RowBadge, WaitCard, badgeDescription, rowHasBadge } from './RowBadge';
 import { attachPullToRefresh } from '../pullRefresh';
@@ -197,34 +197,64 @@ function subjectOf(row: InboxListRow): string {
   return row.subject ?? '(no subject)';
 }
 
-/** What the count cell says in place of the open count (a wait, Archived, a draft, Read, …), or null: the open count. */
-function countState(row: InboxListRow): ReactNode | null {
+/**
+ * What the count says in words (approval "inbox-row-byline", option A, 2026-10-29), or null: the open count (`?N`)
+ * or nothing. `short` is what the row draws, in its 124 px slot; `full` is said in the tooltip and the row's name.
+ * Action items are always named (approval "inbox-next-actions"): "1 action", and "1 action ?1" beside a question.
+ */
+function countWords(row: InboxListRow, now: number): { short: ReactNode; full: string } | null {
   // A reply waiting on a busy agent (approval "inbox-busy-agent-reply"): how long, in place of the count.
   const wait = rowWait(row.delivery);
-  if (wait) return <UndeliveredBadge wait={wait} />;
+  if (wait) return { short: <UndeliveredBadge wait={wait} now={now} />, full: undeliveredLabel(wait.since, now) };
   // A Quiet row says why it is there: archived (resolved), or marked read.
-  if (inboxRowArchived(row)) return 'Archived';
-  // What the person has not sent (approval "inbox-reply-drafts"): "Draft · Your reply, 2 picks".
-  if (row.unsent && inboxHasUnsent(row.unsent)) return <DraftLabel unsent={row.unsent} />;
+  if (inboxRowArchived(row)) return { short: 'Archived', full: 'Archived' };
+  // What the person has not sent (approval "inbox-reply-drafts"): "Draft", and "Draft · Your reply, 2 picks" in full.
+  if (row.unsent && inboxHasUnsent(row.unsent)) return { short: <DraftLabel unsent={row.unsent} short />, full: `Draft · ${unsentWords(rowUnsent(row.unsent))}` };
   // Marked read with 👍 Looks good: the row says so in place of "Read".
-  if (row.section === 'quiet' && (row.read_at ?? null) !== null && row.ack) return `👍 ${row.ack.label}`;
-  if (row.section === 'quiet' && (row.read_at ?? null) !== null) return 'Read';
+  if (row.section === 'quiet' && (row.read_at ?? null) !== null && row.ack) return { short: `👍 ${row.ack.label}`, full: `👍 ${row.ack.label}` };
+  if (row.section === 'quiet' && (row.read_at ?? null) !== null) return { short: 'Read', full: 'Read' };
   // An older Inbox (no `unsent`): its own words.
-  if (row.answered_not_sent) return 'Answered, not sent';
-  if (row.section === 'sent' && row.addressee) return `To ${agentName(rowAgent(row))}`;
-  return null;
+  if (row.answered_not_sent) return { short: 'Answered', full: 'Answered, not sent' };
+  if (row.section === 'sent' && row.addressee) {
+    const to = `To ${agentName(rowAgent(row))}`;
+    return { short: to, full: to };
+  }
+  const actions = Math.min(row.questions.actions ?? 0, row.questions.open);
+  if (actions < 1) return null;
+  const questions = row.questions.open - actions;
+  return {
+    short: (
+      <>
+        <span className="ib-cst">{`${formatCount(actions)} action${actions === 1 ? '' : 's'}`}</span>
+        {questions > 0 && (
+          <span className="ib-qn">
+            <Icon name="question" size={15} />
+            {formatCount(questions)}
+          </span>
+        )}
+      </>
+    ),
+    full: waitCount(row.questions.open, actions),
+  };
 }
 
 /**
- * The row's count in words, or nothing: a state (Read, a draft, Undelivered …), or open action items, which are
- * always named (approval "inbox-next-actions"). Only open questions alone read as `?N` (`QuestionCount`).
+ * The count in words (`countWords`): the short form drawn, the full words for a screen reader and, with `tip`, in
+ * the tooltip; nothing when the count is `?N` or there is none.
  */
-function CountWords({ row }: { row: InboxListRow }) {
-  const state = countState(row);
-  if (state) return <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{state}</span>;
-  const actions = row.questions.actions ?? 0;
-  if (row.questions.open < 1 || actions < 1) return null;
-  return <span className="ib-c">{waitCount(row.questions.open, actions)}</span>;
+function CountWords({ row, tip = false }: { row: InboxListRow; tip?: boolean }) {
+  const now = useMinuteClock(rowWait(row.delivery) !== null);
+  const words = countWords(row, now);
+  if (!words) return null;
+  const cell = (
+    <span className={`ib-c ib-cwords${row.section === 'quiet' ? ' ib-qlabel' : ''}`} data-count-words={words.full}>
+      <span className="ib-cs" aria-hidden="true">
+        {typeof words.short === 'string' ? <span className="ib-cst">{words.short}</span> : words.short}
+      </span>
+      <span className="ib-sr">{words.full}</span>
+    </span>
+  );
+  return tip ? <Tip content={words.full}>{cell}</Tip> : cell;
 }
 
 /**
@@ -234,7 +264,7 @@ function CountWords({ row }: { row: InboxListRow }) {
 function LineCount({ row, tip = false }: { row: InboxListRow; tip?: boolean }) {
   return (
     <>
-      <CountWords row={row} />
+      <CountWords row={row} tip={tip} />
       <QuestionCount row={row} tip={tip} />
     </>
   );
@@ -246,7 +276,7 @@ function LineCount({ row, tip = false }: { row: InboxListRow; tip?: boolean }) {
  */
 function QuestionCount({ row, tip = false }: { row: InboxListRow; tip?: boolean }) {
   const open = row.questions.open;
-  if (open < 1 || countState(row) || (row.questions.actions ?? 0) > 0) return null;
+  if (open < 1 || countWords(row, 0) !== null) return null;
   const words = waitCount(open, 0) || '1 question';
   const cell = (
     <span className="ib-c ib-qn" data-open-count={open}>
@@ -383,7 +413,7 @@ function WideRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: 
       {/* Every column right of the words has a fixed width, so each lines up down the list. The words (a draft,
           Undelivered, action items …) take the width they need, between the subject and the marks. */}
       <span className="ib-cw">
-        <CountWords row={row} />
+        <CountWords row={row} tip />
       </span>
       <MarkCol row={row} fold={LINE_MARKS} />
       <span className="ib-bcol">{badgeEl}</span>

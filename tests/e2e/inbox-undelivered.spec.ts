@@ -293,9 +293,11 @@ test('waiting on a busy agent: "Undelivered N min" on the row (blue / grey), Sen
   await page.goto(`${world.url}`);
   const heroRow = page.locator(`.ib-lbody [data-thread-id="${hero.thread}"]`).first();
   const stuckRow = page.locator(`.ib-lbody [data-thread-id="${stuck.thread}"]`).first();
-  await expect(heroRow.locator('[data-undelivered]')).toHaveText('Undelivered 3 min');
+  // The short form drawn (approval "inbox-row-byline", option A); the full words in the row's name.
+  await expect(heroRow.locator('[data-undelivered]')).toHaveText('Undelivered 3m');
+  await expect(heroRow.locator('.ib-c .ib-sr')).toHaveText('Undelivered 3 min');
   await expect(heroRow.locator('[data-undelivered]')).not.toHaveAttribute('data-stuck', /.*/);
-  await expect(stuckRow.locator('[data-undelivered]')).toHaveText('Undelivered 3 min');
+  await expect(stuckRow.locator('[data-undelivered]')).toHaveText('Undelivered 3m');
   await expect(stuckRow.locator('[data-undelivered]')).toHaveAttribute('data-stuck', '');
   // The badge is the count's cell: the row reads it in its name.
   await expect(heroRow).toContainText('Undelivered 3 min');
@@ -359,7 +361,7 @@ test('on a phone: the row badge, the band and a 44 px Send now', async ({ browse
     await windowAhead(page, 3.5 * MIN);
     await page.goto(world.url);
     const row = page.locator(`.ib-mrow[data-thread-id="${hero.thread}"]`);
-    await expect(row.locator('[data-undelivered]')).toHaveText('Undelivered 3 min');
+    await expect(row.locator('[data-undelivered]')).toHaveText('Undelivered 3m');
     // A phone row keeps one tap target: no Send now on it.
     await expect(page.locator('[data-row-send-now]')).toHaveCount(0);
     await shot(page, 'phone-list');
