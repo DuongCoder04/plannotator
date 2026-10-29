@@ -478,6 +478,7 @@ async function handleTailscaleReady(port: number): Promise<void> {
     ({ url } = enableTailscaleServe(port));
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write("To keep working on this computer, run the same command without --tailscale.\n");
     process.exit(
       annotateStartupFailureExitCode({
         requireApproval: requireApprovalFlag,
