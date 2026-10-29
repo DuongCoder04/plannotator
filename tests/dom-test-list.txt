@@ -141,6 +141,7 @@ packages/inbox/tabCountWindow.test.tsx
 packages/inbox/phoneList.test.tsx
 packages/inbox/listLabels.test.tsx
 packages/inbox/projectLabelRows.test.tsx
+packages/inbox/projectLabelHeld.test.tsx
 packages/inbox/listRowMemo.test.tsx
 packages/inbox/rowTicks.test.tsx
 packages/inbox/guideDiffStyle.test.tsx

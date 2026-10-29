@@ -5,7 +5,7 @@
  * (an old worktree) must not lengthen the name here.
  */
 import { expect, test } from 'bun:test';
-import { listProjectNames, shortProjectNames } from './projectLabels';
+import { shortProjectNames, windowProjectNames } from './projectLabels';
 
 const REPO = { id: 'prj_repo', root: '/Users/me/plannotator/plannotator', name: 'plannotator · plannotator' };
 const WORKTREE = { id: 'prj_wt', root: '/Users/me/worktrees/plannotator', name: 'plannotator · worktrees' };
@@ -33,16 +33,27 @@ test('two listed projects with the same folder name each add their parent, as ma
   expect(deep.get('b')).toBe('Web · b/SRC');
 });
 
-test('a clash only with a project that has no row in the list leaves the folder name alone', () => {
+test('a clash only with a stored project neither the sidebar nor the list draws leaves the folder name alone', () => {
   const sections = [{ threads: [{ project: { id: REPO.id } }, { project: { id: API_WORK.id } }] }];
-  // WORKTREE is stored (the list model knows it) but has no row here.
-  const names = listProjectNames(sections, [REPO, WORKTREE, API_WORK]);
+  // WORKTREE is stored (the list model knows it) but is neither in the sidebar nor in a row.
+  const names = windowProjectNames({ projects: [REPO, WORKTREE, API_WORK], sidebar: [REPO, API_WORK], sections });
   expect(names.get(REPO.id)).toBe('plannotator');
   expect(names.has(WORKTREE.id)).toBe(false);
-  // Its row lands: both now name their parent.
-  const both = listProjectNames([...sections, { threads: [{ project: { id: WORKTREE.id } }] }], [REPO, WORKTREE, API_WORK]);
-  expect(both.get(REPO.id)).toBe('plannotator · plannotator');
-  expect(both.get(WORKTREE.id)).toBe('plannotator · worktrees');
+});
+
+test('the sidebar and the held list name together: a project in only one of them still makes the clash', () => {
+  // The held list still shows WORKTREE's row (archived while a thread is open); the sidebar has dropped it.
+  const held = windowProjectNames({ projects: [REPO, WORKTREE], sidebar: [REPO], sections: [{ threads: [{ project: { id: REPO.id } }, { project: { id: WORKTREE.id } }] }] });
+  expect(held.get(REPO.id)).toBe('plannotator · plannotator');
+  // A project new in the sidebar whose row the held list does not show yet.
+  const fresh = windowProjectNames({ projects: [REPO, WORKTREE], sidebar: [REPO, WORKTREE], sections: [{ threads: [{ project: { id: REPO.id } }] }] });
+  expect(fresh.get(REPO.id)).toBe('plannotator · plannotator');
+});
+
+test("a pin's project the window does not otherwise draw is named against the drawn ones, without renaming them", () => {
+  const names = windowProjectNames({ projects: [REPO, WORKTREE], sidebar: [REPO], sections: [], pins: [{ project: { id: WORKTREE.id } }] });
+  expect(names.get(REPO.id)).toBe('plannotator');
+  expect(names.get(WORKTREE.id)).toBe('plannotator · worktrees');
 });
 
 test('a project at a POSIX filesystem root (`/`, no folder name) keeps the name it came with', () => {

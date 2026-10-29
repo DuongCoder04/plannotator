@@ -14,6 +14,7 @@ import type { InboxListRow, InboxListSection } from '@plannotator/core/inbox-typ
 const hasDom = typeof document !== 'undefined';
 const { InboxList } = (hasDom ? await import('./components/InboxList') : {}) as typeof import('./components/InboxList');
 const { SidebarProvider } = (hasDom ? await import('./shell/sidebar') : {}) as typeof import('./shell/sidebar');
+const { windowProjectNames } = await import('./projectLabels');
 
 const AGENT = { kind: 'agent' as const, host: 'claude-code', session: 'ses_a', name: null };
 
@@ -77,7 +78,7 @@ function draw(shape: 'wide' | 'narrow' | 'phone', sections: InboxListSection[]) 
             path={null}
             sections={sections}
             filtered={false}
-            projects={PROJECTS}
+            projectNames={windowProjectNames({ projects: PROJECTS, sidebar: [], sections })}
             narrow={shape === 'narrow'}
             selectedThreadId={null}
             notice={null}

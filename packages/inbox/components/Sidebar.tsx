@@ -10,7 +10,6 @@ import { Icon } from '../icons';
 import { useSidebar } from '../shell/sidebar';
 import { usePhone } from '../phone';
 import { shownProjects, type ProjectAction } from '../projectMenu';
-import { shortProjectNames } from '../projectLabels';
 import { ProjectRow } from './ProjectRow';
 import { PinnedRow, type PinnedAction } from './PinnedRow';
 import { useInboxTheme } from '../theme';
@@ -35,6 +34,11 @@ export interface SidebarProps {
   /** Rows waiting on the person, all projects. */
   inboxCount: number;
   projects: readonly ProjectFolder[];
+  /**
+   * The window's name for each project (`windowProjectNames`, App.tsx), shared with the rows so a project reads
+   * the same in both, the pins' tooltip and name too. Absent, or a project not in it: the server's name.
+   */
+  projectNames?: ReadonlyMap<string, string>;
   /** Rows waiting on the person, per project id. */
   projectCounts: ReadonlyMap<string, number>;
   /**
@@ -147,23 +151,12 @@ export function Sidebar(props: SidebarProps) {
   const phone = usePhone();
   // A project with nothing in the list leaves the sidebar (automatic hiding); the one the list shows stays until the person leaves it.
   const held = props.page === 'inbox' ? props.projectId : null;
-  // Each project by its folder's name, the parent added only when two projects shown here share it (shortProjectNames).
-  const shown = useMemo(() => {
-    const list = shownProjects(props.projects, held);
-    const names = shortProjectNames(list);
-    return list.map((project) => ({ ...project, name: names.get(project.id) ?? project.name }));
-  }, [props.projects, held]);
+  // Each project by the window's one name for it (windowProjectNames, App.tsx), as the rows name it.
+  const shown = useMemo(
+    () => shownProjects(props.projects, held).map((project) => ({ ...project, name: props.projectNames?.get(project.id) ?? project.name })),
+    [props.projects, props.projectNames, held],
+  );
   const pins = props.pins ?? [];
-  // A pin names its project as the sidebar does; a pin whose project the sidebar does not show (an archived
-  // thread) is named against the shown projects plus its own.
-  const pinProjects = useMemo(() => {
-    const names = new Map(shown.map((project) => [project.id, project.name] as const));
-    const others = props.projects.filter((project) => !names.has(project.id) && pins.some((row) => row.project.id === project.id));
-    if (others.length === 0) return names;
-    const withOthers = shortProjectNames([...shownProjects(props.projects, held), ...others]);
-    for (const project of others) names.set(project.id, withOthers.get(project.id) ?? project.name);
-    return names;
-  }, [shown, props.projects, pins, held]);
   // One scroll area holds Pinned and Projects (no limit on pins: a long Pinned section scrolls with the projects).
   const [projsRef, moreProjects] = useMoreBelow<HTMLDivElement>(`${shown.length}:${pins.length}`);
   /**
@@ -326,7 +319,7 @@ export function Sidebar(props: SidebarProps) {
                 <PinnedRow
                   key={row.thread_id}
                   row={row}
-                  project={pinProjects.get(row.project.id)}
+                  project={props.projectNames?.get(row.project.id)}
                   on={props.page === 'inbox' && props.openThreadId === row.thread_id}
                   first={index === 0}
                   last={index === pins.length - 1}

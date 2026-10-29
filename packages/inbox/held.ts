@@ -92,7 +92,7 @@ export function heldNotice(
   latest: readonly InboxListSection[],
   openedHere?: ReadonlySet<string>,
   open?: OpenThread | null,
-  /** The window's project names by id (`listProjectNames`); a project not in it reads its server name. */
+  /** The window's project names by id (`windowProjectNames`); a project not in it reads its server name. */
   names?: ReadonlyMap<string, string>,
 ): HeldNotice {
   const before = rowsById(shown);

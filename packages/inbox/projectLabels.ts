@@ -56,12 +56,28 @@ export function shortProjectNames(projects: readonly { id: string; root: string;
   return out;
 }
 
-/** The projects with a row in `sections` (the list on screen, a folded Quiet included), named by `shortProjectNames`. */
-export function listProjectNames(
-  sections: readonly { threads: readonly { project: { id: string } }[] }[],
-  projects: readonly { id: string; root: string; name: string }[],
-): Map<string, string> {
-  const listed = new Set<string>();
-  for (const section of sections) for (const row of section.threads) listed.add(row.project.id);
-  return shortProjectNames(projects.filter((project) => listed.has(project.id)));
+/**
+ * The window's one name per project (owner's pick, 2026-10-29): `shortProjectNames` over every project the
+ * window draws by name, so a project reads the same in the sidebar and in the rows. The list is held while the
+ * person reads (held.ts) and the sidebar is not, so the set is both: the sidebar's projects (`sidebar`) and the
+ * projects with a row in the held list (`sections`, a folded Quiet included). A pinned row's project outside that
+ * set (an archived thread) is named against the set plus itself, without renaming the set. A project not in
+ * `projects` has no entry: the caller falls back to the server's name.
+ */
+export function windowProjectNames(input: {
+  projects: readonly { id: string; root: string; name: string }[];
+  sidebar: readonly { id: string }[];
+  sections: readonly { threads: readonly { project: { id: string } }[] }[];
+  pins?: readonly { project: { id: string } }[];
+}): Map<string, string> {
+  const on = new Set(input.sidebar.map((project) => project.id));
+  for (const section of input.sections) for (const row of section.threads) on.add(row.project.id);
+  const drawn = input.projects.filter((project) => on.has(project.id));
+  const names = shortProjectNames(drawn);
+  for (const pin of input.pins ?? []) {
+    if (names.has(pin.project.id)) continue;
+    const project = input.projects.find((p) => p.id === pin.project.id);
+    if (project) names.set(project.id, shortProjectNames([...drawn, project]).get(project.id) ?? project.name);
+  }
+  return names;
 }
