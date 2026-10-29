@@ -47,7 +47,7 @@ import {
 } from "@plannotator/core/inbox-types";
 import { inboxStatus, type InboxRegistryEntry } from "@plannotator/shared/inbox/registry";
 import { qwenHome, qwenSessionOfProcess } from "@plannotator/shared/inbox/qwen-sessions";
-import { INBOX_MAX_REQUEST_BYTES, INBOX_WAKES_META_KEY, inboxRequestTooLargeMessage } from "@plannotator/shared/inbox/connection";
+import { INBOX_MAX_REQUEST_BYTES, inboxRequestTooLargeMessage } from "@plannotator/shared/inbox/connection";
 
 const FILLED_TOOLS = new Set(["send_message", "read_thread", "wait_for_reply", "submit_guide", "card"]);
 /** The tools that take the project but no session: search (its schema is strict, so no `agent_session`). */
@@ -60,24 +60,9 @@ const AUTHOR_TOOLS = new Set(["send_message", "submit_guide", "card"]);
  * `plannotator_inbox` tool sends (`INBOX_AGENT_NAME` in the Claude Code mod,
  * `PI_INBOX_AGENT_NAME`, `OPENCODE_INBOX_AGENT_NAME`), and Codex and Qwen
  * Code, which the Inbox wakes itself (`codex queue`, Qwen's cross-session
- * messaging); and Grok Build, a session the Inbox runs itself over ACP
- * (packages/server/inbox-acp-runner.ts), which is not in INBOX_WAKING_HOSTS
- * (no bridge or MCP wake: the runner's turns).
+ * messaging).
  */
-export const INBOX_SESSION_HOST_NAMES: Readonly<Record<string, string>> = {
-  ...Object.fromEntries(INBOX_WAKING_HOSTS.map((host) => [host, INBOX_HOST_NAMES[host]!])),
-  grok: INBOX_HOST_NAMES.grok!,
-};
-
-/**
- * The hosts whose sessions the Inbox runs itself over ACP (packages/server/
- * inbox-acp-runner.ts sets the tag in the shim's own environment, never in
- * the agent's): every reply reaches them as a turn, so the shim marks their
- * tool calls as coming through a connection that wakes the session
- * (`INBOX_WAKES_META_KEY`), and send_message tells the agent the reply comes
- * by itself instead of telling it to wait_for_reply.
- */
-export const INBOX_RUNNER_HOSTS: ReadonlySet<string> = new Set(["grok"]);
+export const INBOX_SESSION_HOST_NAMES: Readonly<Record<string, string>> = Object.fromEntries(INBOX_WAKING_HOSTS.map((host) => [host, INBOX_HOST_NAMES[host]!]));
 
 /** A host session id: what Claude Code, Pi and OpenCode use (UUIDs, `ses_` ids), and nothing that could carry anything else. */
 const HOST_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -222,11 +207,9 @@ export function fillInboxToolArguments(message: JsonRpc, cwd: string, own: strin
   if (!FILLED_TOOLS.has(name)) return message;
   const args = { ...((message.params.arguments as Record<string, unknown> | undefined) ?? {}) };
   if (args.project_path === undefined && args.reply_to === undefined) args.project_path = cwd;
-  let wakes = false;
   if (args.agent_session === undefined) {
     if (hostSession && (args.agent_host === undefined || args.agent_host === hostSession.host)) {
       args.agent_session = hostSession.session;
-      wakes = INBOX_RUNNER_HOSTS.has(hostSession.host);
       if (AUTHOR_TOOLS.has(name)) {
         args.agent_host = hostSession.host;
         if (args.agent_name === undefined) args.agent_name = hostSession.name;
@@ -235,9 +218,7 @@ export function fillInboxToolArguments(message: JsonRpc, cwd: string, own: strin
       args.agent_session = own;
     }
   }
-  // A session the Inbox runs: its replies come as turns (the shim's env names it; the agent cannot set that).
-  const meta = wakes ? { _meta: { ...((message.params._meta as Record<string, unknown> | undefined) ?? {}), [INBOX_WAKES_META_KEY]: true } } : {};
-  return { ...message, params: { ...message.params, ...meta, arguments: args } };
+  return { ...message, params: { ...message.params, arguments: args } };
 }
 
 /** The JSON-RPC messages in an SSE body (`data:` lines, joined per event). */

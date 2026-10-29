@@ -149,7 +149,6 @@ packages/inbox/sidebarUpdateDot.test.tsx
 packages/inbox/updateStuck.test.tsx
 packages/inbox/palettePicker.test.tsx
 packages/inbox/textSize.test.tsx
-packages/inbox/runLine.test.tsx
 packages/inbox/agentNoteDialog.test.tsx
 packages/inbox/agentsSettings.test.tsx
 packages/inbox/promptsSettings.test.tsx

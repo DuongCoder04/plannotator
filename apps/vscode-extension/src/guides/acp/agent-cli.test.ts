@@ -131,7 +131,7 @@ describe("scope: Guides only", () => {
     expect(Object.keys(AGENT_CLIS).sort()).toEqual([CLAUDE_CODE.id, CODEX.id].sort());
   });
 
-  it("the shared resolver (the Inbox runner's) adds no CLI variable, and Grok has none either way", () => {
+  it("the shared resolver adds no CLI variable, and Grok has none either way", () => {
     for (const a of [CLAUDE_CODE, CODEX, GROK]) {
       const shared = resolveAgentLaunch(a, {}, found, () => null, "darwin");
       expect(shared.ok && shared.env).toBeFalsy();
