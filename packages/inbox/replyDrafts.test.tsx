@@ -8,7 +8,7 @@
  *
  * The window over a REAL Inbox (tests/helpers/inbox-dom-server.ts), its
  * fetches carried over loopback. DOM-gated: runs under DOM_TESTS=1
- * (happy-dom), from the test.yml DOM list.
+ * (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { act } from 'react';

@@ -18,7 +18,7 @@
  * a plain `focus()` here; a click's focus is proved in Chromium
  * (tests/e2e/inbox-row-badges.spec.ts).
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act } from 'react';
