@@ -172,7 +172,7 @@ test('Tailscale stopped: the switch stays on and the error says why, and one cli
   const toggle = block.getByRole('switch', { name: 'Reach the Inbox over Tailscale' });
   await toggle.click();
   await expect(block.locator('[data-tailscale-error]')).toContainText('Tailscale could not publish the Inbox');
-  await expect(block.locator('[data-tailscale-error]')).toContainText('Tailscale is stopped.');
+  await expect(block.locator('[data-tailscale-error]')).toContainText('Tailscale is turned off on this computer.');
   await expect(toggle).toHaveAttribute('aria-checked', 'true');
   await shot('settings-tailscale-unavailable');
   writeFileSync(join(world.root, 'mode'), 'up');
