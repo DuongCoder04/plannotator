@@ -11,7 +11,8 @@
  * its Undo putting the pin back at its old place (a restore of that one
  * thread with its original pinned_at); a quick pin-then-unpin on the
  * header's toggle sending both in order; an archived thread stays
- * pinned and opens as an archived thread; no section when nothing is pinned.
+ * pinned and opens as an archived thread; no section when nothing is pinned;
+ * pinning while Pinned is closed opens it.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
@@ -27,6 +28,10 @@ import type { InboxListRow } from '@plannotator/core/inbox-types';
 const hasDom = typeof document !== 'undefined';
 const { InboxApp } = (hasDom ? await import('./App') : {}) as typeof import('./App');
 const { movePin, pinnedState, unpinnedWhere } = await import('./pins');
+const { SIDEBAR_CLOSED_COOKIE } = await import('./sidebarSections');
+const { storage, setStorageBackend, resetStorageBackend } = await import('@plannotator/ui/utils/storage');
+// Which sidebar sections are closed persists through Plannotator's storage (cookies in the app); a map stands in here.
+const stored = new Map<string, string>();
 
 const SERVER_SCRIPT = resolve(import.meta.dir, '../../tests/helpers/inbox-dom-server.ts');
 
@@ -74,7 +79,7 @@ async function serverPin(threadId: string, pinned: boolean) {
   expect(answer.status).toBe(200);
 }
 
-const TESTS = 9;
+const TESTS = 10;
 
 beforeAll(async () => {
   if (!hasDom) return;
@@ -133,6 +138,12 @@ beforeEach(async () => {
   posted = [];
   clipboard = [];
   window.location.hash = '';
+  stored.clear();
+  setStorageBackend({
+    getItem: (key) => stored.get(key) ?? null,
+    setItem: (key, value) => void stored.set(key, value),
+    removeItem: (key) => void stored.delete(key),
+  });
 });
 
 afterEach(() => {
@@ -146,6 +157,7 @@ afterEach(() => {
   if (savedClipboard) Object.defineProperty(navigator, 'clipboard', savedClipboard);
   else delete (navigator as unknown as Record<string, unknown>).clipboard;
   document.body.innerHTML = '';
+  resetStorageBackend();
 });
 
 async function until(check: () => boolean | Promise<boolean>, what: string) {
@@ -232,7 +244,7 @@ test('the order a move makes, the state a pinned row shows, and the toast words'
 test.skipIf(!hasDom)('no section when nothing is pinned; Pin thread leads the row menu and the thread appears in Pinned, above Projects', async () => {
   await renderApp();
   expect(pinnedSection()).toBeNull();
-  expect(document.querySelector('.ib-side-label')!.textContent).toBe('Projects');
+  expect(document.querySelector('.ib-side-sec-l')!.textContent).toBe('Projects');
   await act(async () => {
     rowButton(ids.stopped)!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 300, clientY: 200 }));
   });
@@ -246,10 +258,10 @@ test.skipIf(!hasDom)('no section when nothing is pinned; Pin thread leads the ro
   });
   await until(() => pinnedOrder().length === 1, 'the pinned row');
   expect(await serverPins()).toEqual([ids.stopped]);
-  // Above Projects, labelled Pinned.
-  const labels = [...document.querySelectorAll('.ib-side-label')].map((el) => el.textContent);
+  // Above Projects, labelled by its header, Pinned.
+  const labels = [...document.querySelectorAll('.ib-side-sec-l')].map((el) => el.textContent);
   expect(labels).toEqual(['Pinned', 'Projects']);
-  expect(pinnedSection()!.getAttribute('aria-labelledby')).toBe(document.querySelector('.ib-side-label')!.id);
+  expect(pinnedSection()!.getAttribute('aria-labelledby')).toBe(document.querySelector('[data-sidebar-section="pinned"]')!.id);
   // The Count variant: Stopped as a pill; the name says subject, project, state; bold (it waits on the person).
   const pin = pinnedRow(ids.stopped)!;
   expect(pin.querySelector('.ib-spill')!.textContent).toBe('Stopped');
@@ -288,6 +300,22 @@ test.skipIf(!hasDom)("the header's pin toggle pins and unpins the open thread", 
   await until(() => !!toast(), 'the Unpinned toast');
   expect(toast()!.textContent).toContain('Unpinned');
   expect(toast()!.textContent).toContain('Still in Waiting on you');
+});
+
+test.skipIf(!hasDom)('pinning a thread while Pinned is closed opens Pinned, so the new pin is seen', async () => {
+  await serverPin(ids.stopped, true);
+  storage.setItem(SIDEBAR_CLOSED_COOKIE, 'pinned');
+  await renderApp(`#thread=${ids.waiting}`);
+  const header = () => document.querySelector<HTMLElement>('[data-sidebar-section="pinned"]')!;
+  await until(() => !!document.querySelector('[data-pin-toggle]') && pinnedSection() !== null, 'the header toggle and Pinned');
+  // Closed: the pin that is not on screen is not drawn; its Stopped counts on the header.
+  expect(header().getAttribute('aria-expanded')).toBe('false');
+  expect(pinnedOrder()).toEqual([]);
+  expect(header().querySelector('.ib-n')!.textContent).toContain('1');
+  await act(async () => document.querySelector<HTMLElement>('[data-pin-toggle]')!.click());
+  await until(() => pinnedOrder().length === 2, 'both pinned rows');
+  expect(header().getAttribute('aria-expanded')).toBe('true');
+  expect(storage.getItem(SIDEBAR_CLOSED_COOKIE)).toBeNull();
 });
 
 test.skipIf(!hasDom)("a quick pin-then-unpin on the header's toggle sends both, in order, and ends unpinned", async () => {
