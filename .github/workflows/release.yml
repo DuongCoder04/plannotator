@@ -1123,6 +1123,7 @@ jobs:
       - pi-extension-ai-runtime-windows
       - install-script-smoke
       - release-security
+      - viewer-pin-live
     if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs['dry-run'] == 'false'))
     runs-on: ubuntu-24.04
     permissions:
@@ -1208,9 +1209,11 @@ jobs:
   # tag's build on the same push. Nothing else ties the two together, so before
   # anything is released, guides.show must serve the exact entry files both jobs
   # pinned. A deploy that failed, lags or built other bytes would otherwise ship
-  # exports that load no viewer. The deploy normally finishes long before this
-  # job starts (this workflow's test job alone takes longer); the retries cover
-  # a slow one.
+  # exports that load no viewer. attest, release and npm-publish all wait for
+  # it, so a failed gate attests, releases and publishes nothing. The deploy
+  # normally finishes long before this job starts (this workflow's test job
+  # alone takes longer); the retries cover a slow one. Recovery: deploy
+  # guides.show on the tag, then "Re-run failed jobs".
   viewer-pin-live:
     needs:
       - release-eligibility
@@ -1222,26 +1225,30 @@ jobs:
     steps:
       - name: guides.show serves the pinned viewer
         env:
-          PINNED: >-
-            ${{ needs.build.outputs.viewer-js }}
-            ${{ needs.build.outputs.viewer-css }}
-            ${{ needs.npm-package.outputs.viewer-js }}
-            ${{ needs.npm-package.outputs.viewer-css }}
+          BUILD_JS: ${{ needs.build.outputs.viewer-js }}
+          BUILD_CSS: ${{ needs.build.outputs.viewer-css }}
+          PACKAGE_JS: ${{ needs.npm-package.outputs.viewer-js }}
+          PACKAGE_CSS: ${{ needs.npm-package.outputs.viewer-css }}
         run: |
           set -eu
-          files=$(printf '%s\n' $PINNED | sort -u)
-          if [ "$(printf '%s\n' "$files" | grep -c .)" -ne 2 ]; then
-            echo "the build and npm-package jobs pinned different viewers: $PINNED" >&2
+          for v in BUILD_JS BUILD_CSS PACKAGE_JS PACKAGE_CSS; do
+            if [ -z "${!v}" ]; then
+              echo "$v is empty: a job did not record the viewer it pinned" >&2
+              exit 1
+            fi
+          done
+          if [ "$BUILD_JS" != "$PACKAGE_JS" ] || [ "$BUILD_CSS" != "$PACKAGE_CSS" ]; then
+            echo "the build and npm-package jobs pinned different viewers: $BUILD_JS $BUILD_CSS vs $PACKAGE_JS $PACKAGE_CSS" >&2
             exit 1
           fi
-          for f in $files; do
+          for f in "$BUILD_JS" "$BUILD_CSS"; do
             if ! printf '%s\n' "$f" | grep -Eq '^viewer\.[A-Za-z0-9_-]+\.(js|css)$'; then
               echo "not a viewer entry file: $f" >&2
               exit 1
             fi
             code=000
             for attempt in $(seq 1 10); do
-              code=$(curl -sS -o /dev/null -I -w '%{http_code}' "https://guides.show/v1/$f" || true)
+              code=$(curl -sS --max-time 20 -o /dev/null -I -w '%{http_code}' "https://guides.show/v1/$f" || true)
               [ "$code" = 200 ] && break
               echo "attempt $attempt: https://guides.show/v1/$f answered $code; retrying in 30 s"
               sleep 30

@@ -11,8 +11,8 @@ import { YAML } from 'bun';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-interface Step { name?: string; run?: string; if?: unknown; 'continue-on-error'?: unknown }
-interface Job { needs?: string | string[]; steps?: Step[] }
+interface Step { id?: string; name?: string; run?: string; if?: unknown; env?: Record<string, string>; 'continue-on-error'?: unknown }
+interface Job { needs?: string | string[]; outputs?: Record<string, string>; steps?: Step[] }
 
 const root = path.resolve(import.meta.dirname, '../../..');
 const read = (file: string) => readFileSync(path.join(root, file), 'utf8');
@@ -61,8 +61,31 @@ describe('every shipping build pins its own viewer', () => {
     const release = jobs('.github/workflows/release.yml');
     expect(needs(release['viewer-pin-live']!)).toEqual(expect.arrayContaining(['build', 'npm-package']));
     expect(release['viewer-pin-live']!.steps!.some((s) => commands(s).some((c) => c.includes('https://guides.show/v1/')))).toBe(true);
-    expect(needs(release.release!)).toContain('viewer-pin-live');
-    expect(needs(release['npm-publish']!)).toContain('viewer-pin-live');
+    for (const downstream of ['attest', 'release', 'npm-publish']) expect(needs(release[downstream]!)).toContain('viewer-pin-live');
+  });
+
+  test('the gate reads the viewer each shipping job actually pinned', () => {
+    const release = jobs('.github/workflows/release.yml');
+    // Without these outputs the gate gets empty strings: it fails closed, but
+    // only on a tag, after the version is already burned.
+    for (const id of ['build', 'npm-package']) {
+      const job = release[id]!;
+      expect(job.outputs, `release.yml job ${id} must expose the viewer it pinned`).toEqual({
+        'viewer-js': '${{ steps.viewer-pin.outputs.js }}',
+        'viewer-css': '${{ steps.viewer-pin.outputs.css }}',
+      });
+      const pinStep = job.steps!.find((s) => s.id === 'viewer-pin');
+      expect(pinStep, `release.yml job ${id} has no step with id viewer-pin`).toBeDefined();
+      const pin = commands(pinStep!);
+      expect(pin[0]).toBe(PIN);
+      expect(pin.some((c) => c.includes('dist/viewer/manifest.json') && c.includes('"$GITHUB_OUTPUT"'))).toBe(true);
+    }
+    expect(release['viewer-pin-live']!.steps![0]!.env).toEqual({
+      BUILD_JS: '${{ needs.build.outputs.viewer-js }}',
+      BUILD_CSS: '${{ needs.build.outputs.viewer-css }}',
+      PACKAGE_JS: '${{ needs.npm-package.outputs.viewer-js }}',
+      PACKAGE_CSS: '${{ needs.npm-package.outputs.viewer-css }}',
+    });
   });
 
   test('guides-show-deploy.yml pins the Worker to its build before deploying it', () => {
