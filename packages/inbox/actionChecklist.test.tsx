@@ -718,4 +718,13 @@ test.skipIf(!hasDom)('the row says "1 action item", or "1 question, 1 action ite
   const count = (id: string) => el.querySelector(`[data-thread-id="${id}"] .ib-c`)?.textContent;
   expect(count('msg_a')).toBe('1 action item');
   expect(count('msg_b')).toBe('1 question, 1 action item');
+  // Beside a thread (approval "inbox-row-byline") too: an action item keeps its words at line 2's end, never `?N`.
+  rerender(
+    <SidebarProvider>
+      <InboxList title="Inbox" path={null} sections={sections} filtered={false} narrow selectedThreadId={null} notice={null} onShowNew={() => {}} onOpen={() => {}} phone={false} />
+    </SidebarProvider>,
+  );
+  expect(el.querySelector('.ib-nrow[data-thread-id="msg_a"] .ib-l2 > .ib-c')!.textContent).toBe('1 action item');
+  expect(el.querySelector('.ib-nrow[data-thread-id="msg_b"] .ib-l2 > .ib-c')!.textContent).toBe('1 question, 1 action item');
+  expect(el.querySelector('.ib-nrow .ib-qn')).toBeNull();
 });

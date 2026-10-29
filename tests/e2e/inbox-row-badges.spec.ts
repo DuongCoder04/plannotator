@@ -11,15 +11,14 @@
  *    right edge lines up, and every subject cell starts on one left edge.
  *  - Card A opens on the badge after the tooltip delay, and while the row has
  *    keyboard focus; a click's focus opens nothing.
- *  - Beside an open thread the two-line rows keep the card. Line 1 keeps its
- *    own words (nothing reserved for a mark); the mark leads line 2, after the
- *    badge when there is one, so every row without a badge starts line 2 with
- *    its mark on one left edge (approval "inbox-row-mark-left", 2026-10-28).
- *  - An iPhone (WebKit): icons only, no card. Line 1 is the project and the
- *    time; the badge and the mark lead line 3 (every row has one), the count
- *    ends it; a long thread name gives way before the count moves to a line
- *    of its own. On a 320 or 360 px phone the guided review mark drops to its
- *    icon before the thread name shrinks, and the name keeps a readable width.
+ *  - Beside an open thread the two-line rows keep the card (approval
+ *    "inbox-row-byline", 2026-10-29). Line 1 is the project, the thread pill
+ *    and the time; line 2 is the subject, then at its right end the marks,
+ *    the badge and the open count `?N` last. The subject is cut first: the
+ *    marks, the badge and the count are never cut and end on the line's edge.
+ *  - An iPhone (WebKit): icons only, no card, the same two lines. On a 320 or
+ *    360 px phone the subject is still cut first, and the thread pill keeps a
+ *    readable width.
  *
  * Build the binary first (see inbox.spec.ts), then `bun run test:e2e:inbox`.
  * PNGs (desktop light and dark, beside a thread, both cards open, keyboard,
@@ -47,9 +46,9 @@ interface World {
   errors: string[];
   stopped: string;
   holding: string;
-  /** A long project name, a long thread name and two questions. */
+  /** A long project name, a long thread name, a long subject and two questions. */
   long: string;
-  /** No badge, no thread name, no count: a phone's line 3 holds the mark alone. */
+  /** No badge, no thread name, no count: the marks end line 2. */
   news: string;
   /** Two agents in one thread. */
   pair: string;
@@ -104,7 +103,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
   const news = await opencode.send({ project_path: relay, subject: 'Release notes are up', body: DEMO_MESSAGES.news });
   const long = await opencode.send({
     project_path: northwind,
-    subject: 'Approve the ledger plan',
+    subject: "Approve the ledger reconciliation plan before Friday's cutover and the audit",
     thread: 'ledger-migration-dry-run-before-the-q3-close-and-audit',
     body: ['Two calls.', '', ':::question', 'Run the dry run on Friday?', '', '- [ ] Yes', '- [ ] No', ':::', '', ':::question', 'Keep the old ledger?', '', '- [ ] Yes', '- [ ] No', ':::'].join('\n'),
   });
@@ -235,15 +234,58 @@ test("keyboard focus on the row opens the card; a click's focus does not", async
   await expect(card(page)).toHaveCount(0);
 });
 
-test('beside an open thread: line 1 keeps its words, the mark leads line 2 on one left edge, the card on keyboard focus', async () => {
+/** A row's line 2, read in the page: what is on it in order, and where its right-hand parts sit. */
+function lineTwo(line: Element) {
+  const kids = [...line.children];
+  const named = (c: Element) => (c.matches('[data-row-badge]') ? 'badge' : c.classList.contains('ib-qn') ? 'count' : c.classList.contains('ib-c') ? 'words' : c.className.split(' ')[0]!);
+  const box = (c: Element | null | undefined) => (c ? c.getBoundingClientRect() : null);
+  const subject = line.querySelector(':scope > .ib-s .ib-st, :scope > .ib-m2') as HTMLElement;
+  const mark = line.querySelector(':scope > .ib-mcol');
+  const badge = line.querySelector(':scope > [data-row-badge]');
+  const count = line.querySelector(':scope > .ib-c');
+  // Each right-hand part shows whole: nothing in it is cut, and it sits inside the line.
+  const whole = [mark, badge, count].filter((c): c is Element => c !== null).every((c) => {
+    const r = c.getBoundingClientRect();
+    const l = line.getBoundingClientRect();
+    return c.scrollWidth <= c.clientWidth + 0.5 && r.left >= l.left - 0.5 && r.right <= l.right + 0.5;
+  });
+  return {
+    order: kids.map(named),
+    lineRight: line.getBoundingClientRect().right,
+    lastRight: kids[kids.length - 1]!.getBoundingClientRect().right,
+    subjectLeft: subject.getBoundingClientRect().left,
+    lineLeft: line.getBoundingClientRect().left,
+    subjectCut: subject.scrollWidth > subject.clientWidth + 0.5,
+    mark: box(mark)?.toJSON() as DOMRect | undefined,
+    badge: box(badge)?.toJSON() as DOMRect | undefined,
+    count: box(count)?.toJSON() as DOMRect | undefined,
+    whole,
+  };
+}
+
+/** Line 2's order and geometry, the same on a two-line row and a phone row (approval "inbox-row-byline"). */
+function expectLineTwo(l: ReturnType<typeof lineTwo>, id: string) {
+  // The subject starts the line; the marks come before the badge, and the count, when there is one, is last.
+  expect(l.order[0], `row ${id}`).toMatch(/^ib-(s|m2)$/);
+  expect(Math.abs(l.subjectLeft - l.lineLeft), `row ${id}`).toBeLessThanOrEqual(0.5);
+  const tail = l.order.slice(l.order.indexOf('ib-mcol'));
+  expect(['ib-mcol', 'ib-mcol,badge', 'ib-mcol,count', 'ib-mcol,words', 'ib-mcol,badge,count', 'ib-mcol,badge,words'], `row ${id}: ${l.order}`).toContain(tail.join(','));
+  // Left to right on screen in that order, and the last ends the line.
+  if (l.badge) expect(l.badge.left, `row ${id}`).toBeGreaterThanOrEqual(l.mark!.right);
+  if (l.count) expect(l.count.left, `row ${id}`).toBeGreaterThanOrEqual((l.badge ?? l.mark)!.right);
+  expect(Math.abs(l.lastRight - l.lineRight), `row ${id}`).toBeLessThanOrEqual(0.5);
+  expect(l.whole, `row ${id}: a mark, badge or count is cut`).toBe(true);
+}
+
+test('beside an open thread: the project, the pill and the time on line 1; the subject, then the marks, the badge and ?N on line 2; the card on keyboard focus', async () => {
   const { page } = world;
   await page.goto(`${world.url}#thread=${world.stopped}`);
   const narrow = page.locator(`.ib-nrow[data-thread-id="${world.holding}"]`);
   await expect(narrow).toBeVisible();
-  const order = await narrow.locator('.ib-l1 > *').evaluateAll((els) => els.map((e) => e.className.split(' ')[0]));
-  expect(order.filter((c) => c !== 'ib-c')).toEqual(['ib-p', 'ib-t']);
-  await expect(narrow.locator('.ib-l1 .ib-mk')).toHaveCount(0);
-  // The hover's Mark read sits on line 1 and stops above line 2 (and so above its mark).
+  // Line 1: the project, the thread's pill, the time; no count and no mark.
+  expect(await narrow.locator('.ib-l1 > *').evaluateAll((els) => els.map((e) => e.className.split(' ')[0]))).toEqual(['ib-pw', 'ib-key', 'ib-t']);
+  await expect(narrow.locator('.ib-l1 :is(.ib-mk, .ib-c)')).toHaveCount(0);
+  // The hover's Mark read sits on line 1 and stops above line 2 (and so above its marks and count).
   await narrow.locator('.ib-l1 .ib-p').hover();
   await expect(page.locator(`.ib-rw[data-row="${world.holding}"] [data-row-mark-read]`)).toBeVisible();
   const clearance = await page.evaluate((id) => {
@@ -252,39 +294,13 @@ test('beside an open thread: line 1 keeps its words, the mark leads line 2 on on
   }, world.holding);
   expect(clearance).toBeGreaterThanOrEqual(0);
   await page.mouse.move(5, 5);
-  const rows = await page.evaluate(() =>
-    [...document.querySelectorAll<HTMLElement>('.ib-nrow')].map((r) => {
-      const l1 = r.querySelector('.ib-l1')!;
-      const l2 = r.querySelector('.ib-l2')!;
-      const markEl = l2.querySelector(':scope > .ib-mcol')!;
-      const mark = markEl.getBoundingClientRect();
-      const badge = l2.querySelector(':scope > [data-row-badge]');
-      // What comes before the mark on its line: nothing, or the badge alone.
-      const before = [...l2.children].slice(0, [...l2.children].indexOf(markEl)).map((c) => (c === badge ? 'badge' : c.className));
-      const p = l1.querySelector('.ib-p')!;
-      const next = p.nextElementSibling!.getBoundingClientRect();
-      // What follows the mark: the thread's name or the subject (nothing on a row whose mark ends the line).
-      const firstAfter = markEl.nextElementSibling?.getBoundingClientRect() ?? null;
-      return { id: r.dataset.threadId, before, markLeft: mark.left, markRight: mark.right, markTop: mark.top, l1Bottom: l1.getBoundingClientRect().bottom, l2Left: l2.getBoundingClientRect().left, badgeRight: badge?.getBoundingClientRect().right ?? null, afterLeft: firstAfter?.left ?? null, pRight: p.getBoundingClientRect().right, nextLeft: next.left, cut: p.scrollWidth > p.clientWidth };
-    }),
-  );
+  const rows = await page.evaluate(`[...document.querySelectorAll('.ib-nrow')].map((r) => ({ id: r.dataset.threadId, l2: (${lineTwo.toString()})(r.querySelector('.ib-l2')) }))`) as { id: string; l2: ReturnType<typeof lineTwo> }[];
   expect(rows.length).toBeGreaterThanOrEqual(5);
-  const plain = rows.filter((r) => r.badgeRight === null);
-  const badged = rows.filter((r) => r.badgeRight !== null);
-  expect(plain.length).toBeGreaterThanOrEqual(3);
-  expect(badged.length).toBeGreaterThanOrEqual(2);
-  for (const r of rows) {
-    // On line 2, first after the badge (or first of all), before the thread's name and the subject.
-    expect(r.markTop).toBeGreaterThanOrEqual(r.l1Bottom);
-    expect(r.before).toEqual(r.badgeRight === null ? [] : ['badge']);
-    expect(r.afterLeft).not.toBeNull();
-    expect(r.afterLeft!).toBeGreaterThan(r.markRight);
-  }
-  // No badge: the mark starts line 2, every one on the same left edge (0 px spread).
-  for (const r of plain) expect(Math.abs(r.markLeft - r.l2Left)).toBeLessThanOrEqual(0.5);
-  expect(Math.max(...plain.map((r) => r.markLeft)) - Math.min(...plain.map((r) => r.markLeft))).toBeLessThanOrEqual(0.5);
-  // A badge: the mark follows it at the line's 8 px gap.
-  for (const r of badged) expect(Math.abs(r.markLeft - r.badgeRight! - 8)).toBeLessThanOrEqual(0.5);
+  for (const r of rows) expectLineTwo(r.l2, r.id);
+  // A badge and a count: the marks, the badge, then ?N at the far right.
+  expect(rows.find((r) => r.id === world.stopped)!.l2.order.slice(-3)).toEqual(['ib-mcol', 'badge', 'count']);
+  // Nothing to count and no badge: the marks end the line.
+  expect(rows.find((r) => r.id === world.news)!.l2.order.slice(-1)).toEqual(['ib-mcol']);
   // Two agents: both marks at the scale's 20 px, and neither tile covers the other's glyph.
   const pair = await page.locator(`.ib-nrow[data-thread-id="${world.pair}"] .ib-l2 > .ib-mcol .ib-mk`).evaluateAll((marks) =>
     marks.map((m) => ({ tile: m.getBoundingClientRect(), glyph: m.firstElementChild!.getBoundingClientRect() })),
@@ -292,10 +308,18 @@ test('beside an open thread: line 1 keeps its words, the mark leads line 2 on on
   expect(pair.length).toBe(2);
   for (const m of pair) expect(Math.round(m.tile.width)).toBe(20);
   expect(pair[0]!.glyph.right).toBeLessThanOrEqual(pair[1]!.tile.left);
-  // Nothing reserved on line 1: a long project name runs right up to the count, 8 px (the line's gap) short of it.
+  // The long row at the column's narrowest (380 px): the subject is cut, the marks, the badge and ?N are whole;
+  // on line 1 the long project is cut before the pill, and the time ends the line whole.
   const long = rows.find((r) => r.id === world.long)!;
-  expect(long.cut).toBe(true);
-  expect(long.nextLeft - long.pRight).toBeLessThanOrEqual(8.5);
+  expect(long.l2.subjectCut).toBe(true);
+  const l1 = await page.locator(`.ib-nrow[data-thread-id="${world.long}"] .ib-l1`).evaluate((line) => {
+    const p = line.querySelector<HTMLElement>('.ib-p')!;
+    const t = line.querySelector<HTMLElement>('.ib-t')!;
+    return { projectCut: p.scrollWidth > p.clientWidth, timeWhole: t.scrollWidth <= t.clientWidth + 0.5, timeEnd: line.getBoundingClientRect().right - t.getBoundingClientRect().right };
+  });
+  expect(l1.projectCut).toBe(true);
+  expect(l1.timeWhole).toBe(true);
+  expect(Math.abs(l1.timeEnd)).toBeLessThanOrEqual(0.5);
   await shot(page, 'beside-thread');
   await page.keyboard.press('Shift');
   await narrow.focus();
@@ -316,7 +340,7 @@ test('beside an open thread: line 1 keeps its words, the mark leads line 2 on on
   await expect(page).not.toHaveURL(new RegExp(`thread=${world.stopped}`));
 });
 
-test('an iPhone (WebKit): icons only, no card, the badge and the mark lead line 3', async () => {
+test('an iPhone (WebKit): icons only, no card; two lines, the subject then the marks, the badge and ?N', async () => {
   let own: Browser | null = null;
   try {
     own = await webkit.launch({ args: [] });
@@ -327,55 +351,17 @@ test('an iPhone (WebKit): icons only, no card, the badge and the mark lead line 
       const row = page.locator(`.ib-mrow[data-thread-id="${world.holding}"]`);
       await expect(row.locator('[data-row-badge]')).toHaveText('Holds up 3');
       const m1 = await row.locator('.ib-m1 > *').evaluateAll((els) => els.map((e) => e.className.split(' ')[0]));
-      expect(m1).toEqual(['ib-p', 'ib-t']);
-      // Every row has line 3, under the subject: the badge (when there is one), then the agent's mark, lead it.
+      expect(m1).toEqual(['ib-pw', 'ib-key', 'ib-t']);
+      // The rows skip paint until laid out (content-visibility): give WebKit a frame or two.
       await page.waitForTimeout(600);
-      const line3s = await page.locator('.ib-mrow').evaluateAll((rows) =>
-        rows.map((r) => {
-          const m3 = r.querySelector(':scope > .ib-m3');
-          if (!m3) return { id: r.getAttribute('data-thread-id'), missing: true } as const;
-          const mark = m3.querySelector(':scope > .ib-mcol')!;
-          const badge = m3.querySelector(':scope > [data-row-badge]');
-          const kids = [...m3.children];
-          return {
-            id: r.getAttribute('data-thread-id'),
-            missing: false,
-            before: kids.slice(0, kids.indexOf(mark)).map((c) => (c === badge ? 'badge' : c.className)),
-            hasBadge: badge !== null,
-            markLeft: mark.getBoundingClientRect().left,
-            lineLeft: m3.getBoundingClientRect().left,
-            markTop: mark.getBoundingClientRect().top,
-            subjectBottom: r.querySelector(':scope > .ib-m2')!.getBoundingClientRect().bottom,
-          } as const;
-        }),
-      );
-      expect(line3s.length).toBeGreaterThanOrEqual(5);
-      for (const l of line3s) {
-        expect(l.missing, `row ${l.id} has a line 3`).toBe(false);
-        if (l.missing) continue;
-        expect(l.before).toEqual(l.hasBadge ? ['badge'] : []);
-        expect(l.markTop).toBeGreaterThanOrEqual(l.subjectBottom);
+      const rows = await page.evaluate(`[...document.querySelectorAll('.ib-mrow')].map((r) => ({ id: r.getAttribute('data-thread-id'), lines: [...r.children].filter((c) => !c.classList.contains('ib-sr')).map((c) => c.className), l2: (${lineTwo.toString()})(r.querySelector(':scope > .ib-ml2')) }))`) as { id: string; lines: string[]; l2: ReturnType<typeof lineTwo> }[];
+      expect(rows.length).toBeGreaterThanOrEqual(5);
+      for (const r of rows) {
+        expect(r.lines, `row ${r.id}`).toEqual(['ib-m1', 'ib-ml2']);
+        expectLineTwo(r.l2, r.id);
       }
-      // No badge: every mark on the line's left edge (0 px spread).
-      const plainLefts = line3s.filter((l) => !l.missing && !l.hasBadge).map((l) => (l.missing ? 0 : l.markLeft - l.lineLeft));
-      expect(plainLefts.length).toBeGreaterThanOrEqual(3);
-      for (const d of plainLefts) expect(Math.abs(d)).toBeLessThanOrEqual(0.5);
-      // Nothing else to list: the mark alone on line 3.
-      const news = page.locator(`.ib-mrow[data-thread-id="${world.news}"]`);
-      expect(await news.locator('.ib-m3 > *').evaluateAll((els) => els.map((e) => e.className))).toEqual(['ib-mcol']);
-      // A long thread name gives way: the count stays on the pill's line, never on a line of its own.
-      const longRow = page.locator(`.ib-mrow[data-thread-id="${world.long}"]`);
-      const parts = await longRow.locator('.ib-m3').evaluate((m3) => {
-        const mid = (sel: string) => {
-          const b = m3.querySelector(sel)!.getBoundingClientRect();
-          return b.top + b.height / 2;
-        };
-        return { line: mid('.ib-m3 > .ib-key'), count: mid('.ib-m3 > .ib-c'), mark: mid('.ib-m3 > .ib-mcol'), countRight: m3.querySelector('.ib-m3 > .ib-c')!.getBoundingClientRect().right, right: m3.getBoundingClientRect().right };
-      });
-      expect(Math.abs(parts.count - parts.line)).toBeLessThanOrEqual(1);
-      expect(Math.abs(parts.mark - parts.line)).toBeLessThanOrEqual(1);
-      // The count ends the line, on the row's right edge (as in the approved phone shot).
-      expect(Math.abs(parts.countRight - parts.right)).toBeLessThanOrEqual(0.5);
+      // The long row: its subject is cut, the marks, the badge and the count are whole.
+      expect(rows.find((r) => r.id === world.long)!.l2.subjectCut).toBe(true);
       await row.locator('[data-row-badge]').tap();
       await page.waitForTimeout(400);
       await expect(card(page)).toHaveCount(0);
@@ -392,36 +378,24 @@ test('an iPhone (WebKit): icons only, no card, the badge and the mark lead line 
   }
 });
 
-test('a small phone (320, 360): the guided review mark drops to its icon first; the thread name keeps a readable width', async () => {
+test('a small phone (320, 360): the subject gives way first; the marks, the badge and ?N stay whole; the thread name keeps a readable width', async () => {
   const own = await webkit.launch({ args: [] });
   try {
     for (const width of [320, 360]) {
       const context = await own.newContext({ ...devices['iPhone 15'], viewport: { width, height: 1600 }, colorScheme: 'light', reducedMotion: 'reduce' });
       const page = await context.newPage();
       await page.goto(world.url);
-      const line3 = page.locator(`.ib-mrow[data-thread-id="${world.guided}"] .ib-m3`);
-      await line3.scrollIntoViewIfNeeded();
-      await expect(line3.locator('[data-guide-mark]')).toBeVisible();
-      await expect(line3.locator('[data-row-badge]')).toHaveText('Holds up 3');
+      const row = page.locator(`.ib-mrow[data-thread-id="${world.guided}"]`);
+      await row.scrollIntoViewIfNeeded();
+      await expect(row.locator('.ib-ml2 > [data-guide-mark]')).toBeVisible();
+      await expect(row.locator('[data-row-badge]')).toHaveText('Holds up 3');
       // The rows skip paint until laid out (content-visibility): give WebKit a frame or two.
       await page.waitForTimeout(600);
-      const m = await line3.evaluate((m3) => {
-        const box = (sel: string) => m3.querySelector(sel)!.getBoundingClientRect();
-        const mid = (b: DOMRect) => b.top + b.height / 2;
-        const label = m3.querySelector<HTMLElement>('.ib-att-l')!;
-        return {
-          pill: box('.ib-key').width,
-          pillMid: mid(box('.ib-key')),
-          countMid: mid(box('.ib-c')),
-          labelShown: label.getClientRects().length > 0,
-          labelCut: label.scrollWidth > label.clientWidth + 0.5,
-        };
-      });
-      // At least 7em of the pill's 11.5 px text, never a sliver.
-      expect(m.pill).toBeGreaterThanOrEqual(48);
-      expect(Math.abs(m.countMid - m.pillMid)).toBeLessThanOrEqual(1);
-      // The label is either whole or gone (the icon stays), never cut mid-word.
-      expect(m.labelShown && m.labelCut).toBe(false);
+      const l2 = (await row.locator('.ib-ml2').evaluate(`(${lineTwo.toString()})(document.querySelector('.ib-mrow[data-thread-id="${world.guided}"] .ib-ml2'))`)) as ReturnType<typeof lineTwo>;
+      expectLineTwo(l2, `${world.guided} at ${width}`);
+      const pill = await row.locator('.ib-m1 .ib-key').evaluate((el) => el.getBoundingClientRect().width);
+      // At least 48 px of the pill's 11.5 px text, never a sliver.
+      expect(pill).toBeGreaterThanOrEqual(48);
       await page.screenshot({ path: join(proofDir, `phone-${width}.png`) });
       await context.close();
     }

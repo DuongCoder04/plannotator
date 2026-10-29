@@ -109,8 +109,8 @@ export function rowAgent(row: InboxListRow): InboxListRow['author'] {
 }
 
 /** The row's mark: the agent's, or, when several agents are in the thread, their marks overlapping (Lines). */
-function RowMark({ row }: { row: InboxListRow }) {
-  if ((row.participants?.length ?? 0) > 1) return <TagStack participants={row.participants!} />;
+function RowMark({ row, fold }: { row: InboxListRow; fold?: number }) {
+  if ((row.participants?.length ?? 0) > 1) return <TagStack participants={row.participants!} fold={fold} />;
   return <AuthorMark author={rowAgent(row)} />;
 }
 
@@ -168,16 +168,19 @@ function BadgeWords({ row, id }: { row: InboxListRow; id: string }) {
 
 /**
  * The agent's mark in a box of its own: a wide row's column just before the time (approval "inbox-row-badges");
- * on a two-line row it leads line 2, and on a phone row the line under the subject, after the badge when the
- * row has one (approval "inbox-row-mark-left", 2026-10-28), so a row without a badge starts with its agent.
+ * on a two-line or phone row, line 2's right end, just before the badge and the count (approval
+ * "inbox-row-byline", 2026-10-29), so it moves with what follows it rather than holding a column.
  */
-function MarkCol({ row }: { row: InboxListRow }) {
+function MarkCol({ row, fold }: { row: InboxListRow; fold?: number }) {
   return (
     <span className="ib-mcol" data-mark-col="">
-      <RowMark row={row} />
+      <RowMark row={row} fold={fold} />
     </span>
   );
 }
+
+/** A two-line or phone row shows up to three agents' marks, past that two marks and "+N" (approval "inbox-row-byline"). */
+const LINE_MARKS = 3;
 
 /**
  * The subject cell's words. A row keeps its own subject: the delivery glyph
@@ -195,6 +198,11 @@ function subjectOf(row: InboxListRow): string {
 }
 
 function countOf(row: InboxListRow): ReactNode {
+  return countState(row) ?? waitCount(row.questions.open, row.questions.actions ?? 0);
+}
+
+/** What the count cell says in place of the open count (a wait, Archived, a draft, Read, …), or null: the open count. */
+function countState(row: InboxListRow): ReactNode | null {
   // A reply waiting on a busy agent (approval "inbox-busy-agent-reply"): how long, in place of the count.
   const wait = rowWait(row.delivery);
   if (wait) return <UndeliveredBadge wait={wait} />;
@@ -208,7 +216,30 @@ function countOf(row: InboxListRow): ReactNode {
   // An older Inbox (no `unsent`): its own words.
   if (row.answered_not_sent) return 'Answered, not sent';
   if (row.section === 'sent' && row.addressee) return `To ${agentName(rowAgent(row))}`;
-  return waitCount(row.questions.open, row.questions.actions ?? 0);
+  return null;
+}
+
+/**
+ * The count at the right end of a two-line or phone row's line 2 (approval "inbox-row-byline", 2026-10-29): what
+ * waits on the person as `?N`, the question icon and the number (from one question on), its words for a screen
+ * reader and in the tooltip; anything else the count cell says (Read, a draft, Undelivered …) in its own words.
+ */
+function LineCount({ row, tip = false }: { row: InboxListRow; tip?: boolean }) {
+  const state = countState(row);
+  if (state) return <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{state}</span>;
+  const open = row.questions.open;
+  if (open < 1) return null;
+  const words = waitCount(open, row.questions.actions ?? 0) || '1 question';
+  // An action item is always named (approval "inbox-next-actions"): only questions read as `?N`.
+  if ((row.questions.actions ?? 0) > 0) return <span className="ib-c">{words}</span>;
+  const cell = (
+    <span className="ib-c ib-qn" data-open-count={open}>
+      <Icon name="question" size={15} />
+      <span aria-hidden="true">{formatCount(open)}</span>
+      <span className="ib-sr">{words}</span>
+    </span>
+  );
+  return tip ? <Tip content={words}>{cell}</Tip> : cell;
 }
 
 /** The thread's name as a chip, unless the subject already starts with it (`threadChipName`). */
@@ -232,33 +263,44 @@ function ClipText({ className, text }: { className: string; text: string }) {
   );
 }
 
+/** The thread's name as a soft pill, cut with "…" (its tooltip shows it whole), or nothing. */
+function ThreadChip({ row }: { row: InboxListRow }) {
+  const chip = chipName(row);
+  if (!chip) return null;
+  return (
+    <span className="ib-key">
+      <ClipText className="ib-keyt" text={chip} />
+    </span>
+  );
+}
+
+/** The record's 1.1: a thread that carries a guided review says so after its subject. */
+function GuideMark({ row }: { row: InboxListRow }) {
+  if (!row.guide || row.section === 'sent') return null;
+  return (
+    <Tip content="Guided review" when={guideLabelHidden}>
+      <span className="ib-att" data-guide-mark="" role="img" aria-label="Guided review">
+        <Icon name="book" size={13} />
+        <span className="ib-att-l">Guided review</span>
+      </span>
+    </Tip>
+  );
+}
+
 /**
- * The thread chip, the subject and the guided review mark, shared by both row
- * shapes. When the line is short of room the subject gives way first, down to
- * a floor (inbox.css), then the chip; the mark drops its label to its icon.
+ * The wide row's subject cell: the thread chip, the subject and the guided
+ * review mark. When the line is short of room the subject gives way first,
+ * down to a floor (inbox.css), then the chip; the mark drops its label to its icon.
  */
 function SubjectLine({ row, pinned = false }: { row: InboxListRow; pinned?: boolean }) {
-  const chip = chipName(row);
   return (
     <>
-      {chip && (
-        <span className="ib-key">
-          <ClipText className="ib-keyt" text={chip} />
-        </span>
-      )}
+      <ThreadChip row={row} />
       <span className="ib-s">
         <ClipText className="ib-st" text={subjectOf(row)} />
       </span>
       {pinned && <PinMark />}
-      {/* The record's 1.1: a thread that carries a guided review says so after its subject. */}
-      {row.guide && row.section !== 'sent' && (
-        <Tip content="Guided review" when={guideLabelHidden}>
-          <span className="ib-att" data-guide-mark="" role="img" aria-label="Guided review">
-            <Icon name="book" size={13} />
-            <span className="ib-att-l">Guided review</span>
-          </span>
-        </Tip>
-      )}
+      <GuideMark row={row} />
     </>
   );
 }
@@ -423,7 +465,6 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
   const [kbd, focus] = useKeyboardFocus(rowHasBadge(row));
   const wordsId = useId();
   const badge = badgeOf(row, kbd);
-  const count = countOf(row);
   return (
     <>
     <button
@@ -439,19 +480,27 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
       aria-describedby={rowHasBadge(row) ? wordsId : undefined}
       {...focus}
     >
-      {/* Line 1 is laid out by its own words, nothing reserved: the project … the count, the ✓ and the time. */}
+      {/* Line 1 (approval "inbox-row-byline", 2026-10-29): the project, the thread's name, then the ✓ and the time
+          at the right. Short of room the project gives way, down to a floor, before the thread's name. */}
       <div className="ib-l1">
-        <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
-        {count && <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{count}</span>}
-        <span className={`ib-t${count ? '' : ' ib-alone'}`}>
+        <span className="ib-pw">
+          <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
+        </span>
+        <ThreadChip row={row} />
+        <span className="ib-t">
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
         </span>
       </div>
-      {/* Line 2 (approval "inbox-row-mark-left"): the badge, the agent's mark, the thread's name, the subject. */}
+      {/* Line 2: the subject, then at its right end the agents' marks, the badge and the count. Only the subject is cut. */}
       <div className="ib-l2">
+        <span className="ib-s">
+          <ClipText className="ib-st" text={subjectOf(row)} />
+        </span>
+        {pinned && <PinMark />}
+        <GuideMark row={row} />
+        <MarkCol row={row} fold={LINE_MARKS} />
         {badge}
-        <MarkCol row={row} />
-        <SubjectLine row={row} pinned={pinned} />
+        <LineCount row={row} tip />
       </div>
       {pinned && <PinnedWords />}
     </button>
@@ -461,17 +510,16 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
 }
 
 /**
- * A row on a phone, read like a mail app's: where and when on the first line
- * (the project, or the agent in one project's list, and the time), the subject
- * on up to two lines, then a line led by the badge and the agent's mark
- * (approval "inbox-row-mark-left"), with what the thread holds after them (the
- * thread's name, the guided review mark, then the question count at the line's end).
+ * A row on a phone, read like a mail app's, in the two-line row's order
+ * (approval "inbox-row-byline", 2026-10-29): where and when on the first line
+ * (the project, or the agent in one project's list, the thread's name, and the
+ * time), then the subject with the agents' marks, the badge and the count at
+ * the right end of line 2.
  */
 function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: InboxListRow; filtered: boolean; lit: boolean; menu: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
   const wordsId = useId();
   // A phone: the icons only, no card (the thread shows the details).
   const badge = rowHasBadge(row) ? <RowBadge row={row} /> : null;
-  const count = countOf(row);
   const guide = row.guide && row.section !== 'sent';
   const chip = chipName(row);
   return (
@@ -489,29 +537,30 @@ function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: Inb
       aria-describedby={rowHasBadge(row) ? wordsId : undefined}
     >
       <span className="ib-m1">
-        <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
-        {pinned && <PinMark />}
-        <span className="ib-t">
-          <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
+        <span className="ib-pw">
+          <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
         </span>
-      </span>
-      <span className="ib-m2" dir="auto">{subjectOf(row)}</span>
-      {/* One line where it fits: the guided review label, then the thread's name (down to a floor) give way before the line wraps. */}
-      <span className="ib-m3">
-        {badge}
-        <MarkCol row={row} />
         {chip && (
           <span className="ib-key">
             <span className="ib-keyt" dir="auto">{chip}</span>
           </span>
         )}
+        {pinned && <PinMark />}
+        <span className="ib-t">
+          <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
+        </span>
+      </span>
+      {/* Line 2: the subject (cut first), then the guided review book, the agents' marks, the badge and the count. */}
+      <span className="ib-ml2">
+        <span className="ib-m2" dir="auto">{subjectOf(row)}</span>
         {guide && (
           <span className="ib-att" data-guide-mark="" role="img" aria-label="Guided review">
             <Icon name="book" size={13} />
-            <span className="ib-att-l">Guided review</span>
           </span>
         )}
-        {count && <span className={`ib-c${row.section === 'quiet' ? ' ib-qlabel' : ''}`}>{count}</span>}
+        <MarkCol row={row} fold={LINE_MARKS} />
+        {badge}
+        <LineCount row={row} />
       </span>
       {pinned && <PinnedWords />}
     </button>
