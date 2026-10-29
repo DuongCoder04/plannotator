@@ -2586,3 +2586,31 @@ See `packages/ui/README.md` and `packages/ui/AGENTS.md` (CLAUDE.md symlink) for 
 - **`onTokenNavigate?: (target: CodeFileTokenTarget) => void`** is a Cmd/Ctrl-click (or Alt-click) on a token.
 
 `CodeFileTokenTarget` is `{ tokenText, tokenElement, lineNumber, lineCharStart }`. Absent: today's view, byte for byte (`CodeFilePopout` and the Inbox pass none).
+
+## `HtmlViewer` `sandbox` (unreleased; additive, no core change)
+
+**`HtmlViewer`** (`components/html-viewer`) gains **`sandbox?: string`**, the srcdoc frame's whole `sandbox` attribute. Added for Workspaces: #2063 changed the default from `allow-scripts` to `allow-scripts allow-modals` with no way to opt out, and in Workspaces a `prompt()` or `confirm()` from a shared, user-written document would draw a dialog over its origin.
+
+- **Absent:** `HTML_VIEWER_SANDBOX`, `"allow-scripts allow-modals"`, as before. Plannotator passes none, so the Inbox, annotate and review frames are unchanged.
+- **Set:** the value is the attribute as given. Workspaces passes `sandbox="allow-scripts"` and can drop its pnpm patch.
+- **Not a string** (`null` from an unset config field, for example): the default, never a frame without a sandbox. React drops a `null` attribute, and a destructuring default does not catch `null`, so `HtmlViewer` checks the type itself.
+- **`""`** (or only spaces): kept as given. That is the strictest frame, with no scripts, so the annotation bridge never starts and the page cannot be annotated. It never widens to the default. With `hostNavigates` it becomes `allow-popups` alone.
+- **A changed value** applies when the frame next loads a document (a new `rawHtml`, for example): browsers read `sandbox` at navigation. To apply it to the document already shown, remount the viewer (for example, key it on the value).
+- **With `hostNavigates`:** `allow-popups` is still added when the value lacks it, because that mode opens links with `window.open`.
+- **Never add `allow-same-origin`** beside `allow-scripts`: the page could then remove its own sandbox and reach the host's origin.
+- Live-app mode (`src`) has no sandbox and ignores the prop. `HtmlViewer` draws one frame, so the prop covers every frame of the document.
+- Pinned by `components/html-viewer/HtmlViewer.sandbox.test.tsx`: no prop gives `allow-scripts allow-modals`, `sandbox="allow-scripts"` gives exactly `allow-scripts`, `hostNavigates` adds `allow-popups` to either, `null` gives the default (with and without `hostNavigates`), `""` gives an empty attribute, and `src` mode has no sandbox.
+
+**Note for hosts that pin CodeMirror (from ui 0.54.0).** ui 0.54.0 raised its CodeMirror and Lezer minimums. A host that pins these packages lower must raise its pins to at least these, or its build ships two copies (two `@codemirror/state` copies break editor extensions at runtime):
+
+| Package | ui 0.54.0 range | ui 0.53.1 range |
+|---|---|---|
+| `@codemirror/commands` | `^6.11.1` | `^6.11.0` |
+| `@codemirror/language` | `^6.13.1` | `^6.12.4` |
+| `@codemirror/legacy-modes` | `^6.5.5` | `^6.5.3` |
+| `@codemirror/state` | `^6.7.6` | `^6.7.2` |
+| `@codemirror/view` | `^6.43.14` | `^6.43.10` |
+| `@lezer/common` | `^1.5.3` | `^1.5.2` |
+| `@lezer/highlight` | `^1.2.5` | `^1.2.3` |
+
+These did not change: `@codemirror/autocomplete` `^6.20.3`, `lang-javascript` `^6.2.5`, `lang-json` `^6.0.2`, `lang-markdown` `^6.5.2`, `lang-python` `^6.2.1`, `lang-yaml` `^6.1.3`, `merge` `^6.12.2`, `search` `^6.7.2`.
