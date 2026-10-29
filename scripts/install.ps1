@@ -65,6 +65,19 @@ $repo = "backnotprop/plannotator"
 $semRepo = "Ataraxy-Labs/sem"
 $semVersion = "v0.8.0"
 $installDir = "$env:LOCALAPPDATA\plannotator"
+$targetExe = "$installDir\plannotator.exe"
+
+# A run stopped between the two moves of the binary swap (below) left no
+# plannotator.exe, only the one it had moved aside: put the newest of those
+# back first, so there is a working binary even if this run stops early.
+if (-not (Test-Path -LiteralPath $targetExe)) {
+    try {
+        $leftAside = Get-ChildItem -Path $installDir -Filter "plannotator.exe.old*" -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^plannotator\.exe\.old(-[0-9a-f]{32})?$' } |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+        if ($leftAside) { Move-Item -LiteralPath $leftAside.FullName -Destination $targetExe -ErrorAction Stop }
+    } catch {}
+}
 
 # First plannotator release that carries SLSA build-provenance attestations.
 # See scripts/install.sh for the full explanation - this constant is bumped
@@ -730,6 +743,20 @@ if ($verifyAttestationResolved) {
 } else {
     Write-Host "SHA256 verified. For build provenance verification, see"
     Write-Host "https://docs.plannotator.ai/open-source/start/installation#pin-or-verify-a-release"
+}
+
+# Stage the new binary next to the target first (a copy when %TEMP% is on
+# another volume), so the swap below is two renames on one volume, back to
+# back: plannotator.exe is missing for no longer than that.
+$stagedExe = "$installDir\plannotator.exe.new"
+try {
+    Remove-Item -Force -LiteralPath $stagedExe -ErrorAction SilentlyContinue
+    Move-Item -Force -LiteralPath $tmpFile -Destination $stagedExe -ErrorAction Stop
+    $tmpFile = $stagedExe
+} catch {
+    Remove-Item -Force -LiteralPath $tmpFile -ErrorAction SilentlyContinue
+    Remove-Item -Force -LiteralPath $stagedExe -ErrorAction SilentlyContinue
+    throw
 }
 
 # Windows cannot overwrite or delete a running .exe, but it can RENAME one.
