@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { inboxMessageImageRefs, readInboxMessageImage } from "@plannotator/shared/inbox/message-images";
+import { inboxHomeDotFolder, inboxMessageImageRefs, readInboxMessageImage } from "@plannotator/shared/inbox/message-images";
 import { MAX_REVIEW_IMAGE_PREVIEW_BYTES } from "@plannotator/shared/diff-paths";
 import { startInboxServer, type InboxServer } from "./inbox";
 
@@ -315,6 +315,21 @@ test("an image in a hidden folder beside the project shows inline, as the same f
     expect(answer.status).toBe(403);
     expect(((await answer.json()) as { code: string }).code).toBe("image_hidden");
   }
+});
+
+test("with HOME pointed elsewhere, a real home folder's hidden folders are still refused; a hidden folder deeper in it still shows", async () => {
+  const { root } = world();
+  // A scratch HOME (world sets it): the real home, other users' and root's are judged by their shape.
+  expect(process.env.HOME).toBe(root);
+  for (const path of ["/Users/someone/.ssh/k.png", "/home/someone/.config/app/x.png", "/root/.cache/t.png", "/var/root/.ssh/k.png", "/private/var/root/.x/k.png", "C:\\Users\\someone\\.ssh\\k.png", "/.hidden/x.png", join(root, ".secrets", "key.png")]) {
+    expect(inboxHomeDotFolder(path)).not.toBeNull();
+  }
+  for (const path of ["/Users/someone/work/.ops/e.png", "/home/someone/src/app/.walkthrough/a.png", "C:\\Users\\someone\\work\\.ops\\e.png", join(root, "work", ".ops", "e.png")]) {
+    expect(inboxHomeDotFolder(path)).toBeNull();
+  }
+  // A relative HOME names no home at all: the shape still guards.
+  process.env.HOME = "relative/home";
+  expect(inboxHomeDotFolder("/Users/someone/.aws/x.png")).toBe("/Users/someone/.aws");
 });
 
 /** send_message's whole result: its text line and structured content. */

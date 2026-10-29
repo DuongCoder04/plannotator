@@ -308,7 +308,7 @@ function exemptsHidden(anchor: string, protectedHomes: readonly string[]): boole
  * The hidden rule for one absolute path. A dotenv-family file name is refused
  * everywhere, as attachments refuse it. Outside `anchors` (the project root
  * and the folder sent from, each in both spellings), a path in a hidden
- * folder of the home folder or of `/` is refused too (`inHomeDotFolder`:
+ * folder of the home folder or of `/` is refused too (`inboxHomeDotFolder`:
  * `~/.ssh`, `~/.config`, `~/.cache`, where keys, settings and caches live).
  * A hidden folder anywhere else belongs to someone's work and shows, as an
  * attachment from it would: `~/work/.ops/shot.png`, screenshots in
@@ -318,14 +318,31 @@ function exemptsHidden(anchor: string, protectedHomes: readonly string[]): boole
  */
 function hiddenPath(path: string, anchors: readonly string[], homes: readonly string[]): boolean {
   if (isDotenvFileName(basename(path))) return true;
-  return !anchors.some((folder) => isInside(path, folder)) && inHomeDotFolder(path, homes);
+  const dot = inboxHomeDotFolder(path, homes);
+  // An anchor exempts it only from inside that hidden folder (a project in `~/.claude/worktrees/`), never from above it.
+  return dot !== null && !anchors.some((folder) => isInside(path, folder) && isInside(folder, dot));
 }
 
-/** `path` is, or is under, an entry starting with `.` directly in a home folder (`homes`) or in `/`. */
-function inHomeDotFolder(path: string, homes: readonly string[]): boolean {
-  return [...homes, parse(path).root].some(
-    (folder) => path !== folder && isInside(path, folder) && relative(folder, path).split(sep)[0]!.startsWith("."),
-  );
+/**
+ * A home-shaped folder's own hidden entry, whatever `HOME` says (an Inbox
+ * started under a scratch or relative HOME still guards the real `~/.ssh`,
+ * and other users' homes too): `/Users/<name>/.x`, `/home/<name>/.x`,
+ * `/root/.x`, `/var/root/.x`, `<drive>:\Users\<name>\.x`.
+ */
+const HOME_SHAPED_DOT_FOLDER = /^(?:\/Users\/[^/]+|\/home\/[^/]+|\/root|\/(?:private\/)?var\/root|[A-Za-z]:[\\/]Users[\\/][^\\/]+)[\\/]\.[^\\/]*/i;
+
+/**
+ * The hidden folder (or file) directly in a home folder or in `/` that `path`
+ * is in, or null: in a home of `homes` (`HOME` and `os.homedir()` by
+ * default), in a home-shaped folder (`HOME_SHAPED_DOT_FOLDER`), or in `/`.
+ */
+export function inboxHomeDotFolder(path: string, homes: readonly string[] = protectedFolders()): string | null {
+  for (const folder of [...homes, parse(path).root]) {
+    if (path === folder || !isInside(path, folder)) continue;
+    const first = relative(folder, path).split(sep)[0]!;
+    if (first.startsWith(".")) return join(folder, first);
+  }
+  return HOME_SHAPED_DOT_FOLDER.exec(path)?.[0] ?? null;
 }
 
 /** A folder and its realpath, when it has one. */
