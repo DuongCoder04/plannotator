@@ -1,6 +1,7 @@
 import { loadConfig, resolvePublicUrl, resolveUrlHost } from "./config";
 import { parsePortSelection } from "./port-range";
 import { isAutoUrlHost, resolveAutoHostCached } from "./tailscale";
+import { isLocalhostHostname } from "./loopback-host";
 
 const LOCAL_ONLY_HOSTS = new Set(["localhost", "0.0.0.0", "[::]", "[::1]"]);
 const IPV4_LOOPBACK_RE = /^127(?:\.\d{1,3}){3}$/;
@@ -22,19 +23,31 @@ function publicUrlAppliesToPort(port: number): boolean {
   return selection === null || port === selection.ports[0];
 }
 
-/** Resolve a display-only session URL; public origins apply only to remote fixed/range-start ports. */
+/**
+ * Resolve a display-only session URL. Precedence:
+ *   remote: public URL (fixed/range-start port) → urlHost:<port> → localhost.
+ *     A localhost urlHost (`plannotator.localhost`, #2184) counts as unset here:
+ *     it names this computer's browser only, so remote users never get it.
+ *   local: a localhost urlHost (`plannotator.localhost`, Settings' "Open
+ *     Plannotator at plannotator.localhost") → localhost. The public URL and any
+ *     other urlHost are ignored with a once-per-process warning: a local
+ *     session binds loopback, so a proxy or tailnet name cannot reach it.
+ */
 export function resolveAdvertisedSessionUrl(port: number, isRemote: boolean): string {
   const config = loadConfig();
 
   if (!isRemote) {
-    const override = resolvePublicUrl(config) ?? resolveUrlHost(config);
+    const configuredHost = resolveUrlHost(config);
+    const localHost =
+      configuredHost !== undefined && isLocalhostHostname(configuredHost) ? configuredHost : undefined;
+    const override = resolvePublicUrl(config) ?? (localHost === undefined ? configuredHost : undefined);
     if (override !== undefined && !warnedLocalAdvertisedUrlOverride) {
       warnedLocalAdvertisedUrlOverride = true;
       process.stderr.write(
-        `[plannotator] Warning: advertised URL override ${JSON.stringify(override)} ignored — this is a local session, so the server binds loopback and only localhost is reachable. Set PLANNOTATOR_REMOTE=1 to use the override.\n`,
+        `[plannotator] Warning: advertised URL override ${JSON.stringify(override)} ignored — this is a local session, so the server binds loopback and only localhost or *.localhost names are supported. Set PLANNOTATOR_REMOTE=1 to use the override.\n`,
       );
     }
-    return localhostUrl(port);
+    return localHost === undefined ? localhostUrl(port) : `http://${localHost}:${port}`;
   }
 
   if (publicUrlAppliesToPort(port)) {
@@ -45,10 +58,12 @@ export function resolveAdvertisedSessionUrl(port: number, isRemote: boolean): st
   }
 
   const configuredHost = resolveUrlHost(config);
+  const remoteHost =
+    configuredHost !== undefined && isLocalhostHostname(configuredHost) ? undefined : configuredHost;
   const host =
-    configuredHost !== undefined && isAutoUrlHost(configuredHost)
+    remoteHost !== undefined && isAutoUrlHost(remoteHost)
       ? resolveAutoHostCached()
-      : configuredHost;
+      : remoteHost;
   return host === undefined ? localhostUrl(port) : `http://${host}:${port}`;
 }
 

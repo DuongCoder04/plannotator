@@ -24,7 +24,7 @@ import { createPiRefCards, handleRefCards, type RefRunner } from "./ref-cards.ts
 import { createRequestHostGuard } from "./request-host-guard.ts";
 import { refuseCrossOriginWrite } from "./request-origin-guard.ts";
 import { createReviewDraftSession, localGitDraftTargetKey, localReviewDraftKeys, prDraftTargetKey, type ReviewDraftKeys } from "../generated/review-draft.ts";
-import { agentSwitchConfigToSave, agentToolSaveFailed, loadConfig, saveConfig, detectGitUser, getServerConfig, parsePackageChangesConfig, parseReviewAnalysisConfig, resolveAIEnabled, resolvePackageLookup, resolveSharingEnabled, resolveClaudeSandbox, resolveCursorSandbox, resolveFeedbackHistory, resolveGuideHistory, resolveGuideShareUrl, resolveGitRemoteCheck, resolveReviewProgress } from "../generated/config.ts";
+import { agentSwitchConfigToSave, agentToolSaveFailed, cookieHostConfigWrite, loadConfig, saveConfig, detectGitUser, getServerConfig, parsePackageChangesConfig, parseReviewAnalysisConfig, resolveAIEnabled, resolvePackageLookup, resolveSharingEnabled, resolveClaudeSandbox, resolveCursorSandbox, resolveFeedbackHistory, resolveGuideHistory, resolveGuideShareUrl, resolveGitRemoteCheck, resolveReviewProgress } from "../generated/config.ts";
 import { currentPiHost } from "../pi-host.ts";
 import { appendFeedbackRecord, countChangedFiles, deriveFeedbackProject, type FeedbackDecision, type FeedbackReviewTarget } from "../generated/feedback-archive.ts";
 import { isFaviconStyle, type FaviconStyle } from "../generated/favicon.ts";
@@ -2718,7 +2718,7 @@ export async function startReviewServer(options: {
 				...(servedError && { error: servedError }),
 				semanticDiff: await getSemanticDiffAdvert(servedDiffType as DiffType),
 				callFlow: await getCallFlowAdvert(servedDiffType as DiffType),
-				serverConfig: getServerConfig(gitUser, currentPiHost()),
+				serverConfig: getServerConfig(gitUser, currentPiHost(), { cookieHost: !isRemoteSession() }),
 				...piUpdateAdvert(options.origin),
 			});
 		} else if (url.pathname === "/api/fetch-base" && req.method === "POST") {
@@ -3972,9 +3972,13 @@ export async function startReviewServer(options: {
 					toSave.packageChanges = packageChangesConfig;
 				}
 				if (body.conventionalComments !== undefined) toSave.conventionalComments = body.conventionalComments;
+				// The cookie switch (#2184): its own write, which never replaces another urlHost;
+				// refused in remote mode.
+				const cookieHostWrite = cookieHostConfigWrite((body as { cookieHost?: unknown }).cookieHost, isRemoteSession());
+				if (cookieHostWrite && cookieHostWrite.status !== 200) return json(res, cookieHostWrite.body, cookieHostWrite.status);
 				if (Object.keys(toSave).length > 0 && !saveConfig(toSave as Parameters<typeof saveConfig>[0])) return json(res, { error: "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it." }, 500);
 				if (agentToolSaveFailed(toSave)) return json(res, { error: "Could not save the setting to config.json." }, 500);
-				json(res, { ok: true });
+				json(res, cookieHostWrite ? cookieHostWrite.body : { ok: true });
 			} catch {
 				json(res, { error: "Invalid request" }, 400);
 			}

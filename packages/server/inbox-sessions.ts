@@ -120,6 +120,12 @@ interface SeenSession {
   idleSince: number | null;
   /** The last time it was seen idle (busy false); null when never. Decides whether an automatic mark went into a turn. */
   idleAt?: number | null;
+  /**
+   * When it last went idle (the `idleSince` of its latest idle spell), kept
+   * through a later busy turn and after the session ends (Tidy's "Nothing to
+   * change" must not flip back). Unlike `idleAt`, not refreshed by each poll.
+   */
+  lastIdleSince?: number | null;
   /** Its poll said it can deliver into a running turn (`send_now`). */
   sendNow: boolean;
   /** Its poll said it understands a reply it was tagged in (`tags`): only then can it be tagged. */
@@ -300,6 +306,7 @@ export function createInboxLiveSessions(options: {
       entry.idleSince = null;
     } else {
       entry.idleSince = entry.busy === false && entry.idleSince !== null ? entry.idleSince : (finiteMs(body.idle_since) ?? at);
+      entry.lastIdleSince = entry.idleSince;
       entry.idleAt = at;
       setDeliveryFlags(entry, false, entry.sendNow);
     }
@@ -981,6 +988,7 @@ export function createInboxLiveSessions(options: {
       holding: 1,
       busy: false,
       idleSince: now(),
+      lastIdleSince: now(),
       idleAt: now(),
       sendNow: false,
       tags: false,
@@ -991,6 +999,8 @@ export function createInboxLiveSessions(options: {
       runner: true,
     });
   };
+  /** When `session` last went idle, live or not; null when never seen idle (Tidy's "Nothing to change"). */
+  const lastIdleOf = (session: string): number | null => sessions.get(session)?.lastIdleSince ?? null;
   /** A runner session's turn started or ended. */
   const setRunnerBusy = (session: string, busy: boolean) => {
     const entry = sessions.get(session);
@@ -1020,6 +1030,7 @@ export function createInboxLiveSessions(options: {
     composeTarget,
     connectionOf,
     deliveryConnectionOf,
+    lastIdleOf,
     steerableSessions,
     autoSendAfterMs,
     trackWaits,

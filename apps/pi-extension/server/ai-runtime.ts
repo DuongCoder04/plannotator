@@ -8,6 +8,7 @@ import type { SessionBridge } from "../generated/ai/session-bridge.ts";
 import type { PullSessionBridgeConfig } from "../generated/ai/session-bridge-pull.ts";
 import { isLoopbackHostHeader } from "../generated/loopback-host.ts";
 import { handleApiNotFound, json, toWebRequest } from "./helpers.ts";
+import { getLocalUrlHostname } from "./network.ts";
 
 export interface PiAIRuntime {
 	endpoints: Record<string, (req: Request) => Promise<Response>>;
@@ -30,6 +31,12 @@ export interface CreatePiAIRuntimeOptions {
 	 * (DNS-rebinding guard). Undefined (not bound yet) refuses bridge requests.
 	 */
 	getServerPort?: () => number | undefined;
+	/**
+	 * The localhost subdomain this session is advertised at (#2184), accepted by
+	 * the bridge beside the loopback names. Defaults to the configured one
+	 * (getLocalUrlHostname), read here once; null accepts none.
+	 */
+	localHostname?: string | null;
 	/**
 	 * "Ask this session" over HTTP (session-bridge-pull.ts) for a host that
 	 * cannot call this process directly. Pi itself always passes an in-process
@@ -57,6 +64,7 @@ export async function createPiAIRuntime(options: CreatePiAIRuntimeOptions = {}):
 	try {
 		const ai = await import("../generated/ai/index.ts");
 		const cwd = options.cwd ?? process.cwd();
+		const localHostname = options.localHostname !== undefined ? options.localHostname : getLocalUrlHostname();
 		const registry = new ai.ProviderRegistry();
 		const sessionManager = new ai.SessionManager();
 		// Model discovery spawns the provider's CLI, so it runs on first explicit
@@ -183,7 +191,7 @@ export async function createPiAIRuntime(options: CreatePiAIRuntimeOptions = {}):
 				getCwd: options.getCwd,
 				beforeProviderSession: discovery.beforeProviderSession,
 				authorizeSessionBridgeRequest: (req: Request) =>
-					isLoopbackHostHeader(req.headers.get("host"), options.getServerPort?.()),
+					isLoopbackHostHeader(req.headers.get("host"), options.getServerPort?.(), localHostname),
 				...(pullBridge ? { pullBridge } : {}),
 			}),
 			dispose: () => {

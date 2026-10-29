@@ -82,7 +82,9 @@ import {
 import { checkServerSession, createServerSessionNonce, INBOX_SERVER_SESSION_MISMATCH_ERROR, serverSessionMismatchBody } from "@plannotator/core/server-session";
 import {
   INBOX_TOOL_HOSTS,
+  cookieHostState,
   loadConfig,
+  saveCookieHost,
   parseAutoUpdateEnv,
   parseExperimentalEnv,
   resolveExperimental,
@@ -108,6 +110,7 @@ import type { InboxSearchIndex, InboxSearchIndexOptions } from "@plannotator/sha
 import { createInboxSearchRoutes } from "./inbox-search";
 import { inboxSkillsRoute } from "./inbox-skills";
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
+import { createInboxTidy } from "./inbox-tidy";
 import { InboxError } from "@plannotator/shared/inbox/schema";
 import { inboxPromptsModel, parseInboxPromptsChange, saveInboxPromptsChange } from "./inbox-prompts";
 import { InboxStore } from "@plannotator/shared/inbox/store";
@@ -309,6 +312,8 @@ export interface InboxServerOptions {
   windowGraceMs?: number;
   /** Tests: the clock (epoch ms) send_message's "not read since" line reads (packages/server/inbox-session-reads.ts). Default: the wall clock. */
   mcpNow?: () => number;
+  /** Tests: the store's clock (what it stamps on messages, cards and deliveries), so a test can write what reads as hours old. Default: the wall clock. */
+  storeNow?: () => Date;
   /**
    * The argv that runs this CLI (the compiled binary's absolute path, or bun
    * plus the entry script), so the window's connect snippets name a command
@@ -460,6 +465,8 @@ const ERROR_STATUS: Record<string, number> = {
   question_set_aside: 409,
   // Re-ask: every question of that session is answered, picked or closed already.
   nothing_to_reask: 409,
+  // Tidy: none of the sessions asked has anything to tidy now (asked a moment ago, or nothing left).
+  nothing_to_tidy: 409,
   thread_resolved: 409,
   // 👍 Looks good: refused on a person's message, on an older agent message, and while a question is open.
   ack_not_allowed: 422,
@@ -533,6 +540,9 @@ const ERROR_STATUS: Record<string, number> = {
   tailscale_env_decides: 409,
   // Settings → Capabilities → Experimental, while PLANNOTATOR_EXPERIMENTAL decides.
   experimental_env_decides: 409,
+  // Settings → General → "Open Plannotator at plannotator.localhost" (#2184): locked by the env var or another urlHost.
+  cookie_host_env_decides: 409,
+  cookie_host_url_host_in_use: 409,
   tailscale_unavailable: 409,
   local_only: 403,
 };
@@ -684,7 +694,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   try {
     previousInboxVersion = readUpdateState(dataDir).inboxVersion ?? null;
   } catch {}
-  const store = InboxStore.open(dataDir);
+  const store = InboxStore.open(dataDir, options.storeNow ? { now: options.storeNow } : {});
   // A send a crash interrupted leaves a temp blob; the next start removes it once it is stale.
   sweepStaleInboxSendTemps(store.dir);
   const serverSession = createServerSessionNonce();
@@ -1611,6 +1621,28 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   };
 
   /**
+   * "Open Plannotator at plannotator.localhost" (#2184): config.json `urlHost:
+   * "plannotator.localhost"`, shared with plan review, code review and
+   * annotate. `env` is PLANNOTATOR_URL_HOST when set and `url_host` another
+   * config.json `urlHost`: either locks the switch. Applies from the next start.
+   */
+  const cookieHostWire = () => {
+    const state = cookieHostState();
+    return { on: state.on, env: state.env ?? null, url_host: state.urlHost ?? null };
+  };
+
+  /** Save the cookie switch. `validateOnly`: check the input and write nothing. */
+  const saveCookieHostSwitch = (input: unknown, validateOnly = false) => {
+    if (typeof input !== "boolean") throw new InboxError("validation_error", "cookie_host: must be a boolean.", { field: "cookie_host" });
+    if (validateOnly) return cookieHostWire();
+    const { outcome } = saveCookieHost(input);
+    if (outcome === "env") throw new InboxError("cookie_host_env_decides", "PLANNOTATOR_URL_HOST decides this setting.", { cookie_host: cookieHostWire() });
+    if (outcome === "url_host") throw new InboxError("cookie_host_url_host_in_use", "config.json already sets urlHost; it is not replaced.", { cookie_host: cookieHostWire() });
+    if (outcome === "failed") throw new InboxError("config_not_saved", "config.json could not be saved; nothing changed. A config.json that is not valid JSON is never written over: fix or remove it.");
+    return cookieHostWire();
+  };
+
+  /**
    * Experimental features (config.json `experimental`, PLANNOTATOR_EXPERIMENTAL
    * wins): each switch, and whether the env var decides it. Read on every
    * request, so a switch applies at once.
@@ -1703,6 +1735,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     sound: soundState(),
     /** Settings → About: update notices and automatic updates. */
     updates: updatesState(),
+    /** Settings → General: "Open Plannotator at plannotator.localhost" (#2184); only for a page on this computer. */
+    ...(via === "local" ? { cookie_host: cookieHostWire() } : {}),
     /** Plannotator's appearance (config.json `theme`), shared with plan review; null when never chosen. */
     theme: themeState(),
     /** The window's text size in px (config.json `inboxTextSize`), 14 unless chosen. */
@@ -2009,6 +2043,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     return { ...ownerCommand(reply, sendNow), ...handedFrom, ...(alsoTagged.length > 0 ? { also_tagged: alsoTagged } : {}) };
   };
   const ownerCommand = (reply: InboxMessage, sendNow: boolean): InboxReplyCommand => {
+    // Tidy: the note's body is the whole wake (inboxWakeText words it); never a reply to anything.
+    if (reply.tidy) {
+      return { type: "message", id: reply.id, thread_id: reply.thread_id, reply_to: null, subject: "Tidy", body: reply.body, url: threadPageUrl(baseUrl, reply.thread_id), tidy: true };
+    }
     // A reply the person sent to another session because the one that asked
     // had ended: the wake says so, naming the agent that asked.
     const asked = reply.to && reply.reply_to ? store.message(reply.reply_to) : null;
@@ -2408,6 +2446,19 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     launcher: options.openInLauncher ?? systemOpenInLauncher(),
   });
 
+  // Tidy (packages/server/inbox-tidy.ts): the list header's and the Board's ⋮ menu.
+  const tidy = createInboxTidy({
+    store,
+    serverSession,
+    deliveryConnectionOf: (session) => live.deliveryConnectionOf(session),
+    // The last idle transition, kept through a busy turn and the session's end (not the live idle_since).
+    idleSince: (session) => live.lastIdleOf(session),
+    mcpAgents: () => live.mcpAgents(),
+    boardOn,
+    readBody,
+    json,
+  });
+
   const handle = async (req: Request, via: RequestVia): Promise<Response> => {
     // The tailnet listener checked its own Host (the served MagicDNS name)
     // and the owner's Tailscale login before handing the request here.
@@ -2574,6 +2625,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         return json({ serverSession, cursor: store.cursor(), decisions });
       }
       if (path === "/api/inbox/projects" && req.method === "GET") return json({ serverSession, cursor: store.cursor(), projects: projectFolders() });
+      // Tidy: who it would ask (GET) and asking them (POST).
+      const tidied = await tidy.route(req, url);
+      if (tidied) return tidied;
       // A hover card's data for an issue, PR or MR link (ref-cards.ts). Read only, the window's own
       // read guard; the owner over the tailnet gets it too. Never on the device door (not in its
       // allowlist), so nothing of it reaches a phone or the relay.
@@ -2721,9 +2775,10 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           body.tour === undefined &&
           body.prompts === undefined &&
           body.board === undefined &&
+          body.cookie_host === undefined &&
           !updateSwitches
         ) {
-          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, experimental, tour, prompts, board, update_check or auto_update is required.");
+          throw new InboxError("validation_error", "body: inbox_tool, notifications, sound, tailscale, theme, text_size, diff_style, experimental, tour, prompts, board, update_check, auto_update or cookie_host is required.");
         }
         // The Board changes what agents on this computer are offered (the card tool): changed only here.
         if (body.board !== undefined && via === "tailnet") return localOnly();
@@ -2731,6 +2786,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (updateSwitches && via === "tailnet") return localOnly();
         // The reminder goes to every agent session on this computer: changed only here, like Settings → Agents.
         if (body.prompts !== undefined && via === "tailnet") return localOnly();
+        // The address this computer's browser opens: never from a page that came through the tailnet.
+        if (body.cookie_host !== undefined && via === "tailnet") return localOnly();
         const promptsChange = body.prompts === undefined ? undefined : parseInboxPromptsChange(body.prompts);
         let tailscaleChange: { on: boolean; replaceExposed: boolean } | undefined;
         if (body.tailscale !== undefined) {
@@ -2762,7 +2819,11 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (body.experimental !== undefined) saveExperimental(body.experimental, true);
         if (body.tour !== undefined) saveTour(body.tour, true);
         if (body.board !== undefined) saveBoard(body.board, true);
+        if (body.cookie_host !== undefined) saveCookieHostSwitch(body.cookie_host, true);
         const tailnet = tailscaleChange === undefined ? tailscale.state() : tailscale.set(tailscaleChange.on, { via, replaceExposed: tailscaleChange.replaceExposed });
+        // After the tailnet change, so a tailnet refusal saves nothing; the cookie switch can be
+        // refused too (the env var, another urlHost), so it comes before the other saves.
+        const cookieHost = body.cookie_host === undefined ? undefined : saveCookieHostSwitch(body.cookie_host);
         const notifications = body.notifications === undefined ? notificationsState() : saveNotifications(body.notifications);
         const sound = body.sound === undefined ? soundState() : saveSound(body.sound);
         const inboxTool = body.inbox_tool === undefined ? inboxToolState() : saveInboxTool(body.inbox_tool);
@@ -2775,7 +2836,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         const tour = body.tour === undefined ? tourState() : saveTour(body.tour);
         const board = body.board === undefined ? { on: boardOn() } : saveBoard(body.board);
         if (promptsChange) saveInboxPromptsChange(promptsChange);
-        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle, experimental, tour, board, prompts: promptsState(via) });
+        return json({ inbox_tool: inboxTool, notifications, sound, tailscale: tailnet, updates: updateState, theme, text_size: textSize, diff_style: diffStyle, experimental, tour, board, prompts: promptsState(via), ...(via === "local" ? { cookie_host: cookieHost ?? cookieHostWire() } : {}) });
       }
       // The one-time sound dialog: the page asks to show it, and only the first ask ever gets `show: true`.
       if (path === "/api/inbox/sound/dialog") {
@@ -3224,7 +3285,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
 
       if (path === "/" && (req.method === "GET" || req.method === "HEAD")) {
         // One origin: notification permission is per origin (inbox-canonical.ts).
-        const canonical = inboxCanonicalRedirect(req, url, port, via);
+        const canonical = inboxCanonicalRedirect(req, url, baseUrl, via);
         if (canonical) return canonical;
         const page = options.htmlContent ?? NOT_BUILT_PAGE;
         // A page load (or a refresh) asks for a new release when the answer is
