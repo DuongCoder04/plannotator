@@ -426,6 +426,20 @@ function ReviewNavigatorContainer({
   );
 }
 
+/** The saved default diff for this session's VCS: Jujutsu keeps its own
+ *  (`reviewDefaults.jj`), everything else reads the Git setting. */
+function savedDefaultDiffTypeFor(gitContext: GitContext | null): string | undefined {
+  return gitContext?.vcsType === 'jj'
+    ? configStore.get('reviewDefaults').jj?.defaultDiffType
+    : configStore.get('defaultDiffType');
+}
+
+/** Evolution diff compares against the change's previous state, never the
+ *  line base: the same base handleDiffSwitch picks when switching to it. */
+function evologBaseFor(diffType: string, gitContext: GitContext | null): string | undefined {
+  return diffType === 'jj-evolog' ? gitContext?.jjEvologs?.[1]?.commitId : undefined;
+}
+
 const ReviewApp: React.FC = () => {
   useViewportEnvironment();
   // A plain-text paste into our text fields is inserted by the page: Chrome 155-156 on macOS drops
@@ -3136,7 +3150,7 @@ const ReviewApp: React.FC = () => {
     if (guideOpen || guideIntroVisible || showLookAndFeel || editModeIntroVisible || tokenHoverIntroVisible || terminalToolsIntroVisible || inboxIntroVisible || askSessionIntroVisible || agentToolIntroVisible) return;
     markAutoViewedNoticeSeen();
     toast('Files are marked viewed as you scroll', {
-      description: "Scroll past a file or move on to the next and it's checked off. Turn this off in Settings → Git, or from the gear above the file list.",
+      description: "Scroll past a file or move on to the next and it's checked off. Turn this off in Settings → Review, or from the gear above the file list.",
       duration: 10000,
       position: 'top-right',
       classNames: { toast: '!w-auto', description: '!text-foreground/70' },
@@ -3145,7 +3159,7 @@ const ReviewApp: React.FC = () => {
         onClick: () => {
           turnOffAutoViewed();
           toast('Auto-mark viewed is off', {
-            description: 'Re-enable it in Settings → Git.',
+            description: 'Re-enable it in Settings → Review.',
             duration: 5000,
             position: 'top-right',
             classNames: { toast: '!w-auto', description: '!text-foreground/70' },
@@ -3723,11 +3737,13 @@ const ReviewApp: React.FC = () => {
       // diffError and the memo intact (no retry loop; the next exit — or a
       // manual picker switch — is the recovery path).
       const target = resolveCommitExitDiff(preCommitDiffRef.current, {
-        preferredDefault: configStore.get('defaultDiffType'),
+        preferredDefault: savedDefaultDiffTypeFor(gitContext),
         diffOptions: gitContext?.diffOptions ?? [],
         activeWorktreePath,
       });
-      void fetchDiffSwitch(target.diffType, target.base ?? undefined);
+      const evologBase = target.base ? undefined : evologBaseFor(target.diffType, gitContext);
+      if (evologBase) setSelectedBase(evologBase);
+      void fetchDiffSwitch(target.diffType, target.base ?? evologBase);
     }
     selectPanelView(view);
   }, [handleSwitchToSections, selectPanelView, searchQuery, isSearchOpen, clearSearch, closeSearch, panelView, diffType, isLoadingDiff, gitContext, activeWorktreePath, fetchDiffSwitch]);
@@ -3802,11 +3818,13 @@ const ReviewApp: React.FC = () => {
     if (!isCommitDiffType(diffType)) return;
     if (panelView === 'commits') return; // defensive: unreachable on load
     const target = resolveCommitExitDiff(null, {
-      preferredDefault: configStore.get('defaultDiffType'),
+      preferredDefault: savedDefaultDiffTypeFor(gitContext),
       diffOptions: gitContext?.diffOptions ?? [],
       activeWorktreePath,
     });
-    void fetchDiffSwitch(target.diffType);
+    const evologBase = evologBaseFor(target.diffType, gitContext);
+    if (evologBase) setSelectedBase(evologBase);
+    void fetchDiffSwitch(target.diffType, evologBase);
   }, [isLoading, diffData, diffType, panelView, gitContext, activeWorktreePath, fetchDiffSwitch]);
 
   // Self-heal a conflicted persisted pair: reviewPanelView=sections with a
@@ -6358,7 +6376,7 @@ const ReviewApp: React.FC = () => {
             externalOpen={openSettingsMenu}
             onExternalClose={() => setOpenSettingsMenu(false)}
             // Local git session where since-base isn't offered (base ref
-            // unresolvable): the Git tab notes that the Git-status preference
+            // unresolvable): Settings → Review → Git notes that the Git-status preference
             // can't take effect in THIS repo. PR/workspace/jj sessions say
             // nothing — the preference isn't about them.
             sinceBaseUnavailable={
