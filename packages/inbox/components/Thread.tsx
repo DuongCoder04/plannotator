@@ -22,6 +22,7 @@ import { AttachmentTiles, AttachmentsCount, changedCount } from './AttachmentTil
 import { AttachmentPane, type AttachmentPaneHandle } from './AttachmentPane';
 import type { OpenInSurface } from './OpenIn';
 import { stepsOf } from '../stepping';
+import { optionOf, optionSetId, optionSetOf } from '../optionSets';
 import { artifactKey, artifactOfFile, newestViewableFile, threadArtifacts } from '../artifacts';
 import { ArtifactsView } from './ArtifactsView';
 import { fileViewFor, openingView, parseFileView, readFileViewChoice, writeFileViewChoice, type FileView } from '../fileView';
@@ -285,6 +286,7 @@ export function MessageBody({
   repo,
   onOpenAttachment,
   onOpenInlineImage,
+  onOpenOptionSet,
   readOnly,
   answers,
   onPick,
@@ -317,6 +319,12 @@ export function MessageBody({
   onOpenAttachment: (attachment: InboxAttachment) => void;
   /** An image the body shows was clicked (or pressed): its captured file (`inline_images`) opens in the viewer. */
   onOpenInlineImage?: (image: InboxInlineImage) => void;
+  /**
+   * A picture choice's zoom (approval "inbox-image-swipe", "Option sets"): its captured file opens in the
+   * viewer over that question's picture choices only (the question's key). Absent: it opens like any image
+   * of the body.
+   */
+  onOpenOptionSet?: (key: string, image: InboxInlineImage) => void;
   readOnly: boolean;
   answers: ReadonlyMap<string, QuestionAnswer>;
   onPick: (key: string, answer: QuestionAnswer | null) => void;
@@ -462,6 +470,17 @@ export function MessageBody({
   const onImageRef = useRef(onImage);
   onImageRef.current = onImage;
   const onImageClick = useCallback((src: string, alt: string) => (onImageRef.current ? onImageRef.current(src, alt) : void openImage(src, alt)), [openImage]);
+  const openSetRef = useRef(onOpenOptionSet);
+  openSetRef.current = onOpenOptionSet;
+  /** A picture choice's zoom: its question's choices in the viewer; a picture not captured yet (or a host's own `onImage`) opens as before. */
+  const onZoomChoice = useCallback(
+    (key: string, _index: number, src: string, alt: string) => {
+      const image = onImageRef.current ? null : imageOf(src);
+      if (image && openSetRef.current) openSetRef.current(key, image);
+      else onImageClick(src, alt);
+    },
+    [imageOf, onImageClick],
+  );
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
@@ -705,6 +724,7 @@ export function MessageBody({
         disableCodePathValidation
         imageBaseDir={imageBaseDir}
         onImageClick={onImageClick}
+        onQuestionPictureZoom={onOpenOptionSet ? onZoomChoice : undefined}
         resolveLocalLink={resolveLocalLink}
         refRepo={refRepo}
         answerOnly
@@ -789,11 +809,11 @@ export interface ThreadPaneProps {
   draftChanged?: number;
   onClose: () => void;
   /** The attachment open beside the thread (`#…&file=att_…`), its version, and an annotation to show. */
-  file: { id: string; version: 'current' | 'sent'; focus: string | null; linked?: string | null; view?: 'full' | 'side' | null } | null;
+  file: { id: string; version: 'current' | 'sent'; focus: string | null; linked?: string | null; view?: 'full' | 'side' | null; set?: string | null } | null;
   /** `replace`: swap the history entry (stepping between files), so Back returns to the thread in one press. */
   /** `back`: the browser's Back when the entry on screen was opened from `file` (a linked page's Back), else a new entry. */
   /** `move`: into full screen from beside the thread, or back out to it (fullScreenOrigin.ts): the window keeps the history a stack of frames. */
-  onOpenFile: (file: { id: string; version: 'current' | 'sent'; focus: string | null; linked?: string | null; view?: 'full' | 'side' | null } | null, options?: { replace?: boolean; back?: boolean; move?: FrameMove }) => void;
+  onOpenFile: (file: { id: string; version: 'current' | 'sent'; focus: string | null; linked?: string | null; view?: 'full' | 'side' | null; set?: string | null } | null, options?: { replace?: boolean; back?: boolean; move?: FrameMove }) => void;
   /**
    * The full screen on screen was entered from the file beside the thread (the history entry's mark,
    * fullScreenOrigin.ts): × and Escape go back beside the thread. Else they close the file, back to the thread.
@@ -1776,8 +1796,21 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
    * guided reviews left out: they open their own reader).
    */
   const artifactList = useMemo(() => threadArtifacts(thread.messages, attachments, inlineImages), [thread.messages, attachments, inlineImages]);
-  /** Every file of the thread in thread order: what the pane steps through. */
+  /** Every file of the thread in thread order: what the pane steps through, and what its pill's sheet lists. */
   const steps = useMemo(() => stepsOf(artifactList), [artifactList]);
+  /**
+   * The question's picture choices the viewer was opened over (`set=`, approval "inbox-image-swipe"): it steps
+   * through those alone, in choice order. Gone when the file on screen is not one of them (a linked page, a tile).
+   */
+  const namedSet = useMemo(() => optionSetOf(thread.messages, steps, file?.set ?? null), [thread.messages, steps, file?.set]);
+  const optionSet = namedSet && file && optionOf(namedSet, file.id) ? namedSet : null;
+  /** The set a file opened from the pane keeps: the one on screen when the file is one of its choices. */
+  const setFor = (attachmentId: string): string | null => (optionSet && optionOf(optionSet, attachmentId) ? optionSet.id : null);
+  /** A picture choice's zoom: the viewer over its question's choices (one picture alone is no set: the thread's files). */
+  const openOptionSet = (messageId: string, key: string, image: InboxInlineImage) => {
+    const id = optionSetId(messageId, key);
+    openFromMessage(image, null, undefined, optionSetOf(thread.messages, steps, id) ? id : null);
+  };
   /** The Artifacts view swaps the thread's body for the grid (the messages never change). */
   const artifactsOn = artifactsRoute;
   /** The button shows once the thread's files have loaded and something is there (or the view is open, from a link). */
@@ -1787,7 +1820,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const artifactsBodyRef = useRef<HTMLDivElement>(null);
   /** The tile last opened from the grid: focus comes back to it when its file or guide closes. */
   const artifactOpened = useRef<string | null>(null);
-  const openFile = (attachment: Pick<InboxAttachmentState, 'id' | 'kind' | 'ref'>, version: 'current' | 'sent' = 'current', focus: string | null = null, view: FileView | null = null) => {
+  const openFile = (attachment: Pick<InboxAttachmentState, 'id' | 'kind' | 'ref'>, version: 'current' | 'sent' = 'current', focus: string | null = null, view: FileView | null = null, set: string | null = null) => {
     // A tile's ⋯ names a view for this file alone. The file already open keeps the view it is in (a comment
     // card in the reply box, its tile again: a one-off view from the ⋯ stays). Else the remembered choice,
     // else today's rule (fileView.ts).
@@ -1795,14 +1828,15 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     const opening = view ?? kept ?? openingView(attachment);
     // Full screen over a file beside the thread: its × and Escape come back beside the thread (fullScreenOrigin.ts).
     const overSide = file !== null && !shownFull && opening === 'full';
-    onOpenFile({ id: attachment.id, version, focus, view: opening }, overSide ? { move: 'open-full' } : undefined);
+    onOpenFile({ id: attachment.id, version, focus, view: opening, set }, overSide ? { move: 'open-full' } : undefined);
   };
   /** A tile, or a link in a message: the file as it is now, focus in its pane (a typed comment in the open file asks first). */
   /** `opening`: called only when the file does open (not after "Keep writing" on a typed comment). */
-  const openFromMessage = (attachment: Pick<InboxAttachmentState, 'id' | 'kind' | 'ref'> & { name?: string }, view: FileView | null = null, opening?: () => void) => {
+  /** `set`: a question's picture choices the viewer then steps through (optionSets.ts); absent: every file of the thread. */
+  const openFromMessage = (attachment: Pick<InboxAttachmentState, 'id' | 'kind' | 'ref'> & { name?: string }, view: FileView | null = null, opening?: () => void, set: string | null = null) => {
     const go = () => {
       opening?.();
-      openFile(attachment, 'current', null, view);
+      openFile(attachment, 'current', null, view, set);
       setPaneFocus((n) => n + 1);
     };
     const pane = paneRef.current;
@@ -4102,6 +4136,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                   repo={thread.project.repo ?? null}
                   onOpenAttachment={openFromMessage}
                   onOpenInlineImage={(image) => openFromMessage(image)}
+                  onOpenOptionSet={(key, image) => openOptionSet(message.id, key, image)}
                   readOnly={!isAgent || !liveMessage(message) || questions.length === 0 || allSent}
                   answers={answersOf(message)}
                   onPick={(key, answer) => pick(message.id, key, answer)}
@@ -4627,7 +4662,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         projectRoot={thread.project.root}
         repo={thread.project.repo ?? null}
         version={file!.version}
-        onVersion={(version) => onOpenFile({ id: openAttachment.id, version, focus: null, view: currentView })}
+        onVersion={(version) => onOpenFile({ id: openAttachment.id, version, focus: null, view: currentView, set: optionSet?.id ?? null })}
         full={shownFull}
         fullLocked={phone || fileStacked}
         // Full screen opened from the thread alone: × and Escape close the file, back to the thread as it was.
@@ -4636,9 +4671,11 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         exitLeavesFor={fullExitFile && fullExitFile !== openAttachment.id ? (allFiles.find((a) => a.id === fullExitFile)?.name ?? 'that file') : null}
         phone={phone}
         openIn={openIn}
-        steps={steps}
-        // A step keeps the frame the person is in, and replaces the route.
-        onStep={(attachmentId, version) => onOpenFile({ id: attachmentId, version, focus: null, view: currentView }, { replace: true })}
+        steps={optionSet ? optionSet.steps : steps}
+        allSteps={steps}
+        optionSet={optionSet}
+        // A step keeps the frame the person is in, and the option set it is in (a step out of it, from the sheet, leaves the set), and replaces the route.
+        onStep={(attachmentId, version) => onOpenFile({ id: attachmentId, version, focus: null, view: currentView, set: setFor(attachmentId) }, { replace: true })}
         // A link in an attached HTML page to another file of the thread: a new entry, so Back returns to the page; the frame stays.
         onOpenLinked={(attachmentId) => onOpenFile({ id: attachmentId, version: 'current', focus: null, view: currentView })}
         // A page the attached page links to: in the route (`linked=`), so each one is a history entry and Back steps back through them.
@@ -4662,7 +4699,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         onSaved={saveRecord}
         onRemoved={dropRecord}
         onToast={onToast}
-        onOpenAt={(attachmentId, version, focus) => onOpenFile({ id: attachmentId, version, focus, view: currentView }, { replace: true })}
+        onOpenAt={(attachmentId, version, focus) => onOpenFile({ id: attachmentId, version, focus, view: currentView, set: setFor(attachmentId) }, { replace: true })}
         onClose={() => {
           onOpenFile(null);
         }}

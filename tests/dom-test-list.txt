@@ -94,6 +94,7 @@ packages/inbox/attachmentStepping.test.tsx
 packages/inbox/imageZoom.test.tsx
 packages/inbox/fullView.test.tsx
 packages/inbox/phoneStepping.test.tsx
+packages/inbox/imageSwipe.test.tsx
 packages/inbox/fullScreenThread.test.tsx
 packages/inbox/sideBySide.test.tsx
 packages/inbox/attachmentSteppingSave.test.tsx

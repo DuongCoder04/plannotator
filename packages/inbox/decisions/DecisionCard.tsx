@@ -27,6 +27,7 @@ import { inboxMessageImageUrl } from '../images';
 import { Tip } from '../components/Tip';
 import { ContextMarkdown } from '../components/ContextMarkdown';
 import { useRefRepo } from '../links';
+import { choiceName } from '../optionSets';
 import { answerNeedsConfirm, answerWords, choiceAnswer, confirmLabel, otherAnswer, skipAnswer, swipeChoices, swipeHint, textAnswer } from './model';
 
 /**
@@ -73,6 +74,8 @@ export interface CardPicture {
   /** The src the context wrote it as, when it came from there (left out of the context, shown as the hero). */
   ref: string | null;
   src: string;
+  /** The picture's own alt text, where its name is something else (a picture choice is named by its choice). */
+  alt?: string;
 }
 
 /**
@@ -337,7 +340,7 @@ export function DecisionCard(props: DecisionCardProps) {
   const recommendedLabels = q.choices.filter((c) => c.recommended).map((c) => c.label);
   /** The tile pictures, for the viewer's stepping (a zoom opens on its own tile). */
   const tilePictures: CardPicture[] = q.choices.flatMap((choice, index) =>
-    choice.image && tileUrls[index] ? [{ attachmentId: '', name: choice.image.alt || choice.label, ref: choice.image.src, src: tileUrls[index]! }] : [],
+    choice.image && tileUrls[index] ? [{ attachmentId: '', name: choiceName(choice.label, index), alt: choice.image.alt || choice.label, ref: choice.image.src, src: tileUrls[index]! }] : [],
   );
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {

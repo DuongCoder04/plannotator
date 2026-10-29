@@ -45,7 +45,7 @@ import {
 import { whenTime, formatBytes } from '../format';
 import { useRefRepo } from '../links';
 import { inboxMarkdownImageBase } from '../images';
-import { ImageAttachmentView } from './ImageAttachmentView';
+import { ImageAttachmentView, type ImageSwipeEdges } from './ImageAttachmentView';
 import type { WheelHintGate } from '@plannotator/ui/components/ImageZoomStage';
 import { VideoAttachmentView, type VideoAttachmentViewHandle } from './VideoAttachmentView';
 import { OpenInControl, type OpenInSurface } from './OpenIn';
@@ -57,8 +57,11 @@ import { useNarrowerThan } from '../narrower';
 import { FullViewBar, type FullViewBarHandle, type ToolbarState } from './FullViewBar';
 import { FilePeek, peekSheetHost } from './AttachmentStepper';
 import { FullScreenMore } from './OpenIn';
-import { fileSwipeMode, useFileSwipe } from '../fileSwipe';
+import { fileSwipeMode, prefersReducedMotion, useFileSwipe } from '../fileSwipe';
 import { FileSwipeCard } from './FileSwipeCard';
+import { ImageSwipePeek, isImageStep } from './ImageSwipePeek';
+import { OptionCaption } from './OptionCaption';
+import { FIRST_OPTION_NOTE, LAST_OPTION_NOTE, optionAnnouncement, type OptionSet } from '../optionSets';
 import { createPortal } from 'react-dom';
 import type { Notice } from './Markup';
 import { MarkupPicture } from './Markup';
@@ -208,10 +211,22 @@ export interface AttachmentPaneProps {
    */
   onStep?: (attachmentId: string, version: 'current' | 'sent') => void;
   /**
+   * Every file of the thread, when `steps` is fewer (a question's picture
+   * choices, `optionSet`): the pill's sheet and the stepper's peek list these,
+   * so the thread's other files are a tap away. Absent: `steps`.
+   */
+  allSteps?: readonly AttachmentStep[];
+  /**
+   * The question's picture choices `steps` are (optionSets.ts, approval
+   * "inbox-image-swipe"): full screen captions the choice on screen, and the
+   * ends say "Last option" / "First option". Absent: the thread's files.
+   */
+  optionSet?: OptionSet | null;
+  /**
    * A phone (phone.ts): always full screen; the toolbar sits bottom right
    * with 44 px targets and leads with Back to the thread, its `4/9 ⌄` pill
    * opens every file of the thread, a sideways swipe on the file steps
-   * (fileSwipe.ts; a fitted image keeps its own), and the comments open as a
+   * (fileSwipe.ts; an image too: approval "inbox-image-swipe"), and the comments open as a
    * bottom sheet instead of a drawer.
    */
   phone?: boolean;
@@ -381,6 +396,12 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const steps = props.steps ?? [];
   const index = stepIndexOf(steps, attachment.id);
   const multi = steps.length > 1 && index >= 0;
+  /** A question's picture choices (optionSets.ts): what the pane steps through; the sheet still lists `allSteps`. */
+  const optionSet = multi && props.optionSet ? props.optionSet : null;
+  const optionSetRef = useRef(optionSet);
+  optionSetRef.current = optionSet;
+  const allSteps = props.allSteps ?? steps;
+  const allIndex = stepIndexOf(allSteps, attachment.id);
   const phone = props.phone === true;
   const [menuOpen, setMenuOpen] = useState(false);
   /** Full screen (approval "inbox-one-fullscreen"): the file fills the window under one floating toolbar. */
@@ -488,7 +509,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     announce(text);
     if (endTimer.current) clearTimeout(endTimer.current);
     endTimer.current = setTimeout(() => setEndNote(null), 1800);
-    if (fullRef.current) showChip(text);
+    // In a set of picture choices the caption says it (it stays on screen); else the chip.
+    if (fullRef.current && !optionSetRef.current) showChip(text);
   };
 
   // ── Full screen (approval "inbox-one-fullscreen", Drawer) ─────────────────
@@ -589,9 +611,10 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
       announce('Side by side: the file is beside the thread.');
     }
   }, [full, announce]);
-  const goTo = (target: number, source: StepSource) => {
-    const next = steps[target];
-    if (!next || target === index) {
+  /** Open the file at `target` in `list` (the files stepped through; the sheet's `allSteps`). */
+  const goTo = (target: number, source: StepSource, list: readonly AttachmentStep[] = steps) => {
+    const next = list[target];
+    if (!next || next.attachment.id === attachment.id) {
       setMenuOpen(false);
       return;
     }
@@ -605,7 +628,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     if (!multi) return;
     const target = index + dir;
     if (target < 0 || target >= steps.length) {
-      showEnd(dir > 0 ? LAST_NOTE : FIRST_NOTE);
+      showEnd(optionSet ? (dir > 0 ? LAST_OPTION_NOTE : FIRST_OPTION_NOTE) : dir > 0 ? LAST_NOTE : FIRST_NOTE);
       return;
     }
     goTo(target, source);
@@ -625,9 +648,10 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     pendingStep.current = null;
     if (!source) return;
     const at = stepIndexOf(stepsRef.current, attachment.id);
-    if (at >= 0) announce(stepAnnouncement(stepsRef.current, at));
-    // Full screen keeps on through a step; with no bar under the file, a chip names the file for a moment.
-    if (fullRef.current) showChipRef.current(null);
+    const set = optionSetRef.current;
+    if (at >= 0) announce(set ? optionAnnouncement(set, at) : stepAnnouncement(stepsRef.current, at));
+    // Full screen keeps on through a step; with no bar under the file, a chip names the file for a moment (a set's caption names the choice).
+    if (fullRef.current && !set) showChipRef.current(null);
     // A key pressed in the document (or the HTML page) leaves focus on the pane; a bar button keeps it.
     if (source === 'key') sectionRef.current?.focus({ preventScroll: true });
     // The sheet's Previous / Next closed the sheet with the step: focus back on what opened it.
@@ -641,15 +665,77 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const blocked = guard !== null || menuOpen || moreOpen;
   const blockedRef = useRef(blocked);
   blockedRef.current = blocked;
-  // A phone's swipe over the file (fileSwipe.ts): documents, text, code, PDFs and the download card follow the finger; an image keeps its own at Fit.
+  // A phone's swipe over the file (fileSwipe.ts): documents, text, code, PDFs, the download card and images follow the finger.
+  // It is heard on the body around the file (`bodyRef`), which never moves, so a finger that comes back while the last
+  // step is still sliding is heard; what moves is the file area, or for an image only the picture (`swipeMoves`).
   const docAreaRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  /** The controls a drag down fades (the dock, the caption, the size bar, the comment box), found once when it starts. */
+  const dismissFades = useRef<HTMLElement[]>([]);
   const swipeMode = fileSwipeMode(kind, tooLarge);
-  const swipe = useFileSwipe(docAreaRef, {
-    enabled: full && phone && multi && swipeMode === 'follow' && !blocked && !sheet,
-    canStep: (dir) => index + dir >= 0 && index + dir < steps.length,
+  // An image (approval "inbox-image-swipe"): a zoomed image or a panorama pans to its edge first, the next image
+  // peeks in beside it, and a drag down closes, even with one file.
+  const imageEdges = useRef<ImageSwipeEdges | null>(null);
+  const isImageFile = kind === 'image';
+  const swipeOn = full && phone && (multi || isImageFile) && swipeMode === 'follow' && !blocked && !sheet;
+  /** The neighbour that way is an image drawn whole beside this one (ImageSwipePeek), not the "Next · name" card. */
+  const peeks = (dir: 1 | -1) => {
+    const neighbour = steps[index + dir];
+    return isImageFile && multi && neighbour !== undefined && isImageStep(neighbour) && !prefersReducedMotion() && memory.current.get(neighbour.attachment.id)?.fit !== 'actual';
+  };
+  const canStepTo = (dir: 1 | -1) => index + dir >= 0 && index + dir < steps.length;
+  /**
+   * What follows the finger. An image stepping to the image beside it, resisting at an end, or dragged down: only the
+   * picture (and the neighbours drawn beside it), so its size bar and comment box stay put (approval
+   * "inbox-image-swipe", mock 2). Toward a file that is not an image, and for every other file: the whole file area.
+   */
+  const swipeMoves = (gesture: 'step' | 'dismiss', dir: 1 | -1): HTMLElement[] => {
+    const area = docAreaRef.current;
+    if (!area) return [];
+    const picture = isImageFile ? area.querySelector<HTMLElement>('.ib-imgstage > .ib-zoomstage') : null;
+    if (!picture) return [area];
+    if (gesture === 'dismiss') return [picture];
+    if (!peeks(dir) && canStepTo(dir)) return [area];
+    const beside = area.querySelector<HTMLElement>('.ib-imgpeeks');
+    return beside ? [picture, beside] : [picture];
+  };
+  const swipe = useFileSwipe(bodyRef, {
+    enabled: swipeOn,
+    canStep: canStepTo,
+    move: swipeMoves,
     onStep: (dir) => stepRef.current(dir, 'key'),
     wouldAsk: () => !props.readOnly && unsavedComposer(sectionRef.current, savedTextRef.current) !== null,
+    // One image alone has nowhere to step: a sideways drag is the image's own.
+    keeps: isImageFile ? (dir) => !multi || (imageEdges.current?.keeps(dir) ?? false) : undefined,
+    peek: peeks,
+    dismiss: isImageFile
+      ? {
+          can: () => imageEdges.current?.canDismiss() ?? false,
+          onDismiss: () => closeRef.current(),
+          // The backdrop fades with the drag (`--ib-dismiss`, registered as not inherited, so the pane's contents are not
+          // restyled on every move) and the controls fade faster, by their own opacity.
+          onProgress: (share) => {
+            const pane = sectionRef.current;
+            if (!pane) return;
+            if (share > 0) {
+              if (!pane.hasAttribute('data-dismissing')) {
+                pane.setAttribute('data-dismissing', '');
+                dismissFades.current = Array.from(pane.querySelectorAll<HTMLElement>('.ib-fvdock, .ib-optcap, .ib-imgbar, .ib-imgcompose'));
+              }
+              pane.style.setProperty('--ib-dismiss', share.toFixed(3));
+              const opacity = Math.max(0, 1 - share * 2.5).toFixed(3);
+              for (const control of dismissFades.current) control.style.opacity = opacity;
+            } else {
+              pane.removeAttribute('data-dismissing');
+              pane.style.removeProperty('--ib-dismiss');
+              for (const control of dismissFades.current) control.style.opacity = '';
+              dismissFades.current = [];
+            }
+          },
+        }
+      : undefined,
   });
+  const closeRef = useRef<() => void>(() => {});
   // A file a swipe cannot step (`swipeMode === 'none'`: HTML pages, diagrams, videos; and code that scrolls sideways)
   // steps through the sheet the pill opens: its ‹ Previous and Next › (the owner's answer; no floating tabs), shown for
   // every file so the sheet is the same everywhere (the phone's FilePeek below, `onStep`).
@@ -1268,6 +1354,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     props.onVersion(next);
   };
   const close = () => leave(null, props.onClose);
+  closeRef.current = close;
   /** Where × and Escape's last rung go: the thread (the file closes), or back beside it. */
   const exitCloses = props.exitCloses ?? props.fullLocked === true;
   /** × and Escape's last rung back beside the thread: through `leave` when that shows another file (a typed comment is asked about). */
@@ -1398,7 +1485,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
       ref={sectionRef}
       tabIndex={-1}
       className={`ib-view${full ? ' ib-full ib-fullview' : ''}${phone ? ' ib-phone' : ''}${folded && !phone ? ' ib-fold' : ''}${hasPanel ? '' : ' ib-nopanel'}${sheetMode && sheet ? ' ib-panel-open' : ''}${drawerMode && drawer && hasPanel ? ' ib-drawer' : ''}`}
-      aria-label={multi ? `${attachment.name}, file ${index + 1} of ${steps.length}` : attachment.name}
+      aria-label={multi ? `${attachment.name}, ${optionSet ? 'option' : 'file'} ${index + 1} of ${steps.length}` : attachment.name}
       data-attachment-pane={attachment.id}
       data-version={effectiveVersion}
       data-full-view={full ? '' : undefined}
@@ -1432,6 +1519,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                   index,
                   total: steps.length,
                   name: attachment.name,
+                  noun: optionSet ? 'option' : 'file',
                   open: menuOpen,
                   peekId: fullViewPeekId,
                   onOpenChange: (open) => {
@@ -1446,12 +1534,12 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                   renderPeek: phone ? undefined : (closePeek) => (
                     <FilePeek
                       id={fullViewPeekId}
-                      steps={steps}
-                      index={index}
+                      steps={allSteps}
+                      index={allIndex}
                       phone={false}
                       annotationCounts={annotationCounts}
                       onClose={closePeek}
-                      onGo={(target) => goTo(target, 'menu')}
+                      onGo={(target) => goTo(target, 'menu', allSteps)}
                     />
                   ),
                 }
@@ -1582,8 +1670,13 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
       ) : (
         <div />
       )}
-      <div className="ib-vbody">
-        <div ref={docAreaRef} className={`ib-docarea${isHtml ? ' ib-html' : ''}`} data-file-swipe={full && phone && multi ? swipeMode : undefined}>
+      <div className="ib-vbody" ref={bodyRef}>
+        <div
+          ref={docAreaRef}
+          className={`ib-docarea${isHtml ? ' ib-html' : ''}`}
+          data-file-swipe={full && phone && multi ? swipeMode : undefined}
+          data-image-peek={swipeOn && isImage && multi ? '' : undefined}
+        >
           {error && (
             <div className="ib-error ib-view-error" role="alert">
               {error}
@@ -1701,12 +1794,24 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               onError={setError}
               initialFit={memory.current.get(attachment.id)?.fit}
               onFitChange={(fit) => remember(attachment.id, { fit })}
-              onSwipe={multi ? (dir) => step(dir, 'key') : undefined}
+              // A phone in full screen: the pane's follow swipe (above); elsewhere a touch screen's swipe at Fit.
+              onSwipe={multi && !(full && phone) ? (dir) => step(dir, 'key') : undefined}
+              edgesRef={imageEdges}
+              onShown={swipe.settle}
               wheelHint={wheelHint}
               suggestion={suggestion?.comment}
               onSelect={setSelectedId}
               onRemove={remove}
               onNotice={props.onToast}
+            />
+          )}
+          {swipeOn && isImage && multi && !prefersReducedMotion() && (
+            <ImageSwipePeek
+              swipe={swipe}
+              steps={steps}
+              index={index}
+              area={docAreaRef}
+              urlOf={(file) => source.imageUrl(file, file.unavailable !== null ? 'sent' : (memory.current.get(file.id)?.version ?? 'current'))}
             />
           )}
           {isVideo && (
@@ -2009,6 +2114,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
           <AttachmentStepper
             steps={steps}
             index={index}
+            peek={optionSet ? { steps: allSteps, index: allIndex, onGo: (target) => goTo(target, 'menu', allSteps) } : undefined}
             menuOpen={menuOpen}
             onMenuOpenChange={setMenuOpen}
             onStep={step}
@@ -2020,7 +2126,11 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
       ) : full ? null : (
         <div />
       )}
-      {full && (
+      {full && optionSet && (
+        // A question's picture choices: the caption names the choice on screen for as long as the set is open (in place of the chip).
+        <OptionCaption set={optionSet} index={index} otherFiles={Math.max(0, allSteps.length - steps.length)} note={endNote} />
+      )}
+      {full && !optionSet && (
         // The step chip (full screen only): names the new file for a moment, the end note at the ends (a one-file thread: its name once, as full screen starts). The live region says it.
         <div className={`ib-fvchip${chip ? ' ib-on' : ''}`} aria-hidden="true" data-full-view-chip={chip ? 'shown' : 'hidden'}>
           {multi && (
@@ -2040,14 +2150,15 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
           )}
         </div>
       )}
-      {full && phone && multi && <FileSwipeCard swipe={swipe} steps={steps} index={index} />}
+      {full && phone && multi && <FileSwipeCard swipe={swipe} steps={steps} index={index} skip={peeks} />}
       {full && phone && menuOpen && phonePeekHost
         ? createPortal(
             <div className="pn-inbox-peek">
               <FilePeek
                 id={fullViewPeekId}
-                steps={steps}
-                index={index}
+                steps={allSteps}
+                index={allIndex}
+                within={optionSet ? { steps, index, noun: 'option' } : undefined}
                 phone
                 annotationCounts={annotationCounts}
                 onClose={() => {
@@ -2055,7 +2166,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                   // The sheet's backdrop covered everything: focus back on what opened it (the toolbar's pill, or the position in the comments sheet).
                   requestAnimationFrame(focusPeekOpener);
                 }}
-                onGo={(target) => goTo(target, 'menu')}
+                onGo={(target) => goTo(target, 'menu', allSteps)}
                 // The step for every file, swipeable or not (the owner's answer for HTML pages and code that scrolls
                 // sideways): one tap steps and closes the sheet, so the new file is what you see; at an end only the note.
                 onStep={(dir) => {
