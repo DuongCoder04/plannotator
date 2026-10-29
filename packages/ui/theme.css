@@ -64,10 +64,17 @@
  * selection stay on the textarea: the caret takes the foreground token, and
  * the selection uses a translucent primary wash so the overlay text stays
  * readable through it. During IME composition `.pn-ref-composing` restores
- * the native text so composition underlines render normally. */
+ * the native text so composition underlines render normally.
+ *
+ * No transition: the overlay's `visibility` flips instantly, so the global
+ * `*` 150ms color transition would fade the textarea's glyphs in (blank text
+ * at every composition start) and out (doubled text at every end). With
+ * Korean/Japanese/Chinese IMEs that swap happens on nearly every keystroke,
+ * and the whole field flickers. */
 .pn-ref-input {
   color: transparent;
   caret-color: var(--foreground);
+  transition: none;
 }
 .pn-ref-input::selection {
   background: color-mix(in oklab, var(--primary) 30%, transparent);

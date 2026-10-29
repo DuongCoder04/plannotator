@@ -91,6 +91,7 @@ import {
 	REPO_FILE_ENDPOINT,
 	REPO_FILES_ENDPOINT,
 	REPO_FILES_STREAM_ENDPOINT,
+	REPO_FILES_SEARCH_ENDPOINT,
 	createRepoListingCache,
 	diffFileStates,
 	findRepoOnDiskChanges,
@@ -99,6 +100,7 @@ import {
 	repoLiveMode,
 	handleRepoFileRequest,
 	handleRepoFilesRequest,
+	handleRepoFilesSearchRequest,
 	type RepoFileRead,
 	type RepoFilesUnavailable,
 } from "../generated/repo-files.ts";
@@ -3726,6 +3728,15 @@ export async function startReviewServer(options: {
 				lazyThreshold: options.repoFilesLazyThreshold,
 			});
 			json(res, result.body, result.status);
+		} else if (url.pathname === REPO_FILES_SEARCH_ENDPOINT && req.method === "GET") {
+			const result = await handleRepoFilesSearchRequest({
+				params: url.searchParams,
+				unavailable: repoFilesUnavailable(),
+				isCurrentSnapshot: (snapshot) => snapshot === currentSnapshotId(),
+				loadListing: loadRepoListing,
+				preferred: new Set(diffFileStates(currentPatch).keys()),
+			});
+			json(res, result.body, result.status);
 		} else if (url.pathname === REPO_FILES_STREAM_ENDPOINT && req.method === "GET") {
 			const snapshot = url.searchParams.get("snapshot");
 			if (!snapshot) {
@@ -3934,7 +3945,7 @@ export async function startReviewServer(options: {
 				return;
 			}
 			try {
-				const body = (await parseBody(req)) as { agentSwitch?: unknown; displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; reviewAnalysis?: Record<string, unknown>; packageChanges?: unknown; conventionalComments?: boolean };
+				const body = (await parseBody(req)) as { agentSwitch?: unknown; displayName?: string; diffOptions?: Record<string, unknown>; reviewDefaults?: Record<string, { defaultDiffType?: string }>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; reviewAnalysis?: Record<string, unknown>; packageChanges?: unknown; conventionalComments?: boolean };
 				const toSave: Record<string, unknown> = {};
 				// OpenCode's agent switch (#1390): a known shape or nothing is saved.
 				const agentSwitch = agentSwitchConfigToSave(body);
@@ -3942,6 +3953,7 @@ export async function startReviewServer(options: {
 				if (agentSwitch !== undefined) toSave.agentSwitch = agentSwitch;
 				if (body.displayName !== undefined) toSave.displayName = body.displayName;
 				if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
+				if (body.reviewDefaults !== undefined) toSave.reviewDefaults = body.reviewDefaults;
 				if (body.theme !== undefined) toSave.theme = body.theme;
 				if (isFaviconStyle(body.favicon)) toSave.favicon = body.favicon;
 				if (typeof body.autoUpdate === "boolean") toSave.autoUpdate = body.autoUpdate;

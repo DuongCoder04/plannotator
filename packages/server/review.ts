@@ -80,6 +80,7 @@ import {
   REPO_FILE_ENDPOINT,
   REPO_FILES_ENDPOINT,
   REPO_FILES_STREAM_ENDPOINT,
+  REPO_FILES_SEARCH_ENDPOINT,
   createRepoListingCache,
   diffFileStates,
   findRepoOnDiskChanges,
@@ -88,6 +89,7 @@ import {
   repoLiveMode,
   handleRepoFileRequest,
   handleRepoFilesRequest,
+  handleRepoFilesSearchRequest,
   type RepoFileRead,
   type RepoFilesUnavailable,
 } from "@plannotator/shared/repo-files";
@@ -3813,6 +3815,19 @@ export async function startReviewServer(
             return Response.json(result.body, { status: result.status });
           }
 
+          // API: Go to File over the listing (the client searches a listing it
+          // holds itself; past the lazy threshold it asks here).
+          if (url.pathname === REPO_FILES_SEARCH_ENDPOINT && req.method === "GET") {
+            const result = await handleRepoFilesSearchRequest({
+              params: url.searchParams,
+              unavailable: repoFilesUnavailable(),
+              isCurrentSnapshot: (snapshot) => snapshot === currentSnapshotId(),
+              loadListing: loadRepoListing,
+              preferred: new Set(diffFileStates(currentPatch).keys()),
+            });
+            return Response.json(result.body, { status: result.status });
+          }
+
           // API: Live updates for a working-tree listing (one event per settled burst of writes).
           if (url.pathname === REPO_FILES_STREAM_ENDPOINT && req.method === "GET") {
             const snapshot = url.searchParams.get("snapshot");
@@ -4097,7 +4112,7 @@ export async function startReviewServer(
               return Response.json({ error: "Cross-origin config writes are not allowed" }, { status: 403 });
             }
             try {
-              const body = (await req.json()) as { agentSwitch?: unknown; displayName?: string; diffOptions?: Record<string, unknown>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; reviewAnalysis?: Record<string, unknown>; packageChanges?: unknown; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
+              const body = (await req.json()) as { agentSwitch?: unknown; displayName?: string; diffOptions?: Record<string, unknown>; reviewDefaults?: Record<string, { defaultDiffType?: string }>; theme?: Record<string, unknown>; favicon?: FaviconStyle; autoUpdate?: unknown; updateCheck?: unknown; agentTool?: unknown; reviewAnalysis?: Record<string, unknown>; packageChanges?: unknown; conventionalComments?: boolean; conventionalLabels?: unknown[] | null };
               const toSave: Record<string, unknown> = {};
               // OpenCode's agent switch (#1390): a known shape or nothing is saved.
               const agentSwitch = agentSwitchConfigToSave(body);
@@ -4105,6 +4120,7 @@ export async function startReviewServer(
               if (agentSwitch !== undefined) toSave.agentSwitch = agentSwitch;
               if (body.displayName !== undefined) toSave.displayName = body.displayName;
               if (body.diffOptions !== undefined) toSave.diffOptions = body.diffOptions;
+              if (body.reviewDefaults !== undefined) toSave.reviewDefaults = body.reviewDefaults;
               if (body.theme !== undefined) toSave.theme = body.theme;
               if (isFaviconStyle(body.favicon)) toSave.favicon = body.favicon;
               if (typeof body.autoUpdate === "boolean") toSave.autoUpdate = body.autoUpdate;

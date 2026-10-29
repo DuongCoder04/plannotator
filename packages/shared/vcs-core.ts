@@ -553,6 +553,11 @@ export function createVcsApi(providers: readonly VcsProvider[]): VcsApi {
       if (diffType === "jj-line" && ownsRequestedDiffType && requestedBase) {
         return requestedBase;
       }
+      // Evolution diff compares against the change's previous state, never
+      // the line base (the same base the UI picks when switching to it).
+      if (diffType === "jj-evolog" && gitContext.jjEvologs?.[1]) {
+        return gitContext.jjEvologs[1].commitId;
+      }
       return gitContext.defaultBranch;
     }
     return requestedBase ?? gitContext.defaultBranch;
@@ -738,9 +743,8 @@ export function resolveInitialDiffType(
   if (gitContext.vcsType === "p4") {
     return "p4-default";
   }
-  if (gitContext.vcsType === "jj") {
-    return "jj-current";
-  }
+  // jj: a saved jj mode the change offers wins; anything else (a Git mode,
+  // or Evolution diff with no history) falls to the first option, Current change.
   if (gitContext.diffOptions.some((option) => option.id === configuredDiffType)) {
     return configuredDiffType;
   }

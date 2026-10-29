@@ -32,11 +32,10 @@ import type {
 } from '@plannotator/core/inbox-types';
 import type { QuestionAnswer } from '@plannotator/core/question-block';
 import { FEEDBACK_UNAVAILABLE } from '@plannotator/core/product-feedback';
-import type { InboxRunAgentId, InboxRunAgentsModel, InboxRunStatus } from '@plannotator/core/inbox-acp';
 import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
 import type { RecipientConnection } from './deliveryLine';
 import { parseRestartAgents } from './restartAgents';
-import type { InboxRestartAgents } from '@plannotator/core/inbox-types';
+import type { InboxRestartAgents, InboxTidyPlan, InboxTidyRun } from '@plannotator/core/inbox-types';
 import type { InboxSearchAnswer, InboxSearchFrom, InboxSearchGroupId, InboxSearchStatus } from '@plannotator/core/inbox-search';
 import type {
   InboxAgentId,
@@ -711,6 +710,16 @@ export const inboxApi = {
   settings: () => get<SettingsModel>('/api/inbox/settings'),
   /** Decision mode (experimental): every decision waiting on the person, in queue order. 404 while the feature is off. */
   decisions: () => get<InboxDecisionsModel>('/api/inbox/decisions'),
+  /** Tidy: who it would ask in the list's (or the Board's) scope, and the last run. */
+  tidy: (project: string | null, surface: 'list' | 'board') => {
+    const query = new URLSearchParams(surface === 'board' ? { surface } : {});
+    if (project) query.set('project', project);
+    const qs = query.toString();
+    return get<InboxTidyPlan>(`/api/inbox/tidy${qs ? `?${qs}` : ''}`);
+  },
+  /** Tidy: ask these sessions. A replay of the key answers the run it wrote. */
+  startTidy: (input: { sessions: readonly string[]; idempotency_key: string; project: string | null; surface: 'list' | 'board' }) =>
+    post<{ run: InboxTidyRun | null; asked: string[] }>('/api/inbox/tidy', { ...input, sessions: [...input.sessions] }),
   saveCookieHost: (on: boolean) => post<{ cookie_host: InboxCookieHost }>('/api/inbox/settings', { cookie_host: on }),
   saveExperimental: (change: { decision_mode: boolean }) =>
     post<{ experimental: InboxExperimentalSettings }>('/api/inbox/settings', { experimental: change }),
@@ -913,18 +922,6 @@ export const inboxApi = {
   // Compose: every live session, a new thread, Send to another session, and drafts.
   composeSessions: (session?: string | null) =>
     get<ComposeSessionsModel>(`/api/inbox/sessions${session ? `?session=${encodeURIComponent(session)}` : ''}`),
-  // The ACP runner (packages/server/inbox-acp-runner.ts): sessions the Inbox runs itself (Grok Build).
-  /** The agents the Inbox can start and the folders it can start them in; an older Inbox answers 404. */
-  runAgents: () => get<InboxRunAgentsModel>('/api/inbox/acp'),
-  /** Compose's "New … session": the session, then the thread addressed to it. */
-  startRun: (input: Omit<StartThreadInput, 'to'> & { agent: InboxRunAgentId; project_id: string }) =>
-    post<{ thread_id: string; message: InboxMessage; project?: { id: string; name: string; root: string }; replayed: boolean; run?: { key: string; agent: InboxRunAgentId } }>('/api/inbox/acp/start', { ...input }),
-  runStatus: (key: string) => get<{ run: InboxRunStatus }>(`/api/inbox/acp/${encodeURIComponent(key)}`),
-  answerRunPermission: (key: string, input: { permission_id: string; option_id: string; approve_rest?: boolean }) =>
-    post<{ run: InboxRunStatus }>(`/api/inbox/acp/${encodeURIComponent(key)}/permission`, { ...input }),
-  stopRun: (key: string) => post<{ run: InboxRunStatus }>(`/api/inbox/acp/${encodeURIComponent(key)}/stop`, {}),
-  retryRun: (key: string) => post<{ run: InboxRunStatus }>(`/api/inbox/acp/${encodeURIComponent(key)}/retry`, {}),
-  setRunEnabled: (agent: InboxRunAgentId, enabled: boolean) => post<InboxRunAgentsModel>(`/api/inbox/acp/agents/${encodeURIComponent(agent)}`, { enabled }),
   startThread: (input: StartThreadInput) =>
     post<{ thread_id: string; message: InboxMessage; project?: { id: string; name: string; root: string }; replayed: boolean }>('/api/inbox/messages', { ...input }),
   readdress: (messageId: string, to: { host: string; session: string }) =>
@@ -1091,8 +1088,6 @@ export interface InboxEventHandlers {
   onDrafts?: (threadId: string) => void;
   /** The sidebar's pins changed (`event: pins`, approval "inbox-pinned-threads"); never called by an older Inbox. */
   onPins?: () => void;
-  /** A session the Inbox runs changed (`event: runs`): a turn started or ended, its activity, a permission. Never called by an older Inbox. */
-  onRuns?: (change: { key: string; thread_ids: string[]; permission?: boolean }) => void;
 }
 
 /** This window, as its event stream (or its report) names it to the server (inbox-windows.ts). */
@@ -1103,7 +1098,7 @@ export interface InboxEventWindow {
 }
 
 /** The event stream's named frames, as they arrive (and as the tab that holds the shared stream passes them on). */
-export const INBOX_EVENT_FRAMES = ['hello', 'record', 'status', 'reach', 'deliveries', 'drafts', 'pins', 'runs'] as const;
+export const INBOX_EVENT_FRAMES = ['hello', 'record', 'status', 'reach', 'deliveries', 'drafts', 'pins'] as const;
 export type InboxEventFrameName = (typeof INBOX_EVENT_FRAMES)[number];
 export interface InboxEventFrame {
   name: InboxEventFrameName;
@@ -1161,20 +1156,6 @@ export function dispatchInboxFrame(frame: InboxEventFrame, handlers: InboxEventH
       return;
     case 'pins':
       handlers.onPins?.();
-      return;
-    case 'runs':
-      try {
-        const data = JSON.parse(frame.data) as { key?: unknown; thread_ids?: unknown; permission?: unknown };
-        if (typeof data.key === 'string') {
-          handlers.onRuns?.({
-            key: data.key,
-            thread_ids: Array.isArray(data.thread_ids) ? data.thread_ids.filter((id): id is string => typeof id === 'string') : [],
-            ...(data.permission === true ? { permission: true } : {}),
-          });
-        }
-      } catch {
-        // A malformed frame changes nothing.
-      }
       return;
     case 'record': {
       let parsed: InboxEvent | null = null;

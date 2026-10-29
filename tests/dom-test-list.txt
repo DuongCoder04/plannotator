@@ -100,6 +100,7 @@ packages/inbox/listColumn.test.tsx
 packages/inbox/endedSession.test.tsx
 packages/inbox/compose.test.tsx
 packages/inbox/listHeaderCompose.test.tsx
+packages/inbox/tidyMenu.test.tsx
 packages/inbox/composeThread.test.tsx
 packages/inbox/sendNow.test.tsx
 packages/inbox/undelivered.test.tsx
@@ -148,7 +149,6 @@ packages/inbox/sidebarUpdateDot.test.tsx
 packages/inbox/updateStuck.test.tsx
 packages/inbox/palettePicker.test.tsx
 packages/inbox/textSize.test.tsx
-packages/inbox/runLine.test.tsx
 packages/inbox/agentNoteDialog.test.tsx
 packages/inbox/agentsSettings.test.tsx
 packages/inbox/promptsSettings.test.tsx
@@ -194,6 +194,7 @@ packages/ui/components/CommentPopover.mentionChips.test.tsx
 packages/ui/components/SkillReferenceMenu.placement.test.tsx
 packages/ui/components/sidebar/FileBrowser.test.ts
 packages/editor/editableDocumentsHook.test.tsx
+packages/review-editor/components/InlineAnnotation.explain.test.tsx
 packages/review-editor/components/ReviewSubmissionDialog.ui.test.tsx
 packages/review-editor/App.panelView.test.tsx
 packages/review-editor/App.agentTool.test.tsx
@@ -342,6 +343,7 @@ packages/ui/components/Viewer.alertDraftRestore.test.tsx
 packages/ui/components/Viewer.belowTitle.test.tsx
 packages/ui/utils/belowTitleSlot.test.ts
 packages/ui/components/AnnotationPanel.allFiles.test.tsx
+packages/ui/components/AnnotationPanel.sectionRefs.test.tsx
 packages/ui/hooks/useLinkedDoc.crossFile.test.tsx
 packages/ui/hooks/useLinkedDoc.revealSidebar.test.tsx
 packages/ui/hooks/useLinkedDoc.reapplyFilter.test.tsx
@@ -361,6 +363,7 @@ packages/ui/components/Settings.compactDisplay.test.tsx
 packages/ui/components/Settings.customFont.test.tsx
 packages/ui/components/Settings.documentTextSize.test.tsx
 packages/ui/components/Settings.experimental.test.tsx
+packages/ui/components/Settings.reviewDefaults.test.tsx
 packages/ui/components/Settings.gridChoice.test.tsx
 packages/editor/App.planLookNotice.test.tsx
 packages/ui/config/documentTextSizeSetting.test.ts
@@ -413,3 +416,5 @@ packages/inbox/cookieHostSettings.test.tsx
 packages/ui/components/Settings.cookieHost.test.tsx
 packages/review-editor/components/FileTree.allFiles.test.tsx
 packages/review-editor/hooks/useRepoFiles.test.tsx
+packages/review-editor/components/RepoFileView.test.tsx
+packages/review-editor/components/GoToFile.test.tsx
