@@ -58,43 +58,33 @@ export function usePhone(): boolean {
 }
 
 /**
- * What the window does for one reading of the visual viewport: the box to pin
- * the window to while the keyboard covers the bottom (null: the full window),
- * and whether to undo a pan to the focused field. Pinch-zoom also shrinks the
+ * Keeps `--ib-vvh` on the document element equal to the visual viewport's
+ * height while a phone's keyboard is up, so the window shrinks to the part
+ * the keyboard leaves and the reply box sits on top of the keyboard. iOS
+ * Safari does not resize the layout for the keyboard; it pans the page
+ * instead, which the reset to the top undoes (the window never scrolls as a
+ * whole). Returns the cleanup.
+ */
+/**
+ * What the window does for one reading of the visual viewport: the height to
+ * shrink to while the keyboard covers the bottom (null: the full window), and
+ * whether to undo iOS's pan to the focused field. Pinch-zoom also shrinks the
  * visual viewport, by its scale: a zoomed page is the person reading closer,
  * never a keyboard, so it is left alone (no shrink, and no scroll back that
  * would yank the zoomed view to the corner).
- *
- * The box is the visual viewport itself: `top` its offsetTop, `height` its
- * height, so the window's bottom is where the keyboard starts. offsetTop is
- * not always a pan: iOS 26 Safari, with its address bar at the top over the
- * page, starts the visual viewport below the bar (offsetTop is the bar, with
- * scrollY 0), and a window sized from the page's top ended that far above the
- * keyboard, its own top bar under Safari's. A pan moves scrollY too (iOS
- * scrolls the page to the field): that is undone by the scroll back, and the
- * next reading pins the window where the visual viewport rests.
  */
 export function keyboardLayout(
   vv: { height: number; offsetTop: number; scale: number },
   innerHeight: number,
   scrollY: number,
   phone: boolean,
-): { height: number | null; top: number; resetScroll: boolean } {
+): { height: number | null; resetScroll: boolean } {
   const unzoomed = Math.abs(vv.scale - 1) < 0.01;
   const covered = phone && unzoomed && innerHeight - vv.height > 80;
-  if (!covered) return { height: null, top: 0, resetScroll: false };
-  const top = scrollY === 0 ? Math.max(0, Math.min(Math.round(vv.offsetTop), innerHeight - Math.round(vv.height))) : 0;
-  return { height: Math.round(vv.height), top, resetScroll: scrollY !== 0 || vv.offsetTop !== 0 };
+  if (!covered) return { height: null, resetScroll: false };
+  return { height: Math.round(vv.height), resetScroll: scrollY !== 0 || vv.offsetTop !== 0 };
 }
 
-/**
- * Keeps the window on the visual viewport while a phone's keyboard is up:
- * `--ib-vvh` its height and `--ib-vvt` its top (keyboardLayout), on the
- * document element, so the reply box and compose sit directly on the keyboard
- * and their top bars stay in view. iOS Safari does not resize the layout for
- * the keyboard; it pans the page instead, which the reset to the top undoes
- * (the window never scrolls as a whole). Returns the cleanup.
- */
 export function trackKeyboard(): () => void {
   const vv = typeof window !== 'undefined' ? window.visualViewport : null;
   if (!vv) return () => {};
@@ -106,12 +96,10 @@ export function trackKeyboard(): () => void {
     const layout = keyboardLayout(vv, window.innerHeight, window.scrollY, isPhone());
     if (layout.height !== null) {
       root.style.setProperty('--ib-vvh', `${layout.height}px`);
-      root.style.setProperty('--ib-vvt', `${layout.top}px`);
       root.dataset.ibKeyboard = '';
       if (layout.resetScroll) window.scrollTo(0, 0);
     } else {
       root.style.removeProperty('--ib-vvh');
-      root.style.removeProperty('--ib-vvt');
       delete root.dataset.ibKeyboard;
     }
   };
@@ -126,7 +114,6 @@ export function trackKeyboard(): () => void {
     vv.removeEventListener('scroll', schedule);
     if (frame) cancelAnimationFrame(frame);
     root.style.removeProperty('--ib-vvh');
-    root.style.removeProperty('--ib-vvt');
     delete root.dataset.ibKeyboard;
   };
 }

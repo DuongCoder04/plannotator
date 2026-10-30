@@ -2607,14 +2607,12 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
    packages/inbox/phone.ts (a phone in portrait, or a short touch screen,
    a phone in landscape): keep the two equal. The window under it is the
    desktop layout, untouched. App.tsx sets `data-view` on .pn-inbox to the
-   screen on top; while the keyboard is up, phone.ts keeps `--ib-vvh` and
-   `--ib-vvt` at the visual viewport's height and top (on iOS 26 the top is
-   Safari's address bar over the page), and the window and the phone sheets
-   take that box, so their bottom is the keyboard's top. Every edge clears the safe areas (index.html has
+   screen on top; phone.ts keeps `--ib-vvh` at the height the keyboard
+   leaves. Every edge clears the safe areas (index.html has
    viewport-fit=cover), touch targets are at least 44 px, and inputs are
    16 px, so iOS never zooms the page when one takes focus. */
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
-  .pn-inbox { top: var(--ib-vvt, 0px); height: var(--ib-vvh, 100%); background: var(--card); -webkit-tap-highlight-color: transparent; }
+  .pn-inbox { height: var(--ib-vvh, 100%); background: var(--card); -webkit-tap-highlight-color: transparent; }
   .ib-main { padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left); gap: 0; position: relative; overflow: hidden; }
   /* One screen at a time: the pane is the screen, edge to edge, with no card around it. */
   .ib-main > :is(.ib-listcol, .ib-pane, .ib-view, .ib-spage, .ib-dpage, .ib-wn, .ib-bpage) { border-radius: 0; box-shadow: none; }
@@ -3379,7 +3377,7 @@ dialog.ib-sp::backdrop { background: oklch(0 0 0 / 0.45); }
   .pn-inbox .ib-sp-entry { height: 44px; font-size: var(--ib-fs-16-in, 16px); }
   /* No keyboard to hint at on a phone. */
   .pn-inbox .ib-sp-entry .ib-sp-hint { display: none; }
-  .pn-inbox dialog.ib-sp[data-phone], dialog.ib-sp[data-phone] { inset: 0; top: var(--ib-vvt, 0px); width: 100%; height: var(--ib-vvh, 100%); max-height: none; border-radius: 0; box-shadow: none; flex-direction: column; background: var(--card); animation: none; padding-top: env(safe-area-inset-top); }
+  .pn-inbox dialog.ib-sp[data-phone], dialog.ib-sp[data-phone] { inset: 0; top: 0; width: 100%; height: var(--ib-vvh, 100%); max-height: none; border-radius: 0; box-shadow: none; flex-direction: column; background: var(--card); animation: none; padding-top: env(safe-area-inset-top); }
   dialog.ib-sp[data-phone][open] { display: flex; }
   dialog.ib-sp[data-phone]::backdrop { animation: none; }
   dialog.ib-sp[data-phone] .ib-sp-inrow { padding: 4px 8px 4px 14px; }
@@ -3593,7 +3591,7 @@ dialog.ib-cp::backdrop { background: oklch(0 0 0 / 0.45); }
   .ib-drafts .ib-dh .ib-lhead-compose { margin-left: auto; }
   .ib-sp-entryrow { margin-bottom: 8px; }
   .pn-inbox .ib-compose-btn { width: 44px; height: 44px; }
-  .pn-inbox dialog.ib-cp[data-phone], dialog.ib-cp[data-phone] { inset: 0; top: var(--ib-vvt, 0px); width: 100%; height: var(--ib-vvh, 100%); max-height: none; border-radius: 0; box-shadow: none; background: var(--card); animation: none; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+  .pn-inbox dialog.ib-cp[data-phone], dialog.ib-cp[data-phone] { inset: 0; top: 0; width: 100%; height: var(--ib-vvh, 100%); max-height: none; border-radius: 0; box-shadow: none; background: var(--card); animation: none; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
   dialog.ib-cp[data-phone]::backdrop { animation: none; }
   .ib-cp-bar { display: flex; align-items: center; height: 52px; padding: 0 6px; border-bottom: 1px solid var(--ib-line); flex: none; }
   .ib-cp-bar h2 { flex: 1; text-align: center; margin: 0; font-size: var(--ib-fs-17, 17px); font-weight: 650; }
@@ -3622,7 +3620,7 @@ dialog.ib-cp::backdrop { background: oklch(0 0 0 / 0.45); }
   .pn-inbox .ib-cp-clip { width: 44px; height: 44px; }
   .ib-cp-ask { flex-wrap: wrap; border-radius: 0; }
   .ib-cp-ask > span:first-child { flex-basis: 100%; }
-  .ib-cp-picker[data-phone] { position: fixed; inset: 0; top: var(--ib-vvt, 0px); left: 0; width: 100%; max-height: none; height: var(--ib-vvh, 100%); border-radius: 0; border: 0; box-shadow: none; background: var(--card); padding-top: env(safe-area-inset-top); z-index: 60; }
+  .ib-cp-picker[data-phone] { position: fixed; inset: 0; top: 0; left: 0; width: 100%; max-height: none; height: var(--ib-vvh, 100%); border-radius: 0; border: 0; box-shadow: none; background: var(--card); padding-top: env(safe-area-inset-top); z-index: 60; }
   .ib-cp-picker[data-phone] .ib-cp-pickhead { display: flex; align-items: center; gap: 8px; height: 52px; padding: 0 6px; border-bottom: 1px solid var(--ib-line); font-weight: 650; }
   .pn-inbox .ib-cp-back { display: inline-flex; align-items: center; gap: 2px; height: 44px; padding: 0 8px; border: 0; background: none; color: var(--primary); font-size: var(--ib-fs-16-in, 16px); }
   .pn-inbox .ib-cp-filter input { height: 48px; font-size: var(--ib-fs-16-in, 16px); }
@@ -5609,11 +5607,11 @@ dialog.ib-dlg.ib-bi { width: min(560px, calc(100vw - 32px)); }
 
 /* Compose in the tour: the dialog is modal (the page under it is inert), so it carries its own copy of the tour bar
    at the top of the window, and on a phone the sheet starts under it (the tour bar stays in view, Exit in reach). */
-.ib-tour-bar.ib-tour-bar-over { position: fixed; top: var(--ib-vvt, 0px); left: 0; right: 0; z-index: 3; margin: 0; }
+.ib-tour-bar.ib-tour-bar-over { position: fixed; top: 0; left: 0; right: 0; z-index: 3; margin: 0; }
 /* The dialog's entrance moves it with a transform, which would carry the fixed bar (and the coach) with it: none in the tour. */
 .pn-inbox[data-tour] dialog.ib-cp[open] { animation: none; }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
-  .pn-inbox[data-tour] dialog.ib-cp[data-phone] { top: calc(var(--ib-vvt, 0px) + var(--ib-tour-bar-h, 52px)); height: calc(var(--ib-vvh, 100%) - var(--ib-tour-bar-h, 52px)); padding-top: 0; }
+  .pn-inbox[data-tour] dialog.ib-cp[data-phone] { top: var(--ib-tour-bar-h, 52px); height: calc(var(--ib-vvh, 100%) - var(--ib-tour-bar-h, 52px)); padding-top: 0; }
 }
 
 /* Settings → Prompts (design of record .product/approved/inbox-prompts-page/, #2194): the Inbox reminder, shared and per agent, then the plan, review and annotate prompts folded, read-only. */
