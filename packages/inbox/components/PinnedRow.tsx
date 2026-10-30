@@ -4,7 +4,7 @@ import { Menu } from '@base-ui/react/menu';
 import type { InboxListRow } from '@plannotator/core/inbox-types';
 import { formatCount } from '../format';
 import { AuthorMark, Icon } from '../icons';
-import { pinnedRowName, pinnedState } from '../pins';
+import { pinnedLabel, pinnedRowName, pinnedState } from '../pins';
 import { rowAgent } from './InboxList';
 import { Tip } from './Tip';
 
@@ -28,8 +28,8 @@ export interface PinnedRowProps {
 
 /**
  * One pinned thread in the sidebar (approval "inbox-pinned-threads", variant
- * Count): the agent's mark, the subject (cut with "…"; the whole subject and
- * its project in a component tooltip), then the state, the way a project row
+ * Count): the agent's mark, the thread's name or else the subject (cut with
+ * "…"; the whole label, the subject if it differs, and its project in a component tooltip), then the state, the way a project row
  * shows its count: a Stopped or Holds N pill in the badges' tints, the open
  * questions, a dot for news, or nothing when nothing waits on the person (the
  * row steps back); an archived thread shows the archive glyph. Bold when the
@@ -48,6 +48,7 @@ export function PinnedRow(props: PinnedRowProps) {
   const project = props.project ?? row.project.name;
   const state = pinnedState(row);
   const subject = row.subject ?? '(no subject)';
+  const label = pinnedLabel(row);
   const items = (
     <PinnedMenuItems
       subject={subject}
@@ -87,7 +88,7 @@ export function PinnedRow(props: PinnedRowProps) {
   );
   const content = (
     <>
-      <Tip side="right" content={<PinnedTipText subject={subject} project={project} state={state.words} />}>
+      <Tip side="right" content={<PinnedTipText label={label} subject={subject} project={project} state={state.words} />}>
         <button
           type="button"
           className={`ib-pin${row.unread ? ' ib-u' : ''}${state.calm ? ' ib-calm' : ''}${props.on ? ' ib-on' : ''}`}
@@ -99,7 +100,7 @@ export function PinnedRow(props: PinnedRowProps) {
         >
           <AuthorMark author={rowAgent(row)} />
           <span className="ib-name" dir="auto">
-            {subject}
+            {label}
           </span>
           {tail}
         </button>
@@ -163,11 +164,16 @@ function PinnedMenuItems({ subject, first, last, onAction }: { subject: string; 
   );
 }
 
-/** A pinned row's tooltip: the whole subject (the row may cut it) over its project and state. */
-function PinnedTipText({ subject, project, state }: { subject: string; project: string; state: string }) {
+/** A pinned row's tooltip: the whole label (the row may cut it), the subject when it differs, then project and state. */
+function PinnedTipText({ label, subject, project, state }: { label: string; subject: string; project: string; state: string }) {
   return (
     <span className="ib-tip-proj" data-pin-tip="">
-      <bdi className="ib-tip-name">{subject}</bdi>
+      <bdi className="ib-tip-name">{label}</bdi>
+      {label !== subject && (
+        <span className="ib-tip-sub" data-pin-tip-subject="">
+          <bdi>{subject}</bdi>
+        </span>
+      )}
       <span className="ib-tip-sub">
         <bdi>{project}</bdi> · {state}
       </span>
