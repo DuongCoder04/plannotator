@@ -60,14 +60,18 @@ export const INBOX_SERVED_TOOLS: readonly (typeof INBOX_MCP_TOOLS)[number][] = I
 export const INBOX_DEFAULT_SERVED_TOOLS: readonly (typeof INBOX_MCP_TOOLS)[number][] = INBOX_SERVED_TOOLS.filter((name) => name !== "card");
 
 
-/** Under Claude Code's 2,048-character cap on server instructions. */
+/**
+ * Under Claude Code's 2,048-character cap on server instructions. Room for
+ * INBOX_THREAD_RULE (in INBOX_AGENT_RULES) came from the attachments line's
+ * examples, which the field's own description gives.
+ */
 export const INBOX_MCP_INSTRUCTIONS = [
   "Plannotator Inbox: a local window where the person reads what you send and answers later, without blocking your session.",
   "",
   INBOX_AGENT_RULES,
   "",
   "- send_message posts markdown. Messages join your session's thread until the person resolves it; pass `thread` (a short name) to keep separate work apart, or reply_to (an id from the Inbox, never from memory) to answer a message. Question syntax: send_message's description.",
-  "- attachments: files to show the person (a plan, a screenshot, an HTML mock); link one from the body (`[the mock](mock.html)`) to open it beside the thread.",
+  "- attachments: files to show the person; link one from the body (`[the mock](mock.html)`) to open it beside the thread.",
   "- wait_for_reply (thread_id) returns the reply when it lands, or { status: \"waiting\", cursor } after about 50 s: call it again with that cursor. Call it only after the work that does not need the answer.",
   "- read_thread reads one thread (thread_id); without an id it lists yours (asked_by \"anyone\": all). search finds older messages by words. resolve_message archives the thread, only when nothing in it is left for the person to read or answer.",
   "- A guided review of a code change: get_guide_brief, write the guide, then submit_guide with the exact patch.",
