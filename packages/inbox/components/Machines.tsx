@@ -4,7 +4,7 @@ import { shortTime } from '../format';
 import { Icon } from '../icons';
 import { machineStatus } from '../machines';
 import { CodeBox, CopyButton } from './ConnectPicker';
-import { RemoveLink } from './Devices';
+import { UnlinkLink } from './Devices';
 
 /**
  * What a refused link means, in the window's words. The server's messages
@@ -101,9 +101,8 @@ export function MachinesSection({ machines, via, onChanged }: MachinesSectionPro
             </span>
             <span className="ib-ctl">
               {!remote && (
-                <RemoveLink
+                <UnlinkLink
                   name={machine.name}
-                  verb="Unlink"
                   warning={machine.waiting > 0 ? `${waitingText(machine.waiting)} will be lost.` : undefined}
                   onRemove={async () => {
                     setError(null);
