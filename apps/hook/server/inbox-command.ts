@@ -36,6 +36,7 @@ import { closeSync, existsSync, mkdirSync, openSync, rmSync, statSync, utimesSyn
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
+import { isAskAiChild } from "@plannotator/shared/child-env";
 import { isNewerStableVersion } from "@plannotator/shared/update-check";
 import { inboxDir } from "@plannotator/shared/inbox/schema";
 import {
@@ -603,6 +604,7 @@ export async function runInboxCommand(args: readonly string[], assets: InboxComm
       ensureRunning: () => ensureInboxRunning(dataDir),
       hostSession: inboxHostSessionFromEnv(process.env),
       qwen: inboxQwenShimContext(process.env, homedir(), process.cwd(), process.ppid),
+      askAiChild: isAskAiChild(process.env),
     });
     process.exit(0);
   }

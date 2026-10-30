@@ -44,6 +44,7 @@ import {
   resolveWindowsCommandShim,
 } from "./command-path.ts";
 import { guardChildStreams, writeChildLine } from "./child-io.ts";
+import { askAiChildEnv } from "./ask-ai-env.ts";
 import { CODEX_FALLBACK_MODELS, cliVersionFrom, effortList, type CatalogModel } from "@plannotator/core/model-catalog";
 
 const PROVIDER_NAME = "codex-sdk";
@@ -66,6 +67,29 @@ const FILE_APPROVAL_METHOD = "item/fileChange/requestApproval";
 // Permission-profile escalation (extra network/filesystem access). Distinct
 // response shape from the two above ({permissions} grant, not {decision}).
 const PERMISSIONS_APPROVAL_METHOD = "item/permissions/requestApproval";
+
+/**
+ * Global `-c` overrides for every `codex app-server` Ask AI starts: they turn
+ * off the Inbox MCP server Plannotator connects to Codex (`codex mcp add
+ * plannotator-inbox`, `INBOX_MCP_SERVER_NAME` in
+ * packages/server/inbox-agents.ts). The marker in the app-server's env
+ * (ask-ai-env.ts) cannot do this: Codex starts a stdio MCP server with a
+ * cleared environment that holds only HOME, PATH and a few others
+ * (codex-rs/rmcp-client `create_env_for_mcp_server`). Codex hooks get the
+ * whole env, so the Stop hook does see the marker.
+ *
+ * The value is a whole stdio server, so the override is valid whether or not
+ * the person has that server. Codex deep-merges `-c` tables over config.toml:
+ * an existing entry gets `enabled = false` (and this command), and when there
+ * is no entry, a disabled stub is added. The stub also carries the marker in
+ * its own `env`, so if a Codex ignored `enabled`, the shim it starts would
+ * still list no tools. Literal strings and no spaces: the argument stays
+ * unquoted on the cmd.exe line of a Windows `.cmd` shim.
+ */
+export const CODEX_ASK_AI_CONFIG_ARGS: readonly string[] = [
+  "-c",
+  "mcp_servers.plannotator-inbox={command='plannotator',args=['inbox','mcp'],env={PLANNOTATOR_ASK_AI_CHILD='1'},enabled=false}",
+];
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for testing)
@@ -326,18 +350,21 @@ class CodexAppServerProcess {
 
   private async doStart(codexPath: string, cwd: string, initTimeoutMs?: number): Promise<void> {
     const commandPath = resolveWindowsCommandShim(codexPath);
+    const appServerArgs = [...CODEX_ASK_AI_CONFIG_ARGS, "app-server"];
     const command =
-      buildWindowsCommandScriptSpawnCommand(commandPath, ["app-server"]) ?? [
+      buildWindowsCommandScriptSpawnCommand(commandPath, appServerArgs) ?? [
         commandPath,
-        "app-server",
+        ...appServerArgs,
       ];
 
     let proc: ChildProcess;
     try {
       const [file, ...args] = command;
       // stderr is "ignore", not "pipe": we never read it, and an un-drained
-      // stderr pipe deadlocks the child once its buffer fills.
-      proc = spawn(file, args, { cwd, stdio: ["pipe", "pipe", "ignore"] });
+      // stderr pipe deadlocks the child once its buffer fills. The env turns
+      // Plannotator's integration off in this Codex (ask-ai-env.ts): its hooks
+      // read the marker; the Inbox MCP server is off by CODEX_ASK_AI_CONFIG_ARGS.
+      proc = spawn(file, args, { cwd, env: askAiChildEnv(), stdio: ["pipe", "pipe", "ignore"] });
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       this.handleProcessEnd(error);

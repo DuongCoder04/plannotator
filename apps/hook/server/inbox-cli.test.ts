@@ -318,6 +318,84 @@ describe("plannotator inbox mcp (the stdio shim)", () => {
   }, 90_000);
 });
 
+describe("plannotator inbox mcp inside an agent Ask AI started (PLANNOTATOR_ASK_AI_CHILD=1)", () => {
+  /** A fake Inbox that answers tools/list with one tool, and counts what reached it. */
+  function fakeInbox() {
+    let requests = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (req) => {
+        requests++;
+        const message = (await req.json()) as { id: number };
+        return Response.json({ jsonrpc: "2.0", id: message.id, result: { tools: [{ name: "send_message", inputSchema: { type: "object" } }] } });
+      },
+    });
+    cleanups.push(() => server.stop(true));
+    return { port: server.port, requests: () => requests };
+  }
+
+  async function shim(askAiChild: boolean | undefined, inbox: { port: number }) {
+    let ensured = 0;
+    const lines: string[] = [];
+    const messages = [
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex-mcp-client", version: "1" } } },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+    ];
+    await runInboxMcpShim({
+      dataDir: sandbox().dataDir,
+      cwd: tmpdir(),
+      ensureRunning: async () => {
+        ensured++;
+        return { v: 1, pid: process.pid, port: inbox.port, url: "", version: "test", token: "t", serverSession: "s", startedAt: "" } as never;
+      },
+      input: new Blob([messages.map((m) => `${JSON.stringify(m)}\n`).join("")]).stream(),
+      write: (line) => lines.push(line),
+      ...(askAiChild === undefined ? {} : { askAiChild }),
+    });
+    const replies = lines.map((line) => JSON.parse(line) as { id: number; result?: { tools?: { name: string }[] } });
+    return { ensured, tools: replies.find((r) => r.id === 2)?.result?.tools?.map((t) => t.name) };
+  }
+
+  test("lists no tools and never starts or reaches the Inbox; without the marker it forwards the Inbox's tools", async () => {
+    const inbox = fakeInbox();
+    const off = await shim(true, inbox);
+    expect(off.tools).toEqual([]);
+    expect(off.ensured).toBe(0);
+    expect(inbox.requests()).toBe(0);
+
+    const on = await shim(undefined, inbox);
+    expect(on.tools).toEqual(["send_message"]);
+    expect(on.ensured).toBeGreaterThan(0);
+    expect(inbox.requests()).toBeGreaterThan(0);
+  });
+
+  test("the real `plannotator inbox mcp` reads the marker from its env: no tools, a refused call, no Inbox started", async () => {
+    const box = sandbox();
+    const client = new Client({ name: "shim-test", version: "1.0.0" });
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["run", entry, "inbox", "mcp"],
+      cwd: box.root,
+      env: { ...box.env, PLANNOTATOR_ASK_AI_CHILD: "1" },
+      stderr: "pipe",
+    });
+    await client.connect(transport);
+    cleanups.push(() => client.close());
+
+    expect((await client.listTools()).tools).toEqual([]);
+    const call = await client.callTool({ name: "send_message", arguments: { body: "hi" } }).then(
+      () => null,
+      (error: Error) => error,
+    );
+    expect(call?.message).toContain("off in an agent");
+    // Nothing started an Inbox in this sandbox.
+    expect(readInboxRegistry(box.dataDir)).toBeNull();
+    expect(existsSync(box.browserMarker)).toBe(false);
+  }, 60_000);
+});
+
 describe("plannotator inbox mcp inside an agent session", () => {
   const CLAUDE_SESSION = "0f3c2a51-7d4e-4b8a-9e21-5c6d7e8f9a0b";
   const CODEX_THREAD = "019a2b3c-4d5e-7f00-8a9b-0c1d2e3f4a5c";

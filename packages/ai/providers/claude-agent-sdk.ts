@@ -29,6 +29,7 @@ import {
   type CatalogModel,
   type ClaudeSdkModelInfo,
 } from "@plannotator/core/model-catalog";
+import { askAiChildEnv } from "./ask-ai-env.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -161,6 +162,8 @@ interface ClaudeSDKQueryOptions {
   settingSources?: string[];
   effort?: string;
   strictMcpConfig?: boolean;
+  /** The whole env of the `claude` process (the SDK does not merge it with process.env). */
+  env: Record<string, string | undefined>;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,6 +283,7 @@ export class ClaudeAgentSDKProvider implements AIProvider {
           // option out, so the SDK loads every source, like the CLI.
           settingSources: [],
           strictMcpConfig: true,
+          env: askAiChildEnv(),
           ...(this.config.claudeExecutablePath && {
             pathToClaudeCodeExecutable: this.config.claudeExecutablePath,
           }),
@@ -465,6 +469,10 @@ class ClaudeAgentSDKSession extends BaseSession {
       abortController: this._currentAbort!,
       includePartialMessages: true,
       persistSession: true,
+      // Plannotator's integration off in this `claude` (ask-ai-env.ts): the
+      // plugin's ExitPlanMode hook exits at once instead of opening a review.
+      // The SDK replaces the child's env with this, so it is the full live env.
+      env: askAiChildEnv(),
       ...(this.config.claudeExecutablePath && {
         pathToClaudeCodeExecutable: this.config.claudeExecutablePath,
       }),
