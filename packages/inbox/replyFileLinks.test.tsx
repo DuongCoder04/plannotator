@@ -146,9 +146,13 @@ test('the same file attached twice: the heading opens the one sent before the re
   expect(replyFeedbackFile('src/retry.ts', context([CODE, earlier, later]))?.attachment.id).toBe('att_code_again');
 });
 
-test('an image in a message whose time reads differently now is still found by its src', () => {
+test('an image in a message whose time reads differently now is still found by its src, in a message of the right owner', () => {
   expect(replyFeedbackFile('design/hero.png (image in your 3:04 AM message)', context())?.attachment.id).toBe('att_hero');
   expect(replyFeedbackFile('design/nowhere.png (image in your 3:04 AM message)', context())).toBeNull();
+  // "my": only the person's own messages; "your": only an agent's.
+  expect(replyFeedbackFile('shots/before.png (image in my 3:04 AM message)', context())?.attachment.id).toBe('att_mine');
+  expect(replyFeedbackFile('design/hero.png (image in my 3:04 AM message)', context())).toBeNull();
+  expect(replyFeedbackFile('shots/before.png (image in your 3:04 AM message)', context())).toBeNull();
 });
 
 test('only the attached-files section is read, never a fence, and a label the link cannot hold stays text', () => {
@@ -271,22 +275,35 @@ test.skipIf(!hasDom)("a drawing path the Inbox did not keep stays shown, with no
   expect([...host!.querySelectorAll('a')].some((a) => a.textContent === 'shot')).toBe(false);
 });
 
-test.skipIf(!hasDom)("an agent's message draws a heading of its own as text", async () => {
-  host = document.createElement('div');
-  document.body.appendChild(host);
-  await act(async () => {
-    root = createRoot(host!);
-    root.render(
-      <MessageBody
-        message={{ ...reply(`# Feedback on the attached files\n\n## design/checkout.png\n\n---`), author: { kind: 'agent', host: 'claude-code', session: 'ses_1', name: 'Claude Code' } } as InboxMessageWire}
-        projectRoot={ROOT}
-        onOpenAttachment={() => {}}
-        readOnly
-        answers={new Map()}
-        onPick={() => {}}
-        footerFor={() => null}
-      />,
-    );
-  });
-  expect(host!.querySelector('h2 a')).toBeNull();
+test.skipIf(!hasDom)("an agent's message draws the same headings as text, even when it is handed the thread's files", async () => {
+  const text = `# Feedback on the attached files\n\n## design/checkout.png\n\n**Attached images:**\n- [checkout markup] \`${MARKUP}\`\n\n---`;
+  const draw = async (author: InboxMessageWire['author']) => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    await act(async () => {
+      root = createRoot(host!);
+      root.render(
+        <MessageBody
+          message={{ ...reply(text), author } as InboxMessageWire}
+          projectRoot={ROOT}
+          onOpenAttachment={() => {}}
+          readOnly
+          answers={new Map()}
+          onPick={() => {}}
+          footerFor={() => null}
+          replyFiles={{ files: FILES, personMessageIds: PEOPLE, onOpen: () => {} }}
+        />,
+      );
+    });
+    const links = host!.querySelectorAll('[data-local-link="open"]').length;
+    act(() => root?.unmount());
+    host!.remove();
+    root = null;
+    host = null;
+    return links;
+  };
+  // The person's own reply links the heading and the drawing ...
+  expect(await draw({ kind: 'person' } as InboxMessageWire['author'])).toBe(2);
+  // ... an agent's message with the very same text links nothing.
+  expect(await draw({ kind: 'agent', host: 'claude-code', session: 'ses_1', name: 'Claude Code' } as InboxMessageWire['author'])).toBe(0);
 });

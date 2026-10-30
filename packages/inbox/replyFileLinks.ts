@@ -44,7 +44,7 @@ export interface ReplyFileTarget {
 }
 
 /** `design/hero.png (image in your 11:22 AM message)`, or with seconds, or a place: the src as written. */
-const IMAGE_IN_MESSAGE = /^(.*) \(image in (?:your|my) [^()]*message(?: \d+)?\)$/;
+const IMAGE_IN_MESSAGE = /^(.*) \(image in (your|my) [^()]*message(?: \d+)?\)$/;
 
 /**
  * The file a heading of the feedback names, and the version its comments
@@ -69,8 +69,9 @@ export function replyFeedbackFile(label: string, context: ReplyFileContext): Rep
   let candidates = files.filter((file) => labelOf(file) === base);
   if (candidates.length === 0) {
     // An image in a message's text, its time written in another time zone or a tie broken otherwise: by its src.
-    const ref = IMAGE_IN_MESSAGE.exec(base)?.[1];
-    if (ref) candidates = files.filter((file) => file.ref === ref);
+    // "my": an image in one of the person's own messages; "your": in an agent's.
+    const match = IMAGE_IN_MESSAGE.exec(base);
+    if (match) candidates = files.filter((file) => file.ref === match[1] && personMessageIds.has(file.message_id) === (match[2] === 'my'));
   }
   // The same file attached again later: the one sent last before the reply.
   const before = context.replyAt ? candidates.filter((file) => file.sent_at <= context.replyAt!) : candidates;

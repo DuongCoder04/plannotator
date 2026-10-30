@@ -418,8 +418,10 @@ export function MessageBody({
   }, [skills, message.body, actionsSent]);
   const replyParts = useMemo(() => sentReplyParts(message, sent, sentAnswers ?? []), [message, sent, sentAnswers]);
   // The files the reply's feedback names, as links (display only; replyFileLinks.ts).
-  const replyFileList = replyFiles?.files;
-  const replyPeople = replyFiles?.personMessageIds;
+  // Only the person's own message: an agent's text is drawn as it wrote it, whatever its headings say.
+  const ownReply = message.author.kind === 'person';
+  const replyFileList = ownReply ? replyFiles?.files : undefined;
+  const replyPeople = ownReply ? replyFiles?.personMessageIds : undefined;
   const linkFiles = useCallback(
     (text: string) =>
       replyFileList && replyPeople
