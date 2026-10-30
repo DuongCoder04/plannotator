@@ -66,6 +66,7 @@ import { shareableDocumentMarkdown } from '@plannotator/ui/utils/sharing';
 import { getCallbackConfig, CallbackAction, executeCallback } from '@plannotator/ui/utils/callback';
 import { useAgents } from '@plannotator/ui/hooks/useAgents';
 import { useActiveSection } from '@plannotator/ui/hooks/useActiveSection';
+import { tocHeadings } from '@plannotator/ui/utils/annotationHelpers';
 import { storage } from '@plannotator/ui/utils/storage';
 import { getIdentity } from '@plannotator/ui/utils/identity';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
@@ -1125,13 +1126,10 @@ const App: React.FC = () => {
   });
   const isResizing = panelResize.isDragging || tocResize.isDragging || agentTerminalResize.isDragging;
 
-  // Whether the document has any TOC-eligible headings (level <= 3, matching
-  // buildTocHierarchy). Drives the empty-doc auto-close behavior below — must
+  // Whether the document has any TOC-eligible headings (tocHeadings: levels 1
+  // to 3, what the list shows). Drives the empty-doc auto-close behavior below — must
   // be declared before the effects that reference it (TDZ in dep arrays).
-  const hasTocEntries = useMemo(
-    () => blocks.some(b => b.type === 'heading' && (b.level ?? 0) <= 3),
-    [blocks]
-  );
+  const hasTocEntries = useMemo(() => tocHeadings(blocks).length > 0, [blocks]);
 
   const exitWideMode = useCallback((options?: {
     restore?: boolean;

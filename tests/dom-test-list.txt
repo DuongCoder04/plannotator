@@ -61,6 +61,7 @@ packages/inbox/refusedImages.test.tsx
 packages/inbox/codeAttachment.test.tsx
 packages/inbox/copyFile.test.tsx
 packages/inbox/fileViewClean.test.tsx
+packages/inbox/documentContents.test.tsx
 packages/inbox/links.test.tsx
 packages/inbox/replyFileLinks.test.tsx
 packages/inbox/issueRefs.test.tsx
@@ -192,6 +193,7 @@ packages/ui/components/RenderedMarkdown.hostSeams.test.tsx
 packages/ui/components/plan-diff/PlanCleanDiffView.seams.test.tsx
 packages/ui/components/AnnotationPanel.questions.test.tsx
 packages/ui/hooks/useActiveSection.test.tsx
+packages/ui/hooks/useActiveSection.positions.test.tsx
 packages/editor/hooks/useQuestionAnswers.test.tsx
 packages/ui/components/diagram/DiagramViewer.test.tsx
 packages/ui/utils/diagramAnchor.test.ts
@@ -365,6 +367,8 @@ packages/ui/hooks/useLinkedDoc.scrollRestore.test.tsx
 packages/ui/components/html-viewer/htmlLinkProtocol.test.tsx
 packages/editor/hooks/useAnnotationJump.test.tsx
 packages/ui/components/TableOfContents.linkedDoc.test.tsx
+packages/ui/components/MarkdownContentsRail.test.tsx
+packages/ui/components/DeferredMarkdownContentsRail.test.ts
 packages/ui/components/CommentPopover.overlayGutter.test.tsx
 packages/ui/components/CommentPopover.multiTarget.test.tsx
 packages/ui/aiProviderConfigPersistence.test.tsx
