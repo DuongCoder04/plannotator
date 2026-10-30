@@ -31,9 +31,9 @@
  * Bun-free and Node-safe: vendored into the Pi extension.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 /** The marker's name. Only the exact value "1" counts. */
 export const ASK_AI_CHILD_ENV = "PLANNOTATOR_ASK_AI_CHILD";
@@ -94,15 +94,19 @@ const CODEX_INBOX_SERVER = "plannotator-inbox";
  *  - otherwise: a whole disabled stdio server. It is merged over a stdio entry,
  *    or added when there is none. Its own `env` carries the marker, so a Codex
  *    that ignored `enabled` would still start a shim that lists no tools.
- * Known gap, not handled: only `$CODEX_HOME/config.toml` is read. A `url`
- * entry for `plannotator-inbox` in a project's `.codex/config.toml` makes the
- * stub invalid, and app-server (without `--strict-config`) then warns
- * "Invalid configuration; using defaults." and runs that Ask AI session or job on
- * Codex's default config. That is rare. Literal strings and no spaces: the
- * argument stays unquoted on the cmd.exe line of a Windows `.cmd` shim.
+ * `configTexts` is every config.toml Codex merges for the run
+ * (`readCodexConfigTexts`): a `url` in any of them, the person's or the
+ * project's, picks the first form. Gap, not handled (rare): Codex ignores the
+ * config of a project it does not trust, so a `url` entry only there, with no
+ * entry in `$CODEX_HOME`, leaves `enabled=false` with no transport, and Codex
+ * (without `--strict-config`) warns "Invalid configuration; using defaults."
+ * and runs that session or job on its default config. Literal strings and no
+ * spaces: the argument stays unquoted on the cmd.exe line of a Windows `.cmd`
+ * shim.
  */
-export function codexAskAiConfigArgs(configText: string | null): string[] {
-  if (configText !== null && codexInboxEntryHasUrl(configText)) {
+export function codexAskAiConfigArgs(configTexts: string | null | readonly string[]): string[] {
+  const texts = configTexts === null ? [] : typeof configTexts === "string" ? [configTexts] : configTexts;
+  if (texts.some((text) => codexInboxEntryHasUrl(text))) {
     return ["-c", `mcp_servers.${CODEX_INBOX_SERVER}.enabled=false`];
   }
   return [
@@ -111,13 +115,46 @@ export function codexAskAiConfigArgs(configText: string | null): string[] {
   ];
 }
 
-/** `$CODEX_HOME/config.toml` (a relative CODEX_HOME resolved against `cwd`, as Codex does), else `~/.codex/config.toml`; null when unreadable. Read only. */
-export function readCodexConfigText(cwd: string, env: Readonly<Record<string, string | undefined>> = process.env): string | null {
+/**
+ * The config.toml files Codex reads for a run in `cwd`, read only, the
+ * unreadable ones left out: `$CODEX_HOME/config.toml` (a relative CODEX_HOME
+ * resolved against `cwd`, as Codex does; else `~/.codex`), then the
+ * `.codex/config.toml` of each folder from `cwd` up to the project root, the
+ * nearest folder with a `.git` (a folder holding `HEAD`, or a worktree's
+ * file). With no root, only `cwd`'s. The `.codex` that is CODEX_HOME is not
+ * read twice. This is Codex's own walk (codex-rs/config `discover_project_root`
+ * and `discover_project_layers`), with its default `project_root_markers`.
+ */
+export function readCodexConfigTexts(cwd: string, env: Readonly<Record<string, string | undefined>> = process.env): string[] {
+  const start = resolve(cwd);
   const home = env.CODEX_HOME?.trim();
+  const codexHome = home ? resolve(start, home) : join(homedir(), ".codex");
+  const dirs: string[] = [];
+  for (let dir = start; ; dir = dirname(dir)) {
+    dirs.push(dir);
+    if (isGitRoot(dir)) break;
+    if (dirname(dir) === dir) {
+      dirs.length = 1;
+      break;
+    }
+  }
+  const folders = [codexHome, ...dirs.map((dir) => join(dir, ".codex")).filter((dot) => dot !== codexHome)];
+  return folders.flatMap((folder) => {
+    try {
+      return [readFileSync(join(folder, "config.toml"), "utf8")];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** Whether `dir` holds a `.git` that Codex takes as the project root marker. */
+function isGitRoot(dir: string): boolean {
   try {
-    return readFileSync(join(home ? resolve(cwd, home) : join(homedir(), ".codex"), "config.toml"), "utf8");
+    const git = statSync(join(dir, ".git"));
+    return git.isFile() || (git.isDirectory() && existsSync(join(dir, ".git", "HEAD")));
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -156,8 +193,7 @@ function inlineTableKeys(value: string): string[] {
  * Whether config.toml's `mcp_servers.plannotator-inbox` has a `url`, in any
  * form: its `[mcp_servers.plannotator-inbox]` table, an inline table, or
  * dotted keys. A line scan, not a full TOML parser: something it cannot read
- * counts as no `url` (the same gap as a project config, see
- * `codexAskAiConfigArgs`).
+ * counts as no `url`.
  */
 export function codexInboxEntryHasUrl(configText: string): boolean {
   let table: string[] = [];

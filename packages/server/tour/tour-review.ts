@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdir, writeFile, readFile, unlink } from "node:fs/promises";
 import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
-import { codexAskAiConfigArgs, readCodexConfigText } from "@plannotator/ai/providers/ask-ai-env";
+import { codexAskAiConfigArgs, readCodexConfigTexts } from "@plannotator/ai/providers/ask-ai-env";
 import type { DiffType } from "../vcs";
 import { getPRPlatformCapabilities, type PRMetadata } from "../pr";
 import { buildWorkspacePromptContextLines, getLocalDiffInstruction, type WorkspaceReviewPromptContext } from "../agent-review-message";
@@ -450,7 +450,7 @@ export async function buildTourCodexCommand(options: {
     ...(reasoningEffort ? ["-c", `model_reasoning_effort=${reasoningEffort}`] : []),
     ...(fastMode ? ["-c", "service_tier=fast"] : []),
     // The Inbox MCP server off: Codex hands a stdio MCP server none of the job's env.
-    ...codexAskAiConfigArgs(readCodexConfigText(cwd)),
+    ...codexAskAiConfigArgs(readCodexConfigTexts(cwd)),
     "exec",
     "--output-schema", schemaPath,
     "-o", outputPath,

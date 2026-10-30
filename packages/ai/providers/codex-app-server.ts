@@ -44,7 +44,7 @@ import {
   resolveWindowsCommandShim,
 } from "./command-path.ts";
 import { guardChildStreams, writeChildLine } from "./child-io.ts";
-import { askAiChildEnv, codexAskAiConfigArgs, readCodexConfigText } from "./ask-ai-env.ts";
+import { askAiChildEnv, codexAskAiConfigArgs, readCodexConfigTexts } from "./ask-ai-env.ts";
 import { CODEX_FALLBACK_MODELS, cliVersionFrom, effortList, type CatalogModel } from "@plannotator/core/model-catalog";
 
 const PROVIDER_NAME = "codex-sdk";
@@ -70,7 +70,7 @@ const PERMISSIONS_APPROVAL_METHOD = "item/permissions/requestApproval";
 
 // The `-c` override that turns the Inbox MCP server off lives in
 // ask-ai-env.ts, so the review server's `codex exec` jobs use it too.
-export { codexAskAiConfigArgs, codexInboxEntryHasUrl, readCodexConfigText } from "./ask-ai-env.ts";
+export { codexAskAiConfigArgs, codexInboxEntryHasUrl, readCodexConfigTexts } from "./ask-ai-env.ts";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for testing)
@@ -331,7 +331,7 @@ class CodexAppServerProcess {
 
   private async doStart(codexPath: string, cwd: string, initTimeoutMs?: number): Promise<void> {
     const commandPath = resolveWindowsCommandShim(codexPath);
-    const appServerArgs = [...codexAskAiConfigArgs(readCodexConfigText(cwd)), "app-server"];
+    const appServerArgs = [...codexAskAiConfigArgs(readCodexConfigTexts(cwd)), "app-server"];
     const command =
       buildWindowsCommandScriptSpawnCommand(commandPath, appServerArgs) ?? [
         commandPath,
