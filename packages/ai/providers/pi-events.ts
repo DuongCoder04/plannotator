@@ -1,10 +1,32 @@
 /**
- * Pi event mapping — shared between Bun and Node.js Pi providers.
+ * Pi event mapping and the Pi child's environment — shared between Bun and
+ * Node.js Pi providers.
  *
- * Pure function, no runtime-specific dependencies.
+ * Pure functions, no runtime-specific dependencies.
  */
 
 import type { AIMessage } from "../types.ts";
+
+/**
+ * The environment for every `pi --mode rpc` process Ask AI starts (a model
+ * probe or a session): the live env with Plannotator's own agent tools off.
+ *
+ * Pi's RPC mode binds a dialog UI, so `ctx.hasUI` is true there, and the
+ * Plannotator Pi extension (which this Pi loads like any other) would take
+ * the throwaway process for a person's session: offer its model
+ * `plannotator_inbox` (and `plannotator`), show it in the Inbox and run the
+ * reply wake in it. These env switches decide every host and win over
+ * config.json (`resolveInboxTool` / `resolveAgentTool` in
+ * packages/shared/config.ts), so the extension registers neither tool and
+ * never connects. The extension does not gate on `ctx.mode === "tui"`
+ * instead: a person can drive Pi over RPC too, and the Inbox's real-Pi proof
+ * (apps/pi-extension/inbox.test.ts) runs Pi that way.
+ */
+export function askAiPiEnv(
+	env: Readonly<Record<string, string | undefined>> = process.env,
+): Record<string, string | undefined> {
+	return { ...env, PLANNOTATOR_INBOX_TOOL: "0", PLANNOTATOR_AGENT_TOOL: "0" };
+}
 
 /**
  * Map a Pi AgentEvent (received as JSONL) to AIMessage[].
