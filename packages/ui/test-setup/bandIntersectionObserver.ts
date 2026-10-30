@@ -4,7 +4,7 @@
  * target, applies the `rootMargin` (px or % of the root's height, top and
  * bottom), and reports the targets whose intersection changed, at once on
  * `observe` and on every `scroll` of the root, as a real observer reports
- * crossings. Enough to drive `useActiveSection` (the package's scroll-spy)
+ * crossings. Enough to drive `useActiveSection` (plan review's scroll-spy)
  * at given scroll positions.
  */
 

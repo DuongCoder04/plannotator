@@ -69,6 +69,8 @@
     "components/MarkdownContentsRail.tsx",
     "components/DeferredMarkdownContentsRail.tsx",
     "components/DocumentContents.tsx",
+    "hooks/useHeadingScrollSpy.ts",
+    "utils/headingScrollSpy.ts",
     "hooks/useScrollViewport.ts",
     "utils/annotationHelpers.ts",
     "config/index.ts"

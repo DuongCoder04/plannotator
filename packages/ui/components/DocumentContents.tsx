@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import type { Annotation, Block } from '../types';
-import { tocHeadings } from '../utils/annotationHelpers';
-import { useDocumentActiveSection } from '../hooks/useActiveSection';
+import { CONTENTS_RAIL_MAX_LEVEL, tocHeadings } from '../utils/annotationHelpers';
+import { useHeadingScrollSpy } from '../hooks/useHeadingScrollSpy';
 import { TableOfContents } from './TableOfContents';
 
 interface DocumentContentsProps {
@@ -18,23 +18,23 @@ interface DocumentContentsProps {
 }
 
 /**
- * A document's Contents list for a host without plan review's sidebar: the
- * same `TableOfContents` (headings from `tocHeadings`, click to scroll, the
- * current heading highlighted) bound to one scroll element through the
- * package's one scroll-spy (`useDocumentActiveSection`, over
- * `useActiveSection`). It draws no chrome; the host places it and titles it.
+ * A document's Contents list for a host without plan review's sidebar, on the
+ * contents rail's surface (the Inbox's sheet, where the rail yields): the same
+ * `TableOfContents` (click to scroll, the current heading highlighted) with
+ * the rail's headings (levels 1 to 4) and the rail's scroll math
+ * (`useHeadingScrollSpy`), so the list and the rail never disagree. It draws
+ * no chrome; the host places it and titles it.
  *
- * The host mounts it afresh (a sheet that opens), often mid-document, where
- * no heading sits in the observer's band; the scroll-spy reads the band once
- * on mount for that. The marked entry is kept in view inside the list's own
- * scroll box (a sheet).
- *
- * Key it by the document: the active-heading observer reads the headings
- * that are drawn when it mounts or when their count changes.
+ * The host mounts it afresh (a sheet that opens), often mid-document: the
+ * current heading is read at once. The marked entry is kept in view inside the
+ * list's own scroll box (a sheet).
  */
 export function DocumentContents({ blocks, annotations, scrollViewport, onNavigate, className = '' }: DocumentContentsProps) {
-  const headings = useMemo(() => tocHeadings(blocks), [blocks]);
-  const activeId = useDocumentActiveSection(scrollViewport, headings.length);
+  const headingIds = useMemo(
+    () => tocHeadings(blocks, CONTENTS_RAIL_MAX_LEVEL).map((heading) => heading.id),
+    [blocks],
+  );
+  const activeId = useHeadingScrollSpy(scrollViewport, headingIds);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -50,6 +50,7 @@ export function DocumentContents({ blocks, annotations, scrollViewport, onNaviga
         activeId={activeId}
         onNavigate={onNavigate ?? noop}
         scrollViewport={scrollViewport}
+        maxLevel={CONTENTS_RAIL_MAX_LEVEL}
         className={className}
       />
     </div>

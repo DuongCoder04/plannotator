@@ -76,6 +76,8 @@ export function tocHeadings(blocks: readonly Block[], maxLevel = 3): Block[] {
 export const CONTENTS_RAIL_MAX_LEVEL = 4;
 /** The contents rail shows for a document with at least this many of them. */
 export const CONTENTS_RAIL_MIN_HEADINGS = 4;
+/** The contents rail shows in a scroll element at least this wide (and with a 68 px gutter). */
+export const CONTENTS_RAIL_MIN_PANE_WIDTH = 480;
 
 /**
  * Whether a document gets the contents rail: at least
@@ -89,9 +91,10 @@ export function hasContentsRailHeadings(blocks: readonly Block[]): boolean {
 
 export function buildTocHierarchy(
   blocks: Block[],
-  annotationCounts: Map<string, number>
+  annotationCounts: Map<string, number>,
+  maxLevel = 3
 ): TocItem[] {
-  const headings = tocHeadings(blocks);
+  const headings = tocHeadings(blocks, maxLevel);
   
   const root: TocItem[] = [];
   const stack: TocItem[] = [];

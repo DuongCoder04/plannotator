@@ -12,17 +12,24 @@
 //   (--popover, --shadow-menu, --geometry-floating-radius, ...) with fallbacks.
 //   The `ws-markdown-contents-*` classes and `--ws-contents-*` properties are
 //   `pn-contents-rail-*` and `--pn-contents-*`.
-// - ONE scroll-spy: the heading being read comes from the package's
-//   `useDocumentActiveSection` (over `useActiveSection`, plan review's), not
-//   the rail's own activation line, so the rail and every `TableOfContents`
-//   mark the same heading. A pick scrolls the heading to that band's top.
+// - The rail's scroll math (cached heading tops, the binary search, the last
+//   heading at the document's end, re-binding on DOM change, a pick marked at
+//   once) moved as it was into utils/headingScrollSpy, so `DocumentContents`
+//   uses it too; the activation line is 80 px (it was 52), plan review's
+//   scroll offset, so a pick lands where plan review's does. DOM changes are
+//   watched on the whole scroll element, so a re-rendered reading column is
+//   re-bound too.
 // - The headings come from `tocHeadings(blocks, 4)`.
 // - Host seams, all optional (Workspaces passes none and is unchanged):
 //   `blocks` (a host that parsed already), `contentSelector` (the reading
 //   column), `hidden` + `onAvailableChange` (a host's own hide choice and
 //   fallback), `panelAction` (one control in the open panel's title row).
-// - Escape closes an open panel wherever focus is (the approved shape:
-//   "Escape closes"), before a host's own Escape handling sees the key.
+// - Escape also closes a panel opened by pointer while focus stays outside
+//   the rail (a tick press never takes focus), unless focus is in an editable
+//   control or a dialog. It is preventDefault-ed, not stopped: a host's own
+//   Escape sees it was used.
+// - The rules are the package's own stylesheet, contents-rail.css (import it
+//   outside any CSS layer), not part of theme.css.
 
 import {
   useCallback,
@@ -39,8 +46,19 @@ import {
 import type { Block } from '../types';
 import { extractFrontmatter } from '../utils/parser';
 import { parseBlocksShared } from '../utils/blockParse';
-import { CONTENTS_RAIL_MAX_LEVEL, CONTENTS_RAIL_MIN_HEADINGS, tocHeadings } from '../utils/annotationHelpers';
-import { ACTIVE_SECTION_BAND_TOP, useDocumentActiveSection } from '../hooks/useActiveSection';
+import {
+  CONTENTS_RAIL_MAX_LEVEL,
+  CONTENTS_RAIL_MIN_HEADINGS,
+  CONTENTS_RAIL_MIN_PANE_WIDTH,
+  tocHeadings,
+} from '../utils/annotationHelpers';
+import {
+  CONTENTS_ACTIVATION_OFFSET,
+  activeHeadingBinding,
+  bindHeadings,
+  topInsideViewport,
+  type HeadingBinding,
+} from '../utils/headingScrollSpy';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
 
 const MIN_HEADING_COUNT = CONTENTS_RAIL_MIN_HEADINGS;
@@ -50,7 +68,7 @@ const DOCK_WIDTH = 36;
 const PANEL_GAP = 6;
 const CONTENT_GAP = 24;
 const VIEWPORT_EDGE_INSET = 8;
-const MIN_RAIL_VIEWPORT_WIDTH = 480;
+const MIN_RAIL_VIEWPORT_WIDTH = CONTENTS_RAIL_MIN_PANE_WIDTH;
 const SMOOTH_SCROLL_SETTLE = 350;
 const SCROLL_CORRECTION_THRESHOLD = 24;
 /** The reading column, by default: the element Workspaces marks around its document. */
@@ -63,12 +81,6 @@ export interface MarkdownContentsItem {
   readonly level: number;
   readonly breadcrumb: string;
   readonly excerpt: string | null;
-}
-
-interface HeadingBinding {
-  readonly itemIndex: number;
-  readonly node: HTMLElement;
-  readonly top: number;
 }
 
 interface RailGeometry {
@@ -145,30 +157,18 @@ function excerptAfterHeading(blocks: readonly Block[], headingIndex: number): st
   return null;
 }
 
-interface ContentsIndex {
-  readonly items: readonly MarkdownContentsItem[];
-  /** Every heading's block id to the item it reads under (a level 5 or 6 heading: the item above it). */
-  readonly sectionOf: ReadonlyMap<string, number>;
-}
-
-function buildContentsIndex(blocks: readonly Block[]): ContentsIndex {
+function buildContentsItems(blocks: readonly Block[]): readonly MarkdownContentsItem[] {
   const listed = new Set(tocHeadings(blocks, CONTENTS_RAIL_MAX_LEVEL));
   const parents: Array<{ level: number; label: string }> = [];
   const items: MarkdownContentsItem[] = [];
-  const sectionOf = new Map<string, number>();
 
   for (let index = 0; index < blocks.length; index++) {
     const block = blocks[index];
-    if (block.type !== 'heading') continue;
-    if (!listed.has(block)) {
-      if (items.length > 0) sectionOf.set(block.id, items.length - 1);
-      continue;
-    }
+    if (block.type !== 'heading' || !listed.has(block)) continue;
     const level = Math.min(6, Math.max(1, block.level ?? 1));
     const label = plainText(block.content) || 'Untitled section';
     while (parents.length > 0 && parents.at(-1)!.level >= level) parents.pop();
     const breadcrumb = [...parents.map((entry) => entry.label), label].join(' / ');
-    sectionOf.set(block.id, items.length);
     items.push({
       key: block.id,
       blockId: block.id,
@@ -180,7 +180,7 @@ function buildContentsIndex(blocks: readonly Block[]): ContentsIndex {
     parents.push({ level, label });
   }
 
-  return { items, sectionOf };
+  return items;
 }
 
 function markdownBlocks(markdown: string): Block[] {
@@ -193,7 +193,7 @@ function markdownBlocks(markdown: string): Block[] {
  * heading anchors. Scroll never reparses or searches the document.
  */
 export function buildMarkdownContentsModel(markdown: string): readonly MarkdownContentsItem[] {
-  return buildContentsIndex(markdownBlocks(markdown)).items;
+  return buildContentsItems(markdownBlocks(markdown));
 }
 
 /**
@@ -241,9 +241,12 @@ function condensedSlotForItem(itemIndex: number, itemCount: number, slotCount: n
   return Math.min(slotCount - 1, Math.floor((boundedIndex * slotCount) / itemCount));
 }
 
-function topInsideViewport(node: HTMLElement, viewport: HTMLElement): number {
-  const viewportRect = viewport.getBoundingClientRect();
-  return node.getBoundingClientRect().top - viewportRect.top + viewport.scrollTop;
+/** Focus in an editable control or a dialog: its Escape is its own. */
+function ownsEscape(element: HTMLElement): boolean {
+  return (
+    element.isContentEditable ||
+    element.closest('input, textarea, select, [role="dialog"], dialog') !== null
+  );
 }
 
 function setViewportScroll(viewport: HTMLElement, top: number, behavior: ScrollBehavior): void {
@@ -293,8 +296,8 @@ export function MarkdownContentsRail({
   onAvailableChange,
   panelAction,
 }: MarkdownContentsRailProps) {
-  const { items, sectionOf } = useMemo(
-    () => buildContentsIndex(hostBlocks ?? markdownBlocks(markdown)),
+  const items = useMemo(
+    () => buildContentsItems(hostBlocks ?? markdownBlocks(markdown)),
     [hostBlocks, markdown],
   );
   const reducedMotion = usePrefersReducedMotion();
@@ -306,9 +309,7 @@ export function MarkdownContentsRail({
     left: VIEWPORT_EDGE_INSET,
     top: 0,
   });
-  // The package's one scroll-spy (plan review's): the same heading every TableOfContents marks.
-  const activeBlockId = useDocumentActiveSection(scrollViewport, items.length);
-  const activeIndex = (activeBlockId === null ? undefined : sectionOf.get(activeBlockId)) ?? 0;
+  const [activeIndex, setActiveIndex] = useState(0);
   const visible = available === true && !hidden;
   const condensedMarkers = useMemo(() => condenseMarkdownContentsMarkers(items), [items]);
   const safeActiveIndex = Math.min(Math.max(0, activeIndex), Math.max(0, items.length - 1));
@@ -326,16 +327,41 @@ export function MarkdownContentsRail({
           ),
     [collapsedActiveSlot, condensedMarkers, items, safeActiveIndex, titlesVisible],
   );
+  const activeIndexRef = useRef(0);
   const bindingsRef = useRef<readonly HeadingBinding[]>([]);
   const markerRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const listRef = useRef<HTMLDivElement | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
+  const actionRef = useRef<HTMLDivElement | null>(null);
+  const activeFrameRef = useRef<number | null>(null);
   const measureFrameRef = useRef<number | null>(null);
   const correctionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrubbingRef = useRef(false);
   const scrubbedIndexRef = useRef<number | null>(null);
   const onAvailableChangeRef = useRef(onAvailableChange);
   onAvailableChangeRef.current = onAvailableChange;
+  const blockIds = useMemo(() => items.map((item) => item.blockId), [items]);
+
+  const commitActiveIndex = useCallback((next: number) => {
+    if (activeIndexRef.current === next) return;
+    activeIndexRef.current = next;
+    setActiveIndex(next);
+  }, []);
+
+  const refreshActiveSection = useCallback(() => {
+    if (scrollViewport === null) return;
+    // No binding (nothing drawn yet): the index stays.
+    const binding = activeHeadingBinding(bindingsRef.current, scrollViewport);
+    if (binding !== null) commitActiveIndex(binding.itemIndex);
+  }, [commitActiveIndex, scrollViewport]);
+
+  const scheduleActiveRefresh = useCallback(() => {
+    if (activeFrameRef.current !== null) return;
+    activeFrameRef.current = requestAnimationFrame(() => {
+      activeFrameRef.current = null;
+      refreshActiveSection();
+    });
+  }, [refreshActiveSection]);
 
   const measure = useCallback(() => {
     if (scrollViewport === null || items.length < MIN_HEADING_COUNT) {
@@ -344,19 +370,7 @@ export function MarkdownContentsRail({
       return;
     }
 
-    const renderedHeadings = Array.from(
-      scrollViewport.querySelectorAll<HTMLElement>('[data-block-type="heading"]'),
-    );
-    const nodesByBlockId = new Map(
-      renderedHeadings.map((node) => [node.dataset.blockId ?? '', node]),
-    );
-    const bindings = items.flatMap<HeadingBinding>((item, itemIndex) => {
-      const node = nodesByBlockId.get(item.blockId);
-      return node === undefined
-        ? []
-        : [{ itemIndex, node, top: topInsideViewport(node, scrollViewport) }];
-    });
-    bindings.sort((left, right) => left.top - right.top);
+    const bindings = bindHeadings(scrollViewport, blockIds);
     bindingsRef.current = bindings;
 
     const viewportRect = scrollViewport.getBoundingClientRect();
@@ -385,7 +399,8 @@ export function MarkdownContentsRail({
       current.left === geometry.left && current.top === geometry.top ? current : geometry,
     );
     setAvailable(bindings.length >= MIN_HEADING_COUNT && hasRailSpace);
-  }, [contentSelector, items, scrollViewport]);
+    refreshActiveSection();
+  }, [blockIds, contentSelector, items.length, refreshActiveSection, scrollViewport]);
 
   const scheduleMeasure = useCallback(() => {
     if (measureFrameRef.current !== null) cancelAnimationFrame(measureFrameRef.current);
@@ -396,6 +411,8 @@ export function MarkdownContentsRail({
   }, [measure]);
 
   useEffect(() => {
+    activeIndexRef.current = 0;
+    setActiveIndex(0);
     setInteractionIndex(null);
     setTitlesVisible(false);
   }, [items]);
@@ -414,20 +431,37 @@ export function MarkdownContentsRail({
     const firstFrame = requestAnimationFrame(() => {
       secondFrame = requestAnimationFrame(measure);
     });
+    scrollViewport.addEventListener('scroll', scheduleActiveRefresh, { passive: true });
     scrollViewport.addEventListener('load', scheduleMeasure, true);
     window.addEventListener('resize', scheduleMeasure);
 
-    const content = scrollViewport.querySelector<HTMLElement>(contentSelector);
+    // The reading column is observed for size; a host that re-renders it (a
+    // new element) is followed through the mutation observer below.
+    let observedContent: HTMLElement | null = null;
     const resizeObserver =
       typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(scheduleMeasure);
+    const followContent = () => {
+      const content = scrollViewport.querySelector<HTMLElement>(contentSelector);
+      if (content === observedContent) return;
+      if (observedContent !== null) resizeObserver?.unobserve(observedContent);
+      observedContent = content;
+      if (content !== null) resizeObserver?.observe(content);
+    };
     resizeObserver?.observe(scrollViewport);
-    if (content !== null) resizeObserver?.observe(content);
+    followContent();
 
+    // Any change to the document's elements re-binds the headings (an edit
+    // can replace them and keep their count), except the rail's own.
     const mutationObserver =
-      content === null || typeof MutationObserver === 'undefined'
+      typeof MutationObserver === 'undefined'
         ? null
-        : new MutationObserver(scheduleMeasure);
-    if (content !== null) mutationObserver?.observe(content, { childList: true, subtree: true });
+        : new MutationObserver((records) => {
+            const rail = railRef.current;
+            if (rail !== null && records.every((record) => rail.contains(record.target))) return;
+            followContent();
+            scheduleMeasure();
+          });
+    mutationObserver?.observe(scrollViewport, { childList: true, subtree: true });
 
     const fonts = typeof document === 'undefined' ? undefined : document.fonts;
     if (fonts !== undefined) void fonts.ready.then(scheduleMeasure);
@@ -435,13 +469,15 @@ export function MarkdownContentsRail({
     return () => {
       cancelAnimationFrame(firstFrame);
       cancelAnimationFrame(secondFrame);
+      if (activeFrameRef.current !== null) cancelAnimationFrame(activeFrameRef.current);
       if (measureFrameRef.current !== null) cancelAnimationFrame(measureFrameRef.current);
+      scrollViewport.removeEventListener('scroll', scheduleActiveRefresh);
       scrollViewport.removeEventListener('load', scheduleMeasure, true);
       window.removeEventListener('resize', scheduleMeasure);
       resizeObserver?.disconnect();
       mutationObserver?.disconnect();
     };
-  }, [contentSelector, items.length, measure, scheduleMeasure, scrollViewport]);
+  }, [contentSelector, items.length, measure, scheduleActiveRefresh, scheduleMeasure, scrollViewport]);
 
   useEffect(() => {
     const list = listRef.current;
@@ -476,14 +512,17 @@ export function MarkdownContentsRail({
       if (target instanceof Node && railRef.current?.contains(target)) return;
       closeTitles();
     };
-    // Escape closes the open panel wherever focus is (a tick press never takes focus),
-    // before a host's own Escape (a full-screen view's) sees the key.
+    // Escape closes a panel opened by pointer, where focus stayed outside the
+    // rail (a tick press never takes focus). Not while focus is in an editable
+    // control or a dialog: that Escape is theirs. preventDefault, never
+    // stopPropagation, so a host's own Escape (a full-screen view's) sees it was used.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
-      event.preventDefault();
-      event.stopPropagation();
       const focused = document.activeElement;
-      if (focused instanceof HTMLElement && railRef.current?.contains(focused)) focused.blur();
+      const inRail = focused instanceof Node && railRef.current?.contains(focused) === true;
+      if (!inRail && focused instanceof HTMLElement && ownsEscape(focused)) return;
+      event.preventDefault();
+      if (inRail && focused instanceof HTMLElement) focused.blur();
       closeTitles();
     };
     document.addEventListener('pointerdown', closeOnOutsidePointerDown, true);
@@ -514,16 +553,16 @@ export function MarkdownContentsRail({
       const binding = bindingsRef.current.find((entry) => entry.itemIndex === itemIndex);
       if (binding === undefined) return;
       const behavior: ScrollBehavior = reducedMotion || scrubbing ? 'auto' : 'smooth';
-      // The scroll-spy band's top: the heading lands in the band, so it is the one marked.
-      const targetTop = topInsideViewport(binding.node, scrollViewport) - ACTIVE_SECTION_BAND_TOP;
+      const targetTop = topInsideViewport(binding.node, scrollViewport) - CONTENTS_ACTIVATION_OFFSET;
       setViewportScroll(scrollViewport, targetTop, behavior);
+      commitActiveIndex(itemIndex);
       setInteractionIndex(itemIndex);
 
       if (correctionTimerRef.current !== null) clearTimeout(correctionTimerRef.current);
       correctionTimerRef.current = setTimeout(
         () => {
           const correctedTop =
-            topInsideViewport(binding.node, scrollViewport) - ACTIVE_SECTION_BAND_TOP;
+            topInsideViewport(binding.node, scrollViewport) - CONTENTS_ACTIVATION_OFFSET;
           if (Math.abs(scrollViewport.scrollTop - correctedTop) > SCROLL_CORRECTION_THRESHOLD) {
             setViewportScroll(scrollViewport, correctedTop, 'auto');
           }
@@ -532,7 +571,7 @@ export function MarkdownContentsRail({
         behavior === 'smooth' ? SMOOTH_SCROLL_SETTLE : 0,
       );
     },
-    [highlightHeading, reducedMotion, scrollViewport],
+    [commitActiveIndex, highlightHeading, reducedMotion, scrollViewport],
   );
 
   const openTitles = useCallback((index: number) => {
@@ -619,12 +658,14 @@ export function MarkdownContentsRail({
     [closeTitles, navigateTo, openTitles, renderedItemIndexes, titlesVisible],
   );
 
-  /** Focus left the rail (not for another of its controls): the panel closes. */
+  /** Focus left the panel (its list, and the host's action): the panel closes. */
   const closeWhenFocusLeaves = useCallback(
     (relatedTarget: EventTarget | null) => {
-      if (!(relatedTarget instanceof Node) || !railRef.current?.contains(relatedTarget)) {
-        closeTitles();
-      }
+      const inPanel =
+        relatedTarget instanceof Node &&
+        (listRef.current?.contains(relatedTarget) === true ||
+          actionRef.current?.contains(relatedTarget) === true);
+      if (!inPanel) closeTitles();
     },
     [closeTitles],
   );
@@ -724,6 +765,7 @@ export function MarkdownContentsRail({
       </div>
       {titlesVisible && panelAction !== undefined && (
         <div
+          ref={actionRef}
           className="pn-contents-rail-action"
           onBlur={(event) => closeWhenFocusLeaves(event.relatedTarget)}
         >

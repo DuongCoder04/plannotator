@@ -1,13 +1,14 @@
 /**
  * What regresses if this fails: plan review's Contents list marks a different
- * heading at the same scroll position. `useActiveSection` is the package's one
- * scroll-spy (the contents rail and `DocumentContents` read it too), so its
- * answer is pinned here at a few positions of plan review's own wiring (App:
+ * heading at the same scroll position. Plan review keeps `useActiveSection`
+ * unchanged (the contents rail has its own scroll math, utils/headingScrollSpy),
+ * and its answer is pinned here at positions of plan review's own wiring (App:
  * the plan area as the container, the OverlayScrollArea viewport as the
- * scroll element): the band runs from 80 px below the top to 20% of the
- * height, the topmost heading in it wins, and with none in it the last answer
- * stays (scrolling back up included). The same expectations pass on the code
- * before the rail moved into the package.
+ * scroll element). The band runs from 80 px below the top to 20% of the
+ * height: positions below sit a heading just above 80 px (a 52 px line would
+ * mark it), across 80 px but not 100 (a 100 px line would not), and just
+ * below 20% (a 30% bottom would mark it). The topmost heading in the band
+ * wins; with none in it the last answer stays (scrolling back up included).
  *
  * DOM-gated (DOM_TESTS=1).
  */
@@ -85,8 +86,9 @@ describe.if(hasDom)('useActiveSection at fixed scroll positions (plan review)', 
 
     // The observer was created before the layout above: nothing was in the band then.
     expect(await at(0)).toBeNull();
-    expect(await at(200)).toBe('Context'); // Context at 100 px: in the band
-    expect(await at(260)).toBe('Context'); // Context at 40 px, above the band; Design far below: kept
+    expect(await at(255)).toBeNull(); // Context at 45 to 75 px: above the band's 80 px top
+    expect(await at(235)).toBe('Context'); // Context at 65 to 95 px: across the top, not past 100
+    expect(await at(570)).toBe('Context'); // Design at 130 to 160 px: below the band's 120 px bottom: kept
     expect(await at(610)).toBe('Design'); // Design at 90 px
     expect(await at(450)).toBe('Design'); // back up: Context at -150, Design at 250, none in the band: kept
     expect(await at(1000)).toBe('Rollout'); // Rollout at 100 px

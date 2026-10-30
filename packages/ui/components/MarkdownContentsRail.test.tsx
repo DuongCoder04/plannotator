@@ -6,19 +6,20 @@
  * reservation, width-qualified markers, active-section roving focus,
  * heading-depth indentation, and the reduced-motion scroll path.
  *
- * Port: the heading being read now comes from the package's one scroll-spy
- * (`useActiveSection`'s band, 80 px down to 20% of the pane), so a pick
- * scrolls to 80 px above the heading, not 52, and the scroll positions below
- * put a heading in that band. Added: the rail and `DocumentContents` mark the
- * same heading; Escape closes the open panel from anywhere; the host seams
- * (`hidden`, `onAvailableChange`, `panelAction`, `contentSelector`).
+ * Port: the activation line is 80 px (it was 52), so a pick scrolls to 80 px
+ * above the heading; the scroll positions are Workspaces' own. A smooth
+ * scroll does not jump in this fixture (it is in flight), so a pick that is
+ * marked at once is the rail's doing, not the scroll's. Added: the rail and
+ * `DocumentContents` mark the same heading, scrolling up included; a short
+ * pane; an embedded document's heading; a re-rendered reading column; Escape
+ * for a pointer-opened panel, and not for a textarea's or a dialog's; the
+ * host seams (`hidden`, `onAvailableChange`, `panelAction`, `contentSelector`).
  *
  * DOM-gated (DOM_TESTS=1).
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { installBandIntersectionObserver } from '../test-setup/bandIntersectionObserver';
 
 const hasDom = typeof document !== 'undefined';
 const rail = (hasDom ? await import('./MarkdownContentsRail') : {}) as typeof import('./MarkdownContentsRail');
@@ -57,6 +58,18 @@ interface Fixture {
   readonly scrollTo: ReturnType<typeof mock>;
   readonly headings: readonly HTMLElement[];
   readonly mount: HTMLElement;
+  readonly content: HTMLElement;
+}
+
+/** A heading as the package's BlockRenderer draws it, `absoluteTop` px down the scrolled content. */
+function drawHeading(viewport: HTMLElement, level: number, blockId: string, label: string, absoluteTop: number): HTMLElement {
+  const heading = document.createElement(`h${level}`);
+  heading.dataset.blockType = 'heading';
+  heading.dataset.blockId = blockId;
+  heading.textContent = label;
+  heading.getBoundingClientRect = () => rect({ top: absoluteTop - viewport.scrollTop, left: 80, width: 500, height: 32 });
+  Object.defineProperty(heading, 'animate', { configurable: true, value: mock(() => {}) });
+  return heading;
 }
 
 type RailProps = Partial<import('./MarkdownContentsRail').MarkdownContentsRailProps>;
@@ -68,6 +81,7 @@ function mountRail({
   scrollbarWidth = 0,
   viewportLeft = 320,
   viewportWidth = 800,
+  viewportHeight = 600,
   contentAttribute = 'documentReadContent',
   props = {},
   withContents = false,
@@ -78,6 +92,7 @@ function mountRail({
   scrollbarWidth?: number;
   viewportLeft?: number;
   viewportWidth?: number;
+  viewportHeight?: number;
   contentAttribute?: string;
   props?: RailProps;
   withContents?: boolean;
@@ -104,7 +119,7 @@ function mountRail({
   viewport.append(content);
   document.body.append(frame);
 
-  viewport.getBoundingClientRect = () => rect({ left: viewportLeft, width: viewportWidth, height: 600 });
+  viewport.getBoundingClientRect = () => rect({ left: viewportLeft, width: viewportWidth, height: viewportHeight });
   const model = buildMarkdownContentsModel(markdown);
   const contentHeight = Math.max(1200, model.length * 220 + 100);
   content.getBoundingClientRect = () => rect({ left: viewportLeft, width: contentRight - viewportLeft, height: contentHeight });
@@ -112,23 +127,19 @@ function mountRail({
     Object.defineProperty(viewport, 'offsetWidth', { configurable: true, value: viewportWidth });
     Object.defineProperty(viewport, 'clientWidth', { configurable: true, value: viewportWidth - scrollbarWidth });
   }
-  Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 600 });
+  Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: viewportHeight });
   Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: contentHeight });
 
   const headings = model.map((item, index) => {
-    const heading = document.createElement(`h${item.level}`);
-    heading.dataset.blockType = 'heading';
-    heading.dataset.blockId = item.blockId;
+    const heading = drawHeading(viewport, item.level, item.blockId, item.label, 40 + index * 220);
     heading.id = `section-${index}`;
-    heading.textContent = item.label;
-    const absoluteTop = 40 + index * 220;
-    heading.getBoundingClientRect = () => rect({ top: absoluteTop - viewport.scrollTop, left: 80, width: 500, height: 32 });
-    Object.defineProperty(heading, 'animate', { configurable: true, value: mock(() => {}) });
     content.append(heading);
     return heading;
   });
 
+  // An instant scroll jumps; a smooth one is in flight and has not moved yet.
   const scrollTo = mock((options: ScrollToOptions) => {
+    if (options.behavior === 'smooth') return;
     viewport.scrollTop = Math.min(Number(options.top ?? 0), Math.max(0, viewport.scrollHeight - viewport.clientHeight));
     viewport.dispatchEvent(new Event('scroll'));
   });
@@ -145,7 +156,7 @@ function mountRail({
       </>,
     );
   });
-  return { root, viewport, scrollTo, headings, mount };
+  return { root, viewport, scrollTo, headings, mount, content };
 }
 
 async function settleRail(): Promise<void> {
@@ -174,7 +185,6 @@ async function scrollViewportTo(fixture: Fixture, top: number) {
   await settleRail();
 }
 
-let restoreObserver: (() => void) | null = null;
 const realRaf = hasDom ? globalThis.requestAnimationFrame : undefined;
 const realCaf = hasDom ? globalThis.cancelAnimationFrame : undefined;
 const realMatchMedia = hasDom ? window.matchMedia : undefined;
@@ -196,14 +206,11 @@ afterAll(() => {
 beforeEach(() => {
   if (!hasDom) return;
   document.body.innerHTML = '';
-  restoreObserver = installBandIntersectionObserver();
 });
 
 afterEach(() => {
   if (!hasDom) return;
   document.body.innerHTML = '';
-  restoreObserver?.();
-  restoreObserver = null;
 });
 
 describe.if(hasDom)('Markdown Contents rail', () => {
@@ -349,12 +356,13 @@ describe.if(hasDom)('Markdown Contents rail', () => {
     expect(fixture.scrollTo).not.toHaveBeenCalled();
 
     key(markers[1], { key: 'Enter' });
-    // The heading (260 px down) lands on the scroll-spy band's top, 80 px below the pane's top.
+    // The heading (260 px down) lands on the 80 px activation line.
     expect(fixture.scrollTo).toHaveBeenCalledWith({ top: 180, behavior: 'smooth' });
+    // Marked at once, while the smooth scroll is still in flight.
+    expect(fixture.viewport.scrollTop).toBe(0);
     expect(markers[1].getAttribute('aria-current')).toBe('location');
 
-    // "Risks" (480 px down) scrolled to 60 px: it reaches the band.
-    await scrollViewportTo(fixture, 420);
+    await scrollViewportTo(fixture, 500);
     expect(markers[2].getAttribute('aria-current')).toBe('location');
     act(() => fixture.root.unmount());
   });
@@ -428,17 +436,17 @@ describe.if(hasDom)('Markdown Contents rail', () => {
     expect(contentMarkers()).toHaveLength(10);
     expect(contentMarkers()[0].getAttribute('aria-current')).toBe('location');
 
-    // Section 18 (index 17) on the band's top.
+    // Section 18 (index 17) on the activation line.
     await scrollViewportTo(fixture, 40 + 17 * 220 - 80);
     expect(contentMarkers()).toHaveLength(10);
     expect(contentMarkers().findIndex((marker) => marker.getAttribute('aria-current') === 'location')).toBe(4);
     expect(contentMarkers()[4].dataset.contentsIndex).toBe('17');
     expect(new Set(contentMarkers().map((marker) => marker.dataset.contentsIndex)).size).toBe(10);
 
-    // The end of the document: the last heading in the band (index 33; 34 sits below it) is current, in the last slot.
+    // The end of the document: the last heading is current (it never reaches the line), in the last slot.
     await scrollViewportTo(fixture, fixture.viewport.scrollHeight - fixture.viewport.clientHeight);
     expect(contentMarkers().findIndex((marker) => marker.getAttribute('aria-current') === 'location')).toBe(9);
-    expect(contentMarkers()[9].dataset.contentsIndex).toBe('33');
+    expect(contentMarkers()[9].dataset.contentsIndex).toBe('34');
 
     act(() => contentMarkers()[9].click());
     expect(nav?.dataset.revealed).toBe('');
@@ -459,23 +467,42 @@ describe.if(hasDom)('Markdown Contents rail', () => {
     act(() => fixture.root.unmount());
   });
 
-  test('Escape closes the open panel wherever focus is, before a host’s own Escape', async () => {
+  test('Escape closes a pointer-opened panel, used but not stopped; a textarea’s or a dialog’s Escape is theirs', async () => {
     const fixture = mountRail();
     await settleRail();
     const hostEscapes: string[] = [];
     const onHostKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.defaultPrevented) hostEscapes.push('host');
+      if (event.key === 'Escape') hostEscapes.push(event.defaultPrevented ? 'used' : 'host');
     };
     document.addEventListener('keydown', onHostKey);
+    const textarea = document.createElement('textarea');
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    const dialogButton = document.createElement('button');
+    dialog.append(dialogButton);
+    document.body.append(textarea, dialog);
     try {
       act(() => contentMarkers()[0]?.click());
       expect(railElement()?.dataset.revealed).toBe('');
       key(document.body, { key: 'Escape' });
       expect(railElement()?.dataset.revealed).toBeUndefined();
-      expect(hostEscapes).toEqual([]);
+      // The host still sees the key, marked as used.
+      expect(hostEscapes).toEqual(['used']);
       // Closed, the next Escape is the host's.
       key(document.body, { key: 'Escape' });
-      expect(hostEscapes).toEqual(['host']);
+      expect(hostEscapes).toEqual(['used', 'host']);
+
+      // Focus in a textarea, or in a dialog: the panel stays and the Escape is theirs.
+      for (const target of [textarea, dialogButton]) {
+        hostEscapes.length = 0;
+        act(() => contentMarkers()[0]?.click());
+        act(() => target.focus());
+        expect(railElement()?.dataset.revealed).toBe('');
+        key(target, { key: 'Escape' });
+        expect(railElement()?.dataset.revealed).toBe('');
+        expect(hostEscapes).toEqual(['host']);
+        act(() => void document.body.dispatchEvent(new Event('pointerdown', { bubbles: true })));
+      }
     } finally {
       document.removeEventListener('keydown', onHostKey);
     }
@@ -490,19 +517,20 @@ describe.if(hasDom)('Markdown Contents rail', () => {
       return current?.textContent ?? null;
     };
     const listMarked = () => document.querySelector('nav[aria-label="Table of contents"] button[aria-current="location"]')?.textContent ?? null;
-    // Mounted at the top: both read the band the same way.
     expect(railMarked()).toBe('Overview');
     expect(listMarked()).toBe('Overview');
+    // Headings at 40, 260, 480, 700 and 920 px; the line is 80 px down; the end is 600.
     for (const [top, expected] of [
       [200, 'Planning'],
-      [250, 'Planning'],
       [420, 'Risks'],
-      [600, 'Review'],
-      [300, 'Review'],
+      // The end: the last heading (level 4: the list shows it too).
+      [600, 'Evidence'],
+      // Back up, by an instant jump: no heading crosses the line on the way, and the mark follows.
+      [300, 'Planning'],
+      [0, 'Overview'],
     ] as const) {
       await scrollViewportTo(fixture, top);
       expect(railMarked()).toBe(expected);
-      // TableOfContents lists levels 1 to 3 only; the rail adds level 4 (Evidence), which is never reached here.
       expect(listMarked()).toBe(expected);
     }
     act(() => fixture.root.unmount());
@@ -542,6 +570,70 @@ describe.if(hasDom)('Markdown Contents rail', () => {
     const fixture = mountRail({ contentAttribute: 'docTextRoot', props: { contentSelector: '[data-doc-text-root]' } });
     await settleRail();
     expect(railElement()?.style.left).toBe('620px');
+    act(() => fixture.root.unmount());
+  });
+
+  test('a short pane still moves the mark', async () => {
+    const fixture = mountRail({ viewportHeight: 300 });
+    await settleRail();
+    expect(railElement()).not.toBeNull();
+    await scrollViewportTo(fixture, 500);
+    expect(contentMarkers()[2].getAttribute('aria-current')).toBe('location');
+    await scrollViewportTo(fixture, 200);
+    expect(contentMarkers()[1].getAttribute('aria-current')).toBe('location');
+    act(() => fixture.root.unmount());
+  });
+
+  test('a heading the rail does not list (an embedded document’s) keeps the index', async () => {
+    const fixture = mountRail();
+    await settleRail();
+    // An embed between Planning (260) and Risks (480): its ids are namespaced by the embedded document.
+    act(() =>
+      fixture.headings[1]!.after(
+        drawHeading(fixture.viewport, 2, 'docs/other.md:block-0', 'Embedded title', 330),
+        drawHeading(fixture.viewport, 3, 'docs/other.md:block-2', 'Embedded section', 380),
+      ),
+    );
+    await settleRail();
+    await scrollViewportTo(fixture, 360);
+    expect(contentMarkers()).toHaveLength(5);
+    expect(contentMarkers()[1].getAttribute('aria-current')).toBe('location');
+    act(() => fixture.root.unmount());
+  });
+
+  test('re-binds when the reading column is drawn again with the same headings at new places', async () => {
+    const fixture = mountRail();
+    await settleRail();
+    await scrollViewportTo(fixture, 300);
+    expect(contentMarkers()[1].getAttribute('aria-current')).toBe('location');
+
+    // A live edit: the host remounts the reading column (a new element, new heading
+    // elements, the same ids and count); a paragraph above pushed each heading 300 px down.
+    const model = buildMarkdownContentsModel(MARKDOWN);
+    const next = document.createElement('div');
+    next.dataset.documentReadContent = '';
+    next.getBoundingClientRect = fixture.content.getBoundingClientRect;
+    next.append(...model.map((item, index) => drawHeading(fixture.viewport, item.level, item.blockId, item.label, 340 + index * 220)));
+    act(() => fixture.content.replaceWith(next));
+    await settleRail();
+    // At 300 the line is at 380: Overview (now at 340) is the heading being read.
+    expect(contentMarkers()[0].getAttribute('aria-current')).toBe('location');
+    await scrollViewportTo(fixture, 520);
+    expect(contentMarkers()[1].getAttribute('aria-current')).toBe('location');
+    act(() => fixture.root.unmount());
+  });
+
+  test('closes when focus leaves the panel, not while it moves inside it', async () => {
+    const fixture = mountRail();
+    await settleRail();
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    act(() => contentMarkers()[0]?.click());
+    act(() => contentMarkers()[0]?.focus());
+    act(() => contentMarkers()[2]?.focus());
+    expect(railElement()?.dataset.revealed).toBe('');
+    act(() => outside.focus());
+    expect(railElement()?.dataset.revealed).toBeUndefined();
     act(() => fixture.root.unmount());
   });
 });
