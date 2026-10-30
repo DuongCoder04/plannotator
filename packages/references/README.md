@@ -84,7 +84,9 @@ Adapters answer and never throw. A failure is `{ ok: false, reason }`, with
 
 `adapter.list(query, port)` answers one page (up to 100) of a scope's
 issues, filtered by the provider, in the same `SearchResult` shape as
-`search`. Pull and merge requests are never listed.
+`search`. Pull and merge requests are never listed. A page can hold fewer
+than 100 items, even none, and still carry a `cursor`: the rows are
+re-checked after the read. Read on until a page has no `cursor`.
 
 ```ts
 const page = await githubAdapter.list?.(
@@ -106,15 +108,28 @@ const page = await githubAdapter.list?.(
 | `order` | `updated_desc` (default), `created_desc`, or `created_asc` (oldest first). |
 | `cursor` | The previous page's `cursor`, with the same query. |
 
-- GitHub reads GraphQL `repository.issues` with `filterBy` and `orderBy`.
-  It uses the search API only when `text` is set. Quotes and colons in the
-  text and labels are removed, so they cannot add a qualifier. GitHub's
-  label filter matches any label, so the page is narrowed to every label
-  after the read. A milestone takes one lookup for its number first. There
-  is no anonymous rung.
+- GitHub reads GraphQL `repository.issues` with `filterBy` and `orderBy`
+  for state, one label and an assignee. It uses the search API when the
+  query has `text`, two or more labels (search requires every label;
+  `filterBy` matches any), or a milestone (search matches its exact title).
+  In the search query, a label or milestone is a quoted value with only
+  `"`, `\` and line breaks removed, so `label:"type: bug"` stays as
+  written. In the free text, quotes, backslashes and parentheses are
+  removed and every word is quoted, so no word can be a qualifier
+  (`repo:other/x`) or an operator (`OR`, `AND`, `NOT`, a leading `-`).
+  There is no anonymous rung.
 - GitLab reads GraphQL `project.issues` with `state`, `labelName`,
   `assigneeUsernames`, `milestoneTitle`, `search` and `sort`. With no
   credential, a public project lists anonymously from its own host.
+  gitlab.com may refuse `search` to an anonymous caller, so an anonymous
+  `text` list can answer `not_resolvable`. GitLab's milestone wildcards
+  (`None`, `Any`, `Upcoming`, `Started`) and label wildcards (`None`,
+  `Any`) never widen the answer: see the re-check below.
+- GitHub and GitLab rows are re-checked after the read: the row's host and
+  repository or project, its state, every label, and the milestone title
+  (labels and milestone case-insensitive). A row whose labels run past the
+  page read for it (50 on GitHub, 100 on GitLab) is kept, never dropped
+  for a label it may carry.
 - Linear reads `issues(filter:)` in the credential's workspace (`account`).
   Oldest first reads the last page and reverses it.
 - A bad cursor, or an empty or too-long filter, answers `field: "cursor"` or

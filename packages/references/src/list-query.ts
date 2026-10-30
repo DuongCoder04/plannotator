@@ -3,9 +3,11 @@
 //
 // A list query is checked before any credential is asked: a bad cursor or
 // an empty or oversized filter is a `field` answer with no provider call.
-// Labels mean "every label" on all three providers. Where a provider's own
-// filter is looser (GitHub's filterBy.labels), the adapter narrows the page
-// with `hasEveryLabel` after the read; the cursor stays the provider's.
+// Labels mean "every label" on all three providers. GitHub and GitLab rows
+// are re-checked after the read (`keepsRow`: state, labels, milestone), so
+// a looser provider filter never widens the answer; the cursor stays the
+// provider's, and a page can hold fewer rows than LIST_PAGE_SIZE, even none,
+// and still carry a cursor.
 
 import type { ExternalRefFailure, ReferenceListOrder, ReferenceListQuery } from "./contract.ts";
 import type { FetchLike } from "./port.ts";
@@ -13,7 +15,11 @@ import type { FetchLike } from "./port.ts";
 /** One page of a list: the most a single provider call answers. */
 export const LIST_PAGE_SIZE = 100;
 
+/** Labels per query: more than a picker sends, and a bound on the size of
+ * one provider query (each label is a filter or a search qualifier). */
 const MAX_LABELS = 20;
+/** Characters per filter value or text: a bound on one value, long enough
+ * for any real label, login, milestone title or search phrase. */
 const MAX_FILTER = 255;
 /** Opaque provider cursors (base64, Relay ids): bounded and plain. */
 const CURSOR = /^[A-Za-z0-9+/=_:.-]{1,512}$/;
@@ -78,6 +84,38 @@ export function checkListQuery(
 export function hasEveryLabel(have: readonly string[], want: readonly string[]): boolean {
 	const lower = new Set(have.map((label) => label.toLowerCase()));
 	return want.every((label) => lower.has(label.toLowerCase()));
+}
+
+/** False when a row's labels connection says it has more labels than were
+ * read (`pageInfo.hasNextPage`). */
+export function labelsComplete(connection: unknown): boolean {
+	return objectAt(connection, "pageInfo")?.["hasNextPage"] !== true;
+}
+
+/** What the re-check reads from one row. */
+export interface ListRow {
+	readonly open: boolean;
+	readonly labels: readonly string[];
+	/** False when the row's labels were not all read. */
+	readonly labelsComplete: boolean;
+	readonly milestone: string | undefined;
+}
+
+/** The re-check every forge row passes after the read, so a provider
+ * filter that is looser than the query (GitHub's filterBy.labels, a GitLab
+ * milestone wildcard such as `Any` or `Started`) never widens the answer:
+ * the state, every label (case-insensitive) and the milestone title
+ * (case-insensitive). A row whose labels were not all read is never
+ * dropped for a label: the provider filtered it, and the missing labels
+ * may hold the one asked for. */
+export function keepsRow(query: CheckedListQuery, row: ListRow): boolean {
+	if (query.state === "open" && !row.open) return false;
+	if (query.state === "closed" && row.open) return false;
+	if (row.labelsComplete && !hasEveryLabel(row.labels, query.labels)) return false;
+	if (query.milestone !== undefined && row.milestone?.toLowerCase() !== query.milestone.toLowerCase()) {
+		return false;
+	}
+	return true;
 }
 
 /** A GraphQL answer, before the provider-specific reading. */

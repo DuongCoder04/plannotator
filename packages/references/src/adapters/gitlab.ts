@@ -37,7 +37,8 @@ import {
 	checkListQuery,
 	connectionNames,
 	connectionNodes,
-	hasEveryLabel,
+	keepsRow,
+	labelsComplete,
 	LIST_PAGE_SIZE,
 	nextCursor,
 	objectAt,
@@ -167,6 +168,16 @@ async function resolveGitlab(
 // Verified against GitLab docs: https://docs.gitlab.com/api/graphql/reference/
 // (Project.issues: state, labelName, assigneeUsernames, milestoneTitle,
 // search, sort; max page size 100; complexity counts each field once).
+// milestoneTitle and labelName take literal titles, but the REST API's
+// wildcards (`None`, `Any`, `Upcoming`, `Started`) may be honoured too;
+// every row is re-checked after the read (keepsRow), so a wildcard only
+// narrows. gitlab.com can refuse `search` to an anonymous caller ("User
+// must be authenticated to include the search argument"): an anonymous
+// text list may then answer not_resolvable.
+
+/** Labels and assignees read per row: GitLab's largest page. A row whose
+ * labels run past this is kept whole by the label re-check. */
+const ROW_CONNECTION = 100;
 
 const PROJECT_ISSUES_QUERY = `query($fullPath: ID!, $first: Int!, $after: String, $state: IssuableState, $labelName: [String!], $assigneeUsernames: [String!], $milestoneTitle: [String!], $search: String, $sort: IssueSort) {
   project(fullPath: $fullPath) {
@@ -175,8 +186,8 @@ const PROJECT_ISSUES_QUERY = `query($fullPath: ID!, $first: Int!, $after: String
       nodes {
         iid title webUrl state createdAt updatedAt
         author { username }
-        labels { nodes { title } }
-        assignees { nodes { username } }
+        labels(first: ${ROW_CONNECTION}) { pageInfo { hasNextPage } nodes { title } }
+        assignees(first: ${ROW_CONNECTION}) { nodes { username } }
         milestone { title }
       }
     }
@@ -251,17 +262,29 @@ async function listGitlab(
 
 	const items: ExternalRefFacts[] = [];
 	for (const node of connectionNodes(connection)) {
-		const facts = listFacts(grammar, scope, node);
-		if (facts !== null && hasEveryLabel(facts.labels ?? [], q.labels)) items.push(facts);
+		const facts = listFacts(grammar, host, scope, node);
+		if (
+			facts !== null &&
+			keepsRow(q, {
+				// GitLab's open states are `opened` and `locked`.
+				open: node["state"] === "opened" || node["state"] === "locked",
+				labels: facts.labels ?? [],
+				labelsComplete: labelsComplete(node["labels"]),
+				milestone: facts.milestone,
+			})
+		)
+			items.push(facts);
 	}
 	const cursor = nextCursor(connection["pageInfo"]);
 	return { ok: true, items, ...(cursor === undefined ? {} : { cursor }) };
 }
 
-/** One list node as facts, or null when it is not an issue of `scope` on a
- * served host. The canonical comes from the grammar, as a pasted URL's. */
+/** One list node as facts, or null when it is not an issue of `scope` on
+ * the list's own `host`. The canonical comes from the grammar, as a pasted
+ * URL's. */
 function listFacts(
 	grammar: GitlabGrammar,
+	host: string,
 	scope: string,
 	node: Record<string, unknown>,
 ): ExternalRefFacts | null {
@@ -277,7 +300,7 @@ function listFacts(
 		return null;
 	}
 	const parsed = ref === null ? null : parseGitlabCanonical(ref);
-	if (ref === null || parsed === null || parsed.form !== "issues") return null;
+	if (ref === null || parsed === null || parsed.form !== "issues" || parsed.host !== host) return null;
 	if (parsed.projectPath.toLowerCase() !== scope.toLowerCase()) return null;
 	const leaf = parsed.projectPath.split("/").pop() ?? parsed.projectPath;
 	const milestone = str(objectAt(node, "milestone")?.["title"]);

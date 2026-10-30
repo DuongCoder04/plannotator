@@ -203,7 +203,8 @@ export interface ReferenceListQuery {
 	readonly assignee?: string;
 	/** A milestone title (Linear: a project milestone name). */
 	readonly milestone?: string;
-	/** Free text. GitHub runs its search API only when this is set. */
+	/** Free text. GitHub runs its search API for text, two or more labels,
+	 * or a milestone. */
 	readonly text?: string;
 	/** The previous page's `cursor`, with the same query. */
 	readonly cursor?: string;
@@ -258,7 +259,9 @@ export interface RefReadAdapter {
 	): Promise<SearchResult>;
 	/** One page (up to 100) of a scope's issues, filtered. Issues only: pull
 	 * and merge requests are never listed. Answers like `search`; `cursor`
-	 * is set when another page exists. */
+	 * is set when another page exists. Rows are re-checked after the read,
+	 * so a page can hold fewer than 100 items, even none, and still carry a
+	 * cursor: read on until a page has no cursor. */
 	list?(query: ReferenceListQuery, port: ReferencePort): Promise<SearchResult>;
 	/** Optional narrowing choices, on `options.host` (default the public
 	 * host). Absent method means no scope control. */

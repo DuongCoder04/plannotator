@@ -42,7 +42,8 @@ import {
 	checkListQuery,
 	connectionNames,
 	connectionNodes,
-	hasEveryLabel,
+	keepsRow,
+	labelsComplete,
 	LIST_PAGE_SIZE,
 	nextCursor,
 	objectAt,
@@ -191,14 +192,25 @@ export function issueState(state: string, stateReason: string | null): ExternalR
 
 // ── list(query): GraphQL ─────────────────────────────────────────────────────
 //
-// repository.issues with filterBy and orderBy; the search API only when the
-// query has text. Docs: docs.github.com/en/graphql/reference/objects#repository
-// (issues, IssueFilters, IssueOrder) and /queries#search.
+// repository.issues with filterBy and orderBy for state, one label and an
+// assignee. The search API for the rest: text; two or more labels (search
+// ANDs label qualifiers, filterBy.labels ORs them); a milestone (the
+// qualifier matches its exact title, where repository.milestones(query:)
+// is a title search that can miss it). Docs:
+// docs.github.com/en/graphql/reference/objects#repository (issues,
+// IssueFilters, IssueOrder), /queries#search, and
+// docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests.
+
+/** Labels read per row. Enough for real issues; a row whose labels run
+ * past this is kept whole by the label narrowing (labelsComplete). */
+const ROW_LABELS = 50;
+/** Assignees read per row: GitHub allows at most 10 on an issue. */
+const ROW_ASSIGNEES = 20;
 
 const LIST_ISSUE_FIELDS = `number title url state stateReason createdAt updatedAt
       author { login }
-      labels(first: 50) { nodes { name } }
-      assignees(first: 20) { nodes { login } }
+      labels(first: ${ROW_LABELS}) { pageInfo { hasNextPage } nodes { name } }
+      assignees(first: ${ROW_ASSIGNEES}) { nodes { login } }
       milestone { title }`;
 
 const REPOSITORY_ISSUES_QUERY = `query($owner: String!, $name: String!, $first: Int!, $after: String, $filterBy: IssueFilters, $orderBy: IssueOrder) {
@@ -210,12 +222,6 @@ const REPOSITORY_ISSUES_QUERY = `query($owner: String!, $name: String!, $first: 
   }
 }`;
 
-const MILESTONES_QUERY = `query($owner: String!, $name: String!, $query: String!) {
-  repository(owner: $owner, name: $name) {
-    milestones(first: 50, query: $query, states: [OPEN, CLOSED]) { nodes { number title } }
-  }
-}`;
-
 const SEARCH_ISSUES_QUERY = `query($q: String!, $first: Int!, $after: String) {
   search(query: $q, type: ISSUE, first: $first, after: $after) {
     pageInfo { hasNextPage endCursor }
@@ -223,13 +229,31 @@ const SEARCH_ISSUES_QUERY = `query($q: String!, $first: Int!, $after: String) {
   }
 }`;
 
-/** A GitHub login (bots carry `[bot]`). */
-const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/;
+/** A GitHub login: letters, digits and hyphens, plus `_` for Enterprise
+ * Managed Users (`mona_acme`; every *.ghe.com user is one), and `[bot]`.
+ * It is sent as a GraphQL variable, or as a search value where neither
+ * `_` nor `-` can start a qualifier. */
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,99})(?:\[bot\])?$/;
 
-/** A search qualifier value: quotes and colons removed, so free text or a
- * label can never become a second qualifier (`repo:other/x`). */
-function searchWords(value: string): string {
-	return value.replace(/[":]/gu, " ").replace(/\s+/gu, " ").trim();
+/** A quoted search qualifier value (`label:"..."`): only `"`, `\` and line
+ * breaks are removed. A colon inside quotes cannot start another
+ * qualifier, so `type: bug` stays as written. */
+function quotedValue(value: string): string {
+	return value.replace(/["\\\r\n]/gu, " ").replace(/\s+/gu, " ").trim();
+}
+
+/** Free text as search terms. Quotes, backslashes and parentheses are
+ * removed, then every word is quoted, so no word can act as a qualifier
+ * (`repo:other/x`) or an operator (OR, AND, NOT, a leading `-`) and widen
+ * the search past `repo:`. Rows from another repository are still dropped
+ * after the read (listFacts), as a backstop. */
+function quotedWords(text: string): string {
+	return text
+		.replace(/["\\()]/gu, " ")
+		.split(/\s+/u)
+		.filter((word) => word.length > 0)
+		.map((word) => `"${word}"`)
+		.join(" ");
 }
 
 /** One GraphQL query on `api`'s host, answered as data or a failure. */
@@ -413,8 +437,13 @@ export function githubPickerReads(grammar: GithubGrammar): GithubPickerReads {
 	}
 
 	/** One list node as facts, or null when it is not an issue of `scope`
-	 * on a served host (the search API can answer other repositories). */
-	function listFacts(scope: string, node: Record<string, unknown>): ExternalRefFacts | null {
+	 * on the list's own `host` (the search API can answer other
+	 * repositories; a list on host H answers refs on H only). */
+	function listFacts(
+		host: string,
+		scope: string,
+		node: Record<string, unknown>,
+	): ExternalRefFacts | null {
 		const url = str(node["url"]);
 		const title = str(node["title"]);
 		const state = str(node["state"]);
@@ -426,7 +455,7 @@ export function githubPickerReads(grammar: GithubGrammar): GithubPickerReads {
 			return null;
 		}
 		const parsed = ref === null ? null : parseGithubCanonical(ref);
-		if (ref === null || parsed === null || parsed.form !== "issues") return null;
+		if (ref === null || parsed === null || parsed.form !== "issues" || parsed.host !== host) return null;
 		if (`${parsed.owner}/${parsed.repo}`.toLowerCase() !== scope.toLowerCase()) return null;
 		const milestone = str(objectAt(node, "milestone")?.["title"]);
 		return {
@@ -445,12 +474,12 @@ export function githubPickerReads(grammar: GithubGrammar): GithubPickerReads {
 	}
 
 	/** One page (up to 100) of a repository's issues, filtered: GraphQL
-	 * repository.issues with filterBy and orderBy, or the search API when
-	 * the query has text. Labels mean every label: GitHub's filterBy matches
-	 * any of them, so the page is narrowed after the read. A milestone is
-	 * matched by title (one lookup for its number first; no such milestone
-	 * is an empty page). No credential is not_linked: GitHub's GraphQL API
-	 * has no anonymous rung. */
+	 * repository.issues with filterBy and orderBy, or the search API for
+	 * text, two or more labels, or a milestone (see the section note). Each
+	 * row is re-checked after the read (host, repository, state, every
+	 * label, milestone title), so a page can hold fewer than 100 rows and
+	 * still carry a cursor. No credential is not_linked: GitHub's GraphQL
+	 * API has no anonymous rung. */
 	async function list(query: ReferenceListQuery, port: ReferencePort): Promise<SearchResult> {
 		const checked = checkListQuery(query);
 		if (!checked.ok) return checked;
@@ -469,16 +498,16 @@ export function githubPickerReads(grammar: GithubGrammar): GithubPickerReads {
 		const [owner, name] = scope.split("/") as [string, string];
 
 		let connection: Record<string, unknown> | null;
-		if (q.text !== undefined) {
+		if (q.text !== undefined || q.labels.length > 1 || q.milestone !== undefined) {
 			const words = [`repo:${scope}`, "is:issue"];
 			if (q.state !== "all") words.push(`is:${q.state}`);
-			for (const label of q.labels) words.push(`label:"${searchWords(label)}"`);
+			for (const label of q.labels) words.push(`label:"${quotedValue(label)}"`);
 			if (q.assignee !== undefined) words.push(`assignee:${q.assignee}`);
-			if (q.milestone !== undefined) words.push(`milestone:"${searchWords(q.milestone)}"`);
+			if (q.milestone !== undefined) words.push(`milestone:"${quotedValue(q.milestone)}"`);
 			words.push(
 				q.order === "created_asc" ? "sort:created-asc" : q.order === "created_desc" ? "sort:created-desc" : "sort:updated-desc",
 			);
-			const text = searchWords(q.text);
+			const text = quotedWords(q.text ?? "");
 			if (text !== "") words.push(text);
 			const answer = await githubGraphql(api, auth.authorization, SEARCH_ISSUES_QUERY, {
 				q: words.join(" "),
@@ -490,24 +519,9 @@ export function githubPickerReads(grammar: GithubGrammar): GithubPickerReads {
 		} else {
 			const filterBy: Record<string, unknown> = {};
 			if (q.state !== "all") filterBy["states"] = [q.state === "open" ? "OPEN" : "CLOSED"];
+			// At most one label here, where "any" and "every" agree.
 			if (q.labels.length > 0) filterBy["labels"] = q.labels;
 			if (q.assignee !== undefined) filterBy["assignee"] = q.assignee;
-			if (q.milestone !== undefined) {
-				const lookup = await githubGraphql(api, auth.authorization, MILESTONES_QUERY, {
-					owner,
-					name,
-					query: q.milestone,
-				});
-				if (!lookup.ok) return lookup;
-				const repository = objectAt(lookup.data, "repository");
-				if (repository === null) return { ok: false, reason: "not_linked" };
-				const wanted = q.milestone.toLowerCase();
-				const found = connectionNodes(repository["milestones"]).find(
-					(m) => typeof m["title"] === "string" && m["title"].toLowerCase() === wanted,
-				);
-				if (found === undefined || typeof found["number"] !== "number") return { ok: true, items: [] };
-				filterBy["milestoneNumber"] = String(found["number"]);
-			}
 			const answer = await githubGraphql(api, auth.authorization, REPOSITORY_ISSUES_QUERY, {
 				owner,
 				name,
@@ -528,8 +542,17 @@ export function githubPickerReads(grammar: GithubGrammar): GithubPickerReads {
 		if (connection === null) return { ok: false, reason: "not_resolvable" };
 		const items: ExternalRefFacts[] = [];
 		for (const node of connectionNodes(connection)) {
-			const facts = listFacts(scope, node);
-			if (facts === null || !hasEveryLabel(facts.labels ?? [], q.labels)) continue;
+			const facts = listFacts(host, scope, node);
+			if (
+				facts === null ||
+				!keepsRow(q, {
+					open: str(node["state"])?.toUpperCase() === "OPEN",
+					labels: facts.labels ?? [],
+					labelsComplete: labelsComplete(node["labels"]),
+					milestone: facts.milestone,
+				})
+			)
+				continue;
 			items.push(facts);
 		}
 		const cursor = nextCursor(connection["pageInfo"]);
