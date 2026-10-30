@@ -294,7 +294,7 @@ describe('Call flow install endpoints', () => {
       preflightImpl = async () => ({
         ok: false,
         reason: 'node-unavailable',
-        message: 'Call flow requires Node.js 22 or newer, which was not found on PATH.',
+        message: 'Call flow needs Node.js 22.18 or newer, which was not found on PATH.',
       });
       try {
         const status = await fetch(`${server.url}/api/call-flow/install`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
@@ -302,7 +302,7 @@ describe('Call flow install endpoints', () => {
         expect(status).toEqual({
           state: 'error',
           reason: 'node-unavailable',
-          error: 'Call flow requires Node.js 22 or newer, which was not found on PATH.',
+          error: 'Call flow needs Node.js 22.18 or newer, which was not found on PATH.',
           languageIds: ['javascript-typescript'],
         });
         expect(installCalls).toBe(0);
