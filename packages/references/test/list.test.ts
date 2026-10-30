@@ -137,35 +137,84 @@ describe("GitHub list", () => {
 		});
 	});
 
-	it("a milestone or two labels go through search, where the title is exact and labels are AND; rows are re-checked", async () => {
+	it("with no text, two labels and a milestone stay off search: filterBy takes the first label and the milestone number; the re-check requires the rest", async () => {
+		const gh = fakeProvider();
+		const milestonePages = [
+			{ pageInfo: { hasNextPage: true, endCursor: "bTE=" }, nodes: [{ number: 7, title: "v1.1" }] },
+			{ pageInfo: { hasNextPage: false }, nodes: [{ number: 3, title: "V1" }] },
+		];
+		gh.on(GH_GRAPHQL, (call) => {
+			const { query } = bodyOf(call);
+			if (query.includes("milestones(")) {
+				return json(200, { data: { repository: { milestones: milestonePages.shift() } } });
+			}
+			return json(200, {
+				data: {
+					repository: {
+						issues: {
+							pageInfo: { hasNextPage: false },
+							nodes: [
+								ghIssue(1, { milestone: { title: "V1" } }),
+								// Another milestone, or one label short: dropped.
+								ghIssue(2, { milestone: { title: "v1.1" } }),
+								ghIssue(3, { labels: { nodes: [{ name: "bug" }] } }),
+								// Labels past the page read for the row: kept, never dropped for a label.
+								ghIssue(4, { labels: { pageInfo: { hasNextPage: true }, nodes: [{ name: "bug" }] } }),
+							],
+						},
+					},
+				},
+			});
+		});
+		const port = makePort(gh.fetch, { "github github.com": ghToken });
+		const result = await githubAdapter.list?.({ scope: "acme/web", labels: ["bug", "p1"], milestone: "v1" }, port);
+		expect(result?.ok && result.items.map((i) => i.ref.key)).toEqual(["acme/web#1", "acme/web#4"]);
+		expect(gh.calls.map((c) => bodyOf(c).variables)).toEqual([
+			{ owner: "acme", name: "web", query: "v1", after: null },
+			{ owner: "acme", name: "web", query: "v1", after: "bTE=" },
+			{
+				owner: "acme",
+				name: "web",
+				first: 100,
+				after: null,
+				filterBy: { states: ["OPEN"], labels: ["bug"], milestoneNumber: "3" },
+				orderBy: { field: "UPDATED_AT", direction: "DESC" },
+			},
+		]);
+		expect(gh.calls.some((c) => bodyOf(c).query.includes("search("))).toBe(false);
+	});
+
+	it("two labels with no text read repository.issues and answer only rows with both labels", async () => {
 		const gh = fakeProvider();
 		gh.on(GH_GRAPHQL, () =>
 			json(200, {
 				data: {
-					search: {
-						pageInfo: { hasNextPage: false },
-						nodes: [
-							ghIssue(1, { milestone: { title: "V1" } }),
-							// Another milestone, or one label short: dropped.
-							ghIssue(2, { milestone: { title: "v1.1" } }),
-							ghIssue(3, { labels: { nodes: [{ name: "bug" }] } }),
-							// Labels past the page read for the row: kept, never dropped for a label.
-							ghIssue(4, { labels: { pageInfo: { hasNextPage: true }, nodes: [{ name: "bug" }] } }),
-						],
+					repository: {
+						issues: {
+							pageInfo: { hasNextPage: false },
+							nodes: [ghIssue(1), ghIssue(2, { labels: { nodes: [{ name: "bug" }] } }), ghIssue(3, { labels: { nodes: [{ name: "P1" }, { name: "BUG" }] } })],
+						},
 					},
 				},
 			}),
 		);
 		const port = makePort(gh.fetch, { "github github.com": ghToken });
-		const result = await githubAdapter.list?.({ scope: "acme/web", labels: ["bug", "p1"], milestone: "v1" }, port);
-		expect(result?.ok && result.items.map((i) => i.ref.key)).toEqual(["acme/web#1", "acme/web#4"]);
-		expect(gh.calls).toHaveLength(1);
+		const result = await githubAdapter.list?.({ scope: "acme/web", labels: ["bug", "p1"] }, port);
+		expect(result?.ok && result.items.map((i) => i.ref.key)).toEqual(["acme/web#1", "acme/web#3"]);
 		const call = gh.calls[0];
 		if (call === undefined) throw new Error("no call");
-		expect(bodyOf(call).query).toContain("search(query: $q, type: ISSUE");
-		expect(bodyOf(call).variables["q"]).toBe(
-			'repo:acme/web is:issue is:open label:"bug" label:"p1" milestone:"v1" sort:updated-desc',
+		expect(bodyOf(call).query).toContain("repository(owner: $owner, name: $name)");
+		expect(bodyOf(call).variables["filterBy"]).toEqual({ states: ["OPEN"], labels: ["bug"] });
+	});
+
+	it("a milestone the repository does not have is an empty page, with no issue read", async () => {
+		const gh = fakeProvider();
+		gh.on(GH_GRAPHQL, () =>
+			json(200, { data: { repository: { milestones: { pageInfo: { hasNextPage: false }, nodes: [{ number: 7, title: "v1.1" }] } } } }),
 		);
+		const port = makePort(gh.fetch, { "github github.com": ghToken });
+		expect(await githubAdapter.list?.({ scope: "acme/web", milestone: "v1" }, port)).toEqual({ ok: true, items: [] });
+		expect(gh.calls).toHaveLength(1);
 	});
 
 	it("a page whose rows all fail the re-check is empty and still carries the cursor", async () => {
@@ -173,9 +222,11 @@ describe("GitHub list", () => {
 		gh.on(GH_GRAPHQL, () =>
 			json(200, {
 				data: {
-					search: {
-						pageInfo: { hasNextPage: true, endCursor: "Y3Vyc29yOjk=" },
-						nodes: [ghIssue(1, { state: "CLOSED" }), ghIssue(2, { labels: { nodes: [{ name: "p1" }] } })],
+					repository: {
+						issues: {
+							pageInfo: { hasNextPage: true, endCursor: "Y3Vyc29yOjk=" },
+							nodes: [ghIssue(1, { state: "CLOSED" }), ghIssue(2, { labels: { nodes: [{ name: "bug" }] } })],
+						},
 					},
 				},
 			}),
@@ -188,7 +239,7 @@ describe("GitHub list", () => {
 		});
 	});
 
-	it("a label or milestone with a colon keeps it inside its quotes; free-text operators are neutralised", async () => {
+	it("with text, a label or milestone with a colon keeps it inside its quotes; free-text operators are neutralised", async () => {
 		const gh = fakeProvider();
 		gh.on(GH_GRAPHQL, () =>
 			json(200, {
@@ -202,22 +253,36 @@ describe("GitHub list", () => {
 		);
 		const port = makePort(gh.fetch, { "github github.com": ghToken });
 		const result = await githubAdapter.list?.(
-			{ scope: "acme/web", labels: ['type: "bug"\\'], milestone: "Q1: launch", text: "crash OR (is:pr) -label:x NOT y AND z" },
+			{ scope: "acme/web", labels: ["type: bug"], milestone: "Q1: launch", text: "crash OR (is:pr) -label:x NOT y AND z" },
 			port,
 		);
-		expect(result?.ok && result.items.map((i) => i.ref.key)).toEqual([]);
+		expect(result?.ok && result.items.map((i) => i.ref.key)).toEqual(["acme/web#1"]);
+		expect(gh.calls).toHaveLength(1);
 		const call = gh.calls[0];
 		if (call === undefined) throw new Error("no call");
+		expect(bodyOf(call).query).toContain("search(query: $q, type: ISSUE");
 		expect(bodyOf(call).variables["q"]).toBe(
 			'repo:acme/web is:issue is:open label:"type: bug" milestone:"Q1: launch" sort:updated-desc "crash" "OR" "is:pr" "-label:x" "NOT" "y" "AND" "z"',
 		);
+	});
 
-		gh.calls.length = 0;
-		const plain = await githubAdapter.list?.({ scope: "acme/web", labels: ["type: bug"], milestone: "Q1: launch", text: "crash" }, port);
-		expect(plain?.ok && plain.items.map((i) => i.ref.key)).toEqual(["acme/web#1"]);
-		expect(gh.calls[0] && bodyOf(gh.calls[0]).variables["q"]).toBe(
-			'repo:acme/web is:issue is:open label:"type: bug" milestone:"Q1: launch" sort:updated-desc "crash"',
-		);
+	it("with text, a label or milestone holding a quote, or text past GitHub's 256-character limit, is a filter error with no credential asked", async () => {
+		const gh = fakeProvider();
+		const port = makePort(gh.fetch, { "github github.com": ghToken });
+		for (const query of [
+			{ scope: "acme/web", labels: ['say "hi"'], text: "crash" },
+			{ scope: "acme/web", milestone: "back\\slash", text: "crash" },
+			// 100 one-letter words: 199 characters raw, 399 once each word is quoted.
+			{ scope: "acme/web", text: Array(100).fill("a").join(" ") },
+		]) {
+			expect(await githubAdapter.list?.(query, port), JSON.stringify(query)).toEqual({
+				ok: false,
+				reason: "not_resolvable",
+				field: "filter",
+			});
+		}
+		expect(port.asked).toEqual([]);
+		expect(gh.calls).toEqual([]);
 	});
 
 	it("an Enterprise Managed User login (with `_`) is a valid assignee on a *.ghe.com host", async () => {

@@ -203,8 +203,8 @@ export interface ReferenceListQuery {
 	readonly assignee?: string;
 	/** A milestone title (Linear: a project milestone name). */
 	readonly milestone?: string;
-	/** Free text. GitHub runs its search API for text, two or more labels,
-	 * or a milestone. */
+	/** Free text. On GitHub, text runs the search API, which answers at
+	 * most 1,000 results per query: a text list ends there with no cursor. */
 	readonly text?: string;
 	/** The previous page's `cursor`, with the same query. */
 	readonly cursor?: string;
@@ -261,7 +261,8 @@ export interface RefReadAdapter {
 	 * and merge requests are never listed. Answers like `search`; `cursor`
 	 * is set when another page exists. Rows are re-checked after the read,
 	 * so a page can hold fewer than 100 items, even none, and still carry a
-	 * cursor: read on until a page has no cursor. */
+	 * cursor: read on until a page has no cursor. A GitHub list with `text`
+	 * runs GitHub search, capped at 1,000 results per query. */
 	list?(query: ReferenceListQuery, port: ReferencePort): Promise<SearchResult>;
 	/** Optional narrowing choices, on `options.host` (default the public
 	 * host). Absent method means no scope control. */

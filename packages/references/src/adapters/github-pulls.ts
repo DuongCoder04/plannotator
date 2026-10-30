@@ -197,18 +197,26 @@ export function issueState(state: string, stateReason: string | null): ExternalR
 
 // ── list(query): GraphQL ─────────────────────────────────────────────────────
 //
-// repository.issues with filterBy and orderBy for state, one label and an
-// assignee. The search API for the rest: text; two or more labels (search
-// ANDs label qualifiers, filterBy.labels ORs them); a milestone (the
-// qualifier matches its exact title, where repository.milestones(query:)
-// is a title search that can miss it). Docs:
-// docs.github.com/en/graphql/reference/objects#repository (issues,
-// IssueFilters, IssueOrder), /queries#search, and
+// With no text: repository.issues with filterBy and orderBy, which has no
+// result cap. filterBy carries the state, the assignee, the FIRST label
+// (filterBy.labels ORs its labels, so one is exact) and the milestone by
+// number; the row re-check (keepsRow) requires every other label. The
+// milestone number comes from repository.milestones(query:), a title
+// search, paged until the exact title is found (MILESTONE_PAGES).
+// With text: the search API, which answers at most 1,000 results per query
+// (GitHub's cap), so a text list ends after 10 pages of 100 with no cursor.
+// Docs: docs.github.com/en/graphql/reference/objects#repository (issues,
+// milestones, IssueFilters, IssueOrder), /queries#search, and
 // docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests.
 
-/** Labels read per row. Enough for real issues; a row whose labels run
- * past this is kept whole by the label narrowing (labelsComplete). */
-const ROW_LABELS = 50;
+/** Labels read per row: GraphQL's largest page. A row whose labels run
+ * past this is kept whole by the label re-check (labelsComplete). */
+const ROW_LABELS = 100;
+/** Milestone title-search pages read (100 each) before the exact title is
+ * given up on and the milestone goes to search as a qualifier instead. */
+const MILESTONE_PAGES = 10;
+/** GitHub's search query limit, in characters, not counting qualifiers. */
+const SEARCH_TEXT_LIMIT = 256;
 /** Assignees read per row: GitHub allows at most 10 on an issue. */
 const ROW_ASSIGNEES = 20;
 
@@ -227,6 +235,15 @@ const REPOSITORY_ISSUES_QUERY = `query($owner: String!, $name: String!, $first: 
   }
 }`;
 
+const MILESTONES_QUERY = `query($owner: String!, $name: String!, $query: String!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    milestones(first: 100, after: $after, query: $query, states: [OPEN, CLOSED]) {
+      pageInfo { hasNextPage endCursor }
+      nodes { number title }
+    }
+  }
+}`;
+
 const SEARCH_ISSUES_QUERY = `query($q: String!, $first: Int!, $after: String) {
   search(query: $q, type: ISSUE, first: $first, after: $after) {
     pageInfo { hasNextPage endCursor }
@@ -240,12 +257,16 @@ const SEARCH_ISSUES_QUERY = `query($q: String!, $first: Int!, $after: String) {
  * `_` nor `-` can start a qualifier. */
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,99})(?:\[bot\])?$/;
 
-/** A quoted search qualifier value (`label:"..."`): only `"`, `\` and line
- * breaks are removed. A colon inside quotes cannot start another
- * qualifier, so `type: bug` stays as written. */
+/** A quoted search qualifier value (`label:"..."`). A colon inside quotes
+ * cannot start another qualifier, so `type: bug` stays as written. A value
+ * holding `"` or `\` cannot be quoted faithfully and is refused before
+ * this (QUOTE_BREAKING); line breaks become spaces. */
 function quotedValue(value: string): string {
-	return value.replace(/["\\\r\n]/gu, " ").replace(/\s+/gu, " ").trim();
+	return value.replace(/[\r\n]/gu, " ").replace(/\s+/gu, " ").trim();
 }
+
+/** Characters a quoted search value cannot carry as written. */
+const QUOTE_BREAKING = /["\\]/u;
 
 /** Free text as search terms. Quotes, backslashes and parentheses are
  * removed, then every word is quoted, so no word can act as a qualifier
@@ -478,13 +499,42 @@ export function githubPickerReads(grammar: GithubGrammar): GithubPickerReads {
 		};
 	}
 
+	/** The number of the milestone titled `title` (case-insensitive), "none"
+	 * when the repository has no such milestone, or "unknown" when the title
+	 * search ran past MILESTONE_PAGES pages without it. */
+	async function milestoneNumber(
+		api: GithubApi,
+		authorization: string,
+		owner: string,
+		name: string,
+		title: string,
+	): Promise<{ ok: true; number: number | "none" | "unknown" } | ExternalRefFailure> {
+		const wanted = title.toLowerCase();
+		let after: string | null = null;
+		for (let page = 0; page < MILESTONE_PAGES; page++) {
+			const answer = await githubGraphql(api, authorization, MILESTONES_QUERY, { owner, name, query: title, after });
+			if (!answer.ok) return answer;
+			const repository = objectAt(answer.data, "repository");
+			if (repository === null) return { ok: false, reason: "not_linked" };
+			const connection = objectAt(repository, "milestones");
+			const found = connectionNodes(connection).find(
+				(m) => typeof m["title"] === "string" && m["title"].toLowerCase() === wanted,
+			);
+			if (found !== undefined && typeof found["number"] === "number") return { ok: true, number: found["number"] };
+			const next = nextCursor(connection?.["pageInfo"]);
+			if (next === undefined) return { ok: true, number: "none" };
+			after = next;
+		}
+		return { ok: true, number: "unknown" };
+	}
+
 	/** One page (up to 100) of a repository's issues, filtered: GraphQL
-	 * repository.issues with filterBy and orderBy, or the search API for
-	 * text, two or more labels, or a milestone (see the section note). Each
-	 * row is re-checked after the read (host, repository, state, every
-	 * label, milestone title), so a page can hold fewer than 100 rows and
-	 * still carry a cursor. No credential is not_linked: GitHub's GraphQL
-	 * API has no anonymous rung. */
+	 * repository.issues with filterBy and orderBy, or the search API when the
+	 * query has text (see the section note: search answers at most 1,000
+	 * results). Each row is re-checked after the read (host, repository,
+	 * state, every label, milestone title), so a page can hold fewer than
+	 * 100 rows and still carry a cursor. No credential is not_linked:
+	 * GitHub's GraphQL API has no anonymous rung. */
 	async function list(query: ReferenceListQuery, port: ReferencePort): Promise<SearchResult> {
 		const checked = checkListQuery(query);
 		if (!checked.ok) return checked;
@@ -496,14 +546,35 @@ export function githubPickerReads(grammar: GithubGrammar): GithubPickerReads {
 		if (q.assignee !== undefined && !LOGIN.test(q.assignee)) {
 			return { ok: false, reason: "not_resolvable", field: "filter" };
 		}
+		const text = quotedWords(q.text ?? "");
+		// A search value that cannot be quoted as written, or text past
+		// GitHub's search length limit, would answer an empty or failed page.
+		const searchValues = [...q.labels, ...(q.milestone === undefined ? [] : [q.milestone])];
+		if (
+			q.text !== undefined &&
+			(text.length > SEARCH_TEXT_LIMIT || searchValues.some((v) => QUOTE_BREAKING.test(v)))
+		) {
+			return { ok: false, reason: "not_resolvable", field: "filter" };
+		}
 		const scope = q.scope;
 		const auth = await githubAuth(port, host);
 		if (!auth.ok) return auth;
 		const api = githubApi(port, host);
 		const [owner, name] = scope.split("/") as [string, string];
 
+		let milestone: number | "none" | "unknown" | undefined;
+		if (q.text === undefined && q.milestone !== undefined) {
+			const lookup = await milestoneNumber(api, auth.authorization, owner, name, q.milestone);
+			if (!lookup.ok) return lookup;
+			if (lookup.number === "none") return { ok: true, items: [] };
+			milestone = lookup.number;
+			if (milestone === "unknown" && searchValues.some((v) => QUOTE_BREAKING.test(v))) {
+				return { ok: false, reason: "not_resolvable", field: "filter" };
+			}
+		}
+
 		let connection: Record<string, unknown> | null;
-		if (q.text !== undefined || q.labels.length > 1 || q.milestone !== undefined) {
+		if (q.text !== undefined || milestone === "unknown") {
 			const words = [`repo:${scope}`, "is:issue"];
 			if (q.state !== "all") words.push(`is:${q.state}`);
 			for (const label of q.labels) words.push(`label:"${quotedValue(label)}"`);
@@ -512,7 +583,6 @@ export function githubPickerReads(grammar: GithubGrammar): GithubPickerReads {
 			words.push(
 				q.order === "created_asc" ? "sort:created-asc" : q.order === "created_desc" ? "sort:created-desc" : "sort:updated-desc",
 			);
-			const text = quotedWords(q.text ?? "");
 			if (text !== "") words.push(text);
 			const answer = await githubGraphql(api, auth.authorization, SEARCH_ISSUES_QUERY, {
 				q: words.join(" "),
@@ -524,9 +594,12 @@ export function githubPickerReads(grammar: GithubGrammar): GithubPickerReads {
 		} else {
 			const filterBy: Record<string, unknown> = {};
 			if (q.state !== "all") filterBy["states"] = [q.state === "open" ? "OPEN" : "CLOSED"];
-			// At most one label here, where "any" and "every" agree.
-			if (q.labels.length > 0) filterBy["labels"] = q.labels;
+			// The first label only, where "any" and "every" agree; the re-check
+			// requires the rest.
+			const first = q.labels[0];
+			if (first !== undefined) filterBy["labels"] = [first];
 			if (q.assignee !== undefined) filterBy["assignee"] = q.assignee;
+			if (typeof milestone === "number") filterBy["milestoneNumber"] = String(milestone);
 			const answer = await githubGraphql(api, auth.authorization, REPOSITORY_ISSUES_QUERY, {
 				owner,
 				name,

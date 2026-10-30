@@ -125,16 +125,23 @@ const page = await githubAdapter.list?.(
 | `order` | `updated_desc` (default), `created_desc`, or `created_asc` (oldest first). |
 | `cursor` | The previous page's `cursor`, with the same query. |
 
-- GitHub reads GraphQL `repository.issues` with `filterBy` and `orderBy`
-  for state, one label and an assignee. It uses the search API when the
-  query has `text`, two or more labels (search requires every label;
-  `filterBy` matches any), or a milestone (search matches its exact title).
-  In the search query, a label or milestone is a quoted value with only
-  `"`, `\` and line breaks removed, so `label:"type: bug"` stays as
-  written. In the free text, quotes, backslashes and parentheses are
-  removed and every word is quoted, so no word can be a qualifier
-  (`repo:other/x`) or an operator (`OR`, `AND`, `NOT`, a leading `-`).
-  There is no anonymous rung.
+- GitHub, with no `text`, reads GraphQL `repository.issues` with
+  `filterBy` and `orderBy`. That read has no result cap. `filterBy` takes
+  the state, the assignee, the first label (it matches any of its labels,
+  so one is exact), and the milestone by number. The number is found by
+  paging the repository's milestone title search (up to 10 pages of 100)
+  for the exact title. No such milestone is an empty page. The re-check
+  below requires every other label.
+- GitHub, with `text`, uses the search API. **GitHub search answers at most
+  1,000 results per query**, so a text list ends after 10 pages with no
+  cursor. A label or milestone is a quoted value (`label:"type: bug"`
+  stays as written); one holding `"` or `\` answers `field: "filter"`. In
+  the free text, quotes, backslashes and parentheses are removed and every
+  word is quoted, so no word can be a qualifier (`repo:other/x`) or an
+  operator (`OR`, `AND`, `NOT`, a leading `-`). Quoted text longer than
+  GitHub's 256-character search limit answers `field: "filter"`. (A
+  milestone title search that runs past 10 pages without the exact title
+  also falls back to search.) There is no anonymous rung.
 - GitLab reads GraphQL `project.issues` with `state`, `labelName`,
   `assigneeUsernames`, `milestoneTitle`, `search` and `sort`. With no
   credential, a public project lists anonymously from its own host.
@@ -145,8 +152,9 @@ const page = await githubAdapter.list?.(
 - GitHub and GitLab rows are re-checked after the read: the row's host and
   repository or project, its state, every label, and the milestone title
   (labels and milestone case-insensitive). A row whose labels run past the
-  page read for it (50 on GitHub, 100 on GitLab) is kept, never dropped
-  for a label it may carry.
+  page read for it (100 labels) is kept, never dropped for a label it may
+  carry. On GitHub with no text, such a row (more than 100 labels) can
+  therefore lack a second or later label asked for.
 - Linear reads `issues(filter:)` in the credential's workspace (`account`).
   It always sends `orderBy` (`createdAt` or `updatedAt`); Linear orders
   newest first and has no direction argument, so oldest first reads the
