@@ -154,6 +154,7 @@ packages/inbox/threadArtifacts.test.tsx
 packages/inbox/sentQuestionLocked.test.tsx
 packages/inbox/themeToggle.test.tsx
 packages/inbox/sidebarUpdateDot.test.tsx
+packages/inbox/sidebarSections.test.tsx
 packages/inbox/updateStuck.test.tsx
 packages/inbox/palettePicker.test.tsx
 packages/inbox/textSize.test.tsx

@@ -464,7 +464,30 @@ button.ib-mut { border-radius: 6px; }
    paints over it and no scroll box (the projects' list) clips it. Free-standing controls keep the
    base ring, 2 px outside. */
 .pn-inbox :is(.ib-nav, .ib-proj, button.ib-band, .ib-mrow):focus-visible { outline-offset: -2px; }
-.ib-side-label { font-size: var(--ib-lbl-size-s, var(--ib-fs-11, 11px)); font-weight: var(--ib-lbl-550-s, 600); letter-spacing: var(--ib-lbl-track-s, 0.07em); text-transform: var(--ib-lbl-case-s, uppercase); color: var(--muted-foreground); padding: 18px 9px 6px; }
+/* Pinned and Projects open and close like folders (owner's pick, direction C "The section is the folder"): each
+   header is a quiet .ib-nav-sized row (its 16 px icon in the Inbox icon's column), 12 px below what is above it,
+   2 px when the section above is closed. The chevron takes the count's place on hover and keyboard focus (the
+   count stays in the button's name), points right closed and down open, and turns in 160 ms. */
+.ib-side-sec { display: flex; align-items: center; gap: 9px; flex: none; width: 100%; height: 30px; margin-top: 12px; padding: 0 9px; border-radius: var(--ib-rl-sm-s, 7px); font-size: var(--ib-fs-13-5, 13.5px); font-weight: 500; text-align: left; color: var(--muted-foreground); cursor: default; transition: var(--ib-fade-s, var(--ib-ui-fade)); }
+.ib-side-sec > svg.ib-ic { width: 16px; height: 16px; stroke-width: 1.6; flex: none; }
+.ib-side-sec-l { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-side-sec-tail { margin-left: auto; display: inline-grid; place-items: center end; min-width: 16px; flex: none; }
+.ib-side-sec-tail > * { grid-area: 1 / 1; }
+.ib-side-sec .ib-n { font-size: var(--ib-fs-12-5, 12.5px); font-weight: 400; font-variant-numeric: tabular-nums; }
+.pn-inbox .ib-side-sec svg.ib-side-sec-chev { width: 12px; height: 12px; stroke-width: 2.2; visibility: hidden; transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.ib-side-sec[aria-expanded="true"] .ib-side-sec-chev { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .pn-inbox .ib-side-sec svg.ib-side-sec-chev { transition: none; }
+}
+.pn-inbox .ib-side-sec:focus-visible { outline-offset: -2px; background: var(--ib-side-hover); color: var(--foreground); }
+.pn-inbox .ib-side-sec:focus-visible svg.ib-side-sec-chev { visibility: visible; }
+.ib-side-sec:focus-visible .ib-n { opacity: 0; }
+@media (hover: hover) {
+  .ib-side-sec:hover { background: var(--ib-side-hover); color: var(--foreground); }
+  .pn-inbox .ib-side-sec:hover svg.ib-side-sec-chev { visibility: visible; }
+  .ib-side-sec:hover .ib-n { opacity: 0; }
+}
+.ib-pins[data-closed] + .ib-side-sec { margin-top: 2px; }
 /* Pinned and Projects share one scroll area (approval "inbox-pinned-threads": no limit on pins, so a long
    Pinned section scrolls with the projects instead of pushing them and the foot off the window). */
 .ib-sidescroll { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
@@ -2865,6 +2888,14 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-pinrow > .ib-pin, .ib-pinrow:hover > .ib-pin, .ib-pinrow:has(:focus-visible) > .ib-pin, .ib-pinrow[data-menu] > .ib-pin { padding-right: 46px; }
   .ib-pinrow:hover .ib-pin > :is(.ib-n, .ib-spill, .ib-pdot, .ib-parch), .ib-pinrow:has(:focus-visible) .ib-pin > :is(.ib-n, .ib-spill, .ib-pdot, .ib-parch), .ib-pinrow[data-menu] .ib-pin > :is(.ib-n, .ib-spill, .ib-pdot, .ib-parch) { visibility: visible; position: static; }
   .pn-inbox .ib-pinmark svg.ib-ic { width: 14px; height: 14px; }
+  /* Section headers on a phone: 44 px and 15 px text like every sheet row, the chevron always shown in the ⋯
+     column (a 44 px box at the right edge) with the count beside it, where the project rows' counts sit. */
+  .ib-side-sec { height: 44px; margin-top: 8px; padding-right: 0; font-size: var(--ib-fs-15, 15px); }
+  .ib-side-sec > svg.ib-ic { width: 18px; height: 18px; }
+  .ib-side-sec-tail { display: inline-flex; align-items: center; gap: 2px; }
+  .ib-side-sec-tail > * { grid-area: auto; }
+  .pn-inbox .ib-side-sec svg.ib-side-sec-chev { visibility: visible; width: 44px; height: 14px; }
+  .ib-side-sec:hover .ib-n, .ib-side-sec:focus-visible .ib-n { opacity: 1; }
   .ib-pm-scrim { display: block; position: fixed; inset: 0; z-index: 79; background: rgb(0 0 0 / 0.3); }
   .ib-pm-pos[data-phone] { position: fixed !important; left: 8px !important; right: 8px !important; top: auto !important; bottom: calc(8px + env(safe-area-inset-bottom)) !important; transform: none !important; width: auto !important; }
   .ib-pm-pos[data-phone] .ib-pm { min-width: 0; padding: 6px; border-radius: var(--ib-sheet-corner, 12px); animation: ib-pm-up 200ms cubic-bezier(0.23, 1, 0.32, 1); }
