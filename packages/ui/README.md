@@ -516,6 +516,20 @@ import { DiffFileTree } from "@plannotator/ui/components/DiffFileTree";
 
 For a custom row, use the atoms (`DiffFileTreeFolderRow`, `DiffFileTreeFileRowContent`, `ChangeTypeLetter`, `DiffCounts`, `diffFileTreeIndent`) with `buildDiffFileTree` and `useDiffFileTreeExpansion`. Plannotator's review shares the tree builder, the expansion hook and `ChangeTypeLetter`, but since its aligned sidebar it draws its own folder and file rows, so it is no longer an example of these atoms. See HANDOFF.md § "Diff file tree".
 
+### Document contents (`components/DocumentContents`; unreleased)
+
+Plan review's Contents list for a host that has no plan-editor sidebar: `TableOfContents` bound to one scroll element, with `useActiveSection` marking the heading being read. It draws no chrome; the host titles and places it, and keys it by the document.
+
+```tsx
+import { DocumentContents } from "@plannotator/ui/components/DocumentContents";
+
+<DocumentContents blocks={blocks} annotations={annotations} scrollViewport={scrollEl} onNavigate={closeSheet} />
+```
+
+- The headings come from `tocHeadings(blocks)` (`utils/annotationHelpers`, levels 1 to 3 in document order), the same function `buildTocHierarchy` and plan review's "has entries" check use.
+- `TableOfContents` takes an optional `scrollViewport` (seam): the element a click scrolls. Default: the `ScrollViewportProvider` context, as before, so plan review passes nothing and is unchanged.
+- Used by the Inbox's attachment pane and phone surface; plan review keeps `SidebarContainer`.
+
 ## Consuming it (e.g. from Workspaces)
 
 ```bash

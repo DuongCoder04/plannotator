@@ -60,13 +60,22 @@ export interface TocItem {
   annotationCount: number;
 }
 
+/**
+ * The headings a Contents list shows: levels 1 to 3, in document order. The
+ * one place that picks them (the list, plan review's "has entries" check and
+ * the Inbox's "3 or more headings" rule all read it).
+ */
+export function tocHeadings(blocks: readonly Block[]): Block[] {
+  return blocks
+    .filter(b => b.type === 'heading' && (b.level ?? 0) <= 3)
+    .sort((a, b) => a.order - b.order);
+}
+
 export function buildTocHierarchy(
   blocks: Block[],
   annotationCounts: Map<string, number>
 ): TocItem[] {
-  const headings = blocks
-    .filter(b => b.type === 'heading' && (b.level ?? 0) <= 3)
-    .sort((a, b) => a.order - b.order);
+  const headings = tocHeadings(blocks);
   
   const root: TocItem[] = [];
   const stack: TocItem[] = [];

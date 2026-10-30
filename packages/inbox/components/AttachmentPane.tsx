@@ -55,6 +55,8 @@ import { FIRST_NOTE, LAST_NOTE, stepAnnouncement, stepIndexOf, stepKeyIntent, ty
 import { Icon } from '../icons';
 import { FileName } from './FileName';
 import { useNarrowerThan } from '../narrower';
+import { CONTENTS_RAIL_BELOW, showsContents, useContentsShown } from '../contents';
+import { ContentsPanel, type ContentsPlacement } from './ContentsPanel';
 import { FullViewBar, type FullViewBarHandle, type ToolbarState } from './FullViewBar';
 import { FullScreenComposer, FullScreenComposerContext, type FullScreenComposerValue } from './FullScreenComposer';
 import { pickComposerMode, setComposerMinimized } from '../fullScreenComposer';
@@ -691,7 +693,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   // It is heard on the body around the file (`bodyRef`), which never moves, so a finger that comes back while the last
   // step is still sliding is heard; what moves is the file area, or for an image only the picture (`swipeMoves`).
   const docAreaRef = useRef<HTMLDivElement>(null);
-  const bodyRef = useRef<HTMLDivElement>(null);
+  // The body's width decides whether full screen has room for the Contents rail (contents.ts).
+  const [bodyRef, bodyNarrow] = useNarrowerThan<HTMLDivElement>(CONTENTS_RAIL_BELOW, false);
   /** The controls a drag down fades (the dock, the caption, the size bar, the comment box), found once when it starts. */
   const dismissFades = useRef<HTMLElement[]>([]);
   const swipeMode = fileSwipeMode(kind, tooLarge);
@@ -1292,6 +1295,19 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const documentBlocks = useMemo(() => (view && !isCode ? attachmentBlocks(kind, view.text, attachment.name) : []), [view, kind, isCode, attachment.name]);
   const commentBlocks = useMemo(() => (isCode ? codeCommentBlocks(annotations) : []), [isCode, annotations]);
   const blocks = isCode ? commentBlocks : documentBlocks;
+  // A Markdown file with 3 or more headings shows its Contents (contents.ts, ContentsPanel.tsx): a rail
+  // on the left in full screen, the top of the comments column beside the thread, else a button and a sheet.
+  const [contentsShown, setContentsShown] = useContentsShown();
+  const contents: ContentsPlacement | null =
+    view === null || kind !== 'markdown' || !showsContents(documentBlocks)
+      ? null
+      : full
+        ? phone || bodyNarrow
+          ? 'sheet'
+          : 'rail'
+        : folded
+          ? 'sheet'
+          : 'column';
   const refRepo = useRefRepo(props.repo);
   const wrapCode = useMemo(() => view !== null && isCode && hasLineLongerThan(view.text, CODE_WRAP_LINE_CHARS), [view, isCode]);
   // Code comments drawn under their lines; one whose lines no longer read as they did is unanchored, and so is a text
@@ -1719,6 +1735,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
         <div
           ref={docAreaRef}
           className={`ib-docarea${isHtml ? ' ib-html' : ''}`}
+          // The rail takes the page's left 240 px; the toolstrip moves over the page with it (inbox.css).
+          data-contents-rail={contents === 'rail' && contentsShown ? '' : undefined}
           data-file-swipe={full && phone && multi ? swipeMode : undefined}
           data-image-peek={swipeOn && isImage && multi ? '' : undefined}
         >
@@ -1825,6 +1843,17 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 compact
               />
             </div>
+          )}
+          {view && (contents === 'rail' || contents === 'sheet') && (
+            <ContentsPanel
+              key={`${attachment.id}:${view.version}:${view.attachment.current?.sha256 ?? ''}`}
+              placement={contents}
+              blocks={blocks}
+              annotations={annotations}
+              scrollViewport={scrollViewport}
+              shown={contentsShown}
+              onShownChange={setContentsShown}
+            />
           )}
           {isImage && (
             <ImageAttachmentView
@@ -2000,6 +2029,17 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 <Icon name="x" />
               </button>
             </div>
+          )}
+          {view && contents === 'column' && (
+            <ContentsPanel
+              key={`${attachment.id}:${view.version}:${view.attachment.current?.sha256 ?? ''}`}
+              placement="column"
+              blocks={blocks}
+              annotations={annotations}
+              scrollViewport={scrollViewport}
+              shown={contentsShown}
+              onShownChange={setContentsShown}
+            />
           )}
           <AnnotationPanel
             // The sheet and the drawer draw the timeline under their own title and close (and a phone's window-wide overlay below 768 px would have no close here).

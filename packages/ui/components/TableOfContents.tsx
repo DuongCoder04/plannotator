@@ -22,6 +22,12 @@ interface TableOfContentsProps {
   linkedDocFilepath?: string | null;
   onLinkedDocBack?: () => void;
   backLabel?: string;
+  /**
+   * The element a click scrolls. Default: the `ScrollViewportProvider`
+   * context's viewport (plan review). A host that draws the list outside the
+   * document's scroll area (the Inbox's comments column) names it here.
+   */
+  scrollViewport?: HTMLElement | null;
 }
 
 // The prototype's TOC is a FLAT list — heading depth is conveyed by indentation
@@ -62,6 +68,7 @@ export function TableOfContents({
   linkedDocFilepath,
   onLinkedDocBack,
   backLabel,
+  scrollViewport: scrollViewportProp,
 }: TableOfContentsProps) {
   // Annotation count per section (kept — production feature).
   const annotationCounts = useMemo(
@@ -77,7 +84,8 @@ export function TableOfContents({
   );
 
   // The real scroll element is the OverlayScrollArea viewport, not <main>.
-  const scrollViewport = useScrollViewport();
+  const contextViewport = useScrollViewport();
+  const scrollViewport = scrollViewportProp === undefined ? contextViewport : scrollViewportProp;
 
   // Smooth scroll-to-heading, accounting for the sticky header.
   const handleNavigate = useCallback(
