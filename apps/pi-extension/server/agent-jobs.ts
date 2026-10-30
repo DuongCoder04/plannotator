@@ -26,6 +26,7 @@ import {
 } from "../generated/agent-jobs.ts";
 import { resolveGuideLaunchInstructions } from "../generated/guide-instructions-store.ts";
 import { gitColorFreeEnvironment } from "../generated/review-core.ts";
+import { askAiChildEnv } from "../generated/ai/providers/ask-ai-env.ts";
 import { ghAccountEnvForPRUrl } from "../generated/pr-github-account.ts";
 import type { GuideLaunchReview } from "../generated/guide-format.ts";
 import { allowedToolsOf, CLAUDE_SHELL_BLOCKED_WARNING, detectClaudeShellBlocked, disallowedToolsOf, formatClaudeLogEvent } from "../generated/claude-review.ts";
@@ -312,7 +313,10 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 					"pipe",
 				],
 				env: {
-					...process.env,
+					// The live env with Plannotator's own integration off (the Inbox MCP,
+					// the agent tool, the plan and Stop hooks). No job uses it: each
+					// returns its result on stdout or in its output file (ask-ai-env.ts).
+					...askAiChildEnv(),
 					// The agent runs `git diff` / `git log` itself through a pipe; keep a
 					// user's `color.diff = always` from filling its context with ANSI
 					// escapes (#1661).
