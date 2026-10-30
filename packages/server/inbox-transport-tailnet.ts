@@ -4,18 +4,24 @@
  * the door "Reach from my tailnet" publishes with `tailscale serve`. The
  * certificate is Tailscale's real one, so the default TLS check holds.
  *
- * Plain `http://` is taken only for a loopback host: the same door on this
- * computer (two Inboxes on one machine, as the tests run them). A bearer
- * token never goes over plain HTTP to another host.
+ * Only a MagicDNS name (`<machine>.<tailnet>.ts.net`) over https is taken:
+ * never another host, a bare IP or `localhost`, so a pasted code, an
+ * `--address`, or a linked machine's `link-back` can never make this Inbox
+ * send a pairing secret or a token off the tailnet. Plain `http://` to a
+ * loopback host is taken only inside a test sandbox
+ * (`PLANNOTATOR_TEST_SANDBOX`), where two Inboxes on one computer stand in
+ * for two machines.
  */
 
 import type { InboxDoorRequest, InboxPeerTransport, InboxTransportSpec } from "./inbox-transport";
 
 const DOOR = "/api/inbox/device/";
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+/** `<machine>.<tailnet>.ts.net`. */
+const MAGIC_DNS = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.){2,}ts\.net$/i;
 
 /** An address as the person or a pairing link gave it (`mini.tail1234.ts.net:8443`, or a URL), as the origin the link keeps; null when unusable. */
-export function checkTailnetAddress(raw: string): string | null {
+export function checkTailnetAddress(raw: string, env: Record<string, string | undefined> = process.env): string | null {
   const text = raw.trim();
   if (!text) return null;
   let url: URL;
@@ -25,8 +31,8 @@ export function checkTailnetAddress(raw: string): string | null {
     return null;
   }
   if (url.username || url.password || (url.pathname !== "/" && url.pathname !== "") || url.search || url.hash) return null;
-  if (url.protocol === "https:") return url.origin;
-  if (url.protocol === "http:" && LOOPBACK.has(url.hostname)) return url.origin;
+  if (url.protocol === "https:" && MAGIC_DNS.test(url.hostname)) return url.origin;
+  if (url.protocol === "http:" && LOOPBACK.has(url.hostname) && env.PLANNOTATOR_TEST_SANDBOX) return url.origin;
   return null;
 }
 

@@ -190,13 +190,16 @@ const ALLOWLIST: readonly DoorRoute[] = [
   { method: "POST", route: /^markups$/, window: () => "/api/inbox/markups", raw: { max: INBOX_DEVICE_MARKUP_MAX_BYTES, code: "markup_too_large", what: "a drawing" } },
 ];
 
-/** The door's routes in words (`GET threads`, `POST messages/:id/(picks|reply|…)`), for `health`: what this Inbox can serve another. */
+/** The two writes only a linked machine sends this door (inbox-machines.ts answers them); never a window route. */
+const MACHINE_DOOR_WRITES = ["link-back", "unlink"] as const;
+
+/** For rule 8's test (inbox-outbox.test.ts): every door route in words (`GET threads`, `POST messages/:id/(picks|reply|…)`). */
 export function doorRouteNames(): string[] {
   const words = (route: RegExp) => route.source.replace(/^\^|\$$/g, "").replaceAll("([^/]+)", ":id").replaceAll("\\/", "/");
-  return [...ALLOWLIST.map((entry) => `${entry.method} ${words(entry.route)}`), "POST link-back", "POST unlink"];
+  return [...ALLOWLIST.map((entry) => `${entry.method} ${words(entry.route)}`), ...MACHINE_DOOR_WRITES.map((route) => `POST ${route}`)];
 }
 
-/** The door's POST routes, as the window's route each reaches (tests classify each one: rule 8). */
+/** For rule 8's test: the door's POST routes, and which take a raw body (a file). */
 export function doorWriteRoutes(): { route: string; raw: boolean }[] {
   return ALLOWLIST.filter((entry) => entry.method === "POST").map((entry) => ({ route: entry.route.source, raw: entry.raw !== undefined }));
 }
@@ -584,6 +587,8 @@ export function createInboxDevices(context: InboxDevicesContext) {
     const secret = typeof body.secret === "string" && body.secret ? body.secret : null;
     const code = typeof body.code === "string" && body.code ? body.code : null;
     if (platform.name === MACHINE_PLATFORM) {
+      // Machines link over the tailnet only: never by a code, or at all, over the Wi-Fi.
+      if (via === "wifi") return refuse(403, "machine_not_accepted_here", "Machines link over the tailnet, not the Wi-Fi.");
       if (!secret && !code) throw new InboxError("validation_error", "secret or code: one is required.", { field: "secret" });
       return redeemMachine(byName.name, secret, code);
     }
@@ -772,8 +777,9 @@ export function createInboxDevices(context: InboxDevicesContext) {
       // A machine reads this Inbox's own threads only (PLAN rule 3): never the merged view, so links both ways cannot echo.
       if (url.searchParams.has("machines")) return refuse(403, "machines_view_refused", "A linked machine reads this Inbox's own threads only.");
       const machines = context.machines?.() ?? null;
-      if (machines && req.method === "POST" && route === "link-back") return machines.linkBack(device.id, await context.readBody(req));
-      if (machines && req.method === "POST" && route === "unlink") return machines.unlinkedBy(device.id);
+      const [linkBack, unlink] = MACHINE_DOOR_WRITES;
+      if (machines && req.method === "POST" && route === linkBack) return machines.linkBack(device.id, await context.readBody(req));
+      if (machines && req.method === "POST" && route === unlink) return machines.unlinkedBy(device.id);
     }
     for (const entry of ALLOWLIST) {
       if (entry.method !== req.method) continue;
@@ -794,21 +800,37 @@ export function createInboxDevices(context: InboxDevicesContext) {
     return refuse(404, "device_route_not_found", "Not a phone route.");
   };
 
+  /**
+   * Phones off: whether the door answers this request at all (it is there
+   * for linked machines only). A machine's pairing while a machine offer is
+   * open, and a machine's token, are answered. So is a token this door does
+   * not know, once machines link here (through the tailnet's listener, or
+   * when any machine device exists): `401 device_token_invalid` tells a
+   * machine whose link was wiped here (a reinstall) to re-pair, and ends the
+   * writes it holds with their notice. Anything else gets the unknown-route
+   * 404 it always got, Origin header or not.
+   */
+  const answersWithPhonesOff = (req: Request, route: string, via: PairingVia, token: string | null, device: InboxDevice | null): boolean => {
+    if (route === "pair" && req.method === "POST") return openMachineOffers().length > 0;
+    if (device) return device.platform === MACHINE_PLATFORM;
+    return token !== null && (via === "tailnet" || devices.list().some((d) => d.platform === MACHINE_PLATFORM));
+  };
+
   /** `via`: the listener the request reached (the window's own port when the caller says nothing). */
   /** Null: Phones are off and this is no machine's request (the caller answers its unknown-route 404). */
   const door = async (req: Request, url: URL, via: PairingVia = "local"): Promise<Response | null> => {
     try {
-      if (req.headers.get("origin") !== null) return refuse(403, "origin_not_allowed", "Browser requests are not accepted here.");
       const route = url.pathname.startsWith(DOOR_PREFIX) ? url.pathname.slice(DOOR_PREFIX.length) : "";
-      // Phones off: the door is there for linked machines only, and to anything else it is the unknown route it always was.
-      if (!phonesOn && route === "pair" && req.method === "POST" && openMachineOffers().length === 0) return null;
-      if (route === "pair" && req.method === "POST") return await redeem(req, via);
       const token = bearer(req);
       const device = token ? devices.byToken(token) : null;
-      if (!phonesOn && device?.platform !== MACHINE_PLATFORM) return null;
+      if (!phonesOn && !answersWithPhonesOff(req, route, via, token, device)) return null;
+      if (req.headers.get("origin") !== null) return refuse(403, "origin_not_allowed", "Browser requests are not accepted here.");
+      if (route === "pair" && req.method === "POST") return await redeem(req, via);
       if (!token) return refuse(401, "device_token_missing", "This request needs the phone's token.");
       if (!device) return refuse(401, "device_token_invalid", "This token does not belong to a paired phone.");
       if (device.revoked_at !== null) return refuse(401, "device_revoked", "This phone was removed from the Inbox. Pair it again.");
+      // A machine reaches this door over the tailnet only, never the Wi-Fi's listener.
+      if (device.platform === MACHINE_PLATFORM && via === "wifi") return refuse(403, "machine_not_accepted_here", "Machines reach this Inbox over the tailnet, not the Wi-Fi.");
       return await serve(req, url, route, device);
     } catch (error) {
       return caught(error);
@@ -1167,6 +1189,13 @@ export function createInboxDevices(context: InboxDevicesContext) {
       const device = devices.get(id);
       if (device && device.revoked_at === null) revoke(device);
     },
+    /** Close a machine offer that will not be used (a link that failed halfway); the device it made, if one was. */
+    closeMachineOffer: (secret: string): string | null => {
+      const found = machineOffers.find((o) => sameSecret(o.secret, secret));
+      if (!found) return null;
+      found.redeemed = true;
+      return found.deviceId ?? null;
+    },
     tailnetAddress: () => tailnet.address,
     publishTailnet: (): { ok: true; address: string } | { ok: false; message: string } => {
       if (tailnet.address) return { ok: true, address: tailnet.address };
@@ -1175,6 +1204,20 @@ export function createInboxDevices(context: InboxDevicesContext) {
       tailnet.on = true;
       saveSwitch(true);
       return { ok: true, address: tailnet.address! };
+    },
+    /**
+     * Phones off: once no machine is linked and no machine offer is open, the
+     * tailnet door has nothing to serve, so this Inbox's mapping comes down and
+     * the switch is cleared (after the last unlink, or an offer nobody used).
+     * Phones on: the person's own switch decides, so nothing changes.
+     */
+    closeTailnetIfUnused: () => {
+      if (phonesOn || openMachineOffers().length > 0 || context.machines?.()?.hasLinks()) return;
+      if (tailnet.address === null && !doorServer && !context.registry().tailnet) return;
+      if (unpublish() === "failed") return;
+      tailnet.on = false;
+      tailnet.error = null;
+      saveSwitch(false);
     },
     computerName: () => computer().name,
   };

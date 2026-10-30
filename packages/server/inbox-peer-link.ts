@@ -181,7 +181,23 @@ export class PeerLink {
     const abort = new AbortController();
     this.stream = abort;
     const headers = this.auth(this.cursor === null ? {} : { "Last-Event-ID": String(this.cursor) });
-    const response = await this.options.transport.events(headers, this.cursor === null ? "" : `?cursor=${this.cursor}`, abort.signal);
+    // A machine that sleeps between its health answer and this one must not hang the line until TCP gives up:
+    // the stream's headers get the same deadline as its silence.
+    let headersLate = false;
+    const headersTimer = setTimeout(() => {
+      headersLate = true;
+      abort.abort();
+    }, this.t.silenceMs);
+    let response: Response;
+    try {
+      response = await this.options.transport.events(headers, this.cursor === null ? "" : `?cursor=${this.cursor}`, abort.signal);
+    } catch (error) {
+      if (this.stream === abort) this.stream = null;
+      if (headersLate) return `the event stream did not answer for ${Math.round(this.t.silenceMs / 1000)} s`;
+      throw error;
+    } finally {
+      clearTimeout(headersTimer);
+    }
     if (response.status === 401) {
       const refused = (await response.json().catch(() => ({}))) as Json;
       if (refused.code === "device_revoked" || refused.code === "device_token_invalid") return "revoked";

@@ -4,12 +4,12 @@
  * The end-to-end runs with real Inboxes are in inbox-machines.test.ts.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxMessage } from "@plannotator/core/inbox-types";
 import { doorRouteNames, doorWriteRoutes } from "./inbox-devices";
-import { classifyAnswer, DOOR_WRITES, InboxOutbox, OUTBOX_KEEP_SETTLED_MS, OUTBOX_MAX_SERVER_ERRORS, replyIsStale, type OutboxAnswer, type OutboxEntry } from "./inbox-outbox";
+import { classifyAnswer, DOOR_WRITES, doorWriteKind, InboxOutbox, OUTBOX_KEEP_SETTLED_MS, OUTBOX_MAX_SERVER_ERRORS, replyIsStale, type OutboxAnswer, type OutboxEntry } from "./inbox-outbox";
 
 const B = "ibx_01K00000000000000000000000";
 const C = "ibx_01K00000000000000000000001";
@@ -225,7 +225,7 @@ describe("rule 12: Sending until the owner answers", () => {
     const states: string[] = [];
     outbox.onChange(({ entry }) => states.push(entry.state));
     outbox.submit(B, "messages/m1/reply", reply("k1"));
-    await outbox.drain(B, owner({ status: 503, body: {} }).send);
+    await outbox.drain(B, owner({ status: 500, body: {} }).send);
     await outbox.drain(B, owner(ok).send);
     expect(states).toEqual(["queued", "sending", "sending", "delivered"]);
   });
@@ -270,6 +270,17 @@ describe("rule 17 and the 5xx bound", () => {
     expect(outbox.get("poison")!.notice!.kind).toBe("may_have_been_delivered");
     expect(outbox.get("next")!.state).toBe("delivered");
   });
+
+  test("a proxy's 502, 503 or 504 (the owner never got it) is not counted: such a write is never parked as maybe delivered", async () => {
+    const outbox = InboxOutbox.open(dataDir());
+    outbox.submit(B, "messages/m1/reply", reply("k1"));
+    for (const status of [502, 503, 504, 502, 503, 504, 502]) {
+      expect(await outbox.drain(B, owner({ status, body: {} }).send)).toBe("unreachable");
+    }
+    expect(outbox.get("k1")).toMatchObject({ state: "sending", errors: 0, notice: null });
+    expect(await outbox.drain(B, owner(ok).send)).toBe("empty");
+    expect(outbox.get("k1")!.state).toBe("delivered");
+  });
 });
 
 describe("rule 11: late words are refused by what the person saw", () => {
@@ -306,6 +317,25 @@ describe("rule 8: every door write is classified, and only small JSON is held", 
       .filter((route) => route.raw)
       .map((route) => `POST ${route.route.replace(/^\^|\$$/g, "")}`);
     expect(files.sort()).toEqual(raw.sort());
+  });
+
+  test("the forward holds or passes a write by its route in this table, never by its Content-Type; an unclassified route has no kind", () => {
+    expect(doorWriteKind("messages/msg_1/reply")).toBe("append");
+    expect(doorWriteKind("messages")).toBe("append");
+    expect(doorWriteKind("threads/msg_1/read")).toBe("set");
+    expect(doorWriteKind("messages/msg_1/actions/a-0123abcd-2")).toBe("set");
+    expect(doorWriteKind("messages/msg_1/guide/annotations")).toBe("set");
+    expect(doorWriteKind("uploads")).toBe("file");
+    expect(doorWriteKind("markups")).toBe("file");
+    expect(doorWriteKind("messages/msg_1/reply/extra")).toBeNull();
+    expect(doorWriteKind("messages/msg_1/actions/not-an-action")).toBeNull();
+    expect(doorWriteKind("settings")).toBeNull();
+  });
+
+  test("an Inbox that never holds a write keeps no outbox folder", () => {
+    const dir = dataDir();
+    InboxOutbox.open(dir);
+    expect(existsSync(join(dir, "inbox", "outbox"))).toBe(false);
   });
 
   test("a body too large to hold is refused before anything is written", () => {

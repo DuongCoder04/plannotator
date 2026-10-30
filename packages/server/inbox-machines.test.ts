@@ -26,9 +26,13 @@
  *     contact.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import type { TailscaleRunner } from "@plannotator/shared/tailscale";
+import { startInboxServer } from "./inbox";
+import { createInboxDevices } from "./inbox-devices";
 import {
   createInboxWorld,
   destroyInboxWorld,
@@ -120,8 +124,13 @@ async function agentOn(m: Machine) {
 
 const QUESTION = (n: number) => [`Refund webhook, question ${n}.`, "", ":::question", `Retry the 409, case ${n}?`, "", "- [ ] Retry", "- [ ] Alert", ":::"].join("\n");
 
-/** Read the merged event stream of a machine until `want` is seen. */
-async function streamUntil(m: Machine, want: (event: string, data: Json) => boolean, timeoutMs = 15_000): Promise<{ event: string; data: Json }[]> {
+/** Read the merged event stream of a machine until `want` is seen. `subscribed`: called at its first `machines` snapshot (sent once the stream listens). */
+async function streamUntil(
+  m: Machine,
+  want: (event: string, data: Json) => boolean,
+  timeoutMs = 15_000,
+  subscribed: () => void = () => {},
+): Promise<{ event: string; data: Json }[]> {
   const abort = new AbortController();
   const seen: { event: string; data: Json }[] = [];
   const timer = setTimeout(() => abort.abort(), timeoutMs);
@@ -142,6 +151,7 @@ async function streamUntil(m: Machine, want: (event: string, data: Json) => bool
         // Other machines' frames never carry an id: the local seq and Last-Event-ID stay this Inbox's.
         if (event === "machine" || event === "machines" || event === "outbox") expect(parsed.id).toBe(false);
         seen.push(parsed);
+        if (event === "machines") subscribed();
         if (want(event, parsed.data)) return seen;
       }
     }
@@ -161,7 +171,7 @@ describe("linked machines, on three real Inboxes", () => {
   let B: Machine;
   let C: Machine;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     stubs = stubBuiltHtml();
     for (const name of ["a", "b", "c"]) {
       const w = createInboxWorld(`plannotator-machines-${name}-`, `machine-${name}`, "machines");
@@ -171,10 +181,17 @@ describe("linked machines, on three real Inboxes", () => {
       chmodSync(join(w.bin, "tailscale"), 0o755);
       const m: Machine = { w, name, id: "", calls };
       start(m);
-      m.id = linksFile(m).self.id;
       machines.push(m);
     }
     [A, B, C] = machines as [Machine, Machine, Machine];
+    for (const m of machines) {
+      // An Inbox that never linked keeps no machines file and no outbox folder.
+      expect(existsSync(join(m.w.dataDir, "inbox", "machines.json"))).toBe(false);
+      expect(existsSync(join(m.w.dataDir, "inbox", "outbox"))).toBe(false);
+    }
+    for (const m of machines) m.id = (await getJson(m, "/api/inbox/health")).inbox_id as string;
+    // Never linked, Phones off: any device request is the unknown route it always was.
+    expect((await fetch(`${base(A)}/api/inbox/device/health`, { headers: { Authorization: "Bearer tok_x" } })).status).toBe(404);
   });
 
   afterAll(async () => {
@@ -233,8 +250,15 @@ describe("linked machines, on three real Inboxes", () => {
     try {
       // A's merged stream (opened first, as a window holds it) raises B's question as a live record of B's.
       let sent!: { thread_id: string; message_id: string };
-      const watching = streamUntil(A, (event, data) => event === "machine" && data.machine === B.id && data.live === true && data.record?.message?.id === sent?.message_id);
-      await Bun.sleep(300);
+      let listening!: () => void;
+      const subscribed = new Promise<void>((resolve) => (listening = resolve));
+      const watching = streamUntil(
+        A,
+        (event, data) => event === "machine" && data.machine === B.id && data.live === true && data.record?.message?.id === sent?.message_id,
+        15_000,
+        listening,
+      );
+      await subscribed;
       sent = await agent.send(QUESTION(1), { thread: "case-1" });
       const waiting = agent.wait(sent.thread_id, 30);
       const frames = await watching;
@@ -270,6 +294,37 @@ describe("linked machines, on three real Inboxes", () => {
       expect(((await again.json()) as Json).reply.id).toBe(reply.reply.id);
       const thread = await getJson(B, `/api/inbox/threads/${sent.thread_id}`);
       expect(thread.thread.messages.filter((m: Json) => m.author.kind === "person")).toHaveLength(1);
+
+      // An SVG on B, opened from A: the forward keeps B's sandbox, so its script never runs on A's origin.
+      const svg = join(B.w.project, "diagram.svg");
+      writeFileSync(svg, '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><script>parent.postMessage("ran","*")</script><rect width="4" height="4"/></svg>');
+      const drawn = await agent.send("The diagram.", { thread: "case-1", attachments: [svg] });
+      const withFile = await getJson(A, `/api/inbox/m/${B.id}/threads/${drawn.thread_id}`);
+      const attachment = (withFile.thread.messages as Json[]).find((m) => m.id === drawn.message_id)!.attachments[0] as Json;
+      const image = await fetch(`${base(A)}/api/inbox/m/${B.id}/attachments/${attachment.id}/image`);
+      expect(image.status).toBe(200);
+      expect(image.headers.get("content-type")).toContain("image/svg+xml");
+      expect(image.headers.get("content-security-policy")).toStartWith("sandbox");
+      expect(image.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+      expect(image.headers.get("x-content-type-options")).toBe("nosniff");
+      const download = await fetch(`${base(A)}/api/inbox/m/${B.id}/attachments/${attachment.id}/download`);
+      expect(download.status).toBe(200);
+      expect(download.headers.get("content-security-policy")).toStartWith("sandbox");
+      await download.arrayBuffer();
+
+      // A file sent to B from A's window: never held, streamed through by its route; A's page session is checked here, never sent on.
+      const { serverSession } = await getJson(A, "/api/inbox/health");
+      const upload = (session: string) =>
+        fetch(`${base(A)}/api/inbox/m/${B.id}/uploads?name=notes.txt&idempotency_key=window-upload-${session.slice(0, 4)}&serverSession=${session}`, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain", Origin: base(A) },
+          body: "notes for B",
+        });
+      expect((await upload("0".repeat(32))).status).toBe(409);
+      const uploaded = await upload(serverSession);
+      expect(uploaded.status).toBe(200);
+      expect(uploaded.headers.get("x-plannotator-outbox")).toBeNull();
+      expect(((await uploaded.json()) as Json).upload).toBeDefined();
     } finally {
       await agent.client.close().catch(() => {});
     }
@@ -363,6 +418,19 @@ describe("linked machines, on three real Inboxes", () => {
       // A reply with no seen_through_seq is not held at all.
       const blind = await windowPost(A, `/api/inbox/m/${B.id}/messages/${sent.message_id}/reply`, { idempotency_key: "window-blind", words: "x" });
       expect(blind.status).toBe(422);
+      // The route decides, never the Content-Type: a text/plain reply still meets rule 11 and goes through the outbox.
+      const serverSession = (await getJson(A, "/api/inbox/health")).serverSession as string;
+      const plain = (body: Json) =>
+        fetch(`${base(A)}/api/inbox/m/${B.id}/messages/${sent.message_id}/reply`, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain", Origin: base(A) },
+          body: JSON.stringify({ serverSession, ...body }),
+        });
+      expect((await plain({ idempotency_key: "window-plain-blind", words: "x" })).status).toBe(422);
+      const plainLate = await plain({ idempotency_key: "window-plain-late", words: "Retry.", seen_through_seq: opened.cursor });
+      expect(plainLate.status).toBe(409);
+      expect(plainLate.headers.get("x-plannotator-outbox")).toBe("refused");
+      expect(((await plainLate.json()) as Json).code).toBe("thread_moved_on");
       const after = (await getJson(B, `/api/inbox/threads/${sent.thread_id}`)).thread.messages as Json[];
       expect(after.filter((m) => m.author.kind === "person"), JSON.stringify(after.map((m) => [m.author.kind, m.body.slice(0, 40)]))).toHaveLength(0);
     } finally {
@@ -425,6 +493,10 @@ describe("linked machines, on three real Inboxes", () => {
   test("6. Unlink removes both sides and revokes both tokens; a held write becomes a notice; a sleeping machine cleans up at its next contact", async () => {
     const tokenAB = linksFile(A).links.find((l: Json) => l.id === B.id).token as string;
     const tokenBA = linksFile(B).links.find((l: Json) => l.id === A.id).token as string;
+    // While a machine links here, a token this door does not know (a machine that reinstalled) is told to re-pair, not 404.
+    const stranger = await fetch(`${base(A)}/api/inbox/device/health`, { headers: { Authorization: "Bearer tok_from_before_a_reinstall" } });
+    expect(stranger.status).toBe(401);
+    expect(((await stranger.json()) as Json).code).toBe("device_token_invalid");
     // Both up: B unlinks C, and C hears it at once.
     const both = cli(B, "unlink", C.id);
     expect(both.code).toBe(0);
@@ -463,4 +535,143 @@ describe("linked machines, on three real Inboxes", () => {
       expect(((await answer.json()) as Json).code).toBe("device_revoked");
     }
   }, 240_000);
+});
+
+/** Tailscale's serve config, kept by a scripted CLI through the seam the Inbox runs the real one with (as inbox-devices.test.ts does). */
+function scriptedTailscale() {
+  const serve = new Map<number, string>();
+  const calls: string[][] = [];
+  const run: TailscaleRunner = (args) => {
+    calls.push(args);
+    const ok = (stdout = "") => ({ status: 0, stdout, stderr: "" });
+    if (args[1] === "status") {
+      if (serve.size === 0) return ok("{}");
+      const TCP = Object.fromEntries([...serve.keys()].map((p) => [String(p), { HTTPS: true }]));
+      const Web = Object.fromEntries([...serve].map(([p, proxy]) => [`laptop.tail0000.ts.net:${p}`, { Handlers: { "/": { Proxy: proxy } } }]));
+      return ok(JSON.stringify({ TCP, Web }));
+    }
+    const httpsPort = Number(/--https=(\d+)/.exec(args.join(" "))![1]);
+    if (args.includes("off")) {
+      serve.delete(httpsPort);
+      return ok();
+    }
+    serve.set(httpsPort, args.at(-1)!);
+    return ok(`Available within your tailnet:\n\nhttps://laptop.tail0000.ts.net:${httpsPort}/\n|-- proxy ${args.at(-1)}\n`);
+  };
+  /** The calls that published or took down the door's port 8443, in order. */
+  const doorCalls = () => calls.filter((args) => args.includes("--https=8443")).map((args) => (args.includes("off") ? "off" : "on"));
+  return { serve, run, doorCalls };
+}
+
+describe("the tailnet door with Phones off, in process", () => {
+  const roots: string[] = [];
+  afterAll(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+  const OTHER = "ibx_01K00000000000000000000000";
+  const closedPort = () => {
+    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+    const port = probe.port as number;
+    probe.stop(true);
+    return port;
+  };
+  const scratch = (prefix: string) => {
+    const root = mkdtempSync(join(tmpdir(), prefix));
+    roots.push(root);
+    return join(root, "data");
+  };
+  const inboxJson = (dataDir: string) => JSON.parse(readFileSync(join(dataDir, "inbox", "inbox.json"), "utf8")) as Json;
+
+  test("published only while a machine is linked: never for a saved switch alone, at start with a link, down after the last unlink", async () => {
+    const dataDir = scratch("plannotator-machines-door-");
+    const tailscale = scriptedTailscale();
+
+    // A saved switch and no link: nothing is published.
+    let inbox = await startInboxServer({ dataDir, binaryPath: null, phones: false, tailscale: tailscale.run });
+    inbox.stop();
+    writeFileSync(join(dataDir, "inbox", "inbox.json"), JSON.stringify({ ...inboxJson(dataDir), tailnet: { https_port: 8443, door_port: closedPort() } }));
+    inbox = await startInboxServer({ dataDir, binaryPath: null, phones: false, tailscale: tailscale.run });
+    expect(tailscale.doorCalls()).toEqual([]);
+    expect(existsSync(join(dataDir, "inbox", "machines.json"))).toBe(false);
+    inbox.stop();
+
+    // A linked machine: the door is published at start.
+    const link = { id: OTHER, name: "Mini", token: "tok_x", transport: { kind: "tailnet", url: `http://127.0.0.1:${closedPort()}` }, device_id: null, linked_at: "2026-10-30T00:00:00Z" };
+    writeFileSync(join(dataDir, "inbox", "machines.json"), JSON.stringify({ v: 1, self: { id: "ibx_01K00000000000000000000001" }, links: [link] }), { mode: 0o600 });
+    inbox = await startInboxServer({ dataDir, binaryPath: null, phones: false, tailscale: tailscale.run });
+    try {
+      expect(tailscale.doorCalls()).toEqual(["on"]);
+      const doorUrl = tailscale.serve.get(8443)!;
+      expect(doorUrl).not.toBe(`http://127.0.0.1:${inbox.port}`);
+      // Through the tailnet's listener, a token this door does not know is told so (a reinstalled machine re-pairs) ...
+      const unknown = await fetch(`${doorUrl}/api/inbox/device/health`, { headers: { Authorization: "Bearer tok_from_before_a_reinstall" } });
+      expect(unknown.status).toBe(401);
+      expect(((await unknown.json()) as Json).code).toBe("device_token_invalid");
+      // ... while this computer's own port, with no machine paired here, stays the unknown route, Origin header or not.
+      for (const headers of [{ Authorization: "Bearer tok_x" }, { Authorization: "Bearer tok_x", Origin: "https://evil.example" }]) {
+        expect((await fetch(`http://127.0.0.1:${inbox.port}/api/inbox/device/health`, { headers })).status).toBe(404);
+      }
+
+      // The last unlink: the door comes down and the switch is cleared.
+      const { serverSession } = (await (await fetch(`http://127.0.0.1:${inbox.port}/api/inbox/health`)).json()) as Json;
+      const unlinked = await fetch(`http://127.0.0.1:${inbox.port}/api/inbox/machines/${OTHER}/unlink`, { method: "POST", body: JSON.stringify({ serverSession }) });
+      expect(unlinked.status).toBe(200);
+      expect(tailscale.doorCalls()).toEqual(["on", "off"]);
+      expect(tailscale.serve.has(8443)).toBe(false);
+      expect(inboxJson(dataDir).tailnet).toBeUndefined();
+      expect(await fetch(`${doorUrl}/api/inbox/device/health`).then(() => "open", () => "closed")).toBe("closed");
+    } finally {
+      inbox.stop();
+    }
+  }, 60_000);
+
+  test("with Phones on, a machine never pairs (by code or secret) or connects over the Wi-Fi listener: the tailnet only", async () => {
+    const devices = createInboxDevices({
+      dataDir: scratch("plannotator-machines-wifi-"),
+      serverSession: "0".repeat(32),
+      port: () => 1,
+      registry: () => ({ v: 1, pid: process.pid, port: 1, url: "", version: "dev", token: "t".repeat(64), serverSession: "0".repeat(32), startedAt: "" }),
+      readBody: async (req) => (await req.json()) as Record<string, unknown>,
+      dispatch: async () => Response.json({ ok: true }),
+      phones: true,
+    });
+    const offer = devices.machineDoor.openMachineOffer();
+    const pairUrl = new URL("http://127.0.0.1/api/inbox/device/pair");
+    const pair = (body: Json, via: "wifi" | "tailnet") => devices.door(new Request(pairUrl, { method: "POST", body: JSON.stringify({ name: "Mini", platform: "machine", ...body }) }), pairUrl, via);
+    for (const body of [{ code: offer.code }, { secret: offer.secret }]) {
+      const refused = (await pair(body, "wifi"))!;
+      expect(refused.status).toBe(403);
+      expect(((await refused.json()) as Json).code).toBe("machine_not_accepted_here");
+    }
+    const paired = (await pair({ secret: offer.secret }, "tailnet"))!;
+    expect(paired.status).toBe(201);
+    const { token } = (await paired.json()) as Json;
+    const healthUrl = new URL("http://127.0.0.1/api/inbox/device/health");
+    const asked = (via: "wifi" | "tailnet") => devices.door(new Request(healthUrl, { headers: { Authorization: `Bearer ${token}` } }), healthUrl, via);
+    expect((await asked("wifi"))!.status).toBe(403);
+    expect((await asked("tailnet"))!.status).toBe(200);
+  });
+
+  test("link <code> publishes this side's door itself, and takes it down again when the link fails", async () => {
+    const dataDir = scratch("plannotator-machines-link-door-");
+    const tailscale = scriptedTailscale();
+    const inbox = await startInboxServer({ dataDir, binaryPath: null, phones: false, tailscale: tailscale.run });
+    try {
+      const base = `http://127.0.0.1:${inbox.port}`;
+      const { serverSession } = (await (await fetch(`${base}/api/inbox/health`)).json()) as Json;
+      const code = `plannotator://link?v=1&id=${OTHER}&name=Mini&secret=s3cr3t&code=123456`;
+      const linked = await fetch(`${base}/api/inbox/machines/link`, { method: "POST", body: JSON.stringify({ serverSession, link: code, address: `http://127.0.0.1:${closedPort()}` }) });
+      expect(((await linked.json()) as Json).code).toBe("machine_unreachable");
+      expect(linked.status).toBe(502);
+      // Published for the way back before the other machine was asked, then down again: nothing came of it.
+      expect(tailscale.doorCalls()).toEqual(["on", "off"]);
+      expect(inboxJson(dataDir).tailnet).toBeUndefined();
+      // An address off the tailnet is never asked at all: no secret leaves for it.
+      const elsewhere = await fetch(`${base}/api/inbox/machines/link`, { method: "POST", body: JSON.stringify({ serverSession, link: code, address: "https://evil.example:8443" }) });
+      expect(elsewhere.status).toBe(422);
+      expect(tailscale.doorCalls()).toEqual(["on", "off"]);
+    } finally {
+      inbox.stop();
+    }
+  }, 60_000);
 });

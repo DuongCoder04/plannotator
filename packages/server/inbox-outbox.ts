@@ -166,6 +166,24 @@ export const DOOR_WRITES: Readonly<Record<string, "append" | "set" | "file">> = 
   "POST unlink": "set",
 };
 
+const DOOR_WRITE_ROUTES = Object.entries(DOOR_WRITES).map(([name, kind]) => ({
+  kind,
+  route: new RegExp(`^${name.slice("POST ".length).replaceAll(":id", "[^/]+")}$`),
+}));
+
+/**
+ * The forward's one decision, by route and never by Content-Type: a `file`
+ * goes straight through while the machine is online; every other write is
+ * held in the outbox. Null: no door write has that route, so it is never
+ * forwarded (a write rule 8 has not classified cannot reach another machine).
+ */
+export function doorWriteKind(route: string): "append" | "set" | "file" | null {
+  return DOOR_WRITE_ROUTES.find((entry) => entry.route.test(route))?.kind ?? null;
+}
+
+/** Statuses a proxy in front of the owner answers when the owner itself never got the request (`tailscale serve` with the Inbox down). */
+const GATEWAY_STATUSES = new Set([502, 503, 504]);
+
 const MACHINE_FILE = /^ibx_[0-9A-HJKMNP-TV-Z]{26}$/;
 
 function isEntry(value: unknown): value is OutboxEntry {
@@ -189,20 +207,15 @@ export class InboxOutbox {
   private readonly again = new Set<string>();
   private readonly listeners = new Set<(change: OutboxChange) => void>();
   private readonly waiters = new Map<string, Set<() => void>>();
+  /** The folder is made with the first held write: an Inbox that never links keeps none. */
+  private dirMade = false;
 
   private constructor(
     dataDir: string,
     private readonly now: () => Date,
   ) {
     this.dir = join(inboxDir(dataDir), INBOX_OUTBOX_DIR);
-    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    let names: string[] = [];
-    try {
-      names = readdirSync(this.dir);
-    } catch {
-      names = [];
-    }
-    for (const name of names) {
+    for (const name of safeReaddir(this.dir)) {
       if (!name.endsWith(".jsonl")) continue;
       const machine = name.slice(0, -".jsonl".length);
       if (!MACHINE_FILE.test(machine)) continue;
@@ -228,6 +241,10 @@ export class InboxOutbox {
 
   /** Write the entry's new snapshot, then tell the listeners. The line is on disk before anyone hears of it. */
   private save(entry: OutboxEntry): OutboxEntry {
+    if (!this.dirMade) {
+      mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+      this.dirMade = true;
+    }
     this.file(entry.machine).append(entry);
     this.entries.set(entry.key, entry);
     for (const listener of this.listeners) listener({ machine: entry.machine, entry });
@@ -399,7 +416,8 @@ export class InboxOutbox {
         this.dropMachine(machine);
         return "revoked";
       }
-      if (answer === null) return "unreachable";
+      // No answer, or a proxy's answer for an owner that never got the request: not counted toward parking.
+      if (answer === null || GATEWAY_STATUSES.has(answer.status)) return "unreachable";
       // A 5xx: counted, and parked once it keeps happening, so the queue moves on.
       const errors = current.errors + 1;
       if (errors >= OUTBOX_MAX_SERVER_ERRORS) {

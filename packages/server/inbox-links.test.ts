@@ -2,7 +2,7 @@
  * The link records (inbox-links.ts): the one place linking state lives.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InboxLinks, parseLinkOffer, type InboxLinkRecord } from "./inbox-links";
@@ -27,11 +27,27 @@ const record = (id: string, name: string, url = "https://mini.tail1234.ts.net:84
 const OTHER = "ibx_01K00000000000000000000000";
 
 describe("machines.json", () => {
-  test("this Inbox's id is made once and kept across restarts", () => {
+  test("an Inbox that never links writes nothing; once an offer keeps its id, the id survives restarts", () => {
     const dir = dataDir();
-    const first = InboxLinks.open(dir).selfId;
-    expect(first).toMatch(/^ibx_[0-9A-HJKMNP-TV-Z]{26}$/);
-    expect(InboxLinks.open(dir).selfId).toBe(first);
+    const links = InboxLinks.open(dir);
+    expect(links.selfId).toMatch(/^ibx_[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(existsSync(join(dir, "inbox", "machines.json"))).toBe(false);
+    links.keepSelf();
+    expect(InboxLinks.open(dir).selfId).toBe(links.selfId);
+  });
+
+  test("an unreadable machines.json is moved aside, never written over", () => {
+    const dir = dataDir();
+    const links = InboxLinks.open(dir);
+    links.put(record(OTHER, "Mini"));
+    const file = join(dir, "inbox", "machines.json");
+    writeFileSync(file, '{"v":1,"self":{"id":"ibx_01K', { mode: 0o600 });
+    const reopened = InboxLinks.open(dir);
+    expect(reopened.list()).toHaveLength(0);
+    const aside = readdirSync(join(dir, "inbox")).filter((name) => name.startsWith("machines.json.unreadable-"));
+    expect(aside).toHaveLength(1);
+    expect(readFileSync(join(dir, "inbox", aside[0]!), "utf8")).toBe('{"v":1,"self":{"id":"ibx_01K');
+    expect(existsSync(file)).toBe(false);
   });
 
   test("rule 19: a second link to the same Inbox id replaces the first (re-pairing, a new address)", () => {

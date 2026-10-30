@@ -11,6 +11,11 @@
  * gave this Inbox, the transport that reaches it, and the device id that
  * machine holds on THIS Inbox's door (the way back; null for a one-way link).
  *
+ * Nothing is written until the first offer or link: an Inbox that never
+ * links keeps no file (its id lives in memory until then). A file that cannot
+ * be read is moved aside (`machines.json.unreadable-<time>`), never written
+ * over, so its links and tokens can still be recovered by hand.
+ *
  * Written whole to a temp file, then renamed over the old one. A link to an
  * id already linked replaces it (re-pairing); a link to this Inbox's own id is
  * refused (a data folder copied to another computer).
@@ -20,7 +25,7 @@
  * the one-time offer's secret and six digits.
  */
 
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkInboxThreadName, inboxId, isInboxId } from "@plannotator/core/inbox-types";
 import { InboxError, inboxDir } from "@plannotator/shared/inbox/schema";
@@ -62,21 +67,29 @@ function isLink(value: unknown): value is InboxLinkRecord {
 
 export class InboxLinks {
   private readonly path: string;
+  private readonly dir: string;
   private file: MachinesFile;
+  private saved: boolean;
 
   private constructor(dataDir: string) {
-    const dir = inboxDir(dataDir);
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    this.path = join(dir, INBOX_MACHINES_FILE);
+    this.dir = inboxDir(dataDir);
+    this.path = join(this.dir, INBOX_MACHINES_FILE);
     let read: Partial<MachinesFile> | null = null;
-    try {
-      read = JSON.parse(readFileSync(this.path, "utf8")) as Partial<MachinesFile>;
-    } catch {
-      read = null;
+    if (existsSync(this.path)) {
+      try {
+        read = JSON.parse(readFileSync(this.path, "utf8")) as Partial<MachinesFile>;
+      } catch {
+        read = null;
+      }
+      if (!read || !isInboxId("ibx", read.self?.id)) {
+        const aside = `${this.path}.unreadable-${Date.now()}`;
+        renameSync(this.path, aside);
+        console.error(`Plannotator Inbox: ${this.path} could not be read; moved to ${aside}. Machines need linking again.`);
+        read = null;
+      }
     }
-    const self = read && isInboxId("ibx", read.self?.id) ? read.self!.id : null;
-    this.file = { v: 1, self: { id: self ?? inboxId("ibx") }, links: Array.isArray(read?.links) ? read!.links!.filter(isLink) : [] };
-    if (!self) this.write();
+    this.saved = read !== null;
+    this.file = { v: 1, self: { id: read?.self?.id ?? inboxId("ibx") }, links: Array.isArray(read?.links) ? read!.links!.filter(isLink) : [] };
   }
 
   static open(dataDir: string): InboxLinks {
@@ -85,6 +98,11 @@ export class InboxLinks {
 
   get selfId(): string {
     return this.file.self.id;
+  }
+
+  /** Keep this Inbox's id from now on: an offer carries it, so it must outlive a restart. */
+  keepSelf(): void {
+    if (!this.saved) this.write();
   }
 
   list(): InboxLinkRecord[] {
@@ -113,10 +131,12 @@ export class InboxLinks {
   }
 
   private write(): void {
+    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     const temp = `${this.path}.${process.pid}.tmp`;
     writeFileSync(temp, `${JSON.stringify(this.file, null, 2)}\n`, { mode: 0o600 });
     chmodSync(temp, 0o600);
     renameSync(temp, this.path);
+    this.saved = true;
   }
 }
 

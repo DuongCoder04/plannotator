@@ -28,6 +28,8 @@ interface DoorScript {
   records?: (since: number | null) => number[];
   /** Keep the stream open with heartbeats (default), or go silent after hello. */
   silent?: boolean;
+  /** The stream's answer never comes (the machine slept between health and events). */
+  eventsHang?: boolean;
   threads?: () => Promise<Response> | Response;
   post?: (route: string, body: any) => Response;
 }
@@ -51,6 +53,7 @@ function door(script: DoorScript) {
         stats.events += 1;
         const since = req.headers.get("last-event-id");
         stats.lastEventId.push(since);
+        if (script.eventsHang) return new Promise<Response>(() => {});
         const encoder = new TextEncoder();
         let timer: ReturnType<typeof setInterval> | null = null;
         const body = new ReadableStream<Uint8Array>({
@@ -114,6 +117,15 @@ describe("the line", () => {
     await until("online", () => peer.state === "online");
     await until("offline after the silence", () => peer.state === "offline");
     expect(peer.reason).toContain("heartbeat");
+    await until("redialled", () => d.stats.events >= 2);
+  });
+
+  test("a stream whose answer never comes is a dead line too, and it redials (no hang until TCP gives up)", async () => {
+    const d = door({ eventsHang: true });
+    const { peer } = link(d.url);
+    peer.start();
+    await until("offline after the stream's deadline", () => peer.state === "offline");
+    expect(peer.reason).toContain("did not answer");
     await until("redialled", () => d.stats.events >= 2);
   });
 
@@ -228,14 +240,27 @@ describe("the outbox goes when the machine is there (rule 15)", () => {
 });
 
 describe("the tailnet transport's address", () => {
-  test("https anywhere, plain http only to this computer: a token never crosses a network unencrypted", () => {
-    expect(checkTailnetAddress("mini.tail1234.ts.net:8443")).toBe("https://mini.tail1234.ts.net:8443");
-    expect(checkTailnetAddress("https://mini.tail1234.ts.net:8443/")).toBe("https://mini.tail1234.ts.net:8443");
-    expect(checkTailnetAddress("http://127.0.0.1:4100")).toBe("http://127.0.0.1:4100");
-    expect(checkTailnetAddress("http://mini.tail1234.ts.net:8443")).toBeNull();
-    expect(checkTailnetAddress("http://100.101.102.103:8443")).toBeNull();
-    expect(checkTailnetAddress("https://user:pw@mini.ts.net")).toBeNull();
-    expect(checkTailnetAddress("https://mini.ts.net/api")).toBeNull();
-    expect(checkTailnetAddress("")).toBeNull();
+  test("only a MagicDNS name over https: a code, --address or link-back can never send a secret or token off the tailnet", () => {
+    const released = {};
+    expect(checkTailnetAddress("mini.tail1234.ts.net:8443", released)).toBe("https://mini.tail1234.ts.net:8443");
+    expect(checkTailnetAddress("https://mini.tail1234.ts.net:8443/", released)).toBe("https://mini.tail1234.ts.net:8443");
+    for (const elsewhere of [
+      "https://evil.example:8443",
+      "https://mini.tail1234.ts.net.evil.example",
+      "https://ts.net",
+      "https://100.101.102.103:8443",
+      "https://localhost:8443",
+      "https://[::1]:8443",
+      "http://mini.tail1234.ts.net:8443",
+      "http://127.0.0.1:4100",
+      "https://user:pw@mini.tail1234.ts.net",
+      "https://mini.tail1234.ts.net/api",
+      "",
+    ]) {
+      expect(checkTailnetAddress(elsewhere, released)).toBeNull();
+    }
+    // Two Inboxes on one computer stand in for two machines only inside a test sandbox.
+    expect(checkTailnetAddress("http://127.0.0.1:4100", { PLANNOTATOR_TEST_SANDBOX: "/tmp/x" })).toBe("http://127.0.0.1:4100");
+    expect(checkTailnetAddress("http://192.168.1.4:4100", { PLANNOTATOR_TEST_SANDBOX: "/tmp/x" })).toBeNull();
   });
 });

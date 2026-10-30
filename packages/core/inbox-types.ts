@@ -1482,8 +1482,6 @@ export interface InboxHealth {
   inbox_id?: string;
   /** The machine-link protocol this Inbox speaks (additive; absent: it cannot link). */
   machine_links?: number;
-  /** The device door's routes in words: what this Inbox can serve another machine (additive). */
-  routes?: string[];
 }
 
 /** What an Inbox window reports about its browser's notification permission for its own origin. */

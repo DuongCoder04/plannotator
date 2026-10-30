@@ -15,8 +15,10 @@
  *    (the door refuses that parameter to a machine, so two Inboxes linked
  *    both ways can never echo each other's threads);
  *  - the generic forward `/api/inbox/m/<machine>/<door route>`: reads pass
- *    through, keyed JSON writes go through the outbox, files go straight
- *    through while the machine is online;
+ *    through with the far door's own safety headers (and `sandbox` when it
+ *    sent none); a write is held or passed by its route in rule 8's table
+ *    (`doorWriteKind`), never by its Content-Type: files go straight through
+ *    while the machine is online, every other write through the outbox;
  *  - the window's routes (`/api/inbox/machines…`, `/api/inbox/outbox…`), the
  *    CLI's control routes, and the two door routes only a machine may call
  *    (`link-back`, `unlink`).
@@ -27,7 +29,7 @@ import { checkServerSession, INBOX_SERVER_SESSION_MISMATCH_ERROR, serverSessionM
 import { InboxError } from "@plannotator/shared/inbox/schema";
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { buildLinkOffer, InboxLinks, parseLinkOffer, type InboxLinkRecord } from "./inbox-links";
-import { InboxOutbox, type OutboxEntry } from "./inbox-outbox";
+import { doorWriteKind, InboxOutbox, type OutboxEntry } from "./inbox-outbox";
 import { MACHINE_LINKS_PROTOCOL, PeerLink, type PeerLinkTimings, type PeerRecord } from "./inbox-peer-link";
 import { openTransport, type InboxTransportSpec } from "./inbox-transport";
 import { checkTailnetAddress } from "./inbox-transport-tailnet";
@@ -46,12 +48,16 @@ export interface InboxMachineDoor {
   openMachineOffer: () => { secret: string; code: string; expires_at: string };
   /** The device a machine offer was redeemed for, once it was. */
   offerDevice: (secret: string) => string | null;
+  /** Close a machine offer that will not be used; the device it made, if one was. */
+  closeMachineOffer: (secret: string) => string | null;
   /** Remove a device from this Inbox's door (its token stops at once). */
   revokeDevice: (deviceId: string) => void;
   /** This Inbox's door on the tailnet (`host:8443`), or null while it is not published. */
   tailnetAddress: () => string | null;
   /** Publish the door on the tailnet now (the tailnet switch's own path). */
   publishTailnet: () => { ok: true; address: string } | { ok: false; message: string };
+  /** Phones off: take the tailnet door down once no machine is linked and no machine offer is open. */
+  closeTailnetIfUnused: () => void;
 }
 
 export interface InboxMachinesContext {
@@ -117,7 +123,34 @@ const FORWARD = /^\/api\/inbox\/m\/(ibx_[0-9A-HJKMNP-TV-Z]{26})\/(.+)$/;
 const REPLY_ROUTE = /^messages\/[^/]+\/reply$/;
 /** Of the window's headers, the forward passes on only these (as the door does). */
 const PASS_REQUEST = ["range", "if-range", "if-none-match"];
-const PASS_RESPONSE = ["content-type", "content-length", "content-range", "accept-ranges", "etag", "cache-control", "content-disposition", "last-modified", "x-content-type-options"];
+/** Of the far door's answer, these: its bytes' description, and its safety headers (an SVG or a page from another machine never runs on this origin). */
+const PASS_RESPONSE = [
+  "content-type",
+  "content-length",
+  "content-range",
+  "accept-ranges",
+  "etag",
+  "cache-control",
+  "content-disposition",
+  "last-modified",
+  "x-content-type-options",
+  "content-security-policy",
+  "cross-origin-resource-policy",
+  "x-image-width",
+  "x-image-height",
+];
+
+/**
+ * The far door's answer as the window gets it, from this Inbox's origin: its
+ * own CSP when it sent one, else `sandbox`, so nothing another machine serves
+ * (an SVG, an HTML asset, an older Inbox's answer) can run script here.
+ */
+function passAnswer(response: Response): Response {
+  const headers = pick(response.headers, PASS_RESPONSE);
+  if (!headers["content-security-policy"]) headers["content-security-policy"] = "sandbox";
+  if (!headers["x-content-type-options"]) headers["x-content-type-options"] = "nosniff";
+  return new Response(response.body, { status: response.status, headers });
+}
 
 function pick(headers: Headers, names: readonly string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -133,6 +166,8 @@ export function createInboxMachines(context: InboxMachinesContext) {
   const outbox = InboxOutbox.open(context.dataDir, context.now);
   const peers = new Map<string, PeerLink>();
   const listeners = new Set<(frame: MachineFrame) => void>();
+  /** An offer that published the door: the door comes down when it expires unused. */
+  let offerTimer: ReturnType<typeof setTimeout> | null = null;
   let lastMachines = "";
   const startedAt = new Date().toISOString();
   const json = context.json;
@@ -219,6 +254,8 @@ export function createInboxMachines(context: InboxMachinesContext) {
     const link = links.remove(id);
     if (link?.device_id) context.door.revokeDevice(link.device_id);
     outbox.dropMachine(id);
+    // The last link gone: with Phones off the tailnet door has nothing left to serve.
+    context.door.closeTailnetIfUnused();
     machinesChanged();
     return link;
   };
@@ -229,9 +266,7 @@ export function createInboxMachines(context: InboxMachinesContext) {
   const doorAnswer = async (response: Response, what: string): Promise<Record<string, any>> => {
     const body = (await response.json().catch(() => ({}))) as Record<string, any>;
     if (!response.ok) {
-      throw new InboxError(typeof body.code === "string" ? body.code : "link_failed", `${what}: ${typeof body.error === "string" ? body.error : `answered ${response.status}`}`, {
-        status: response.status,
-      });
+      throw new InboxError(typeof body.code === "string" ? body.code : "link_failed", `${what}: ${typeof body.error === "string" ? body.error : `answered ${response.status}`}`);
     }
     return body;
   };
@@ -281,6 +316,11 @@ export function createInboxMachines(context: InboxMachinesContext) {
       else tailnetError = published.message;
     }
     const opened = context.door.openMachineOffer();
+    // The code carries this Inbox's id, so the id must outlive a restart from now on.
+    links.keepSelf();
+    if (offerTimer) clearTimeout(offerTimer);
+    offerTimer = setTimeout(() => context.door.closeTailnetIfUnused(), Date.parse(opened.expires_at) - Date.now() + 1_000);
+    offerTimer.unref?.();
     const link = buildLinkOffer({ id: links.selfId, name: context.computerName(), tailnet: address, secret: opened.secret, code: opened.code });
     return { link, code: opened.code, expires_at: opened.expires_at, machine: { id: links.selfId, name: context.computerName() }, tailnet: address, tailnet_error: tailnetError };
   };
@@ -290,8 +330,9 @@ export function createInboxMachines(context: InboxMachinesContext) {
    * machine's code, then hand it a one-time code for this door so it links
    * back (both ways by default). `address` overrides the code's tailnet
    * address; `back` is how the other machine reaches this one (default: this
-   * door's tailnet address). With no way back, the link is refused unless
-   * `one_way` says the person wants it that way.
+   * door's tailnet address, published now when it is not yet: linking both
+   * ways is the person's consent to it). When it cannot be published, the
+   * link is refused unless `one_way` says the person wants it that way.
    */
   const link = async (input: { link?: unknown; address?: unknown; code?: unknown; back?: unknown; one_way?: unknown }) => {
     const parsed = typeof input.link === "string" && input.link.trim() ? parseLinkOffer(input.link) : null;
@@ -307,40 +348,55 @@ export function createInboxMachines(context: InboxMachinesContext) {
     const url = checkTailnetAddress(rawAddress);
     if (!url) throw new InboxError("validation_error", "address: an https address on your tailnet, like mini.tail1234.ts.net:8443.", { field: "address" });
     const oneWay = input.one_way === true;
-    const backRaw = typeof input.back === "string" && input.back.trim() ? input.back : context.door.tailnetAddress();
-    const back = backRaw ? checkTailnetAddress(backRaw) : null;
-    if (backRaw && !back) throw new InboxError("validation_error", "back: an https address on your tailnet for this machine.", { field: "back" });
-    if (!back && !oneWay) {
-      throw new InboxError(
-        "no_way_back",
-        "The other machine has no way to reach this one, so it could not show this machine's threads. Turn on this Inbox's tailnet door (plannotator inbox link --offer --tailscale does it), or pass --back <address>, or --one-way.",
-      );
+    const givenBack = typeof input.back === "string" && input.back.trim() ? input.back : null;
+    if (givenBack && !checkTailnetAddress(givenBack)) {
+      throw new InboxError("validation_error", "back: this machine's address on your tailnet, like laptop.tail1234.ts.net:8443.", { field: "back" });
     }
-    const target = await redeem({ kind: "tailnet", url }, { id: parsed?.id ?? null, secret, code });
-    let deviceId: string | null = null;
-    if (back && !oneWay) {
-      const backOffer = context.door.openMachineOffer();
-      const backLink = buildLinkOffer({ id: links.selfId, name: context.computerName(), tailnet: back, secret: backOffer.secret, code: backOffer.code });
-      try {
-        await doorAnswer(
-          await target.transport.request("link-back", "", {
-            method: "POST",
-            headers: { Authorization: `Bearer ${target.token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ link: backLink }),
-            signal: AbortSignal.timeout(PAIR_MS * 2),
-          }),
-          `${target.name} could not link back to this machine`,
+    let backRaw = oneWay ? null : (givenBack ?? context.door.tailnetAddress());
+    if (!backRaw && !oneWay) {
+      const published = context.door.publishTailnet();
+      if (!published.ok) {
+        throw new InboxError(
+          "no_way_back",
+          `The other machine needs a way to reach this one to show its threads, and this Inbox could not publish its tailnet door: ${published.message} Fix that and link again, or pass --back <address>, or --one-way.`,
         );
-      } catch (error) {
-        // Nothing half-made: the device this pairing made over there goes too.
-        await tellUnlink(target.transport, target.token);
-        throw error;
       }
-      deviceId = context.door.offerDevice(backOffer.secret);
+      backRaw = published.address;
     }
-    const record: InboxLinkRecord = { id: target.id, name: target.name, token: target.token, transport: { kind: "tailnet", url }, device_id: deviceId, linked_at: new Date().toISOString() };
-    save(record);
-    return { machine: machinesView().find((m) => m.id === record.id)! };
+    const back = backRaw ? checkTailnetAddress(backRaw) : null;
+    try {
+      const target = await redeem({ kind: "tailnet", url }, { id: parsed?.id ?? null, secret, code });
+      let deviceId: string | null = null;
+      if (back) {
+        const backOffer = context.door.openMachineOffer();
+        const backLink = buildLinkOffer({ id: links.selfId, name: context.computerName(), tailnet: back, secret: backOffer.secret, code: backOffer.code });
+        try {
+          await doorAnswer(
+            await target.transport.request("link-back", "", {
+              method: "POST",
+              headers: { Authorization: `Bearer ${target.token}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ link: backLink }),
+              signal: AbortSignal.timeout(PAIR_MS * 2),
+            }),
+            `${target.name} could not link back to this machine`,
+          );
+        } catch (error) {
+          // Nothing half-made: the device this pairing made over there goes, and so does any the other side made here.
+          const orphan = context.door.closeMachineOffer(backOffer.secret);
+          if (orphan) context.door.revokeDevice(orphan);
+          await tellUnlink(target.transport, target.token);
+          throw error;
+        }
+        deviceId = context.door.offerDevice(backOffer.secret);
+      }
+      const record: InboxLinkRecord = { id: target.id, name: target.name, token: target.token, transport: { kind: "tailnet", url }, device_id: deviceId, linked_at: new Date().toISOString() };
+      save(record);
+      return { machine: machinesView().find((m) => m.id === record.id)! };
+    } catch (error) {
+      // A door this link published comes down again when nothing came of it.
+      context.door.closeTailnetIfUnused();
+      throw error;
+    }
   };
 
   const tellUnlink = async (transport: ReturnType<typeof openTransport>, token: string): Promise<boolean> => {
@@ -416,31 +472,41 @@ export function createInboxMachines(context: InboxMachinesContext) {
       json({ error: `${links.get(machine)?.name ?? "That machine"} cannot be reached now.`, code: "machine_offline", machine: machinesView().find((m) => m.id === machine) }, 503);
     if (req.method === "GET") {
       try {
-        const response = await peer.request(route, url.search, { method: "GET", headers: pick(req.headers, PASS_REQUEST), signal: req.signal });
-        return new Response(response.body, { status: response.status, headers: pick(response.headers, PASS_RESPONSE) });
+        return passAnswer(await peer.request(route, url.search, { method: "GET", headers: pick(req.headers, PASS_REQUEST), signal: req.signal }));
       } catch {
         return offline();
       }
     }
     if (req.method !== "POST") return json({ error: "Use GET or POST." }, 405);
-    const type = req.headers.get("content-type") ?? "";
-    if (!/^application\/json\b/i.test(type)) {
+    // Rule 8's table decides, by route: a write it has not classified never reaches another machine.
+    const kind = doorWriteKind(route);
+    if (!kind) return json({ error: "Not a forwarded route.", code: "not_found" }, 404);
+    if (kind === "file") {
       // A file (an upload, a drawing): never held. It goes now, or not at all.
       if (peer.state !== "online") return offline();
       try {
-        const headers: Record<string, string> = { "Content-Type": type || "application/octet-stream" };
+        const headers: Record<string, string> = { "Content-Type": req.headers.get("content-type") || "application/octet-stream" };
         const length = req.headers.get("content-length");
         if (length) headers["Content-Length"] = length;
-        const response = await peer.request(route, url.search, { method: "POST", headers, body: req.body, signal: req.signal, timeoutMs: UPLOAD_MS });
-        return new Response(response.body, { status: response.status, headers: pick(response.headers, PASS_RESPONSE) });
+        // A file's stale-tab guard rides the query: checked here against this Inbox's page session, never sent on.
+        const query = new URLSearchParams(url.search);
+        const session = query.get("serverSession");
+        if (session !== null && checkServerSession({ serverSession: session }, context.serverSession) === "mismatch") {
+          return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
+        }
+        query.delete("serverSession");
+        const search = query.size > 0 ? `?${query}` : "";
+        return passAnswer(await peer.request(route, search, { method: "POST", headers, body: req.body, signal: req.signal, timeoutMs: UPLOAD_MS }));
       } catch {
         return offline();
       }
     }
+    // Every other write is a JSON body, whatever its Content-Type says, and goes through the outbox.
     const body = await context.readBody(req);
     if (checkServerSession(body, context.serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
-    // This Inbox's page session means nothing to the other machine's Inbox.
+    // This Inbox's page session means nothing to the other machine's Inbox, and its drafts stay on this computer.
     delete body.serverSession;
+    if (route === "messages") delete body.draft_id;
     // Rule 11: a reply held for another machine says what the person saw, so a late one is refused there.
     if (REPLY_ROUTE.test(route) && (typeof body.seen_through_seq !== "number" || !Number.isSafeInteger(body.seen_through_seq))) {
       throw new InboxError("validation_error", "seen_through_seq: a reply to another machine carries the newest seq of the thread the person saw.", { field: "seen_through_seq" });
@@ -541,6 +607,8 @@ export function createInboxMachines(context: InboxMachinesContext) {
   };
 
   const stop = () => {
+    if (offerTimer) clearTimeout(offerTimer);
+    offerTimer = null;
     for (const peer of peers.values()) peer.stop();
     peers.clear();
     listeners.clear();
@@ -562,7 +630,6 @@ export function createInboxMachines(context: InboxMachinesContext) {
     control,
     linkBack,
     unlinkedBy,
-    outbox,
     start,
     stop,
   };

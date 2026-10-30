@@ -174,7 +174,7 @@ import { forgeCardRefResolver, resolveInboxCardRefs } from "./inbox-card-refs";
 import { createCardMarks } from "./inbox-card-marks";
 import { isInboxBoardSeq, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
 import { createInboxTagsRoute } from "./inbox-tags";
-import { createInboxDevices, DOOR_PREFIX, doorRouteNames } from "./inbox-devices";
+import { createInboxDevices, DOOR_PREFIX } from "./inbox-devices";
 import { createInboxMachines, type InboxMachines, type MachineFrame } from "./inbox-machines";
 import { replyIsStale } from "./inbox-outbox";
 import type { PeerLinkTimings } from "./inbox-peer-link";
@@ -461,6 +461,15 @@ const ERROR_STATUS: Record<string, number> = {
   thread_resolved: 409,
   // A reply held for this machine whose thread an agent wrote to after the person read it (linked machines, rule 11).
   thread_moved_on: 409,
+  // Linking machines (inbox-machines.ts).
+  machine_not_linked: 404,
+  machine_unreachable: 502,
+  machine_needs_update: 409,
+  machine_mismatch: 409,
+  link_to_self: 409,
+  link_failed: 502,
+  no_way_back: 409,
+  offer_expired: 410,
   // 👍 Looks good: refused on a person's message, on an older agent message, and while a question is open.
   ack_not_allowed: 422,
   ack_stale: 409,
@@ -914,10 +923,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     event_streams: openEventStreams,
     // Additive: read_thread honours the peek mark (the session's thread list after a compaction or resume).
     peek: true,
-    // Additive (linked machines, inbox-machines.ts): this Inbox's stable id, the link protocol it speaks, and the door routes it serves.
+    // Additive (linked machines, inbox-machines.ts): this Inbox's stable id and the link protocol it speaks.
     inbox_id: machines.selfId,
     machine_links: 1,
-    routes: doorRouteNames(),
   });
 
   /**
