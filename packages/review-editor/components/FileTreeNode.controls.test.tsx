@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { FileTreeNodeItem } from './FileTreeNode';
+import { FileTreeNodeItem, alignedTreeIndent, maxTreeIndent } from './FileTreeNode';
 import type { FileTreeNode } from '../utils/buildFileTree';
 
 const hasDom = typeof document !== 'undefined';
@@ -68,5 +68,26 @@ describe('FileTreeNodeItem compact controls', () => {
     expect(host.querySelector('[role="checkbox"]')).toBeNull();
     expect(host.querySelector('[aria-label="Stage file"]')).toBeNull();
     expect(host.textContent).toContain('example.ts');
+  });
+
+  test.skipIf(!hasDom)('a cut name keeps its full path on hover', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => root?.render(<Row compact={false} />));
+    expect(host.querySelector('.file-tree-item')?.getAttribute('title')).toBe('src/example.ts');
+  });
+});
+
+describe('the Changes tree indent', () => {
+  test('12 px a level from the 8 px row edge, so a level lines its chevron up with the label above', () => {
+    expect([0, 1, 2].map((depth) => alignedTreeIndent(depth))).toEqual([8, 20, 32]);
+  });
+
+  test('a deep tree stops indenting where the names would lose their room, by panel width', () => {
+    expect(alignedTreeIndent(12, maxTreeIndent(256))).toBe(8 + 56);
+    expect(alignedTreeIndent(12, maxTreeIndent(400))).toBe(8 + 144);
+    // The minimum width still shows two levels.
+    expect(alignedTreeIndent(12, maxTreeIndent(160))).toBe(8 + 24);
   });
 });
