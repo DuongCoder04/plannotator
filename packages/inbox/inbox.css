@@ -2820,9 +2820,11 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-sentanswers .ib-ranswer-a { flex: 0 0 100%; max-width: 100%; padding-inline-start: 2.1em; }
   .ib-route { padding: 10px 6px 8px; }
   .ib-opt { min-height: 44px; }
-  /* menus are sheets from the bottom edge: New message's sessions, the annotations list */
+  /* menus are sheets from the bottom edge: New message's sessions, the annotations list. Fixed boxes keep the
+     layout viewport's height when the keyboard comes up, so each one that holds a field ends where `--ib-vvh`
+     ends (the top of the keyboard) instead of at the window's bottom edge. */
   .ib-nmpop, .ib-menu.ib-nmpop, .ib-state.ib-nmpop, .ib-annpop {
-    position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: auto; max-height: 72%; overflow-y: auto; z-index: 60;
+    position: fixed; left: 0; right: 0; bottom: calc(100% - var(--ib-vvh, 100%)); top: auto; width: auto; max-height: calc(var(--ib-vvh, 100%) * 0.72); overflow-y: auto; z-index: 60;
     border-radius: var(--ib-sheet-corner, 12px) var(--ib-sheet-corner, 12px) 0 0; border-bottom: 0; padding-bottom: calc(10px + env(safe-area-inset-bottom));
     box-shadow: 0 -16px 48px rgba(0, 0, 0, 0.28);
   }
@@ -2832,7 +2834,9 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .pn-inbox .ib-arow .ib-aa { min-height: 36px; }
 
   /* a file: always full screen (its toolbar leads with Back to the thread), the comments as a sheet */
-  .ib-view.ib-full { z-index: 40; padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+  /* Its bottom is the keyboard's top (`--ib-vvh`): the composer, the comment row and the toolbar ride on the
+     keyboard, and the image or the page shrinks above them. */
+  .ib-view.ib-full { z-index: 40; bottom: calc(100% - var(--ib-vvh, 100%)); padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
   .ib-vhead { gap: 4px; padding: env(safe-area-inset-top) 6px 0 0; }
   .ib-vhead .ib-fn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--ib-fs-15, 15px); }
   .ib-vhead .ib-from, .ib-vhead .ib-sp { display: none; }
@@ -3321,7 +3325,7 @@ details.ib-wn-skipped[open] > summary { margin-bottom: 6px; }
 }
 /* A phone on its side: the comments sheet covers the file view (it shared it, and left room for one line). */
 @media (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
-  .ib-phone.ib-panel-open .ib-apanel { position: fixed; top: env(safe-area-inset-top); left: 0; right: 0; bottom: 0; height: auto; z-index: 8; border-radius: 0; }
+  .ib-phone.ib-panel-open .ib-apanel { position: fixed; top: env(safe-area-inset-top); left: 0; right: 0; bottom: calc(100% - var(--ib-vvh, 100%)); height: auto; z-index: 8; border-radius: 0; }
 }
 
 /* ───────────── Search (the approved "inbox-search" design; the palette after Workspaces' ui/command.tsx) ───────────── */
@@ -4940,7 +4944,8 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
   .ib-dm-dots i, .ib-dm-choice { transition: none; }
 }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
-  dialog.ib-dm { width: 100vw; height: 100dvh; border-radius: 0; }
+  /* Full screen down to the keyboard's top while it is up (`--ib-vvh`), so a note or an answer is never under it. */
+  dialog.ib-dm { width: 100vw; height: var(--ib-vvh, 100dvh); bottom: calc(100% - var(--ib-vvh, 100%)); border-radius: 0; }
   .ib-dm-head { padding: max(14px, env(safe-area-inset-top)) 16px 4px; }
   /* No room beside the count on a phone; the card names the thread under it. */
   .ib-dm-scope { display: none; }
@@ -5615,8 +5620,8 @@ dialog.ib-dlg.ib-bi { width: min(560px, calc(100vw - 32px)); }
   .ib-crdp-phone .ib-crdp-foot { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
   .pn-inbox .ib-crdp-phone .ib-crdp-foot .ib-btn { min-height: 44px; }
   .ib-crdp-notesform textarea, .ib-crdp-link input, .ib-crdp-drop input, .ib-ncd-title, .ib-ncd-notes, .ib-ncd-links input { font-size: var(--ib-fs-16-in, 16px); }
-  dialog.ib-dlg.ib-ncd.ib-ncd-phone { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; margin: 0; }
-  .ib-ncd-phone .ib-ncd-form { height: 100dvh; }
+  dialog.ib-dlg.ib-ncd.ib-ncd-phone { width: 100vw; height: var(--ib-vvh, 100dvh); max-height: none; border-radius: 0; margin: 0; }
+  .ib-ncd-phone .ib-ncd-form { height: var(--ib-vvh, 100dvh); }
   .ib-ncd-phone .ib-ncd-body { flex: 1; }
   .ib-ncd-phone .ib-ncd-modes { flex: 1; justify-content: space-around; }
   .ib-ncd-phone .ib-ncd-mode { min-height: 44px; flex: 1; justify-content: center; }
@@ -5796,7 +5801,7 @@ dialog.ib-dlg.ib-fbk { width: min(540px, calc(100vw - 32px)); }
 .ib-fbk-sent .ib-acts-row { justify-content: center; align-self: stretch; }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
   .pn-inbox dialog.ib-dlg.ib-fbk.ib-fbk-phone, dialog.ib-dlg.ib-fbk.ib-fbk-phone {
-    inset: auto 0 0 0; margin: 0; width: 100vw; max-width: 100vw; max-height: calc(var(--ib-vvh, 100dvh) - 24px);
+    inset: auto 0 calc(100% - var(--ib-vvh, 100%)) 0; margin: 0; width: 100vw; max-width: 100vw; max-height: calc(var(--ib-vvh, 100dvh) - 24px);
     border-radius: var(--ib-sheet-corner, 12px) var(--ib-sheet-corner, 12px) 0 0; border-bottom: 0;
   }
   .ib-fbk-phone .ib-dlg-in { padding: 18px calc(16px + env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
@@ -5952,6 +5957,8 @@ dialog.ib-dlg.ib-fbk { width: min(540px, calc(100vw - 32px)); }
 /* Phone: the card spans the width above the home bar and the toolbar sits above it (the pane measures the card as the
    foot); the tabs read Comment and Reply, Send is the icon. Minimized, the pill shares the toolbar's row at its left. */
 .ib-fcomp.ib-phone { left: 8px; right: 8px; width: auto; transform: none; bottom: calc(8px + env(safe-area-inset-bottom)); }
+/* With the keyboard up the full view ends at its top (`--ib-vvh`) and the home bar is under it: the card sits on the keyboard. */
+:root[data-ib-keyboard] .ib-fcomp.ib-phone { bottom: 8px; }
 .pn-inbox .ib-fcomp.ib-phone .ib-fcomp-tabs button { height: 32px; font-size: var(--ib-fs-13, 13px); }
 .pn-inbox .ib-fcomp.ib-phone .ib-fcomp-min, .pn-inbox .ib-fcomp.ib-phone .ib-fcomp-clip { width: 36px; height: 36px; }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
