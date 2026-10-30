@@ -11,7 +11,8 @@
   "files": [
     "src/**/*.ts",
     "README.md",
-    "PROVENANCE.md"
+    "PROVENANCE.md",
+    "LICENSE"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
