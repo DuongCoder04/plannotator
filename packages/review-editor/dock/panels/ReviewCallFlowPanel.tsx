@@ -312,9 +312,27 @@ export function ReviewCallFlowPanel() {
       <div className="call-flow-shell">
         <header className="call-flow-header">
           <div>
-            <div className="call-flow-eyebrow">Inferred call paths</div>
-            <h2>{data.summary.changedNodes === 0 ? 'No changed call paths' : `${data.summary.changedNodes} changed path ${data.summary.changedNodes === 1 ? 'step' : 'steps'}`}</h2>
-            <p>{data.summary.entries} entr{data.summary.entries === 1 ? 'y' : 'ies'} · {data.summary.impactedFiles} impacted {data.summary.impactedFiles === 1 ? 'file' : 'files'}</p>
+            <h2>{data.summary.changedNodes === 0 ? 'No changed call paths' : 'Call paths'}</h2>
+            <p className="call-flow-summary">
+              {data.summary.added > 0 && (
+                <span className="call-flow-summary-item call-flow-summary-changed">
+                  <span className="call-flow-marker call-flow-marker-added" aria-hidden="true" />
+                  {data.summary.added.toLocaleString()} new
+                </span>
+              )}
+              {data.summary.removed > 0 && (
+                <span className="call-flow-summary-item call-flow-summary-changed">
+                  <span className="call-flow-marker call-flow-marker-removed" aria-hidden="true" />
+                  {data.summary.removed.toLocaleString()} removed
+                </span>
+              )}
+              <span className="call-flow-summary-item">
+                {data.summary.impactedFiles.toLocaleString()} {data.summary.impactedFiles === 1 ? 'file' : 'files'}
+              </span>
+              <span className="call-flow-summary-item">
+                {data.summary.entries.toLocaleString()} {data.summary.entries === 1 ? 'entry' : 'entries'}
+              </span>
+            </p>
           </div>
           <div className="call-flow-header-actions">
             <div className="call-flow-view-switch" aria-label="Call flow view">
@@ -343,10 +361,10 @@ export function ReviewCallFlowPanel() {
 
         {view === 'paths' && (
           <div className="call-flow-legend" aria-label="Call-flow legend">
-            <span><b className="call-flow-status-added">+</b> added</span>
-            <span><b className="call-flow-status-removed">−</b> removed</span>
-            <span><b>·</b> unchanged context</span>
-            <span className="call-flow-legend-hint">Click any row to comment. Shift-click adds steps. Select a file path to open source.</span>
+            <span className="call-flow-legend-key">
+              <span className="call-flow-marker call-flow-marker-same" aria-hidden="true" /> unchanged
+            </span>
+            <span className="call-flow-legend-hint">Click a call to comment, Shift-click to add steps. Click a location to open it.</span>
           </div>
         )}
 
