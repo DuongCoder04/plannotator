@@ -181,7 +181,7 @@ import type { PeerLinkTimings } from "./inbox-peer-link";
 import type { PairingProbes } from "./inbox-pairing-checks";
 import { createInboxRelay } from "./inbox-relay";
 import type { TailscaleRunner } from "@plannotator/shared/tailscale";
-import { createInboxTailscale, PHONES_TAILNET_HTTPS_PORT, type InboxTailscale } from "./inbox-tailscale";
+import { createInboxTailscale, isDoorTailnetPort, type InboxTailscale } from "./inbox-tailscale";
 import { createInboxUpdates, type InboxUpdatesOptions } from "./inbox-updates";
 import { INBOX_WHATS_NEW_IMAGE_PATH, whatsNewImageRoute } from "./inbox-whats-new-images";
 import { inboxCanonicalBaseUrl, inboxCanonicalRedirect } from "./inbox-canonical";
@@ -648,9 +648,9 @@ function startOnLoopback(fetch: Parameters<typeof Bun.serve>[0]["fetch"], prefer
   const serve = (port: number) =>
     Bun.serve(withPlannotatorServerHeader({ hostname: LOOPBACK, port, idleTimeout: 0, maxRequestBodySize: INBOX_MAX_REQUEST_BYTES, fetch }) as Parameters<typeof Bun.serve>[0]);
   let portChanged = false;
-  // Never remote mode's port, and never Phones' tailnet HTTPS port: the
-  // window's tailnet mapping uses the Inbox's own port, so the two never meet.
-  const forbidden = (port: number) => port === INBOX_FORBIDDEN_PORT || port === PHONES_TAILNET_HTTPS_PORT;
+  // Never remote mode's port, and never one the device door may take (8443 to 8450):
+  // the window's tailnet mapping uses the Inbox's own port, so the two never meet.
+  const forbidden = (port: number) => port === INBOX_FORBIDDEN_PORT || isDoorTailnetPort(port);
   if (preferred && !forbidden(preferred)) {
     try {
       return { server: serve(preferred), portChanged: false };

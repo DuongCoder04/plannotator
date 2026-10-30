@@ -68,7 +68,7 @@ export interface PairingChecks {
     https_certs: boolean | null;
     /** A tailnet port the door may take (8443 to 8450) is free, or already the Inbox's own mapping. Null when unknown (not running, or serve did not answer). */
     port_free: boolean | null;
-    /** The port the door would take (`port_free`), else null. */
+    /** The port the door would take (`port_free`), or the door's kept port another mapping now holds (`port_free: false`); null when every port is held or unknown. */
     https_port: number | null;
     /** What the CLI said when it could not be read, in its own words. */
     error: string | null;
@@ -299,6 +299,9 @@ async function tailscaleChecks(context: PairingChecksContext): Promise<PairingCh
       const port = context.doorPort(serve.stdout);
       if (port.state === "usable") {
         tailscale.port_free = true;
+        tailscale.https_port = port.port;
+      } else if (port.state === "held") {
+        tailscale.port_free = false;
         tailscale.https_port = port.port;
       } else if (port.state === "taken") tailscale.port_free = false;
     }

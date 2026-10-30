@@ -62,6 +62,8 @@ export interface InboxMachineDoor {
   revokeDevice: (deviceId: string) => void;
   /** This Inbox's door on the tailnet (`host:8443`), or null while it is not published. */
   tailnetAddress: () => string | null;
+  /** Why the door is not published while it should be (its port held, Tailscale stopped), or null. */
+  tailnetError: () => string | null;
   /** Publish the door on the tailnet now (the tailnet switch's own path). */
   publishTailnet: () => { ok: true; address: string } | { ok: false; message: string };
   /** Phones off: take the tailnet door down once no machine is linked and no machine offer is open. */
@@ -248,7 +250,8 @@ export function createInboxMachines(context: InboxMachinesContext) {
       self: true,
       state: "online",
       since: startedAt,
-      reason: null,
+      // This Inbox's door, when it cannot be published (its port held by another mapping): the window and `link --list` say why.
+      reason: context.door.tailnetError(),
       version: null,
       address: context.door.tailnetAddress(),
       both_ways: true,
