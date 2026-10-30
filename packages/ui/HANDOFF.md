@@ -1934,8 +1934,18 @@ was rebuilt.
 The `file-tree-item` CSS was already in `theme.css`. The new pieces are the
 `DiffFileTree` component itself and its ARIA/keyboard handling.
 
+**Since the aligned sidebar (approved design record "review-sidebar-aligned"),
+the review draws its own rows.** Its Changes tree has its own folder row and
+file row (`FileTreeNode.tsx`: 12 px indent steps on the panel's edges, `+`/`−`
+in two aligned columns, `CountColumns` in `FileRowBits.tsx`); it no longer
+renders `DiffFileTreeFolderRow`, `DiffFileTreeFileRowContent` or `DiffCounts`.
+It still shares `buildDiffFileTree`, `useDiffFileTreeExpansion`,
+`ChangeTypeLetter`, and `diffFileTreeIndent` (All files keeps that indent).
+The atoms below are unchanged and stay the host's starting point for a custom
+row; they no longer show what the review's rows look like.
+
 **Review-only, and why.** The review's `FileTree` keeps its own wrapper and
-renders its rows from the shared atoms, adding: the viewed checkbox and the
+rows, adding: the viewed checkbox and the
 hide-viewed filter, stage controls and the staged/committed/untracked marks,
 the annotation badge and `has-annotations` tint, the scroll-highlight row, the
 "Copy path" context menu, the double-click handler, the panel header, view toggle,
@@ -1943,8 +1953,8 @@ diff-type / base / worktree / evolog pickers, search results, the nav rows
 (PR overview, artifacts, call flow, semantic diff, all files), and its
 **window-wide** j/k/arrow/Home/End shortcut (an app shortcut, gated on inputs,
 menus and dialogs). None of those is a host concern, so `DiffFileTree` takes no
-props for them; a host that needs any of them builds its own row from the atoms,
-as the review does. The review rows also keep their current DOM: no ARIA tree
+props for them; a host that needs any of them builds its own row from the atoms
+(the review now goes further and draws its own rows, above). The review rows also keep their current DOM: no ARIA tree
 roles were added there (that would be a behavior change to Plannotator's app,
 out of scope here).
 
