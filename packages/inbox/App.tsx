@@ -29,6 +29,7 @@ import { DecisionPill, decideEntryShown } from './decisions/entry';
 import { threadDecisions } from './decisions/model';
 import {
   InboxApiError,
+  InboxHeldError,
   inboxApi,
   setPageSession,
   subscribeInboxEvents,
@@ -209,6 +210,8 @@ export const THREAD_READ_RETRY_MS = [250, 1000, 2000, 4000, 5000] as const;
  * a dropped one is; before this it waited for good.
  */
 export const THREAD_READ_TIMEOUT_MS = 8000;
+/** How long a fresh load's 404 waits for the first merged list before it says the thread is not here. */
+const FIRST_LIST_WAIT_MS = 10_000;
 /** Why the open thread is not on screen yet: its read failed (read again soon), or the server has no such thread. */
 interface ThreadLoad {
   threadId: string;
@@ -536,7 +539,12 @@ function Inbox() {
    * Linked machines (docs/agent-guides/inbox-machines.md): every machine and its state, from the merged list and
    * the stream's `machines` frames. Nothing draws from it while no machine is linked (machines.ts).
    */
-  const [machineViews, setMachineViews] = useState<MachineView[] | null>(null);
+  const [machineViews, setMachineViewsNow] = useState<MachineView[] | null>(null);
+  // Every list read carries the machines; the same ones keep the same model, so a list read rebuilds nothing.
+  const setMachineViews = useCallback(
+    (next: MachineView[]) => setMachineViewsNow((current) => (current && JSON.stringify(current) === JSON.stringify(next) ? current : next)),
+    [],
+  );
   const machines = useMemo(() => machinesModel(machineViews), [machineViews]);
   const machinesRef = useRef(machines);
   machinesRef.current = machines;
@@ -548,27 +556,34 @@ function Inbox() {
     setHideAwayState(next);
     storage.setItem(HIDE_AWAY_MACHINES_COOKIE, String(next));
   }, []);
-  // Once a machine is linked: the writes this Inbox holds for one, and the notices about ones that did not land.
-  // The `outbox` frames keep them from then on.
+  // Once a machine is linked: the writes this Inbox holds for one, and the notices about ones that did not land. The
+  // `outbox` frames keep them; every `machines` snapshot (sent when the stream opens, so after each reconnect) reads
+  // them again whole, so a frame lost in a reconnect never leaves "Will send when … is back" beside a delivered reply.
   const anyMachineLinked = machines.linked.length > 0;
+  const outboxRead = useRef(0);
+  const outboxRef = useRef(outbox);
+  outboxRef.current = outbox;
+  /** Read the held writes again; answers the machines whose pending writes settled meanwhile. */
+  const reloadOutbox = useCallback(async (): Promise<Set<string>> => {
+    const mine = ++outboxRead.current;
+    try {
+      const { waiting, notices } = await inboxApi.outbox();
+      if (mine !== outboxRead.current) return new Set();
+      const next = new Map([...waiting, ...notices].map((entry) => [entry.key, entry] as const));
+      const settled = new Set<string>();
+      for (const entry of outboxRef.current.values()) {
+        const now = next.get(entry.key);
+        if ((entry.state === 'queued' || entry.state === 'sending') && (!now || (now.state !== 'queued' && now.state !== 'sending'))) settled.add(entry.machine);
+      }
+      setOutbox(next);
+      return settled;
+    } catch {
+      return new Set();
+    }
+  }, []);
   useEffect(() => {
-    if (!anyMachineLinked) return;
-    let live = true;
-    inboxApi
-      .outbox()
-      .then(({ waiting, notices }) => {
-        if (!live) return;
-        setOutbox((current) => {
-          const next = new Map(current);
-          for (const entry of [...waiting, ...notices]) if (!next.has(entry.key)) next.set(entry.key, entry);
-          return next;
-        });
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [anyMachineLinked]);
+    if (anyMachineLinked) void reloadOutbox();
+  }, [anyMachineLinked, reloadOutbox]);
   const dismissOutbox = useCallback((key: string) => {
     setOutbox((current) => {
       const entry = current.get(key);
@@ -630,6 +645,17 @@ function Inbox() {
   }, []);
   /** Each read of a thread is numbered; an older one never overwrites a newer one that landed (A, then B, then A again). */
   const threadReadSeq = useRef(0);
+  /**
+   * The first merged list, read: until then the window does not know which machine owns an id, so a fresh load of
+   * another machine's thread (`#thread=` after a reload, in a new tab) first reads it here and gets a 404. That 404
+   * waits for this list and, when the list names another machine as the owner, reads the thread there.
+   */
+  const firstList = useRef<{ done: boolean; promise: Promise<void>; resolve: () => void } | null>(null);
+  if (!firstList.current) {
+    let resolve = () => {};
+    const promise = new Promise<void>((r) => (resolve = r));
+    firstList.current = { done: false, promise, resolve };
+  }
   const threadReadApplied = useRef(0);
   /** The open thread as last read, for the open effect when another read (the event stream's) landed first. */
   const threadLoaded = useRef<InboxThread | null>(null);
@@ -932,6 +958,10 @@ function Inbox() {
       // Before the render: what waits on this read (Mark read after a look, markRead) reads the rows it brought.
       latestRef.current = next;
       setLatest(next);
+      if (!firstList.current!.done) {
+        firstList.current!.done = true;
+        firstList.current!.resolve();
+      }
       // Linked machines: the merged list names every machine and its state (an older Inbox names none).
       if (next.machines) setMachineViews(next.machines);
       if (adopt && slide) armSlide();
@@ -1039,6 +1069,8 @@ function Inbox() {
 
   const refreshThread = useCallback(async (threadId: string) => {
     const mine = ++threadReadSeq.current;
+    // The machine this read goes to: null is this Inbox (or an owner not learned yet).
+    const askedOwner = machineOf(threadId);
     try {
       const next = await inboxApi.thread(threadId, THREAD_READ_TIMEOUT_MS);
       if (routeRef.current.thread === threadId && mine > threadReadApplied.current) {
@@ -1054,6 +1086,12 @@ function Inbox() {
       }
       return next.thread;
     } catch (cause) {
+      // Not on this Inbox, asked before the list named each id's machine: once the first list is read (it may have landed
+      // while this read was out; else wait a few seconds at most), read the thread on the machine it names.
+      if (cause instanceof InboxApiError && cause.status === 404 && !askedOwner) {
+        if (!machineOf(threadId) && !firstList.current!.done) await Promise.race([firstList.current!.promise, new Promise((r) => setTimeout(r, FIRST_LIST_WAIT_MS))]);
+        if (machineOf(threadId) && routeRef.current.thread === threadId) return refreshThread(threadId);
+      }
       if (routeRef.current.thread === threadId && mine > threadReadApplied.current) {
         const missing = cause instanceof InboxApiError && cause.status === 404;
         if (missing) setThread(null);
@@ -1272,6 +1310,9 @@ function Inbox() {
     /** The machines as last read (state and list cursor each), and whether one was linked. */
     let machinesSignature = '';
     let machinesLinked = false;
+    // Which machines are linked: a link made or removed changes what the list is, not only its rows' states.
+    let machinesSet = '';
+    let machinesAdopt = false;
     let cancelled = false;
     // Listen to the tabs' shared stream before the first read, so nothing passed on between the read and the subscription is lost (sharedEvents.ts).
     prepareInboxEvents();
@@ -1361,12 +1402,32 @@ function Inbox() {
           // A machine's state or its list moved: read the merged list. Only while a machine is (or just was) linked,
           // so an Inbox that never links reads nothing more than before.
           const linked = next.some((m) => !m.self);
+          if (linked) {
+            // The held writes, whole: a snapshot follows every reconnect, and an `outbox` frame may have been missed. One
+            // that settled meanwhile is in its thread now: the open thread of that machine is read again.
+            void reloadOutbox().then((settled) => {
+              const open = routeRef.current.thread;
+              const owner = open ? machineOf(open) : null;
+              if (open && owner && settled.has(owner)) void refreshThread(open);
+            });
+          }
           const signature = next.map((m) => `${m.id}:${m.state}:${m.list_cursor ?? ''}`).join('|');
           if ((!linked && !machinesLinked) || signature === machinesSignature) return;
           machinesLinked = linked;
           machinesSignature = signature;
+          // Each linked machine, and whether its list has been read yet (its rows arrive with that first read).
+          const set = next.filter((m) => !m.self).map((m) => `${m.id}:${m.list_cursor === null ? 0 : 1}`).sort().join('|');
+          // A machine linked (its first rows) or unlinked (here, or from its side): the list on screen takes the new one at once, so an
+          // unlinked machine's rows go with it (the open thread keeps its place). Otherwise its rows follow as any agent's do.
+          // Sticky until the read: a frame right after must not turn an adopting read back into a held one.
+          machinesAdopt ||= set !== machinesSet;
+          machinesSet = set;
           if (machinesTimer) clearTimeout(machinesTimer);
-          machinesTimer = setTimeout(() => void refreshList(false).then((list) => list && flushNotifications(list)), 60);
+          machinesTimer = setTimeout(() => {
+            const adopt = machinesAdopt;
+            machinesAdopt = false;
+            void refreshList(adopt, false, adopt ? { keepOpen: true } : undefined).then((list) => list && flushNotifications(list));
+          }, 60);
         },
         onOutbox: (entry) => {
           setOutbox((current) => new Map(current).set(entry.key, entry));
@@ -2075,9 +2136,12 @@ function Inbox() {
     // armToastTimer reads only refs and setToast, so the first render's copy serves.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  /** A write that failed: its message, whole (it may wrap). */
+  /**
+   * A write that failed: its message, whole (it may wrap). A write held for another machine (linked machines) did not
+   * fail: it waits in this Inbox's outbox and applies when that machine takes it, and says so, without the warning.
+   */
   const showError = (cause: unknown) =>
-    showToast({ icon: 'warn', lead: cause instanceof Error ? cause.message : 'The thread did not change.', wrap: true });
+    showToast({ icon: cause instanceof InboxHeldError ? 'clock' : 'warn', lead: cause instanceof Error ? cause.message : 'The thread did not change.', wrap: true });
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
   }, []);
@@ -2427,7 +2491,7 @@ function Inbox() {
         }
       }
     } catch (cause) {
-      showToast({ icon: 'warn', lead: cause instanceof Error ? cause.message : 'The project did not change.', wrap: true });
+      showError(cause);
       return;
     }
     await afterWrite();
@@ -3382,13 +3446,19 @@ function Inbox() {
   const backToCard = () => close({ page: 'board', project: route.boardProject ?? null, thread: null, board: route.board ?? 'lanes', card: fromCard });
   const guideMessage =
     route.guide && thread && thread.thread_id === route.thread ? (thread.messages.find((m) => m.id === route.guide && m.guide) ?? null) : null;
+  // Linked machines: the open thread's machine is away, so its read failed: "MacBook asleep since …", and the answers
+  // held for it. A phone and a stacked window show this in the thread's place too, so a held answer is never out of sight.
+  const openOwner = route.thread ? machines.linked.find((m) => m.id === machineOf(route.thread!)) : undefined;
+  const threadAway = openOwner ? threadAwayLine(openOwner) : null;
+  const awayWait =
+    !!threadAway && !!route.thread && !(thread && thread.thread_id === route.thread) && threadLoad?.threadId === route.thread && threadLoad.state === 'failed';
   // The screen on top, which a phone shows alone (inbox.css): the list, a thread, a file.
-  // A thread is on top once it has loaded, so a phone keeps the list until there is a thread to show.
+  // A thread is on top once it has loaded, so a phone keeps the list until there is a thread to show (or its machine is away).
   const view =
     route.page === 'inbox'
       ? fileOpen
         ? 'file'
-        : route.thread && thread?.thread_id === route.thread
+        : route.thread && (thread?.thread_id === route.thread || awayWait)
           ? 'thread'
           : 'list'
       : route.page;
@@ -3881,12 +3951,13 @@ function Inbox() {
         />
         )}
         {/* Beside the list, the thread's place says it is opening (or why not) until its read lands; a phone
-            and a stacked window keep the list until there is a thread to show. */}
-        {route.thread && !(thread && thread.thread_id === route.thread) && !phone && !stack.thread && (
+            and a stacked window keep the list until there is a thread to show, or the thread's machine is away. */}
+        {route.thread && !(thread && thread.thread_id === route.thread) && ((!phone && !stack.thread) || awayWait) && (
           <ThreadWait
             key={route.thread}
             load={threadLoad?.threadId === route.thread ? threadLoad : null}
-            away={threadAwayLine(machines.linked.find((m) => m.id === machineOf(route.thread!)))}
+            away={threadAway}
+            held={{ entries: threadOutbox(outbox, { thread_id: route.thread!, messages: [] }), machine: openOwner ?? null, onDismiss: dismissOutbox }}
             onFocusLeaving={() => {
               focusThreadSubject.current = true;
             }}

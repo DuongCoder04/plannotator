@@ -1,4 +1,6 @@
 import { useLayoutEffect, useRef } from 'react';
+import type { MachineView, OutboxView } from '../api';
+import { HeldWrites } from './HeldWrites';
 
 /**
  * The thread's place while its read has not landed. Before this the right
@@ -19,6 +21,8 @@ export function ThreadWait(props: {
   onFocusLeaving: () => void;
   /** The thread is on a linked machine that is away: its line ("MacBook asleep since 10:42 AM"), said in place of the failed read. */
   away?: string | null;
+  /** Linked machines: what the person sent to this thread that its machine has not taken yet, shown while it cannot open. */
+  held?: { entries: readonly OutboxView[]; machine: Pick<MachineView, 'name' | 'state'> | null; onDismiss?: (key: string) => void };
 }) {
   const { load } = props;
   const ref = useRef<HTMLDivElement>(null);
@@ -59,6 +63,11 @@ export function ThreadWait(props: {
           <span>Opening the thread…</span>
         )}
       </div>
+      {props.held && props.held.entries.length > 0 && (
+        <div className="ib-pwait-held" data-thread-wait-held="">
+          <HeldWrites entries={props.held.entries} machine={props.held.machine} onDismiss={props.held.onDismiss} />
+        </div>
+      )}
     </div>
   );
 }

@@ -166,7 +166,7 @@ export function threadOutbox(entries: ReadonlyMap<string, OutboxView>, thread: {
   return [...entries.values()]
     .filter((entry) => {
       const target = outboxTarget(entry);
-      if (!target || !ids.has(target.id)) return false;
+      if (entry.thread !== thread.thread_id && (!target || !ids.has(target.id))) return false;
       if (outboxPending(entry)) return outboxCarriesWords(entry);
       return entry.notice !== null && !entry.dismissed;
     })
@@ -185,7 +185,12 @@ export function outboxPending(entry: Pick<OutboxView, 'state'>): boolean {
 export function outboxLine(entry: OutboxView, machine: Pick<MachineView, 'name' | 'state'> | null): { tone: 'waiting' | 'failed'; text: string } | null {
   const name = machine?.name ?? 'the other machine';
   if (outboxPending(entry)) {
-    return { tone: 'waiting', text: machine && machine.state !== 'online' ? `Will send when ${name} is back` : `Sending to ${name}…` };
+    // Online or still connecting: on its way. Asleep or out of date: it waits for the machine. Removed there: it
+    // cannot go until the link is made again, said so rather than promised.
+    if (!machine || machine.state === 'online' || machine.state === 'connecting') return { tone: 'waiting', text: `Sending to ${name}…` };
+    if (machine.state === 'revoked') return { tone: 'waiting', text: `Not sent: ${name} removed the link. Link it again to send.` };
+    if (machine.state === 'needs_update') return { tone: 'waiting', text: `Will send when ${name} is updated` };
+    return { tone: 'waiting', text: `Will send when ${name} is back` };
   }
   if (entry.dismissed || !entry.notice) return null;
   switch (entry.notice.kind) {

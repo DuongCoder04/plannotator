@@ -313,7 +313,8 @@ const MACHINE_OFFERS_KEPT = 8;
  * name's first label.
  */
 function computerName(): string {
-  const named = process.env.PLANNOTATOR_MACHINE_NAME?.trim();
+  // Control characters stripped: the name is echoed by another machine's CLI and must never carry a terminal escape.
+  const named = process.env.PLANNOTATOR_MACHINE_NAME?.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
   if (named) return named.slice(0, 64);
   if (process.platform === "darwin") {
     try {

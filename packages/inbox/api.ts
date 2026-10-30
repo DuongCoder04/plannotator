@@ -6,7 +6,7 @@
  */
 
 import { isActionRecord, questionsOnly, splitThreadActions } from './actions';
-import { inboxUrl, machineOf, rememberMachine, setSelfMachine } from './inboxUrl';
+import { inboxUrl, machineOf, rememberLocal, rememberMachine, setSelfMachine } from './inboxUrl';
 import type {
   InboxCardMark,
   InboxDecisionsModel,
@@ -135,6 +135,8 @@ export interface OutboxView {
   dismissed: boolean;
   /** A held reply's or message's words. Absent from an older Inbox. */
   words?: string | null;
+  /** The thread it is about, as this window named it when it pressed Send. Absent from an older Inbox. */
+  thread?: string | null;
 }
 
 /** `POST /api/inbox/machines/offer`: this machine's one-time link code for another. */
@@ -552,6 +554,8 @@ function forwardedTo(path: string): string | null {
  * `id` or `…_id` field long enough to be one. Remembered, so the routes of its messages, files and comments go
  * there too (inboxUrl.ts).
  */
+const ROUTED_ID_KEYS = new Set(['id', 'thread_id', 'message_id', 'attachment_id', 'annotation_id', 'project_id', 'upload_id', 'markup_id']);
+
 export function idsIn(value: unknown, out: Set<string> = new Set(), depth = 0): Set<string> {
   if (depth > 12 || value === null || typeof value !== 'object') return out;
   if (Array.isArray(value)) {
@@ -560,7 +564,7 @@ export function idsIn(value: unknown, out: Set<string> = new Set(), depth = 0): 
   }
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
     if (typeof item === 'string') {
-      if ((key === 'id' || key.endsWith('_id')) && /^[A-Za-z0-9_-]{16,80}$/.test(item) && !item.startsWith('ibx_')) out.add(item);
+      if (ROUTED_ID_KEYS.has(key) && /^[A-Za-z0-9_-]{16,80}$/.test(item) && !item.startsWith('ibx_')) out.add(item);
     } else idsIn(item, out, depth + 1);
   }
   return out;
@@ -591,7 +595,9 @@ export class InboxHeldError extends InboxApiError {
 /** What a held write says, by its machine's state. */
 export function heldWords(machine: Pick<MachineView, 'name' | 'state'> | null): string {
   const name = machine?.name ?? 'the other machine';
-  return machine && machine.state !== 'online' ? `Will send when ${name} is back.` : `Sending to ${name}…`;
+  return machine && machine.state !== 'online' && machine.state !== 'connecting'
+    ? `Waiting for ${name}: this applies when ${name} is back.`
+    : `Sending to ${name}: this applies once ${name} confirms.`;
 }
 
 /** A read that gives no answer in `timeoutMs` (a held connection, a stalled server) fails with this. */
@@ -654,7 +660,7 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<T> 
   const sent = machine && typeof body.idempotency_key !== 'string' ? { ...body, idempotency_key: crypto.randomUUID() } : body;
   const response = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(machine ? threadHeader(path) : {}) },
     body: JSON.stringify(pageSession ? { ...sent, serverSession: pageSession } : sent),
   });
   if (machine && response.status === 202) {
@@ -668,6 +674,17 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<T> 
 
 /** The thread a message belongs to, for another machine's messages (learned from its thread reads). */
 const threadOfMessage = new Map<string, string>();
+/**
+ * The thread a forwarded write is about, named to this Inbox in `X-Plannotator-Thread` (kept on the outbox entry, never
+ * sent on), so a held answer shows even where that thread cannot open.
+ */
+function threadHeader(path: string): Record<string, string> {
+  const match = /^\/api\/inbox\/m\/ibx_[^/]+\/(messages|threads)\/([^/?]+)/.exec(path);
+  if (!match) return {};
+  const id = decodeURIComponent(match[2]!);
+  const thread = match[1] === 'threads' ? id : threadOfMessage.get(id);
+  return thread ? { 'X-Plannotator-Thread': thread } : {};
+}
 /** The cursor of the last read of another machine's thread: a reply there says what the person saw (rule 11). */
 const remoteThreadCursor = new Map<string, number>();
 
@@ -683,8 +700,11 @@ const projectUrl = (projectId: string, rest = '') => inboxUrl(`/projects/${encod
 /** The merged list names each row's and project's machine: their routes go there from now on (inboxUrl.ts). */
 function learnMachines(model: ListModel): void {
   setSelfMachine(model.self);
-  for (const section of model.sections) for (const row of section.threads) rememberMachine([row.thread_id], row.machine);
-  for (const project of model.projects) rememberMachine([project.id], project.machine);
+  const rows = model.sections.flatMap((section) => section.threads);
+  // This Inbox's own rows and projects first: a linked machine's row with the same id never takes one over.
+  rememberLocal([...rows.filter((row) => !row.machine || row.machine === model.self).map((row) => row.thread_id), ...model.projects.filter((p) => !p.machine || p.machine === model.self).map((p) => p.id)]);
+  for (const row of rows) rememberMachine([row.thread_id], row.machine, true);
+  for (const project of model.projects) rememberMachine([project.id], project.machine, true);
 }
 
 /** A file's query: the page session, and for another machine the key its door asks of every write. */
@@ -871,6 +891,9 @@ export const inboxApi = {
         // Another machine's thread: which thread each message is in, and the newest seq the person now sees there.
         for (const message of model.thread.messages) threadOfMessage.set(message.id, threadId);
         remoteThreadCursor.set(threadId, model.cursor);
+      } else {
+        // This Inbox's own thread: every id in it is this Inbox's for good.
+        rememberLocal(idsIn(model));
       }
       return { ...model, thread: splitThreadActions(model.thread) };
     }),
@@ -1164,7 +1187,11 @@ export const inboxApi = {
   sendNow: (messageId: string, session?: string | null) =>
     post<{ message: InboxMessage }>(messageUrl(messageId, `/send-now`), session ? { session } : {}),
   newMessage: (threadId: string, input: { session: string; body: string; idempotency_key: string }) =>
-    post<{ message: InboxMessage; replayed: boolean }>(threadUrl(threadId, `/message`), input),
+    post<{ message: InboxMessage | null; replayed: boolean; held?: OutboxView }>(threadUrl(threadId, `/message`), input).catch((cause) => {
+      // To another machine: held in the outbox, as a reply is; the thread shows it waiting.
+      if (cause instanceof InboxHeldError) return { message: null, replayed: false, held: cause.outbox };
+      throw cause;
+    }),
   // Phones: pairing, the paired devices, the tailnet and Wi-Fi switches (packages/server/inbox-devices.ts).
   // Linked machines (docs/agent-guides/inbox-machines.md). Linking and unlinking answer only on this computer.
   machines: () => get<{ self: string; machines: MachineView[] }>(inboxUrl('/machines')),

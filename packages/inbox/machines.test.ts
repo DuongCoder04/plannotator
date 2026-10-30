@@ -10,7 +10,7 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { InboxListRow, InboxListSection } from '@plannotator/core/inbox-types';
-import type { MachineView, OutboxView } from './api';
+import { idsIn, inboxApi, type MachineView, type OutboxView } from './api';
 import { inboxUrl, machineOf, rememberMachine, resetMachineRoutes, setSelfMachine } from './inboxUrl';
 import { filterMachineRows, machineCounts, machineProjectNames, machinesModel, outboxLine, threadAwayLine, threadOutbox } from './machines';
 
@@ -139,5 +139,81 @@ describe('held answers', () => {
     );
     const shown = threadOutbox(entries, { thread_id: 'thr_1', messages: [{ id: 'msg_1' }] });
     expect(shown.map((e) => e.key)).toEqual(['k-fail', 'k-msg', 'k-reply']);
+  });
+});
+
+describe('held answers by state', () => {
+  test('connecting is on its way, out of date waits for an update, removed there says it will not go; none says delivered', () => {
+    const held = outbox('k', 'messages/msg_1/reply', 'queued');
+    expect(outboxLine(held, machine(MAC, 'MacBook', 'connecting'))!.text).toBe('Sending to MacBook…');
+    expect(outboxLine(held, machine(MAC, 'MacBook', 'needs_update'))!.text).toBe('Will send when MacBook is updated');
+    expect(outboxLine(held, machine(MAC, 'MacBook', 'revoked'))!.text).toMatch(/^Not sent: MacBook removed the link/);
+    for (const state of ['connecting', 'needs_update', 'revoked', 'offline', 'online'] as const) {
+      expect(outboxLine(held, machine(MAC, 'MacBook', state))!.text).not.toMatch(/deliver/i);
+    }
+  });
+
+  test('a held answer the window tied to its thread shows while the thread cannot be read (no messages yet), and only there', () => {
+    const entries = new Map<string, OutboxView>(
+      [outbox('k-mine', 'messages/msg_1/reply', 'queued', { thread: 'thr_1' }), outbox('k-other', 'messages/msg_9/reply', 'queued', { thread: 'thr_9' })].map((e) => [e.key, e]),
+    );
+    expect(threadOutbox(entries, { thread_id: 'thr_1', messages: [] }).map((e) => e.key)).toEqual(['k-mine']);
+  });
+});
+
+describe("thread ids: a linked machine never takes over this machine's", () => {
+  const LOCAL = 'thr_01KLOCAL00000000000000001';
+  const REMOTE = 'thr_01KREMOTE0000000000000001';
+  const LOCAL_PROJECT = 'prj_01KLOCAL00000000000000001';
+  const REMOTE_PROJECT = 'prj_01KREMOTE0000000000000001';
+  const listModel = {
+    self: SELF,
+    sections: [
+      {
+        id: 'needs_you',
+        threads: [
+          { thread_id: LOCAL, section: 'needs_you', project: { id: LOCAL_PROJECT, name: 'billing-svc' } },
+          // MacBook sends a row with this machine's own thread id, and one of its own.
+          { thread_id: LOCAL, section: 'needs_you', project: { id: REMOTE_PROJECT, name: 'billing-svc' }, machine: MAC },
+          { thread_id: REMOTE, section: 'needs_you', project: { id: REMOTE_PROJECT, name: 'billing-svc' }, machine: MAC },
+        ],
+      },
+    ],
+    projects: [
+      { id: LOCAL_PROJECT, name: 'billing-svc' },
+      { id: REMOTE_PROJECT, name: 'billing-svc', machine: MAC },
+    ],
+    machines: [],
+  };
+
+  test('a colliding id in the merged list stays local; a later answer or event from a linked machine cannot claim it either', async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify(listModel), { headers: { 'Content-Type': 'application/json' } })) as unknown as typeof fetch;
+    try {
+      await inboxApi.list();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(machineOf(LOCAL)).toBeNull();
+    expect(machineOf(LOCAL_PROJECT)).toBeNull();
+    expect(machineOf(REMOTE)).toBe(MAC);
+    // A forwarded answer or a `machine` frame naming the local id: still local, so a reply to it stays here.
+    rememberMachine([LOCAL], MAC);
+    rememberMachine([LOCAL], MINI, true);
+    expect(machineOf(LOCAL)).toBeNull();
+    expect(inboxUrl(`/threads/${LOCAL}/read`, undefined, machineOf(LOCAL))).toBe(`/api/inbox/threads/${LOCAL}/read`);
+    // Nor can one linked machine take another's thread: Mini naming MacBook's id leaves it with MacBook.
+    rememberMachine([REMOTE], MINI);
+    rememberMachine([REMOTE], MINI, true);
+    expect(machineOf(REMOTE)).toBe(MAC);
+  });
+
+  test('a forwarded answer teaches only its routed id fields, never any string under a key ending in _id', () => {
+    const ids = idsIn({
+      thread: { id: REMOTE, messages: [{ message_id: 'msg_01KREMOTE00000000000000001' }] },
+      x_id: LOCAL,
+      session_id: 'ses_01KREMOTE0000000000000001',
+    });
+    expect([...ids].sort()).toEqual(['msg_01KREMOTE00000000000000001', REMOTE]);
   });
 });

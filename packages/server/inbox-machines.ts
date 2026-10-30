@@ -110,8 +110,11 @@ export interface OutboxView {
   answer: unknown;
   notice: OutboxEntry["notice"];
   dismissed: boolean;
-  /** The words a held reply or message carries, so the window can show what waits (null for any other write). */
+  /** The words a held reply or message carries, so the window can show what waits (null for any other write). Cut at
+   * OUTBOX_WORDS_SHOWN, then "…". */
   words: string | null;
+  /** The thread it is about, as the window named it (null: not named, or an older entry). */
+  thread: string | null;
 }
 
 /** At most this much of a held write's words rides its view. */
@@ -119,10 +122,11 @@ const OUTBOX_WORDS_SHOWN = 2_000;
 
 const wordsOf = (body: Record<string, unknown>): string | null => {
   const words = typeof body.words === "string" ? body.words : typeof body.body === "string" ? body.body : null;
-  return words === null ? null : words.slice(0, OUTBOX_WORDS_SHOWN);
+  if (words === null) return null;
+  return words.length > OUTBOX_WORDS_SHOWN ? `${words.slice(0, OUTBOX_WORDS_SHOWN)}…` : words;
 };
 
-const outboxView = (entry: OutboxEntry): OutboxView => ({
+export const outboxView = (entry: OutboxEntry): OutboxView => ({
   key: entry.key,
   machine: entry.machine,
   route: entry.route,
@@ -134,10 +138,13 @@ const outboxView = (entry: OutboxEntry): OutboxView => ({
   notice: entry.notice,
   dismissed: entry.dismissed,
   words: wordsOf(entry.body),
+  thread: entry.thread ?? null,
 });
 
 const FORWARD = /^\/api\/inbox\/m\/(ibx_[0-9A-HJKMNP-TV-Z]{26})\/(.+)$/;
 const REPLY_ROUTE = /^messages\/[^/]+\/reply$/;
+/** A thread id the window names in `X-Plannotator-Thread`: kept on the outbox entry only, never sent on. */
+const THREAD_HINT = /^[A-Za-z0-9_-]{8,80}$/;
 /** Of the window's headers, the forward passes on only these (as the door does). */
 const PASS_REQUEST = ["range", "if-range", "if-none-match"];
 /** Of the far door's answer, these: its bytes' description, and its safety headers (an SVG or a page from another machine never runs on this origin). */
@@ -321,7 +328,9 @@ export function createInboxMachines(context: InboxMachinesContext) {
     }
     if (offer.id && health.inbox_id !== offer.id) throw new InboxError("machine_mismatch", "A different Inbox answers at that address than the one that made this code.");
     if (health.inbox_id === links.selfId) throw new InboxError("link_to_self", "That is this Inbox's own link code: open the code on the other machine.");
-    const name = typeof pairedBody.computer?.name === "string" && pairedBody.computer.name ? pairedBody.computer.name : "Other machine";
+    // The other machine names itself: control characters dropped (the CLI prints the name), at most 64 characters.
+    const named = typeof pairedBody.computer?.name === "string" ? pairedBody.computer.name.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim().slice(0, 64) : "";
+    const name = named || "Other machine";
     return { token, id: health.inbox_id as string, name, transport };
   };
 
@@ -534,7 +543,9 @@ export function createInboxMachines(context: InboxMachinesContext) {
     if (REPLY_ROUTE.test(route) && (typeof body.seen_through_seq !== "number" || !Number.isSafeInteger(body.seen_through_seq))) {
       throw new InboxError("validation_error", "seen_through_seq: a reply to another machine carries the newest seq of the thread the person saw.", { field: "seen_through_seq" });
     }
-    const { entry, fresh } = outbox.submit(machine, route, body);
+    // The window names the thread a write is about, so a held answer shows even where that thread cannot open.
+    const named = req.headers.get("X-Plannotator-Thread")?.trim() ?? "";
+    const { entry, fresh } = outbox.submit(machine, route, body, THREAD_HINT.test(named) ? named : null);
     if (peer.state === "online") peer.flush();
     else peer.poke();
     const settled = (await outbox.waitSettled(entry.key, peer.state === "online" ? MACHINE_WRITE_WAIT_MS : 0)) ?? entry;

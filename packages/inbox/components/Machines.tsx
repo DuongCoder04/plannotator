@@ -23,10 +23,15 @@ export function linkErrorText(error: unknown): string {
   return error.message;
 }
 
+/** "2 waiting to send": what the outbox holds for a machine, said the same way in its line and in Unlink. */
+function waitingText(waiting: number): string {
+  return `${waiting} waiting to send`;
+}
+
 /** The line under a linked machine: its state, then the answers waiting for it. */
 function machineLine(machine: MachineView): string {
   const status = machineStatus(machine);
-  return machine.waiting > 0 ? `${status} · ${machine.waiting} waiting to send` : status;
+  return machine.waiting > 0 ? `${status} · ${waitingText(machine.waiting)}` : status;
 }
 
 export interface MachinesSectionProps {
@@ -52,7 +57,15 @@ export function MachinesSection({ machines, via, onChanged }: MachinesSectionPro
   const [offering, setOffering] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [justLinked, setJustLinked] = useState<string | null>(null);
+  // After an Unlink the other machine could not hear (asleep): it drops the link at its next contact, said here.
+  const [unlinkedNote, setUnlinkedNote] = useState<string | null>(null);
   const linkButton = useRef<HTMLButtonElement>(null);
+  // A code someone used is spent: once a new machine shows up, the code goes away.
+  const linkedCount = useRef(linked.length);
+  useEffect(() => {
+    if (linked.length > linkedCount.current) setOffer(null);
+    linkedCount.current = linked.length;
+  }, [linked.length]);
 
   const showOffer = async () => {
     setOffering(true);
@@ -91,10 +104,13 @@ export function MachinesSection({ machines, via, onChanged }: MachinesSectionPro
                 <RemoveLink
                   name={machine.name}
                   verb="Unlink"
+                  warning={machine.waiting > 0 ? `${waitingText(machine.waiting)} will be lost.` : undefined}
                   onRemove={async () => {
                     setError(null);
+                    setUnlinkedNote(null);
                     try {
-                      await inboxApi.unlinkMachine(machine.id);
+                      const answer = await inboxApi.unlinkMachine(machine.id);
+                      if (!answer.told) setUnlinkedNote(`Unlinked here. ${machine.name} could not be reached, so it drops the link the next time it is in touch.`);
                     } catch (cause) {
                       setError(linkErrorText(cause));
                     }
@@ -122,6 +138,11 @@ export function MachinesSection({ machines, via, onChanged }: MachinesSectionPro
             <span className="ib-txt">
               <span className="ib-l">{linked.length > 0 ? 'Link another machine' : 'No machine linked yet'}</span>
               {linked.length === 0 && <span className="ib-desc">Make a link code on the other computer, then paste it here.</span>}
+              {unlinkedNote && (
+                <span className="ib-desc" data-machine-unlinked="" role="status">
+                  {unlinkedNote}
+                </span>
+              )}
               {justLinked && (
                 <span className="ib-desc ib-paired" data-machine-linked="" role="status">
                   <Icon name="check" size={13} /> Linked with {justLinked}.
@@ -136,6 +157,7 @@ export function MachinesSection({ machines, via, onChanged }: MachinesSectionPro
                 disabled={remote}
                 onClick={() => {
                   setJustLinked(null);
+                  setUnlinkedNote(null);
                   setError(null);
                   setLinking(true);
                 }}
@@ -151,8 +173,8 @@ export function MachinesSection({ machines, via, onChanged }: MachinesSectionPro
             <span className="ib-l">This machine&apos;s link code</span>
             <span className="ib-desc">
               {offer
-                ? `Paste it in Settings → Machines on the other computer. It works once, until ${shortTime(offer.expires_at)}.`
-                : 'Show it here, then paste it on the other computer.'}
+                ? `Paste it in Settings → Machines on the other computer before ${shortTime(offer.expires_at)}. Each code works once. This Inbox stays on your tailnet while a code is open or a machine is linked.`
+                : 'Showing a code puts this Inbox on your tailnet with Tailscale Serve, so the other computer can reach it.'}
             </span>
           </span>
           <span className="ib-ctl">
@@ -162,7 +184,7 @@ export function MachinesSection({ machines, via, onChanged }: MachinesSectionPro
           </span>
         </div>
         {offer && !remote && (
-          <div className="ib-mcode" data-machine-offer="" data-code={offer.code}>
+          <div className="ib-mcode" data-machine-offer="">
             {offer.tailnet_error && (
               <div className="ib-callout ib-warn" data-machine-offer-tailnet="">
                 <Icon name="warn" />

@@ -16,8 +16,9 @@ import { capQuestionPrompt, emptyQuestionAnswer, indexQuestionBlocks, isQuestion
 import { INBOX_AUTO_SEND_ACK_NOTES, inboxAskingMessage, wholeMinutes, isInboxNote, isInboxTextKind, readInboxAttachmentKind, type InboxAnnotationRecord, type InboxAttachment, type InboxAttachmentState, type InboxInlineImage, type InboxQuestionState } from '@plannotator/core/inbox-types';
 import type { LocalLinkResolver } from '@plannotator/ui/components/LocalLinkContext';
 import { NOT_ATTACHED_TITLE, attachmentDeepLink, attachmentDisplayPath, attachmentForLink, openAttachmentTitle, useRefRepo } from '../links';
-import { InboxApiError, inboxApi, type AttachmentsModel, type MachineView, type OutboxView, type TagMode } from '../api';
-import { awayLine, outboxLine } from '../machines';
+import { InboxApiError, InboxHeldError, inboxApi, type AttachmentsModel, type MachineView, type OutboxView, type TagMode } from '../api';
+import { awayLine } from '../machines';
+import { HeldWrites } from './HeldWrites';
 import type { HtmlEmbedHost } from '@plannotator/ui/components/html-embed/HtmlEmbedBlock';
 import { annotationOf, attachmentFeedback, isFileComment } from '../attachments';
 import { linkReplyFeedback, resolveReplyLink } from '../replyFileLinks';
@@ -2626,6 +2627,8 @@ export function ThreadPane({ notice, thread, machine = null, outbox = NO_OUTBOX,
     pickChain.current = pickChain.current.then(async () => {
       const known = questionById(id);
       const revision = Math.max(revisions.current.get(id) ?? 0, known?.revision ?? 0);
+      /** Held for another machine (linked machines): the pick stays drawn as picked; it applies when that machine takes it. */
+      let held = false;
       try {
         const result = await inboxApi.pick(messageId, key, revision, answer);
         for (const q of result.questions) revisions.current.set(`${q.message_id}/${q.key}`, q.revision);
@@ -2636,11 +2639,16 @@ export function ThreadPane({ notice, thread, machine = null, outbox = NO_OUTBOX,
         threadRef.current = { ...latest, messages: latest.messages.map((m) => (m.id === messageId ? { ...m, questions: result.questions } : m)) };
         onQuestions(messageId, result.questions);
       } catch (cause) {
+        if (cause instanceof InboxHeldError) {
+          held = true;
+          return;
+        }
         // The agent replaced the question meanwhile: reading the thread again redraws it as Replaced.
         if (!isSuperseded(cause)) setError(cause instanceof InboxApiError ? cause.message : 'The pick was not saved.');
         await onChanged();
       } finally {
         setPending((current) => {
+          if (held) return current;
           if (!current.has(id) || current.get(id) !== answer) return current;
           const next = new Map(current);
           next.delete(id);
@@ -4554,43 +4562,8 @@ export function ThreadPane({ notice, thread, machine = null, outbox = NO_OUTBOX,
           );
           return before;
         })}
-        {/* Linked machines: what the person sent to this machine's thread that its Inbox has not taken yet, drawn
-            as their own reply is, with the outbox's state in place of the delivery line: "Sending…" until the
-            other machine's Inbox answers, never "Delivered" before (rule 12). Delivered, it is the thread's own. */}
-        {outbox.map((entry) => {
-          const line = outboxLine(entry, machine);
-          if (!line) return null;
-          const state = (
-            <div className="ib-delivered" data-delivery={line.tone === 'failed' ? 'undelivered' : 'queued'} data-outbox-line="">
-              <span className="ib-dl-main">
-                <Icon name={line.tone === 'failed' ? 'warn' : machine?.state === 'online' ? 'send' : 'clock'} size={14} />
-                <span className="ib-dl-text">{line.text}</span>
-              </span>
-              {line.tone === 'failed' && onDismissOutbox && (
-                <button type="button" className="ib-sendnow" data-outbox-dismiss="" onClick={() => onDismissOutbox(entry.key)}>
-                  Dismiss
-                </button>
-              )}
-            </div>
-          );
-          if (!entry.words) return <div key={entry.key} data-outbox={entry.key} data-outbox-state={entry.state}>{state}</div>;
-          return (
-            <article key={entry.key} className="ib-message" data-author="person" data-outbox={entry.key} data-outbox-state={entry.state}>
-              <div className="ib-fline ib-is-open">
-                <span className="ib-mk ib-big" aria-hidden="true">
-                  <Icon name="reply" />
-                </span>
-                <span className="ib-fl-nm ib-who">You</span>
-              </div>
-              <div className="ib-msg">
-                <p className="ib-held-words" dir="auto">
-                  {entry.words}
-                </p>
-                {state}
-              </div>
-            </article>
-          );
-        })}
+        {/* Linked machines: what the person sent here that the thread's machine has not taken yet (HeldWrites.tsx). */}
+        <HeldWrites entries={outbox} machine={machine} onDismiss={onDismissOutbox} />
         {showNew && !phone && newPill}
         <div className="ib-sr" aria-live="polite" data-fold-live="">
           {announced}

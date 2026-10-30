@@ -266,6 +266,10 @@ describe("linked machines, on three real Inboxes", () => {
       expect(frames.some((f) => f.event === "machine" && f.data.record?.message?.id === sent.message_id)).toBe(true);
       const row = await waitFor("B's thread in A's merged list", async () => (await mergedRows(A)).find((r) => r.thread_id === sent.thread_id));
       expect(row.machine).toBe(B.id);
+      // A holds a cursor of B's list (the window's cue to read the merged list again); A's own has none.
+      const views = await machinesOf(A);
+      expect(typeof views.find((x) => x.id === B.id)!.list_cursor).toBe("number");
+      expect(views.find((x) => x.self)!.list_cursor).toBeNull();
       // A's own list (no machines=1) stays A's own.
       expect(((await getJson(A, "/api/inbox/threads")).sections as Json[]).flatMap((s) => s.threads).some((r: Json) => r.thread_id === sent.thread_id)).toBe(false);
       // The person opens the thread from A (a read forwarded to B), then presses Send.

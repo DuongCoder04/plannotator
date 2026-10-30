@@ -1169,7 +1169,8 @@ function OpenedCard({
     const thread = card.threads.find((id) => rowOf(id)?.project.id === card.project_id) ?? card.threads[0];
     if (thread && askTarget.session === agentSession) {
       const sent = await inboxApi.newMessage(thread, { session: askTarget.session, body, idempotency_key: idempotency });
-      return sent.message.id;
+      // Board cards are this Inbox's own, so its threads are too: a message is never held for another machine here.
+      return sent.message?.id ?? idempotency;
     }
     const started = await inboxApi.startThread({ to: { host: askTarget.host, session: askTarget.session }, body, idempotency_key: idempotency });
     // A send links the thread itself; an Ask links it here.

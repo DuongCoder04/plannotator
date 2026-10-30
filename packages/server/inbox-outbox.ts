@@ -85,6 +85,11 @@ export interface OutboxEntry {
   /** What the person is told about an entry that did not land (rules 3, 4). */
   notice: { kind: OutboxNoticeKind; at: string } | null;
   dismissed: boolean;
+  /**
+   * The thread the write is about, as the window that pressed Send named it (`X-Plannotator-Thread`), so the window
+   * shows a held answer even when that thread cannot open. Never sent on; absent from an older entry.
+   */
+  thread?: string | null;
 }
 
 /** What one try got back: the owner's status and JSON body, or `null` when the machine could not be reached. */
@@ -286,7 +291,7 @@ export class InboxOutbox {
    * whatever state it is in, and queues nothing. The same key on another
    * route or machine is refused, as the door refuses it.
    */
-  submit(machine: string, route: string, body: Record<string, unknown>): { entry: OutboxEntry; fresh: boolean } {
+  submit(machine: string, route: string, body: Record<string, unknown>, thread: string | null = null): { entry: OutboxEntry; fresh: boolean } {
     if (!MACHINE_FILE.test(machine)) throw new InboxError("validation_error", "machine: an ibx_ id.", { field: "machine" });
     const key = typeof body.idempotency_key === "string" ? body.idempotency_key.trim() : "";
     if (!key) throw new InboxError("validation_error", "idempotency_key: required on a write to another machine.", { field: "idempotency_key" });
@@ -317,6 +322,7 @@ export class InboxOutbox {
       settled_at: null,
       notice: null,
       dismissed: false,
+      thread,
     });
     return { entry, fresh: true };
   }

@@ -13,7 +13,13 @@ function grouped(hex: string): string {
 }
 
 /** Remove, asked twice like Delete thread: "Remove? Click again", then the phone's token stops working. Settings → Machines says Unlink. */
-export function RemoveLink({ name, onRemove, verb = 'Remove' }: { name: string; onRemove: () => Promise<void>; verb?: string }) {
+export function RemoveLink({ name, onRemove, verb = 'Remove', warning }: { name: string; onRemove: () => Promise<void>; verb?: string; warning?: string }) {
+  // `warning`: what the second click costs, said in the confirm itself (Settings → Machines: answers that will not be sent).
+  const confirmText = warning ? `${verb}? ${warning} Click again` : `${verb}? Click again`;
+  return <RemoveButton name={name} onRemove={onRemove} verb={verb} confirmText={confirmText} />;
+}
+
+function RemoveButton({ name, onRemove, verb, confirmText }: { name: string; onRemove: () => Promise<void>; verb: string; confirmText: string }) {
   const [state, setState] = useState<'idle' | 'confirm' | 'busy'>('idle');
   useEffect(() => {
     if (state !== 'confirm') return;
@@ -25,7 +31,7 @@ export function RemoveLink({ name, onRemove, verb = 'Remove' }: { name: string; 
       type="button"
       className={`ib-del-l${state === 'confirm' ? ' ib-confirm' : ''}`}
       disabled={state === 'busy'}
-      aria-label={state === 'confirm' ? `${verb} ${name}: click again to ${verb.toLowerCase()}` : `${verb} ${name}`}
+      aria-label={state === 'confirm' ? `${verb} ${name}: ${confirmText.slice(verb.length + 2)}` : `${verb} ${name}`}
       onClick={() => {
         if (state === 'idle') return setState('confirm');
         if (state !== 'confirm') return;
@@ -33,7 +39,7 @@ export function RemoveLink({ name, onRemove, verb = 'Remove' }: { name: string; 
         onRemove().finally(() => setState('idle'));
       }}
     >
-      {state === 'confirm' ? `${verb}? Click again` : verb}
+      {state === 'confirm' ? confirmText : verb}
     </button>
   );
 }

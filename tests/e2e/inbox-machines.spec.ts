@@ -16,13 +16,17 @@
  *     no "Hide offline machines"; Settings → Machines says none is linked.
  *  2. Linked: the merged list labels another machine's rows like the project
  *     label ("billing-svc · MacBook"), this machine's not; Machines in the
- *     sidebar; a thread from another machine says "On MacBook".
+ *     sidebar; a thread from another machine says "On MacBook". A fresh load
+ *     of that thread (a reload, a new tab) opens it.
  *  3. Answering MacBook's thread from Studio wakes MacBook's agent.
  *  4. MacBook asleep: its rows greyed under "MacBook asleep since …"; an
- *     answer is held ("Will send when MacBook is back", never delivered), then
- *     lands once when MacBook is back, and its agent gets it.
+ *     answer is held ("Will send when MacBook is back", never delivered), and
+ *     still shows after a reload while the thread cannot open; then it lands
+ *     once when MacBook is back, and its agent gets it.
  *  5. The sidebar filter, and Hide offline machines.
- *  6. Unlink in Settings → Machines.
+ *  6. Unlink in Settings → Machines (Mini asleep: it is told at its next contact).
+ *  7. The sidebar's Machines section goes with the last link: unlinked from
+ *     MacBook's side, then (linked again) from Studio's Settings.
  *
  * Screenshots (light and dark at 1440×900, phone at 390) land in
  * PLANNOTATOR_MACHINES_SHOTS, else .local/proof/link-machines-window/.
@@ -293,6 +297,23 @@ test('2b. the merged list labels another machine\'s rows like the project label;
   await phoneShot('02-thread-other-machine', `#thread=${macThread}`);
 });
 
+test("2c. a fresh load of another machine's thread opens it: a reload, and a new tab", async () => {
+  const subject = 'Ledger export: keep the CSV columns stable?';
+  await page.goto(`${studio.url}#thread=${macThread}`);
+  await page.reload();
+  await expect(page.locator('section.ib-pane .ib-subject')).toHaveText(subject);
+  await expect(page.locator('section.ib-pane [data-thread-machine]')).toHaveText('On MacBook');
+  await expect(page.locator('[data-thread-wait="missing"]')).toHaveCount(0);
+  const tab = await context.newPage();
+  try {
+    await tab.goto(`${studio.url}#thread=${macThread}`);
+    await expect(tab.locator('section.ib-pane .ib-subject')).toHaveText(subject);
+    await expect(tab.locator('[data-thread-wait="missing"]')).toHaveCount(0);
+  } finally {
+    await tab.close();
+  }
+});
+
 test("3. answering MacBook's thread from Studio wakes MacBook's agent", async () => {
   const onMac = await agentOn(macbook);
   const waiting = onMac.waitForReply(macThread, 45);
@@ -330,9 +351,25 @@ test('4. MacBook asleep: greyed rows under "MacBook asleep since"; an answer wai
   await shot('03-asleep-held');
   await phoneShot('03-asleep', '');
 
-  // MacBook is back: the answer is sent once, the waiting line goes, and the reply shows in the thread.
+  // Back to the list, then a fresh load of the thread: it cannot open while MacBook sleeps, and the answer still
+  // shows there, waiting.
+  await page.goto(studio.url);
+  await page.goto(`${studio.url}#thread=${macHeldThread}`);
+  await page.reload();
+  await expect(page.locator('[data-thread-wait-away]')).toContainText('MacBook asleep since', { timeout: 20_000 });
+  const waiting = page.locator('[data-thread-wait-held] [data-outbox]');
+  await expect(waiting.locator('.ib-held-words')).toHaveText('Split it per account first; index after if it is still slow.');
+  await expect(waiting.locator('[data-outbox-line]')).toHaveText('Will send when MacBook is back');
+  // The away line is on screen above it (it fades in after a short wait), not only in the DOM.
+  await expect(page.locator('.ib-pwait-line')).toHaveCSS('opacity', '1');
+  await shot('07-asleep-held-reload');
+  await phoneShot('07-asleep-held-reload', `#thread=${macHeldThread}`);
+
+  // MacBook is back: the answer is sent once, the waiting line goes, the thread opens with the reply in it.
   start(macbook);
   await expect.poll(() => stateOf(studio, macbook), { timeout: 45_000 }).toBe('online');
+  await expect(page.locator('[data-thread-wait-held]')).toHaveCount(0, { timeout: 30_000 });
+  await expect(pane.locator('.ib-subject')).toHaveText('Nightly reconcile is slow', { timeout: 30_000 });
   await expect(held).toHaveCount(0, { timeout: 30_000 });
   await expect(away).toHaveCount(0);
   await expect(pane.locator('article[data-author="person"]')).toHaveCount(1, { timeout: 15_000 });
@@ -398,6 +435,8 @@ test('6. Settings → Machines: each machine with its state and version; Unlink 
   await miniRow.locator('.ib-del-l').click();
   await expect(miniRow).toHaveCount(0);
   await expect(macRow).toBeVisible();
+  // Mini sleeps, so it could not be told: it drops the link the next time it is in touch, and the page says so.
+  await expect(page.locator('[data-machine-unlinked]')).toContainText('Mini could not be reached');
   const left = await json<{ machines: { id: string }[] }>(studio, '/api/inbox/machines');
   expect(left.machines.map((m) => m.id)).not.toContain(mini.id);
 
@@ -405,5 +444,40 @@ test('6. Settings → Machines: each machine with its state and version; Unlink 
   await expect(row(ownThread)).toBeVisible();
   await expect(row(miniThread)).toHaveCount(0);
   await expect(page.locator('[data-machines-section] [data-machine] .ib-name')).toHaveText(['Studio', 'MacBook']);
+  expect(errors).toEqual([]);
+});
+
+test('7. the sidebar Machines section goes with the last link: unlinked from the other side, then from here', async () => {
+  const section = page.locator('[data-machines-section]');
+  await page.goto(studio.url);
+  await expect(label(macWaiting)).toHaveText('stripe-sync · MacBook');
+  await expect(section).toBeVisible();
+
+  // MacBook unlinks Studio on its own side: Studio's window drops the section and MacBook's rows, no reload.
+  const run = cli(macbook, 'unlink', studio.id);
+  expect(run.status, run.err).toBe(0);
+  await expect(section).toHaveCount(0, { timeout: 15_000 });
+  await expect(row(macWaiting)).toHaveCount(0);
+  await expect(label(ownThread)).toHaveText('billing-svc');
+  await expect(page.locator('.ib-lbody [data-away]')).toHaveCount(0);
+  expect(await menuHasHideOffline()).toBe(false);
+
+  // Linked again, then the last link unlinked here in Settings: the section goes again, with every label.
+  link(studio, macbook);
+  await expect(section).toBeVisible({ timeout: 15_000 });
+  await expect(label(macWaiting)).toHaveText('stripe-sync · MacBook', { timeout: 15_000 });
+  await page.goto(`${studio.url}#settings/machines`);
+  const macRow = page.locator(`[data-machine-row="${macbook.id}"]`);
+  await macRow.locator('.ib-del-l').click();
+  await expect(macRow.locator('.ib-del-l')).toHaveText('Unlink? Click again');
+  await macRow.locator('.ib-del-l').click();
+  await expect(macRow).toHaveCount(0);
+  await expect(page.locator('[data-machine-start] .ib-l')).toHaveText('No machine linked yet');
+  await page.goto(studio.url);
+  await expect(row(ownThread)).toBeVisible();
+  await expect(section).toHaveCount(0);
+  await expect(row(macWaiting)).toHaveCount(0);
+  await expect(label(ownThread)).toHaveText('billing-svc');
+  await expect(page.locator('.ib-lbody [data-away]')).toHaveCount(0);
   expect(errors).toEqual([]);
 });

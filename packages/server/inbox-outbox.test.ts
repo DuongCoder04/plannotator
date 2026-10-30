@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxMessage } from "@plannotator/core/inbox-types";
 import { doorRouteNames, doorWriteRoutes } from "./inbox-devices";
+import { outboxView } from "./inbox-machines";
 import { classifyAnswer, DOOR_WRITES, doorWriteKind, InboxOutbox, OUTBOX_KEEP_SETTLED_MS, OUTBOX_MAX_SERVER_ERRORS, replyIsStale, type OutboxAnswer, type OutboxEntry } from "./inbox-outbox";
 
 const B = "ibx_01K00000000000000000000000";
@@ -70,6 +71,26 @@ describe("rule 1: one key from end to end", () => {
     const outbox = InboxOutbox.open(dataDir());
     expect(() => outbox.submit(B, "messages/m1/reply", { words: "x" })).toThrow(/idempotency_key/);
     expect(outbox.list(B)).toHaveLength(0);
+  });
+});
+
+describe("the window's view of a held write", () => {
+  test("it carries the words (a long reply cut, and said so) and the thread the window named, kept across a restart and never sent on", async () => {
+    const dir = dataDir();
+    const outbox = InboxOutbox.open(dir);
+    outbox.submit(B, "messages/m1/reply", reply("k1", "x".repeat(2_500)), "thr_01K00000000000000000000001");
+    outbox.submit(B, "threads/t1/read", { idempotency_key: "k2" });
+    const [long, read] = InboxOutbox.open(dir).list(B).map(outboxView);
+    expect(long!.words).toBe(`${"x".repeat(2_000)}…`);
+    expect(long!.thread).toBe("thr_01K00000000000000000000001");
+    expect(read!.words).toBeNull();
+    expect(read!.thread).toBeNull();
+    const sent: OutboxEntry[] = [];
+    await outbox.drain(B, async (entry) => {
+      sent.push(entry);
+      return ok;
+    });
+    expect(sent.map((entry) => JSON.stringify(entry.body)).join("")).not.toContain("thr_01K00000000000000000000001");
   });
 });
 

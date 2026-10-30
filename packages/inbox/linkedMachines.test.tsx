@@ -14,13 +14,14 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InboxListRow, InboxListSection } from '@plannotator/core/inbox-types';
-import type { MachineView } from './api';
+import type { MachineView, OutboxView } from './api';
 import type { SidebarProps } from './components/Sidebar';
 
 const hasDom = typeof document !== 'undefined';
 const { InboxList } = (hasDom ? await import('./components/InboxList') : {}) as typeof import('./components/InboxList');
 const { Sidebar } = (hasDom ? await import('./components/Sidebar') : {}) as typeof import('./components/Sidebar');
 const { MachinesSection } = (hasDom ? await import('./components/Machines') : {}) as typeof import('./components/Machines');
+const { ThreadWait } = (hasDom ? await import('./components/ThreadWait') : {}) as typeof import('./components/ThreadWait');
 const { SidebarProvider } = (hasDom ? await import('./shell/sidebar') : {}) as typeof import('./shell/sidebar');
 const { machinesModel, machineProjectNames } = await import('./machines');
 const { setStorageBackend, resetStorageBackend } = await import('@plannotator/ui/utils/storage');
@@ -72,12 +73,14 @@ let host: HTMLElement | null = null;
 const stored = new Map<string, string>();
 let savedFetch: typeof fetch;
 const posted: { url: string; body: Record<string, unknown> }[] = [];
+let unlinkTold = true;
 
 beforeEach(() => {
   if (!hasDom) return;
   stored.clear();
   setStorageBackend({ getItem: (k) => stored.get(k) ?? null, setItem: (k, v) => void stored.set(k, v), removeItem: (k) => void stored.delete(k) });
   posted.length = 0;
+  unlinkTold = true;
   savedFetch = globalThis.fetch;
   // Settings → Machines' writes: recorded, answered as the server does.
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -88,7 +91,7 @@ beforeEach(() => {
       if (body.link === 'plannotator://link?v=1&old') return new Response(JSON.stringify({ error: 'This link code is no longer open. Make a new one on the other machine.', code: 'offer_expired' }), { status: 409 });
       return new Response(JSON.stringify({ machine: machine(MAC, 'MacBook', 'online') }), { status: 201 });
     }
-    if (url.includes('/unlink')) return new Response(JSON.stringify({ unlinked: { id: MAC, name: 'MacBook' }, told: true }), { status: 200 });
+    if (url.includes('/unlink')) return new Response(JSON.stringify({ unlinked: { id: MAC, name: 'MacBook' }, told: unlinkTold }), { status: 200 });
     return new Response('{}', { status: 200 });
   }) as typeof fetch;
 });
@@ -259,15 +262,58 @@ test.skipIf(!hasDom)('Settings → Machines: each machine with its state and ver
   expect(desc[0]).toEndWith('· Plannotator 0.28.39 · 1 waiting to send');
   expect(desc[1]).toBe('Needs update · runs 0.28.30');
 
+  // MacBook holds an answer: the confirm says it will be lost before the second click. Mini holds none: no warning.
   const unlink = rows[0]!.querySelector<HTMLButtonElement>('.ib-del-l')!;
   expect(unlink.textContent).toBe('Unlink');
   act(() => unlink.click());
-  expect(unlink.textContent).toBe('Unlink? Click again');
+  expect(unlink.textContent).toBe('Unlink? 1 waiting to send will be lost. Click again');
+  const unlinkMini = rows[1]!.querySelector<HTMLButtonElement>('.ib-del-l')!;
+  act(() => unlinkMini.click());
+  expect(unlinkMini.textContent).toBe('Unlink? Click again');
   expect(posted).toHaveLength(0);
+  // MacBook asleep could not be told: the section says it drops the link at its next contact.
+  unlinkTold = false;
   act(() => unlink.click());
   await settle();
   expect(posted.map((p) => p.url)).toEqual([`/api/inbox/machines/${MAC}/unlink`]);
   expect(changed).toBe(1);
+  expect(document.querySelector('[data-machine-unlinked]')!.textContent).toContain('MacBook could not be reached, so it drops the link the next time it is in touch');
+});
+
+test.skipIf(!hasDom)("a thread that cannot open because its machine sleeps still shows the person's held answer, waiting, never delivered", () => {
+  const held: OutboxView = {
+    key: 'k1',
+    machine: MAC,
+    route: 'messages/msg_far/reply',
+    state: 'queued',
+    queued_at: SINCE,
+    settled_at: null,
+    status: null,
+    answer: null,
+    notice: null,
+    dismissed: false,
+    words: 'Ship the ledger fix',
+    thread: 'msg_far',
+  };
+  mount(
+    <ThreadWait
+      load={{ state: 'failed', error: 'machine_offline' }}
+      onRetry={noop}
+      onClose={noop}
+      onFocusLeaving={noop}
+      away="MacBook asleep since 10:42 AM. The thread opens when it is back."
+      held={{ entries: [held], machine: machine(MAC, 'MacBook', 'offline') }}
+    />,
+  );
+  expect(document.querySelector('[data-thread-wait-away]')).not.toBeNull();
+  const shown = document.querySelector('[data-thread-wait-held] [data-outbox="k1"]')!;
+  expect(shown.querySelector('.ib-held-words')!.textContent).toBe('Ship the ledger fix');
+  expect(shown.querySelector('[data-outbox-line]')!.textContent).toBe('Will send when MacBook is back');
+});
+
+test.skipIf(!hasDom)('"Show link code" says, before the click, that it puts this Inbox on the tailnet', () => {
+  mount(<MachinesSection machines={[machine(SELF, 'Studio', 'online')]} via="local" onChanged={noop} />);
+  expect(document.querySelector('[data-machine-offer-row] .ib-desc')!.textContent).toContain('puts this Inbox on your tailnet');
 });
 
 test.skipIf(!hasDom)('linking: a pasted link, or an address and six digits; only the Link button sends; a refusal is said', async () => {
