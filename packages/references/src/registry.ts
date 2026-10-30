@@ -22,7 +22,7 @@ import { createGitlabAdapter, gitlabAdapter } from "./adapters/gitlab.ts";
 import { linearAdapter } from "./adapters/linear.ts";
 import { GITHUB_PUBLIC_HOST, type GithubHostsOptions } from "./grammars/github.ts";
 import { GITLAB_PUBLIC_HOST, type GitlabHostsOptions } from "./grammars/gitlab.ts";
-import { servedHosts } from "./hosts.ts";
+import { apiOrigin, servedHosts } from "./hosts.ts";
 
 /** Linear's one host. */
 const LINEAR_HOST = "linear.app";
@@ -44,7 +44,8 @@ export interface ReferenceAdapterHosts {
  * self-managed GitLab hosts added. Hosts stay disjoint: throws a TypeError
  * for a host that is not a bare hostname, a host named for both forges, or
  * a host another provider owns (github.com, gitlab.com, linear.app and
- * their `www.` forms). */
+ * their `www.` forms), or a host whose API origin (`apiOrigin`) another
+ * served host already has (`api.github.com`, `api.linear.app`). */
 export function createReferenceAdapters(hosts: ReferenceAdapterHosts = {}): readonly RefReadAdapter[] {
 	const github = servedHosts(GITHUB_PUBLIC_HOST, hosts.github?.hosts);
 	const gitlab = servedHosts(GITLAB_PUBLIC_HOST, hosts.gitlab?.hosts);
@@ -60,6 +61,21 @@ export function createReferenceAdapters(hosts: ReferenceAdapterHosts = {}): read
 	for (const host of gitlab.all) {
 		if (othersPublic(host, GITLAB_PUBLIC_HOST)) throw clash(host);
 	}
+	// API origins stay disjoint too (`api.github.com` named as a GitHub
+	// Enterprise host would share github.com's), so a port can map an
+	// origin back to exactly one host.
+	const origins = new Map<string, string>();
+	const claim = (provider: "github" | "gitlab" | "linear", host: string) => {
+		const origin = apiOrigin(provider, host);
+		const owner = origins.get(origin);
+		if (owner !== undefined) {
+			throw new TypeError(`hosts: "${host}" would read ${origin}, the API origin of "${owner}"; origins must be disjoint`);
+		}
+		origins.set(origin, host);
+	};
+	claim("linear", LINEAR_HOST);
+	for (const host of github.all) claim("github", host);
+	for (const host of gitlab.all) claim("gitlab", host);
 	return [createGithubAdapter(hosts.github), createGitlabAdapter(hosts.gitlab), linearAdapter];
 }
 

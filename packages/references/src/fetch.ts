@@ -106,7 +106,14 @@ export async function externalRefsFetch(
 				status,
 				duration_ms: Date.now() - started,
 			});
-			if (written instanceof Promise) written.catch(() => {});
+			// Any thenable, not only a native Promise.
+			if (
+				written !== null &&
+				(typeof written === "object" || typeof written === "function") &&
+				typeof (written as { then?: unknown }).then === "function"
+			) {
+				Promise.resolve(written as PromiseLike<unknown>).catch(() => {});
+			}
 		} catch {
 			// The log line is best effort.
 		}

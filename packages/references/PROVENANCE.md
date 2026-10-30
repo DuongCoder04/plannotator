@@ -232,6 +232,15 @@ repo after placement, in commit order:
   swallows a rejected async log. `resolve` reads only a ref whose URL is
   the canonical its grammar mints. `createReferenceAdapters` throws on a
   host named for both forges or owned by another provider.
+- Delta review fixes (#2387), replacing part of the entry above: GitHub
+  `list` runs search only with text (search answers at most 1,000
+  results). With no text it reads `repository.issues` with the first
+  label and the milestone number in `filterBy` (the number from a paged
+  milestone title search), and the re-check requires the other labels.
+  With text, a label or milestone holding `"` or `\`, or quoted text over
+  256 characters, answers `field: "filter"`. `createReferenceAdapters`
+  also refuses hosts that share an API origin. Linear `resolve` makes the
+  same canonical check. A log's rejected thenable is swallowed too.
 - Unchanged from the extract, recorded so it is not mistaken for new: a
   canonical on a host the adapter does not serve answers `not_resolvable`
   before the port is asked for a credential, and no fetch runs (Workspaces

@@ -43,9 +43,10 @@ const registry = createReferenceRegistry(
 - A host is a bare lowercase hostname: no scheme, port or path. Anything
   else throws a `TypeError` when the adapter is built.
   `createReferenceAdapters` also throws when a host is named for both
-  forges, or is another provider's host (`github.com`, `gitlab.com`,
-  `linear.app`, or their `www.` forms).
-- `resolve` reads only a ref whose URL is the canonical its grammar mints
+  forges, is another provider's host (`github.com`, `gitlab.com`,
+  `linear.app`, or their `www.` forms), or would read an API origin that
+  another served host already reads (`api.github.com`, `api.linear.app`).
+- `resolve` (GitHub, GitLab and Linear) reads only a ref whose URL is the canonical its grammar mints
   (matching the URL again gives back the same URL). A hand-made ref, or
   one on a host the adapter does not serve, answers `not_resolvable` before
   any credential is asked.
@@ -202,7 +203,8 @@ Rules the adapters apply to every answer (`credentialFor` in `port.ts`):
 The port's `fetch` is wrapped by `fetch.ts` on every call. Redirects to
 another origin are returned, not followed, so a credential header never
 leaves the origin it was sent to. Each call writes one line to the port's
-`log` (host, status and duration only); a `log` that throws is ignored.
+`log` (host, status and duration only); a `log` that throws, or returns a
+promise or thenable that rejects, is ignored.
 Each product names itself with `userAgent`; the adapters hold no product
 names.
 
@@ -277,7 +279,8 @@ values. One test is a tripwire: no source file may read env (`process.env`,
 `Bun.env`, `import.meta.env`, `Deno.env`), mint a JWT, name an auth-flow
 step (`refresh_token`, `client_secret`, `grant_type`, `/login/oauth`,
 `oauth`), call `require(` or a computed or package `import(`, call the
-global `fetch(` (only `src/fetch.ts` calls a fetcher), or import anything
+global fetch (a bare `fetch(`, or through `globalThis`, `self`, `window`
+or `global`; `src/fetch.ts` included), or import anything
 but relative modules and `@plannotator/core/diff-paths` (side-effect
 imports included).
 

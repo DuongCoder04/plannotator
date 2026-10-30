@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, spyOn } from "b
 
 import { createGithubAdapter, githubAdapter } from "../src/adapters/github.ts";
 import { createGitlabAdapter, gitlabAdapter } from "../src/adapters/gitlab.ts";
+import { linearAdapter } from "../src/adapters/linear.ts";
 import type { ExternalRef, RefReadAdapter } from "../src/contract.ts";
 import { githubGrammar } from "../src/grammars/github.ts";
 import { gitlabGrammar } from "../src/grammars/gitlab.ts";
@@ -101,13 +102,18 @@ describe("host-aware grammars", () => {
 		expect(matchExternalRef(new URL(`https://${GHES}/a/b/issues/1`))).toBeNull();
 	});
 
-	it("the registry refuses a host named for both forges, or one another provider owns", () => {
+	it("the registry refuses a host named for both forges, one another provider owns, or one on another host's API origin", () => {
 		const cases: Array<[string, Parameters<typeof createReferenceAdapters>[0]]> = [
 			["both forges", { github: { hosts: [GHES] }, gitlab: { hosts: [GHES.toUpperCase()] } }],
 			["gitlab.com as GitHub", { github: { hosts: ["gitlab.com"] } }],
 			["www.gitlab.com as GitHub", { github: { hosts: ["www.gitlab.com"] } }],
 			["github.com as GitLab", { gitlab: { hosts: ["github.com"] } }],
 			["linear.app as GitLab", { gitlab: { hosts: ["linear.app"] } }],
+			// Another host's API origin.
+			["api.github.com as GitHub", { github: { hosts: ["api.github.com"] } }],
+			["api.github.com as GitLab", { gitlab: { hosts: ["api.github.com"] } }],
+			["api.linear.app as GitHub", { github: { hosts: ["api.linear.app"] } }],
+			["api.acme.ghe.com beside acme.ghe.com", { github: { hosts: [GHE_CLOUD] }, gitlab: { hosts: [`api.${GHE_CLOUD}`] } }],
 		];
 		for (const [name, hosts] of cases) {
 			expect(() => createReferenceAdapters(hosts), name).toThrow(TypeError);
@@ -129,6 +135,8 @@ describe("resolve reads only a canonical the grammar mints", () => {
 			[github, `https://${GHES}/o/r/issues/1?x=1`],
 			[gitlab, `https://${GLSM}/g/p%2F..%2Fx/-/issues/1`],
 			[gitlab, `https://${GLSM}/g/p/-/work_items/1`],
+			[linearAdapter, "https://linear.app/acme/issue/ENG-1?x=1"],
+			[linearAdapter, "https://LINEAR.app/acme/issue/ENG-1"],
 		];
 		for (const [adapter, url] of forged) {
 			const ref: ExternalRef = { provider: adapter.provider, key: "x", url };

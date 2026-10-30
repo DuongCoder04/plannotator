@@ -287,19 +287,26 @@ describe("the port's user agent and log", () => {
 		expect(port.lines).toEqual(["api.github.com"]);
 	});
 
-	it("an async log that rejects leaves no unhandled rejection", async () => {
+	it("an async log that rejects, as a promise or any thenable, leaves no unhandled rejection", async () => {
 		const fake = forges();
 		const unhandled: unknown[] = [];
 		const onUnhandled = (reason: unknown) => unhandled.push(reason);
 		process.on("unhandledRejection", onUnhandled);
 		try {
-			const port = {
-				...makePort(fake.fetch),
-				log: async () => {
+			const logs = [
+				async () => {
 					throw new Error("log sink down");
 				},
-			};
-			expect((await githubAdapter.resolve(refOf("https://github.com/a/b/issues/1"), port)).ok).toBe(true);
+				// A non-native thenable over a rejected promise.
+				() => {
+					const inner = Promise.reject(new Error("log sink down"));
+					return { then: (ok: (v: unknown) => unknown, fail: (e: unknown) => unknown) => inner.then(ok, fail) };
+				},
+			];
+			for (const log of logs) {
+				const port = { ...makePort(fake.fetch), log: log as ReferencePort["log"] };
+				expect((await githubAdapter.resolve(refOf("https://github.com/a/b/issues/1"), port)).ok).toBe(true);
+			}
 			await new Promise((resolve) => setTimeout(resolve, 0));
 			expect(unhandled).toEqual([]);
 		} finally {

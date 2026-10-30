@@ -164,10 +164,13 @@ describe("the cut stays cut", () => {
 				expect(/^["']\.\.?\/[^"']+["']$/u.test((m[1] ?? "").trim()), `${file}: ${m[0]}`).toBe(true);
 			}
 			// The global fetch would skip the port's host gate and the redirect
-			// policy. Only fetch.ts calls a fetcher; `.fetch(` and `fetcher(` pass.
-			if (!file.endsWith(`${join("src", "fetch.ts")}`)) {
-				expect(/(?<![.\w$])fetch\s*\(/u.test(text), `${file} calls the global fetch`).toBe(false);
-			}
+			// policy: a bare `fetch(`, or through a global object. Every file,
+			// fetch.ts included; `port.fetch(`, `api.fetch(` and `fetcher(` pass.
+			expect(/(?<![.\w$])fetch\s*\(/u.test(text), `${file} calls the global fetch`).toBe(false);
+			expect(
+				/\b(?:globalThis|self|window|global)\s*(?:\.\s*fetch|\[\s*["']fetch["']\s*\])/u.test(text),
+				`${file} reaches the global fetch through a global object`,
+			).toBe(false);
 		}
 	});
 

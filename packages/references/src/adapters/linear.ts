@@ -33,7 +33,7 @@ import type {
 } from "../contract.ts";
 import { providerFetch } from "../fetch.ts";
 import { matchLinearUrl, parseLinearCanonical } from "../grammars/linear.ts";
-import { apiOrigin } from "../hosts.ts";
+import { apiOrigin, isMintedCanonical } from "../hosts.ts";
 import {
 	checkListQuery,
 	connectionNames,
@@ -153,7 +153,10 @@ function node(value: unknown): Record<string, unknown> | null {
 
 async function resolveLinear(ref: ExternalRef, port: ReferencePort): Promise<ResolveResult> {
 	const parsed = parseLinearCanonical(ref);
-	if (parsed === null) return { ok: false, reason: "not_resolvable" };
+	// Only a canonical the grammar mints is read, as on the forges.
+	if (parsed === null || !isMintedCanonical(matchLinearUrl, ref.url)) {
+		return { ok: false, reason: "not_resolvable" };
+	}
 	const item = parsed.item;
 
 	const credential = await credentialFor(port, "linear", new URL(ref.url).hostname.toLowerCase(), [
