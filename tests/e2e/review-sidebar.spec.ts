@@ -8,6 +8,8 @@
  *    chosen tab when the panel redraws for the new view;
  *  - a group heading folds and opens with Enter and Space, and says so
  *    (aria-expanded);
+ *  - at the default 256 px, Changes | All files and the tools share one line
+ *    in both scopes (All files live), so switching scope never moves the list;
  *  - the sticky tools block (Changes | All files, the tools, the progress)
  *    stays on top while the files scroll under it, with its hairline only
  *    while something is under it;
@@ -181,6 +183,29 @@ test('a group heading folds and opens with Enter and Space', async ({ browser })
     await page.keyboard.press(' ');
     await expect(heading).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('[data-file-kind-block="test"] .file-tree-item')).toHaveCount(1);
+  });
+});
+
+test('at the default 256 px the scope and the tools share one line in both scopes, and switching never moves the list', async ({ browser }) => {
+  await withReview(browser, 900, async (page) => {
+    const geometry = () =>
+      page.evaluate(() => {
+        const top = (selector: string) => Math.round(document.querySelector(selector)!.getBoundingClientRect().top);
+        return {
+          pills: top('[data-tree-scope="changes"]'),
+          tools: top('[aria-label="List options"]'),
+          block: Math.round(document.querySelector('[data-review-sticky-tools]')!.getBoundingClientRect().height),
+        };
+      });
+    const changes = await geometry();
+    expect(Math.abs(changes.tools - changes.pills)).toBeLessThanOrEqual(2);
+    await page.locator('[data-tree-scope="all"]').click();
+    await expect(page.locator('[data-repo-file-tree]')).toBeVisible();
+    await expect(page.locator('[data-repo-listing-dot]')).toBeVisible();
+    const all = await geometry();
+    expect(all).toEqual(changes);
+    // The label is whole, not cut to fit.
+    expect(await page.locator('[data-tree-scope="all"] .truncate').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
   });
 });
 
