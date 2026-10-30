@@ -29,7 +29,10 @@ const binary = resolve(process.env.PLANNOTATOR_E2E_BINARY ?? join(repo, '.local/
 
 const DOC = '# Refund flow: partial captures\n\nHow a refund is split when the payment was captured in parts.\n';
 const BRANCH = 'fix/refund-partial-captures';
-const FOLDER_FILE = 'design-reconciling-refund-ledger-entries-with-the-provider.md';
+// Longer than the old 220px cap, short enough for the row at 1440.
+const FOLDER_FILE = 'reconciling-refund-ledger-entries-design.md';
+// Too long for the row at 1100 by far.
+const FOLDER_FILE_LONG = 'design-reconciling-refund-ledger-entries-with-the-provider.md';
 
 // Every first-run dialog already seen, so the page opens on the document.
 const COOKIES: [string, string][] = [
@@ -99,12 +102,13 @@ async function stop(session: { child: ChildProcess; url: string }): Promise<void
   if (child.exitCode === null) child.kill('SIGKILL');
 }
 
-async function open(browser: Browser, url: string, view: { width: number; height: number }): Promise<Page> {
+/** The session in a new window. A folder session opens on its file list, with no document yet. */
+async function open(browser: Browser, url: string, view: { width: number; height: number }, folder = false): Promise<Page> {
   const context = await browser.newContext({ viewport: view, colorScheme: 'light' });
   await context.addCookies(COOKIES.map(([name, value]) => ({ name, value, url })));
   const page = await context.newPage();
   await page.goto(url);
-  await expect(page.locator('article[data-print-region="article"]')).toBeVisible();
+  if (!folder) await expect(page.locator('article[data-print-region="article"]')).toBeVisible();
   return page;
 }
 
@@ -120,7 +124,9 @@ interface Fit { chips: Record<string, Chip | null>; gapToActions: number | null 
 async function fit(page: Page, titles: Record<string, string>): Promise<Fit> {
   await page.waitForTimeout(500); // fonts and the actions lane settle
   return page.evaluate((titles) => {
-    const article = document.querySelector<HTMLElement>('article[data-print-region="article"]')!;
+    // The document on screen (a folder session keeps others mounted, hidden).
+    const article = Array.from(document.querySelectorAll<HTMLElement>('article[data-print-region="article"]'))
+      .find((a) => a.getClientRects().length > 0)!;
     const cut = (el: HTMLElement) => {
       if (el.scrollWidth > el.clientWidth) return true;
       const range = document.createRange();
@@ -166,6 +172,18 @@ test('annotate a file: the repository and branch show whole when there is room, 
     expect(f.chips.repo!.cut, `1440: the repository is whole (${f.chips.repo!.width}px)`).toBe(false);
     expect(f.chips.branch!.cut, `1440: the branch is whole (${f.chips.branch!.width}px)`).toBe(false);
     expect(f.gapToActions, '1440: the badges end before the buttons').toBeGreaterThanOrEqual(0);
+
+    // The card narrows with the window unchanged (as when the first-run look
+    // choice puts it on the grid): the buttons move left without changing
+    // size, and the badges are measured again and stop before them.
+    await page.evaluate(() => {
+      const article = Array.from(document.querySelectorAll<HTMLElement>('article[data-print-region="article"]'))
+        .find((a) => a.getClientRects().length > 0)!;
+      article.parentElement!.style.maxWidth = `${article.getBoundingClientRect().width - 160}px`;
+    });
+    f = await fit(page, titles);
+    expect(f.gapToActions, `a narrower card: the badges end ${f.gapToActions}px before the buttons`).toBeGreaterThanOrEqual(0);
+    expect(f.chips.branch!.cut, 'a narrower card: the branch gives way').toBe(true);
     await page.context().close();
 
     // Opened narrow: the branch is cut, the repository is not, and nothing runs under the buttons.
@@ -202,22 +220,26 @@ test('annotate a folder: the open file\'s name shows whole when there is room, a
     const folder = join(root, 'add-refund-flow');
     mkdirSync(folder, { recursive: true });
     writeFileSync(join(folder, 'proposal.md'), '# Proposal: add the refund flow\n\nWhy and what.\n');
-    writeFileSync(join(folder, FOLDER_FILE), '# Design: reconciling refund ledger entries\n\nHow the ledger matches the provider.\n');
+    writeFileSync(join(folder, FOLDER_FILE), '# Reconciling refund ledger entries\n\nHow the ledger matches the provider.\n');
+    writeFileSync(join(folder, FOLDER_FILE_LONG), '# Design: reconciling refund ledger entries\n\nWith the provider.\n');
     const session = await annotate(root, root, folder, 1);
     sessions.push(session);
-    const titles = { file: join(folder, FOLDER_FILE) };
 
-    const page = await open(browser, session.url, WIDE);
-    await page.getByText(FOLDER_FILE.replace(/\.md$/, ''), { exact: true }).first().click();
-    await expect(page.locator('article[data-print-region="article"] h1')).toHaveText(/Design: reconciling/);
-    let f = await fit(page, titles);
+    const page = await open(browser, session.url, WIDE, true);
+    const pick = async (file: string, heading: RegExp) => {
+      await page.getByText(file.replace(/\.md$/, ''), { exact: true }).first().click();
+      await expect(page.locator('article[data-print-region="article"]:visible h1')).toHaveText(heading);
+    };
+    await pick(FOLDER_FILE, /^Reconciling/);
+    let f = await fit(page, { file: join(folder, FOLDER_FILE) });
     expect(f.chips.file, 'the file name chip').not.toBeNull();
     expect(f.chips.file!.cut, `1440: the file name is whole (${f.chips.file!.width}px; the old cap was 220px)`).toBe(false);
     expect(f.gapToActions, '1440: the badges end before the buttons').toBeGreaterThanOrEqual(0);
 
-    // Narrowed in place: the name is cut where the buttons start.
+    // A long name, narrowed in place: the name is cut where the buttons start.
+    await pick(FOLDER_FILE_LONG, /^Design: reconciling/);
     await page.setViewportSize(NARROW);
-    f = await fit(page, titles);
+    f = await fit(page, { file: join(folder, FOLDER_FILE_LONG) });
     expect(f.chips.file!.cut, '1100: the file name is cut').toBe(true);
     expect(f.gapToActions, `1100: the badges end ${f.gapToActions}px before the buttons`).toBeGreaterThanOrEqual(0);
     await page.context().close();
