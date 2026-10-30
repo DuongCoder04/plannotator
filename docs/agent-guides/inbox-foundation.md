@@ -153,6 +153,7 @@ More rules:
 - Routing reads only the log: two indexes (`sessionThreads`, `namedThreads`) are rebuilt from each root's first line in seq order. A replay therefore routes exactly as the live store did, and an older store with no `thread_name` replays unchanged.
 - Routing is synchronous inside the server process, so racing sends land in one thread.
 - `read_thread`'s list mode lists the threads the session sent in (`asked_by: "me"`), and `wait_for_reply` with no id waits on those threads.
+- `read_thread`'s list over a folder with no threads (a plain folder over a repo) adds one line naming up to 3 known projects whose root is strictly inside it (whole path segments, `projectsInside` in `inbox-mcp.ts`), and `projects_inside: [{name, root, threads}]` in the structured result. It merges none of their threads and makes no project; the peek path is unchanged. The SessionStart/compaction thread listing (`connection.ts`) reads this result but prints nothing for an empty list, so it carries no hint.
 - Without a cursor, a reply counts when it comes after the caller's last message in the thread.
 
 **The list** (`packages/shared/inbox/list.ts`, pure; labels in `INBOX_SECTIONS`, `packages/core/inbox-types.ts`). The sections, in order: Stopped on you, Holding up work, Waiting on you, New since you looked, Sent, Quiet. Sent sits below New because it waits on the agent, not on the person (owner ruling 2026-10-11). The strongest reason wins:
