@@ -33,6 +33,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  INBOX_AGENT_RULES,
   INBOX_BRIEFING_FROM_NOW_ON,
   INBOX_CHANNEL_RULE,
   INBOX_COMMAND_BRIEFING,
@@ -41,6 +42,7 @@ import {
   INBOX_REMINDER_TEXT_NO_WAKE,
   INBOX_REPLY_TO_CHECK,
   INBOX_SUBAGENT_RULE,
+  INBOX_THREAD_RULE,
   INBOX_TOOL_WAKE_NOTE,
   INBOX_USE_RULE,
   inboxAgentTool,
@@ -114,6 +116,7 @@ const SURFACES: Record<string, string> = {
 const SENTENCES = {
   "follow through": INBOX_FOLLOW_THROUGH_RULE,
   "when to use it": INBOX_USE_RULE,
+  "one thread per work stream": INBOX_THREAD_RULE,
   "chat or Inbox": INBOX_CHANNEL_RULE,
   "subagent reports to its agent": INBOX_SUBAGENT_RULE,
   "reply_to check": INBOX_REPLY_TO_CHECK,
@@ -127,6 +130,8 @@ const prose = ["note (opt-in)", "plannotator inbox --help", "plannotator skill"]
 const EXCEPTIONS: Record<Sentence, Record<string, string>> = {
   // No exceptions: every harness and every surface carries the one wording.
   "follow through": {},
+  // The owner's sentence word for word (2026-10-29): every surface, no exceptions.
+  "one thread per work stream": {},
   "when to use it": Object.fromEntries([
     ...reminders.map((s) => [s, "one line in the chat: words it as 'when you finish long work, or need a decision'"]),
     ...prose.map((s) => [s, "prose guide: expands it"]),
@@ -161,12 +166,14 @@ describe("Inbox guidance parity across harnesses", () => {
     });
   }
 
-  test("the follow-through rule appears once per surface (never stated twice)", () => {
-    for (const [surface, text] of Object.entries(SURFACES)) expect([surface, text.split(INBOX_FOLLOW_THROUGH_RULE).length - 1]).toEqual([surface, 1]);
+  test("the follow-through and work-stream rules appear once per surface (never stated twice)", () => {
+    for (const rule of [INBOX_FOLLOW_THROUGH_RULE, INBOX_THREAD_RULE]) {
+      for (const [surface, text] of Object.entries(SURFACES)) expect([surface, text.split(rule).length - 1]).toEqual([surface, 1]);
+    }
   });
 
   test("the agent tool and the MCP instructions carry the same rules in the same order", () => {
-    const rules = `${INBOX_USE_RULE} ${INBOX_CHANNEL_RULE} ${INBOX_FOLLOW_THROUGH_RULE} ${INBOX_SUBAGENT_RULE}`;
+    const rules = `${INBOX_USE_RULE} ${INBOX_THREAD_RULE} ${INBOX_CHANNEL_RULE} ${INBOX_FOLLOW_THROUGH_RULE} ${INBOX_SUBAGENT_RULE}`;
     expect(SURFACES["tool: Pi, OpenCode 2 (wake)"]).toContain(rules);
     expect(SURFACES["MCP instructions: Codex, Gemini, Cursor, Grok, MCP clients"]).toContain(rules);
   });
@@ -193,6 +200,20 @@ describe("Inbox guidance parity across harnesses", () => {
       const text = SURFACES[surface]!;
       expect(text).toContain(`send_message and keep going. ${INBOX_FOLLOW_THROUGH_RULE}`);
       expect(text.indexOf(INBOX_FOLLOW_THROUGH_RULE)).toBeLessThan(text.indexOf("when the person writes here"));
+    }
+  });
+
+  test("the texts Claude Code cuts at 2,048 characters fit whole with every rule in them", () => {
+    // Fitting by dropping a rule would pass a bare length check: each must carry INBOX_AGENT_RULES and still fit.
+    const capped = {
+      "tool: Claude Code (mod copy, bundled list)": modAgentTool(INBOX_DEFAULT_TOOLS)!.description,
+      "tool: Pi, OpenCode 2 (wake)": inboxAgentTool(INBOX_DEFAULT_TOOLS)!.description,
+      "tool: OpenCode 1 (no wake)": inboxAgentTool(INBOX_DEFAULT_TOOLS, { wakes: false })!.description,
+      "MCP instructions": INBOX_MCP_INSTRUCTIONS,
+    };
+    for (const [surface, text] of Object.entries(capped)) {
+      expect([surface, text.includes(INBOX_AGENT_RULES)]).toEqual([surface, true]);
+      expect([surface, text.length < 2048]).toEqual([surface, true]);
     }
   });
 
