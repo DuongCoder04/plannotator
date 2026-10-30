@@ -161,9 +161,9 @@ test.skipIf(!hasDom)("the state in words is in the row's name; a Sent row keeps 
   expect(accessibleName(rowEl(el, SAVED.thread_id))).toContain('Saved for Codex,');
   expect(accessibleName(rowEl(el, UNDELIVERED.thread_id))).toContain('Not delivered,');
   expect(accessibleName(rowEl(el, DELIVERED.thread_id))).toContain(`Delivered to Claude Code, ${shortTime(DELIVERED_AT)}`);
-  expect(rowEl(el, SENDING.thread_id).querySelector('.ib-st')!.textContent).toBe('Drop the legacy share portal route?');
+  expect(rowEl(el, SENDING.thread_id).querySelector('.ib-title')!.textContent).toBe('Drop the legacy share portal route?');
   // No glyph: the older wording stays.
-  expect(rowEl(el, OLDER.thread_id).querySelector('.ib-st')!.textContent).toBe('Queued for Claude Code; it gets this as its next turn.');
+  expect(rowEl(el, OLDER.thread_id).querySelector('.ib-title')!.textContent).toBe('Queued for Claude Code; it gets this as its next turn.');
 });
 
 test.skipIf(!hasDom)("the tooltip is the thread's delivery line, ui's tooltip, never a native title", async () => {

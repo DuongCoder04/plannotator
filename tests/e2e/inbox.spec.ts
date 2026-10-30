@@ -312,7 +312,8 @@ test('agents write three threads in two projects; the rows land in the six secti
   const holdingRow = page.locator(`[data-section-id="holding"] [data-thread-id="${holding.thread_id}"]`);
   await expect(holdingRow.locator('.ib-badge')).toHaveText('Holds up 3');
   const namedRow = page.locator(`[data-section-id="waiting"] [data-thread-id="${named.thread_id}"]`);
-  await expect(namedRow.locator('.ib-key')).toHaveText('refund-webhooks');
+  // The thread's name is the row's title (approval "list-rows-mail-icons").
+  await expect(namedRow.locator('.ib-title')).toHaveText('refund-webhooks');
   await expect(page.locator('.ib-band')).toHaveText([/^Stopped on you\s*1$/, /^Holding up work\s*1$/, /^Waiting on you\s*1$/]);
   await expect(side(page).getByRole('button', { name: /^Inbox/ })).toContainText('3');
   await expect(side(page).getByRole('button', { name: /^billing-svc(?: \d+)?$/ })).toContainText('2');
@@ -329,12 +330,14 @@ async function leftOf(page: Page, selector: string): Promise<number> {
 
 test('a project folder filters the list and the sections still apply', async () => {
   const { page } = world;
-  // Every project: the row starts with the project label, the agent mark sits two columns in.
+  // Every project: the row starts with the project label, the agents' marks right after it, in the same column.
   const named = `.ib-row[data-thread-id="${world.threads.named}"]`;
   const stoppedRow = `.ib-row[data-thread-id="${world.threads.stopped}"]`;
   const labelLeft = await leftOf(page, `${named} .ib-p`);
   expect(await leftOf(page, '.ib-band')).toBe(labelLeft - 12);
-  expect(await leftOf(page, `${named} .ib-mk`)).toBeGreaterThan(labelLeft + 200);
+  const labelRight = await page.locator(`${named} .ib-p`).evaluate((el) => el.getBoundingClientRect().right);
+  expect(await leftOf(page, `${named} .ib-ags`)).toBeGreaterThan(labelRight);
+  expect(await leftOf(page, `${named} .ib-ags`)).toBeLessThan(await leftOf(page, `${named} .ib-subj`));
 
   await side(page).getByRole('button', { name: /^docs-site(?: \d+)?$/ }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'docs-site' })).toBeVisible();
@@ -350,16 +353,17 @@ test('a project folder filters the list and the sections still apply', async () 
   await side(page).getByRole('button', { name: /^billing-svc(?: \d+)?$/ }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'billing-svc' })).toBeVisible();
   await expect(page.locator('.ib-band')).toHaveText([/^Stopped on you\s*1$/, /^Waiting on you\s*1$/]);
-  // One project: no project column at all, and no empty block where it was. The
-  // subject cell starts where the project label did, badge or not. The agents'
-  // marks, the badge and the count have their own columns before the time
-  // (approval "inbox-row-byline", the one-line row), each on one right edge for every row.
+  // One project: no project label. The agents' marks start the row where the
+  // label did (approval "list-rows-mail-icons"), and the title cell starts on one
+  // left edge for every row, badge or not. The badge and the count have their own
+  // columns before the time, each on one right edge for every row.
   await expect(page.locator('.ib-row .ib-p')).toHaveCount(0);
-  expect(await leftOf(page, `${named} .ib-subj`)).toBe(labelLeft);
-  expect(await leftOf(page, `${stoppedRow} .ib-subj`)).toBe(labelLeft);
+  expect(await leftOf(page, `${named} .ib-ags`)).toBe(labelLeft);
+  expect(await leftOf(page, `${stoppedRow} .ib-ags`)).toBe(labelLeft);
+  expect(await leftOf(page, `${stoppedRow} .ib-subj`)).toBe(await leftOf(page, `${named} .ib-subj`));
   await expect(page.locator('.ib-row .ib-subj :is(.ib-mk, .ib-badge)')).toHaveCount(0);
   const rightOf = async (sel: string) => Math.round((await page.locator(sel).boundingBox())!.x + (await page.locator(sel).boundingBox())!.width);
-  for (const cell of ['.ib-cw', '.ib-mcol', '.ib-bcol', '.ib-cq']) expect(await rightOf(`${named} ${cell}`)).toBe(await rightOf(`${stoppedRow} ${cell}`));
+  for (const cell of ['.ib-cw', '.ib-bcol', '.ib-cq']) expect(await rightOf(`${named} ${cell}`)).toBe(await rightOf(`${stoppedRow} ${cell}`));
   expect(await rightOf(`${stoppedRow} .ib-bcol .ib-badge`)).toBe(await rightOf(`${stoppedRow} .ib-bcol`));
   expect(await rightOf(`${named} .ib-cq`)).toBeLessThanOrEqual(await leftOf(page, `${named} .ib-t`));
   await shot('1.2-project-filter');
@@ -430,8 +434,8 @@ test('a pick is saved at once and the agent reads it through read_thread', async
       };
       const count = rect(el.querySelector('.ib-c .ib-cs')!);
       const time = rect(el.querySelector('.ib-t')!);
-      // A two-line row's count ends line 2 (approval "inbox-row-byline"), under the time: it must end inside that line.
-      const l2 = el.querySelector('.ib-l2');
+      // A three-line row's count ends line 3 (approval "list-rows-mail-icons"), under the time: it must end inside that line.
+      const l2 = el.querySelector('.ib-l3');
       const lineEnd = l2 ? Math.round(l2.getBoundingClientRect().right - count.right) : null;
       return { shape: el.className.split(' ')[0], list: document.querySelector('.ib-lbody')!.clientWidth, text: el.querySelector('.ib-c .ib-cs')!.textContent, full: el.querySelector('.ib-c')!.getAttribute('data-count-words'), gap: time.left - count.right, sameLine: Math.abs(count.top - time.top) < 4, lineEnd, last: l2 ? l2.lastElementChild === el.querySelector('.ib-c') : null };
     });
