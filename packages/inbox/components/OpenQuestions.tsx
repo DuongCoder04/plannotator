@@ -463,7 +463,9 @@ export function OpenQuestionsButton({ questions, actions = [], reask = null, dec
                     onClick={() => {
                       picked.current = true;
                       close();
-                      onPick(q);
+                      // After the list has closed: focus put on the card while the menu is still open is lost
+                      // with it (the page's body ends up focused).
+                      requestAnimationFrame(() => onPick(q));
                     }}
                   >
                     <span className="ib-oq-n" aria-hidden="true">
@@ -493,7 +495,9 @@ export function OpenQuestionsButton({ questions, actions = [], reask = null, dec
                         onClick={() => {
                           picked.current = true;
                           close();
-                          onPickAction?.(item);
+                          // After the list has closed: focus put on the row while the menu is still open is lost
+                          // with it (the page's body ends up focused).
+                          requestAnimationFrame(() => onPickAction?.(item));
                         }}
                       >
                         {/* The action item's box (the list row's action badge), where a question has its number. */}

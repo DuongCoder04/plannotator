@@ -37,7 +37,7 @@ const action = (task: string, extra: string[] = []) => [':::action', task, 'Only
 const prose = (topic: string) =>
   [`Progress on ${topic}.`, '', ...Array.from({ length: 8 }, (_, i) => `- Step ${i + 1} of ${topic}: checked the logs, the config and the retry path; nothing else changed.`)].join('\n');
 
-type Sent = { message_id: string; thread_id: string; questions: { key: string; prompt: string; kind: string }[] };
+type Sent = { message_id: string; thread_id: string; actions?: { key: string }[] };
 
 interface World {
   url: string;
@@ -116,7 +116,7 @@ test.beforeAll(async ({ browser }: { browser: Browser }) => {
     { wakes: true },
   )) as Sent;
 
-  const keysOf = (sent: Sent) => sent.questions.filter((q) => q.kind === 'action').map((q) => q.key);
+  const keysOf = (sent: Sent) => (sent.actions ?? []).map((a) => a.key);
   world = {
     url,
     context,
@@ -245,6 +245,12 @@ test('both kinds: "2 questions, 1 action item", the action item listed after the
   await expect(target).not.toBeInViewport();
   await rows.nth(2).click();
   await expectLandedOn(page, world.both.message, world.both.key);
+  // A question's entry in a message that is not folded lands the same way: its card focused and ringed.
+  await button.click();
+  await rows.nth(0).click();
+  const card = page.locator('section.ib-pane [data-question-key]').first();
+  await expect(card).toBeFocused();
+  await expect(card).toHaveClass(/ib-q-target/);
   expect(world.errors).toEqual([]);
 });
 
