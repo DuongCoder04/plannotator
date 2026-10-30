@@ -598,6 +598,43 @@ describe("Linear list", () => {
 		});
 	});
 
+	it("oldest first, page two: the cursor is sent as `before` with `last: 100`; the next cursor is the startCursor until no previous page", async () => {
+		const lin = fakeProvider();
+		lin.on(
+			LIN_GRAPHQL,
+			() =>
+				json(200, {
+					data: {
+						issues: {
+							pageInfo: { hasNextPage: true, endCursor: "end-2", hasPreviousPage: true, startCursor: "start-3" },
+							nodes: [linIssue(4), linIssue(3)],
+						},
+					},
+				}),
+			() =>
+				json(200, {
+					data: {
+						issues: {
+							// The newest page: no previous page, so no cursor even with a startCursor.
+							pageInfo: { hasNextPage: true, endCursor: "end-3", hasPreviousPage: false, startCursor: "start-4" },
+							nodes: [linIssue(6), linIssue(5)],
+						},
+					},
+				}),
+		);
+		const port = makePort(lin.fetch, { "linear linear.app": linKey });
+		const second = await linearAdapter.list?.({ order: "created_asc", cursor: "start-2" }, port);
+		expect(second).toMatchObject({ ok: true, cursor: "start-3" });
+		expect(second?.ok && second.items.map((i) => i.ref.key)).toEqual(["acme/ENG-3", "acme/ENG-4"]);
+		const third = await linearAdapter.list?.({ order: "created_asc", cursor: "start-3" }, port);
+		expect(third).toEqual({ ok: true, items: expect.any(Array) });
+		expect(third?.ok && third.items.map((i) => i.ref.key)).toEqual(["acme/ENG-5", "acme/ENG-6"]);
+		expect(lin.calls.map((call) => bodyOf(call).variables)).toEqual([
+			{ last: 100, before: "start-2", orderBy: "createdAt", filter: { and: [{ state: { type: { nin: ["completed", "canceled"] } } }] } },
+			{ last: 100, before: "start-3", orderBy: "createdAt", filter: { and: [{ state: { type: { nin: ["completed", "canceled"] } } }] } },
+		]);
+	});
+
 	it("newest updated first pages forward; rows outside the credential's workspace are dropped", async () => {
 		const lin = fakeProvider();
 		lin.on(LIN_GRAPHQL, ({ headers }) => {

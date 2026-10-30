@@ -250,10 +250,21 @@ async function resolveLinear(ref: ExternalRef, port: ReferencePort): Promise<Res
 
 // ── list(query): GraphQL issues(filter:) ────────────────────────────────────
 //
-// Linear pages Relay style (first/after and last/before) and orders by
-// createdAt or updatedAt, newest first. Oldest first (`created_asc`) reads
-// the LAST page of the createdAt order and reverses it; its cursor is the
-// page's startCursor, read with `before`.
+// Linear pages Relay style (first/after and last/before) and takes an
+// `orderBy` of createdAt or updatedAt with no direction argument. Docs:
+// https://linear.app/developers/pagination ("We implement Relay style
+// cursor-based pagination model with first/after and last/before";
+// "By default results are ordered by createdAt"; ordering by updatedAt
+// gives "most recently updated" first), read 2026-10-30. So both orders
+// run newest first, and the query always sends `orderBy` explicitly.
+// Oldest first (`created_asc`) reads the LAST page of the createdAt order
+// (`last: 100, before: cursor`) and reverses it; the next cursor is that
+// page's startCursor while hasPreviousPage holds, which steps toward newer
+// issues. Not probed against a live workspace.
+
+/** Labels read per row: Linear filters labels itself, so this bounds the
+ * facts only; real issues carry far fewer. */
+const ROW_LABELS = 50;
 
 const LIST_ISSUES_QUERY = `query($first: Int, $after: String, $last: Int, $before: String, $filter: IssueFilter, $orderBy: PaginationOrderBy) {
   issues(first: $first, after: $after, last: $last, before: $before, filter: $filter, orderBy: $orderBy) {
@@ -262,7 +273,7 @@ const LIST_ISSUES_QUERY = `query($first: Int, $after: String, $last: Int, $befor
       identifier title url createdAt updatedAt
       state { name type }
       assignee { name displayName } creator { name }
-      labels(first: 50) { nodes { name } }
+      labels(first: ${ROW_LABELS}) { nodes { name } }
       projectMilestone { name }
     }
   }

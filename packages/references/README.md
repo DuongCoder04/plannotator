@@ -141,7 +141,10 @@ const page = await githubAdapter.list?.(
   page read for it (50 on GitHub, 100 on GitLab) is kept, never dropped
   for a label it may carry.
 - Linear reads `issues(filter:)` in the credential's workspace (`account`).
-  Oldest first reads the last page and reverses it.
+  It always sends `orderBy` (`createdAt` or `updatedAt`); Linear orders
+  newest first and has no direction argument, so oldest first reads the
+  last page (`last: 100, before: cursor`) and reverses it. The next
+  cursor is that page's `startCursor` while `hasPreviousPage` holds.
 - A bad cursor, or an empty or too-long filter, answers `field: "cursor"` or
   `field: "filter"` before a credential is asked.
 
