@@ -1991,10 +1991,14 @@ export type InboxToolCostHost = "pi" | "opencode";
  * Then `project_path`'s description says it defaults to the folder the
  * session started in (INBOX_AGENT_PROJECT_PATH_DESCRIPTION): about +86
  * bytes (0.9%, estimated, inside the 5% drift test); the stated cost stands.
+ * Then the action item's command sentence (each command in its own fenced
+ * block, so it gets a copy button; `Run:` left out of the short list):
+ * measured on Pi, 10,303 bytes (both changes; tokens estimated at about
+ * 4 bytes each). With the Board on 11,722 (11,490 + 232, estimated).
  */
-const INBOX_TOOL_COST_NOW = { bytes: 10071, tokens: 2700 };
+const INBOX_TOOL_COST_NOW = { bytes: 10303, tokens: 2750 };
 /** The entry with the Board on (the `card` action listed): for the switch's words, measured on Pi. */
-export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 11490, tokens: 3100 } as const;
+export const INBOX_TOOL_COST_WITH_BOARD = { bytes: 11722, tokens: 3150 } as const;
 export const INBOX_TOOL_COST: Readonly<Record<InboxToolCostHost, { bytes: number; tokens: number }>> = {
   pi: INBOX_TOOL_COST_NOW,
   opencode: INBOX_TOOL_COST_NOW,

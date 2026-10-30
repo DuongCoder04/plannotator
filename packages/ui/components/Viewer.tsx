@@ -88,7 +88,7 @@ import type { MentionSource } from '../utils/mentions';
 import { DocBadges, type DocBadgesProps, type LinkedDocBadgeInfo } from './DocBadges';
 import { PinpointOverlay } from './PinpointOverlay';
 import { usePinpoint } from '../hooks/usePinpoint';
-import { useAnnotationHighlighter, type AnnotationRestoreReport } from '../hooks/useAnnotationHighlighter';
+import { rangeInsideExcluded, useAnnotationHighlighter, type AnnotationRestoreReport } from '../hooks/useAnnotationHighlighter';
 import { useVimSelection } from '../hooks/useVimSelection';
 import {
   getScrollViewportIntersectionRoot,
@@ -1380,6 +1380,10 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     const handleCopy = (e: ClipboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      // A live selection where nothing is annotated (an Inbox action item's text) is
+      // the person's own: the browser copies it, never an older toolbar's text.
+      const live = window.getSelection();
+      if (live && !live.isCollapsed && live.rangeCount > 0 && containerRef.current && rangeInsideExcluded(containerRef.current, live.getRangeAt(0))) return;
 
       if (toolbarState?.selectionText) {
         e.preventDefault();
