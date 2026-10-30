@@ -165,6 +165,32 @@ describe("parseInboxActionBlocks", () => {
     expect(inline!.why).toBe("In your terminal:\n\n```\nnpm login\n```\n\nThen `npm whoami` should name you.");
   });
 
+  test("\"Run in/on/from …:\" is a command only when the words before the colon name a shell and what follows is not a sentence", () => {
+    const why = (line: string) => parseInboxActionBlocks(`:::action\nCheck the deploy\n${line}\n:::`)[0]!.why;
+    for (const prose of [
+      "Run in the morning: check the dashboard first.",
+      "Run on staging: the migration is safe there",
+      "Run from the repo root: it needs the .env file",
+      "Run on CI: it failed twice",
+      // Names a shell, but what follows is a sentence: prose.
+      "Run it in a fresh terminal: the old one has a stale token.",
+    ]) {
+      expect(why(prose)).toBe(prose);
+    }
+    // The same lead-in before a command is a command.
+    expect(why("Run it in a fresh terminal: npm login")).toBe("Run it in a fresh terminal:\n\n```\nnpm login\n```");
+    expect(why("Run from PowerShell: winget install Plannotator")).toBe("Run from PowerShell:\n\n```\nwinget install Plannotator\n```");
+  });
+
+  test("a fence indented under a numbered step copies the command without the step's indent", () => {
+    const [block] = parseInboxActionBlocks(
+      [":::action", "Sign in to npm", "Because the token expired.", "", "1. Log in:", "", "   ```", "   npm login", "   ```", "", "2. Check:", "", "   ```", "   npm whoami", "     --registry https://registry.npmjs.org", "   ```", ":::"].join("\n"),
+    );
+    expect(block!.why).toBe(
+      "Because the token expired.\n\n1. Log in:\n\n```\nnpm login\n```\n\n2. Check:\n\n```\nnpm whoami\n  --registry https://registry.npmjs.org\n```",
+    );
+  });
+
   test("one Run: line is the item's command; several are fenced in place, in order, none dropped", () => {
     const [one] = parseInboxActionBlocks(":::action\nSign in to npm\nRun: `npm login`\n:::");
     expect(one!.action.run).toBe("npm login");
