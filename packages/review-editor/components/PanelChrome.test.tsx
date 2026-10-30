@@ -98,14 +98,32 @@ describe.skipIf(!hasDom)("PanelControlsRow", () => {
     expect(eye(el)?.getAttribute("aria-pressed")).toBe("false");
   });
 
-  test("Search in diff and Collapse all are one click, Search shows when it is open", async () => {
+  test("Search in diff is a real toggle: a second click closes the search", async () => {
+    function SearchHarness() {
+      const [open, setOpen] = useState(false);
+      return <Harness onOpenSearch={() => setOpen(true)} onCloseSearch={() => setOpen(false)} isSearchVisible={open} />;
+    }
+    const el = await mount(<SearchHarness />);
+    const search = () => el.querySelector<HTMLButtonElement>('[aria-label="Search in diff"]')!;
+    expect(search().getAttribute("aria-pressed")).toBe("false");
+    await act(async () => search().click());
+    expect(search().getAttribute("aria-pressed")).toBe("true");
+    await act(async () => search().click());
+    expect(search().getAttribute("aria-pressed")).toBe("false");
+  });
+
+  test("without a way to close, Search in diff claims no pressed state", async () => {
+    const el = await mount(<Harness onOpenSearch={() => {}} isSearchVisible />);
+    expect(el.querySelector('[aria-label="Search in diff"]')?.hasAttribute("aria-pressed")).toBe(false);
+  });
+
+  test("Search in diff and Collapse all are one click", async () => {
     const onOpenSearch = mock(() => {});
     const onToggleAllFolders = mock(() => {});
     const el = await mount(
-      <Harness onOpenSearch={onOpenSearch} isSearchVisible onToggleAllFolders={onToggleAllFolders} areAllFoldersExpanded />,
+      <Harness onOpenSearch={onOpenSearch} onToggleAllFolders={onToggleAllFolders} areAllFoldersExpanded />,
     );
     const search = el.querySelector<HTMLButtonElement>('[aria-label="Search in diff"]')!;
-    expect(search.getAttribute("aria-pressed")).toBe("true");
     await act(async () => search.click());
     expect(onOpenSearch).toHaveBeenCalledTimes(1);
     const collapse = el.querySelector<HTMLButtonElement>('[aria-label="Collapse all folders"]')!;

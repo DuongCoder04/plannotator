@@ -27,7 +27,7 @@ import { initialRepoExpansion, repoAncestors } from '../utils/repoTree';
 import type { OverlayScrollAreaHandle } from '@plannotator/ui/components/OverlayScrollArea';
 
 import { SidebarActionRow, SemanticDiffRow, CallFlowRow, AllChangesRow } from './PanelNavRows';
-import { PanelControlsRow, PanelSearchField } from './PanelChrome';
+import { PanelControlsRow, PanelSearchField, TOOLS_ONE_ROW_WIDTH } from './PanelChrome';
 import { PanelSectionHeader, CountColumns, countColumnVars, compactRowsProps } from './FileRowBits';
 
 interface FileTreeProps {
@@ -395,6 +395,8 @@ export const FileTree: React.FC<FileTreeProps> = ({
       stagedCount={stagedFiles.size}
       isSearchVisible={isSearchVisible}
       onOpenSearch={onOpenSearch}
+      onCloseSearch={searchQuery.trim() ? onSearchClear : onSearchClose}
+      oneRow={panelWidth >= TOOLS_ONE_ROW_WIDTH}
       onToggleAllFolders={showAllFiles ? toggleAllRepoFolders : handleToggleAllFolders}
       areAllFoldersExpanded={showAllFiles ? !repoAllCollapsed : areAllFoldersExpanded}
       collapseDisabled={showAllFiles ? !repoReady : allFolderPaths.length === 0}

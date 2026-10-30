@@ -21,10 +21,20 @@ import { Tooltip } from "@plannotator/ui/components/Tooltip";
  * source so both views keep the same tools in the same places. In a narrow
  * panel the icons wrap under the scope instead of drawing over it.
  */
+/** From this panel width the scope and the tools always share one line (they
+ *  fit at the default 256 px in either scope); narrower, the tools always
+ *  wrap under the scope. Either way switching scope never moves the list. */
+export const TOOLS_ONE_ROW_WIDTH = 256;
+
 export interface PanelControlsProps {
   stagedCount?: number;
   isSearchVisible?: boolean;
   onOpenSearch?: () => void;
+  /** Closes the search a second click on Search in diff finds open. Without
+   *  it the button is a plain button (no pressed state). */
+  onCloseSearch?: () => void;
+  /** Keep the scope and the tools on one line (`TOOLS_ONE_ROW_WIDTH`). */
+  oneRow?: boolean;
   /** Tree view only — the sections view has no folders to collapse. */
   onToggleAllFolders?: () => void;
   areAllFoldersExpanded?: boolean;
@@ -129,7 +139,6 @@ function StickyTools({ children }: { children: React.ReactNode }) {
       <div
         ref={blockRef}
         className="review-sticky-tools sticky top-0 z-10 -mx-2 px-2 pb-3 flex flex-col bg-background"
-        data-files-section-header=""
         data-review-sticky-tools=""
       >
         {children}
@@ -299,6 +308,8 @@ export function PanelControlsRow(props: PanelControlsProps) {
   const {
     isSearchVisible = false,
     onOpenSearch,
+    onCloseSearch,
+    oneRow = false,
     onToggleAllFolders,
     areAllFoldersExpanded = false,
     collapseDisabled = false,
@@ -306,13 +317,22 @@ export function PanelControlsRow(props: PanelControlsProps) {
     scope,
   } = props;
   const collapseLabel = areAllFoldersExpanded ? "Collapse all folders" : "Expand all folders";
+  const searchToggles = !!onCloseSearch;
   return (
     <StickyTools>
-      <div className="flex flex-wrap items-center min-h-7 gap-y-1" data-panel-controls-row="">
+      <div
+        className={`flex ${oneRow ? "flex-nowrap" : "flex-wrap"} items-center min-h-7 gap-y-1`}
+        data-panel-controls-row=""
+      >
         {scope ?? <span className="px-2 text-[13px] font-medium text-muted-foreground">Files</span>}
-        <div className="ml-auto flex items-center pl-2 pr-1">
+        <div className="ml-auto flex flex-shrink-0 items-center pr-1">
           {onOpenSearch && (
-            <ToolButton label="Search in diff" tooltip="Search in diff (Cmd/Ctrl+F)" onClick={onOpenSearch} pressed={isSearchVisible}>
+            <ToolButton
+              label="Search in diff"
+              tooltip={searchToggles && isSearchVisible ? "Close search in diff" : "Search in diff (Cmd/Ctrl+F)"}
+              onClick={searchToggles && isSearchVisible ? onCloseSearch! : onOpenSearch}
+              pressed={searchToggles ? isSearchVisible : undefined}
+            >
               <TextSearch className="w-3.5 h-3.5" aria-hidden="true" />
             </ToolButton>
           )}

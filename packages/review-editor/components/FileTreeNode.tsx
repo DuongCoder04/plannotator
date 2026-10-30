@@ -1,23 +1,31 @@
 import React from 'react';
 import { ContextMenu } from '@base-ui/react/context-menu';
 import type { FileTreeNode as TreeNode } from '../utils/buildFileTree';
+import { folderDisplayPath } from '../utils/fileKindTree';
 import { ViewedControl, StageControl, AnnotationBadge, CommittedDot, ChangeTypeLetter, CountColumns } from './FileRowBits';
 import { diffFileTreeIndent } from '@plannotator/ui/components/DiffFileTree';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
+
+/** The full step of the Changes tree, and the smaller one past the cap. */
+const TREE_STEP = 12;
+const DEEP_TREE_STEP = 4;
 
 /**
  * The Changes tree's indent (approved design record "review-sidebar-aligned"):
  * 12 px a level, level 0 starting on the panel's 16 px content edge (the list
  * sits 8 px in, the row pads 8). A child's chevron then sits under its
- * parent's name. Past `maxIndent` (a narrow panel, a deep tree) the steps
- * stop, so a deep file keeps room for its name.
+ * parent's name. Past `maxIndent` (a narrow panel, a deep tree) each further
+ * level steps 4 px: never 0, so a child never lines up with its parent's
+ * siblings. A deep name truncates instead; the row's title has the path.
  */
 export function alignedTreeIndent(depth: number, maxIndent = Infinity): number {
-  return 8 + Math.min(depth * 12, maxIndent);
+  const full = Math.min(depth, Math.floor(maxIndent / TREE_STEP));
+  return 8 + full * TREE_STEP + (depth - full) * DEEP_TREE_STEP;
 }
 
-/** How far the Changes tree may indent in a panel `width` px wide: what is
- *  left after a row's controls, its numbers and room for a short name. */
+/** How far the Changes tree indents in full steps in a panel `width` px
+ *  wide: what is left after a row's controls, its numbers and room for a
+ *  short name. */
 export function maxTreeIndent(width: number): number {
   return Math.max(24, width - 200);
 }
@@ -40,7 +48,7 @@ const FolderRow: React.FC<{ node: TreeNode; isExpanded: boolean; onToggle: () =>
     onClick={onToggle}
     aria-expanded={isExpanded}
     data-folder-row=""
-    title={node.path}
+    title={folderDisplayPath(node.path)}
     className="review-folder-row"
     style={{ paddingLeft }}
   >

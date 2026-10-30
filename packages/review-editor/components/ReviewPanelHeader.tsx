@@ -130,12 +130,12 @@ function useLiveTooltip(repo: ReadyRepo | null | undefined): string | null {
  * tooltip, the status line under the row (partial) and the polite status
  * region (live), so the button's name stays "All files N".
  */
-const LiveDot: React.FC<{ repo: ReadyRepo | null | undefined }> = ({ repo }) => {
+const LiveDot: React.FC<{ repo: ReadyRepo | null | undefined; className?: string }> = ({ repo, className = 'inline-flex items-center' }) => {
   const text = useLiveTooltip(repo);
   if (!repo || !text) return null;
   return (
     <Tooltip content={text} side="bottom">
-      <span className="inline-flex items-center" aria-hidden="true" data-repo-listing-dot={repo.live ? 'live' : 'partial'}>
+      <span className={className} aria-hidden="true" data-repo-listing-dot={repo.live ? 'live' : 'partial'}>
         <span className={`w-1.5 h-1.5 rounded-full ${repo.live ? 'bg-success' : 'border border-warning'}`} />
       </span>
     </Tooltip>
@@ -319,6 +319,12 @@ const ViewTabs: React.FC<{ model: ReviewPanelHeaderModel; views: ReviewPanelView
     if (view === model.view) return;
     pendingTabFocus = view;
     model.onSelectView(view);
+    // The new panel mounts in this same update. A switch the app refused
+    // must not pull focus onto a tab later, when the view changes by another
+    // route: the wish lasts one frame.
+    requestAnimationFrame(() => {
+      if (pendingTabFocus === view) pendingTabFocus = null;
+    });
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -459,44 +465,52 @@ export const ReviewPanelHeader: React.FC<{ model: ReviewPanelHeaderModel; width:
 };
 
 /**
- * Changes N / All files N, the lead of the list's sticky tools row: two
- * pills, the chosen one a quiet grey fill. While All files is on, its
- * listing's state follows: the live dot after the count, a visible line for a
- * partial listing, and a polite status region for a live one. Draws nothing
- * when the panel shows no scope (Commits, a search, a session without All
- * files).
+ * Changes N / All files, the lead of the list's sticky tools row: two pills,
+ * the chosen one a quiet grey fill. All files keeps its count in its name and
+ * tooltip, not on screen, and its live dot sits at its top corner: that way
+ * the pills and the three tools fit on one line at the default 256 px in
+ * either scope, and switching scope never moves the list. While All files is
+ * on, its listing's state follows: the live dot, a visible line for a partial
+ * listing, and a polite status region for a live one. Draws nothing when the
+ * panel shows no scope (Commits, a search, a session without All files).
  */
 export const ScopeSwitch: React.FC<{ model: ReviewPanelHeaderModel; width: number }> = ({ model, width }) => {
   const scope = shownScope(model);
   if (!scope || !model.scope) return null;
   const narrow = width < NARROW_HEADER_WIDTH;
   const listing = scope === 'all' ? model.repo : null;
+  const pill = (active: boolean) =>
+    `h-6 flex items-center gap-1 rounded-md text-[13px] font-medium whitespace-nowrap transition-colors ${FOCUS} ${
+      active ? 'bg-[var(--sidebar-fill-strong)] text-foreground' : 'text-muted-foreground hover:bg-[var(--sidebar-fill)] hover:text-foreground'
+    }`;
+  const changed = model.scope.changed;
+  const all = model.scope.all;
   return (
     <div className="min-w-0" data-tree-scope-row="">
-      <div className="flex min-w-0 items-center gap-0.5" role="group" aria-label="Files shown in the tree" data-tree-scope-switch="">
-        {(['changes', 'all'] as const).map((key) => {
-          const active = scope === key;
-          const count = key === 'changes' ? model.scope!.changed : model.scope!.all;
-          return (
-            <button
-              key={key}
-              type="button"
-              aria-pressed={active}
-              onClick={() => selectScope(model, key)}
-              data-tree-scope={key}
-              title={key === 'changes' ? 'The files this review changes' : 'Every file of the repository at the revision the diff reads'}
-              className={`min-w-0 flex items-center gap-1.5 ${narrow ? 'px-1.5' : 'px-2'} h-6 rounded-md text-[13px] font-medium whitespace-nowrap transition-colors ${FOCUS} ${
-                active ? 'bg-[var(--sidebar-fill-strong)] text-foreground' : 'text-muted-foreground hover:bg-[var(--sidebar-fill)] hover:text-foreground'
-              }`}
-            >
-              <span className="truncate">{key === 'changes' ? 'Changes' : narrow ? 'All' : 'All files'}</span>
-              {count !== undefined && (
-                <span className="tabular-nums text-[11px] font-normal text-muted-foreground">{formatCount(count)}</span>
-              )}
-              {key === 'all' && active && <LiveDot repo={model.repo} />}
-            </button>
-          );
-        })}
+      <div className="flex min-w-0 items-center" role="group" aria-label="Files shown in the tree" data-tree-scope-switch="">
+        <button
+          type="button"
+          aria-pressed={scope === 'changes'}
+          onClick={() => selectScope(model, 'changes')}
+          data-tree-scope="changes"
+          title="The files this review changes"
+          className={`flex-shrink-0 ${narrow ? 'px-1.5' : 'px-2'} ${pill(scope === 'changes')}`}
+        >
+          <span>Changes</span>
+          {changed !== undefined && <span className="tabular-nums text-[11px] font-normal text-muted-foreground">{formatCount(changed)}</span>}
+        </button>
+        <button
+          type="button"
+          aria-pressed={scope === 'all'}
+          onClick={() => selectScope(model, 'all')}
+          data-tree-scope="all"
+          title={`Every file of the repository at the revision the diff reads${all !== undefined ? ` (${formatCount(all)} files)` : ''}`}
+          className={`relative min-w-0 ${narrow ? 'px-1.5' : 'pl-1.5 pr-2'} ${pill(scope === 'all')}`}
+        >
+          <span className="truncate">{narrow ? 'All' : 'All files'}</span>
+          {all !== undefined && <span className="sr-only">{formatCount(all)}</span>}
+          {scope === 'all' && <LiveDot repo={model.repo} className="absolute top-1 right-0.5 flex" />}
+        </button>
       </div>
       {listing && !listing.live && listing.truncated && (
         <p className="pt-1 px-2 flex items-center gap-1.5 text-[11px] leading-4 text-muted-foreground" data-repo-listing-status="partial">

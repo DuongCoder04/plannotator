@@ -3,7 +3,7 @@ import { CodeAnnotation } from '@plannotator/ui/types';
 import type { SinceBaseSections } from '@plannotator/shared/types';
 import { ReviewPanelHeader, ScopeSwitch, reviewPanelBodyProps, type ReviewPanelHeaderModel } from './ReviewPanelHeader';
 import { SemanticDiffRow, CallFlowRow, AllChangesRow } from './PanelNavRows';
-import { PanelControlsRow, PanelSearchField } from './PanelChrome';
+import { PanelControlsRow, PanelSearchField, TOOLS_ONE_ROW_WIDTH } from './PanelChrome';
 import {
   ViewedControl,
   ChangeTypeLetter,
@@ -469,6 +469,8 @@ export const SectionsPanel: React.FC<SectionsPanelProps> = ({
       stagedCount={stagedCount}
       isSearchVisible={isSearchVisible}
       onOpenSearch={onOpenSearch}
+      onCloseSearch={searchQuery.trim() ? onSearchClear : onSearchClose}
+      oneRow={panelWidth >= TOOLS_ONE_ROW_WIDTH}
       onToggleHideViewed={onToggleHideViewed}
       hideViewedFiles={hideViewedFiles}
       viewedCount={viewedFiles.size}

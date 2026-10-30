@@ -216,6 +216,29 @@ describe('FileTree kind blocks', () => {
     expect(minus.textContent).toBe('');
   });
 
+  test.skipIf(!hasDom)('a deep tree keeps its nesting: each folder and its files sit right of their parent, at 256 and 200 px', async () => {
+    // One file at every level, so no folder chain merges into one row.
+    const levels = ['src', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    const deep = levels.map((_, i) => file(`${levels.slice(0, i + 1).join('/')}/f${i}.ts`));
+    for (const width of [256, 200]) {
+      const el = await mount(<Tree files={[...deep, file('tests/x.test.ts')]} activeFileIndex={0} width={width} />);
+      const pad = (row: Element) => parseFloat((row as HTMLElement).style.paddingLeft);
+      const folders = [...block(el, 'code').querySelectorAll('[data-folder-row]')];
+      expect(folders.map((f) => f.textContent?.replace(/[+\-\d]/g, ''))).toEqual(levels);
+      for (let i = 1; i < folders.length; i += 1) expect(pad(folders[i])).toBeGreaterThan(pad(folders[i - 1]));
+      // A folder's files sit right of the folder itself.
+      for (let i = 0; i < levels.length; i += 1) {
+        const row = [...block(el, 'code').querySelectorAll('.file-tree-item')].find((r) => r.getAttribute('title')?.endsWith(`/f${i}.ts`))!;
+        expect(pad(row)).toBeGreaterThan(pad(folders[i]));
+      }
+      // The hover path is the repository's, not the kind-scoped key.
+      expect(folders[1].getAttribute('title')).toBe('src/a');
+      await act(async () => root?.unmount());
+      root = null;
+      host?.remove();
+    }
+  });
+
   test.skipIf(!hasDom)('a narrow panel gives the names the room of the row numbers', async () => {
     const el = await mount(<Tree width={180} />);
     expect(el.querySelector('[data-review-sidebar]')!.hasAttribute('data-compact-rows')).toBe(true);

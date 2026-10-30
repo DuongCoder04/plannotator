@@ -514,7 +514,7 @@ import { DiffFileTree } from "@plannotator/ui/components/DiffFileTree";
 - `role="tree"` with `treeitem` rows (`aria-level`, `aria-expanded`, `aria-selected`) and one tab stop. While focus is in the tree: ArrowDown/`j`, ArrowUp/`k`, Home, End select files in tree order (the review's keys, opening folders as needed); ArrowRight/ArrowLeft open/close a focused folder, ArrowLeft from a file focuses its folder. Unlike the review, nothing listens on `window`.
 - Styling is the `file-tree-item` rules in `styles.css` plus ThemeProvider tokens; no fetches, no seams.
 
-For a custom row, use the atoms (`DiffFileTreeFolderRow`, `DiffFileTreeFileRowContent`, `ChangeTypeLetter`, `DiffCounts`, `diffFileTreeIndent`) with `buildDiffFileTree` and `useDiffFileTreeExpansion`, as the review does. See HANDOFF.md § "Diff file tree".
+For a custom row, use the atoms (`DiffFileTreeFolderRow`, `DiffFileTreeFileRowContent`, `ChangeTypeLetter`, `DiffCounts`, `diffFileTreeIndent`) with `buildDiffFileTree` and `useDiffFileTreeExpansion`. Plannotator's review shares the tree builder, the expansion hook and `ChangeTypeLetter`, but since its aligned sidebar it draws its own folder and file rows, so it is no longer an example of these atoms. See HANDOFF.md § "Diff file tree".
 
 ## Consuming it (e.g. from Workspaces)
 

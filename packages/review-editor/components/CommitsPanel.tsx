@@ -44,7 +44,7 @@ const CommitRow: React.FC<{
 }> = ({ commit, isActive, headLabel, onSelect }) => (
   <button
     onClick={onSelect}
-    className={`w-full text-left px-2 py-1.5 transition-colors ${
+    className={`w-full text-left px-2 py-1.5 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/70 ${
       isActive ? 'bg-[var(--sidebar-fill-strong)]' : 'hover:bg-[var(--sidebar-fill)]'
     }`}
     title={`${commit.sha}\n${commit.author} <${commit.authorEmail}>\n${commit.subject}`}
@@ -129,7 +129,8 @@ export const CommitsPanel: React.FC<CommitsPanelProps> = ({
       )}
 
       <OverlayScrollArea className="flex-1 min-h-0">
-        <div className="py-1" {...reviewPanelBodyProps(header)}>
+        {/* Containers on the panel's 8 px edge, text on its 16 px edge. */}
+        <div className="px-2 py-1" {...reviewPanelBodyProps(header)}>
           {error && commits.length === 0 ? (
             // Full-panel error only when there's nothing to show — an error
             // with a populated list renders inline below it instead, so a

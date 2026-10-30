@@ -84,10 +84,23 @@ describe('the Changes tree indent', () => {
     expect([0, 1, 2].map((depth) => alignedTreeIndent(depth))).toEqual([8, 20, 32]);
   });
 
-  test('a deep tree stops indenting where the names would lose their room, by panel width', () => {
-    expect(alignedTreeIndent(12, maxTreeIndent(256))).toBe(8 + 56);
-    expect(alignedTreeIndent(12, maxTreeIndent(400))).toBe(8 + 144);
-    // The minimum width still shows two levels.
-    expect(alignedTreeIndent(12, maxTreeIndent(160))).toBe(8 + 24);
+  test('every deeper level sits strictly further right, at any width', () => {
+    for (const width of [160, 200, 256, 400]) {
+      const cap = maxTreeIndent(width);
+      for (let depth = 0; depth < 12; depth += 1) {
+        // A child never lines up with its parent's siblings.
+        expect(alignedTreeIndent(depth + 1, cap)).toBeGreaterThan(alignedTreeIndent(depth, cap));
+      }
+    }
+  });
+
+  test('a deep tree steps less past the cap, so names keep room', () => {
+    const cap = maxTreeIndent(256);
+    // Full 12 px steps up to the cap (56 px at 256: four levels), then 4 px.
+    expect(alignedTreeIndent(4, cap)).toBe(8 + 48);
+    expect(alignedTreeIndent(5, cap)).toBe(8 + 48 + 4);
+    expect(alignedTreeIndent(9, cap) - alignedTreeIndent(8, cap)).toBe(4);
+    // A wide panel keeps the full step deeper.
+    expect(alignedTreeIndent(9, maxTreeIndent(400))).toBe(8 + 108);
   });
 });

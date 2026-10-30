@@ -2558,6 +2558,21 @@ diffs-container {
   font-variant-numeric: tabular-nums;
 }
 
+/* All files' "changed on disk" dot on a changed row: just left of the + column,
+   whose width the panel sets. 11 px so `ch` in the widths is the numbers' ch.
+   Without numbers (a narrow panel) it takes their place. */
+.review-on-disk-dot {
+  font-size: 11px;
+  right: calc(8px + var(--count-del-w, 3ch) + 4px + var(--count-add-w, 3ch) + 6px);
+}
+.review-sidebar[data-compact-rows] .review-on-disk-dot {
+  right: 8px;
+}
+/* The name ends before the dot instead of running under it. */
+[data-repo-changed]:has(> .review-on-disk-dot) .review-file-row-main {
+  padding-right: 10px;
+}
+
 /* Folder rows of the Changes tree: the chevron on the content edge, the name
    on the label edge; tertiary grey, lighter than a group heading. */
 .review-folder-row {

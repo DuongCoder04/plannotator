@@ -201,15 +201,33 @@ describe.skipIf(!hasDom)('ReviewPanelHeader', () => {
   test('choosing a tab reaches the app and focus stays on it in the new panel', async () => {
     const onSelectView = mock((_view: string) => {});
     const el = await mount(<ReviewPanelHeader model={model({ onSelectView })} width={256} />);
-    await act(async () => viewTab(el, 'commits').click());
+    // Each view is its own panel: in the app the click's own update unmounts
+    // this header and mounts the new view's.
+    await act(async () => {
+      viewTab(el, 'commits').click();
+      root?.unmount();
+      root = createRoot(el);
+      root.render(<ReviewPanelHeader model={model({ view: 'commits', onSelectView })} width={256} />);
+    });
     expect(onSelectView).toHaveBeenLastCalledWith('commits');
-    // Each view is its own panel: the header remounts with the new view.
-    await act(async () => root?.unmount());
-    root = createRoot(el);
-    await act(async () => root?.render(<ReviewPanelHeader model={model({ view: 'commits', onSelectView })} width={256} />));
     expect(document.activeElement).toBe(viewTab(el, 'commits'));
     expect(viewTab(el, 'commits').tabIndex).toBe(0);
     expect(viewTab(el, 'tree').tabIndex).toBe(-1);
+  });
+
+  test('a tab choice the app refused does not pull focus later', async () => {
+    // The app keeps the tree (the switch is refused).
+    const el = await mount(<ReviewPanelHeader model={model({ onSelectView: () => {} })} width={256} />);
+    await act(async () => viewTab(el, 'commits').click());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    // Later the view changes by another route.
+    await act(async () => root?.render(<ReviewPanelHeader model={model({ view: 'commits' })} width={256} />));
+    expect(document.activeElement).toBe(outside);
   });
 
   test('a panel that mounts without a tab choice leaves focus alone', async () => {
@@ -320,6 +338,8 @@ describe.skipIf(!hasDom)('ScopeSwitch (Changes | All files)', () => {
     expect(el.querySelector('[data-tree-scope="all"]')?.textContent).toBe('All files8');
     expect(el.querySelector('[data-tree-scope="changes"]')?.getAttribute('aria-pressed')).toBe('true');
     expect(el.querySelector('[data-tree-scope="all"]')?.getAttribute('aria-pressed')).toBe('false');
+    // All files' count is in its name and tooltip, so the row keeps one line.
+    expect(el.querySelector('[data-tree-scope="all"]')?.getAttribute('title')).toContain('(8 files)');
   });
 
   test('narrow: All files reads "All"', async () => {

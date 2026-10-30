@@ -7,11 +7,12 @@ import { Tooltip } from '@plannotator/ui/components/Tooltip';
  * language: same viewed circle, same leading change-type letter, same
  * stage button/dot.
  *
- * The change-type letter and +/- counts are the shared diff-file-tree atoms
- * from @plannotator/ui (the same ones the embeddable DiffFileTree renders);
- * they are re-exported here so review call sites keep importing one module.
+ * The change-type letter is the shared diff-file-tree atom from
+ * @plannotator/ui, re-exported so review call sites import one module. The
+ * +/- numbers are the review's own `CountColumns` (two aligned columns), not
+ * ui's `DiffCounts`.
  */
-export { ChangeTypeLetter, DiffCounts } from '@plannotator/ui/components/DiffFileTree';
+export { ChangeTypeLetter } from '@plannotator/ui/components/DiffFileTree';
 
 /** Viewed checkbox — always visible: green check-circle when viewed, empty
  * circle otherwise. Fixed 16px slot, same as StageControl, so the two align
