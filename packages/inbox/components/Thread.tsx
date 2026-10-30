@@ -109,7 +109,7 @@ import { OpenQuestionsButton, type OpenQuestionsDecide } from './OpenQuestions';
 import { fitWholeFootRow, footRowOpenQuestionsForm, footRowTokens, laidOutChildren, pillHitsButtons, type OpenQuestionsLabelForm } from '../footFit';
 import { clearPhoneHead, fitPhoneHead } from '../headFit';
 import { useInboxTextSize } from '../textSize';
-import { openQuestionsShown, placeOf, reaskItemLabel, skipToggledAnswer, threadOpenQuestions, type OpenQuestion, type OpenQuestionPlace } from '../openQuestions';
+import { openQuestionsShown, placeOf, reaskItemLabel, skipToggledAnswer, threadOpenActions, threadOpenQuestions, type OpenQuestion, type OpenQuestionPlace } from '../openQuestions';
 import { ShortcutHint, useShortcutAria, useShortcutHintShown } from '../shortcuts/hint';
 import { lastInput, traversedJustNow } from '../lastInput';
 import { bareKeyAllowed, keyTarget } from '../shortcuts/guards';
@@ -1487,17 +1487,21 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const jumpNow = (target: JumpTarget) => {
     const body = bodyRef.current;
     if (!body) return;
+    const inMessage = `[data-message-id="${CSS.escape(target.messageId)}"]`;
     const element =
       target.kind === 'message'
         ? body.querySelector<HTMLElement>(`[data-message-article="${CSS.escape(target.messageId)}"]`)
-        : body.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(target.messageId)}"] [data-question-key="${CSS.escape(target.key)}"]`);
+        : target.kind === 'action'
+          ? // An action item is a row of its message's checklist (ActionChecklist), not a question card.
+            body.querySelector<HTMLElement>(`${inMessage} [data-action-card="${CSS.escape(target.key)}"]`)
+          : body.querySelector<HTMLElement>(`${inMessage} [data-question-key="${CSS.escape(target.key)}"]`);
     if (!element) return;
     stopHold();
     const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
     element.scrollIntoView?.({ block: 'center', behavior: reduced ? 'auto' : 'smooth' });
     if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1');
     element.focus({ preventScroll: true });
-    if (target.kind === 'question') {
+    if (target.kind !== 'message') {
       element.classList.remove('ib-q-target-out');
       element.classList.add('ib-q-target');
       setTimeout(() => {
@@ -3463,7 +3467,6 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const reaskList = resolved && !cameBack ? [] : reaskTargets(thread.messages, liveMessage);
   const reaskShown = reaskOffered(reaskList, thread.messages.filter(liveMessage));
   const reaskOpen = reaskList.reduce((n, t) => n + (t.kind === 'reask' ? t.open : 0), 0);
-  const reaskActions = reaskList.reduce((n, t) => n + (t.kind === 'reask' ? t.actions : 0), 0);
   const [reasking, setReasking] = useState(false);
   /** One idempotency key per target message, kept for a retry. */
   const reaskKeys = useRef<Map<string, string> | null>(null);
@@ -3538,6 +3541,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   // Open questions in this thread (approval "inbox-thread-open-questions", option A): the "N open questions"
   // button lists them (Re-ask at its foot), and a row takes the person to the card (unfolding its message).
   const openQFromServer = resolved && !cameBack ? { questions: [], replaced: 0 } : threadOpenQuestions(thread.messages, liveMessage);
+  // Its open action items too (owner, 2026-10-30): counted beside the questions and listed after them.
+  const openActions = resolved && !cameBack ? [] : threadOpenActions(thread.messages, liveMessage);
   // A pick still being saved shows on its row at once, as on its card (a Skip from the list goes quiet: "Skipped").
   const openQ = {
     ...openQFromServer,
@@ -3566,8 +3571,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       pick(q.messageId, q.key, skipToggledAnswer(base));
     }
   };
-  // Shown whenever a question waits, or Re-ask is offered (it lives in the list now, so never out of reach).
-  const openQShown = openQuestionsShown(openQ.questions, reaskShown);
+  // Shown whenever a question or an action item waits, or Re-ask is offered (it lives in the list now, so never out of reach).
+  const openQShown = openQuestionsShown(openQ.questions, reaskShown, openActions.length);
   /** Where each listed card sits now: in a folded message, or above or below the middle of the thread's view. */
   const measureOpenQuestions = (): ReadonlyMap<string, OpenQuestionPlace> => {
     const places = new Map<string, OpenQuestionPlace>();
@@ -3585,6 +3590,17 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         body?.querySelector<HTMLElement>(`[data-message-article="${CSS.escape(q.messageId)}"]`) ??
         null;
       places.set(q.id, placeOf(card?.getBoundingClientRect() ?? null, view));
+    }
+    for (const a of openActions) {
+      if (current.folded.has(a.messageId) || hidden.has(a.messageId)) {
+        places.set(a.id, 'folded');
+        continue;
+      }
+      const row =
+        body?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(a.messageId)}"] [data-action-card="${CSS.escape(a.key)}"]`) ??
+        body?.querySelector<HTMLElement>(`[data-message-article="${CSS.escape(a.messageId)}"]`) ??
+        null;
+      places.set(a.id, placeOf(row?.getBoundingClientRect() ?? null, view));
     }
     return places;
   };
@@ -3622,6 +3638,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             onRemoveFile: (key) => replyFiles.remove(key),
             actions: draftActions.length,
             openQuestions: unanswered.length,
+            openActions: openActions.length,
             conflict: replyDraft.conflict !== null,
             error,
             sentAt: composerSentAt,
@@ -3670,7 +3687,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   // What the row shows; a change re-fits it (with its width).
   // The Reply keycap (Show keys on buttons) takes room too: turning it on or off re-fits the row.
   const replyKeyShown = useShortcutHintShown({ scope: inboxThreadShortcuts, action: 'reply' });
-  const footSig = [footStatusShown, draftKept, picksCount, records.length, unanswered.length, keepOpen, skipIds.size, openQShown, openQ.questions.length, reaskActions, rowMax, phone, replyKeyShown].join('|');
+  const footSig = [footStatusShown, draftKept, picksCount, records.length, unanswered.length, keepOpen, skipIds.size, openQShown, openQ.questions.length, openActions.length, rowMax, phone, replyKeyShown].join('|');
   const rowFittedFor = useRef('');
   const fitRowRef = useRef<(force?: boolean) => void>(() => {});
   fitRowRef.current = (force = false) => {
@@ -4807,7 +4824,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
               {openQShown && (
                 <OpenQuestionsButton
                   questions={openQ.questions}
-                  actions={reaskActions}
+                  actions={openActions}
                   reask={
                     reaskShown
                       ? { label: reaskItemLabel(reaskOpen), tooltip: reaskTooltip(reaskList), busy: reasking, onReask: () => void sendReask() }
@@ -4818,6 +4835,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                   phone={phone}
                   measure={measureOpenQuestions}
                   onPick={(q) => jumpTo({ kind: 'question', messageId: q.messageId, key: q.key })}
+                  onPickAction={(a) => jumpTo({ kind: 'action', messageId: a.messageId, key: a.key })}
                   onSetSkipped={setSkippedFromList}
                   rowForm={rowLevel !== null && footStatusShown ? footRowOpenQuestionsForm(rowLevel, rowMax) : null}
                 />
