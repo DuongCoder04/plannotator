@@ -5,6 +5,7 @@ import {
   getAnnotationCountBySection,
   type TocItem,
 } from '../utils/annotationHelpers';
+import { ACTIVE_SECTION_BAND_TOP } from '../hooks/useActiveSection';
 import {
   getScrollViewportRect,
   getScrollViewportTop,
@@ -94,7 +95,8 @@ export function TableOfContents({
       const target = (scrollViewport ?? document).querySelector(`[data-block-id="${blockId}"]`);
       if (target && scrollViewport) {
         const scrollContainer = scrollViewport;
-        const headerOffset = 80; // sticky header (h-12) + breathing room
+        // Sticky header (h-12) + breathing room: the scroll-spy band's top, so the heading lands in it and is marked.
+        const headerOffset = ACTIVE_SECTION_BAND_TOP;
         const containerRect = getScrollViewportRect(scrollContainer);
         const targetRect = target.getBoundingClientRect();
         const offsetPosition =

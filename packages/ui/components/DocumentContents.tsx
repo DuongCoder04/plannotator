@@ -1,7 +1,7 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef } from 'react';
 import type { Annotation, Block } from '../types';
 import { tocHeadings } from '../utils/annotationHelpers';
-import { useActiveSection } from '../hooks/useActiveSection';
+import { useDocumentActiveSection } from '../hooks/useActiveSection';
 import { TableOfContents } from './TableOfContents';
 
 interface DocumentContentsProps {
@@ -18,36 +18,23 @@ interface DocumentContentsProps {
 }
 
 /**
- * `useActiveSection`'s band starts this far below the scroll element's top
- * (its `rootMargin` of -80px): a heading above it is one already read past.
- */
-const BAND_TOP = 80;
-
-/**
  * A document's Contents list for a host without plan review's sidebar: the
  * same `TableOfContents` (headings from `tocHeadings`, click to scroll, the
- * current heading highlighted) bound to one scroll element through
- * `useActiveSection`. It draws no chrome; the host places it and titles it.
+ * current heading highlighted) bound to one scroll element through the
+ * package's one scroll-spy (`useDocumentActiveSection`, over
+ * `useActiveSection`). It draws no chrome; the host places it and titles it.
  *
- * The host mounts it afresh (a sheet that opens, a list shown again, a new
- * placement), often mid-document, where no heading sits in the observer's
- * band. So on mount it marks the last heading already scrolled above the band
- * (the section being read) until the observer reports one. The marked entry
- * is kept in view inside the list's own scroll box (a capped column, a sheet).
+ * The host mounts it afresh (a sheet that opens), often mid-document, where
+ * no heading sits in the observer's band; the scroll-spy reads the band once
+ * on mount for that. The marked entry is kept in view inside the list's own
+ * scroll box (a sheet).
  *
  * Key it by the document: the active-heading observer reads the headings
  * that are drawn when it mounts or when their count changes.
  */
 export function DocumentContents({ blocks, annotations, scrollViewport, onNavigate, className = '' }: DocumentContentsProps) {
-  // useActiveSection reads headings from the ref's element, else from the scroll element.
-  const noContainer = useRef<HTMLElement | null>(null);
   const headings = useMemo(() => tocHeadings(blocks), [blocks]);
-  const observed = useActiveSection(noContainer, headings.length, scrollViewport);
-  const [seed, setSeed] = useState<string | null>(null);
-  useLayoutEffect(() => {
-    setSeed(scrollViewport ? headingReadIn(scrollViewport, new Set(headings.map((h) => h.id))) : null);
-  }, [scrollViewport, headings]);
-  const activeId = observed ?? seed;
+  const activeId = useDocumentActiveSection(scrollViewport, headings.length);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -67,19 +54,6 @@ export function DocumentContents({ blocks, annotations, scrollViewport, onNaviga
       />
     </div>
   );
-}
-
-/** The last listed heading whose top is above the band in `viewport` (the section being read), or null. */
-function headingReadIn(viewport: HTMLElement, ids: ReadonlySet<string>): string | null {
-  const bandTop = viewport.getBoundingClientRect().top + BAND_TOP;
-  let read: string | null = null;
-  for (const heading of viewport.querySelectorAll<HTMLElement>('[data-block-type="heading"][data-block-id]')) {
-    const id = heading.getAttribute('data-block-id')!;
-    if (!ids.has(id)) continue;
-    if (heading.getBoundingClientRect().top > bandTop) break;
-    read = id;
-  }
-  return read;
 }
 
 /**
