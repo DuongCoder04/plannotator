@@ -21,7 +21,9 @@ import type {
 	ExternalRefFacts,
 	ExternalRefState,
 	RefReadAdapter,
+	ReferenceListQuery,
 	ResolveResult,
+	SearchResult,
 } from "../contract.ts";
 import { providerFetch, providerUserAgent } from "../fetch.ts";
 import {
@@ -30,7 +32,17 @@ import {
 	type GitlabHostsOptions,
 	parseGitlabCanonical,
 } from "../grammars/gitlab.ts";
-import { servedHost, type ServedHosts } from "../hosts.ts";
+import { readHost, servedHost, type ServedHosts } from "../hosts.ts";
+import {
+	checkListQuery,
+	connectionNames,
+	connectionNodes,
+	hasEveryLabel,
+	LIST_PAGE_SIZE,
+	nextCursor,
+	objectAt,
+	postGraphql,
+} from "../list-query.ts";
 import { credentialFor, type ReferenceCredential, type ReferencePort } from "../port.ts";
 
 /** The origin a GitLab item host serves its API from: the host itself
@@ -150,6 +162,140 @@ async function resolveGitlab(
 	return { ok: true, facts };
 }
 
+// ── list(query): GraphQL project.issues ─────────────────────────────────────
+//
+// Verified against GitLab docs: https://docs.gitlab.com/api/graphql/reference/
+// (Project.issues: state, labelName, assigneeUsernames, milestoneTitle,
+// search, sort; max page size 100; complexity counts each field once).
+
+const PROJECT_ISSUES_QUERY = `query($fullPath: ID!, $first: Int!, $after: String, $state: IssuableState, $labelName: [String!], $assigneeUsernames: [String!], $milestoneTitle: [String!], $search: String, $sort: IssueSort) {
+  project(fullPath: $fullPath) {
+    issues(first: $first, after: $after, state: $state, labelName: $labelName, assigneeUsernames: $assigneeUsernames, milestoneTitle: $milestoneTitle, search: $search, sort: $sort) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        iid title webUrl state createdAt updatedAt
+        author { username }
+        labels { nodes { title } }
+        assignees { nodes { username } }
+        milestone { title }
+      }
+    }
+  }
+}`;
+
+/** A project path: two or more GitLab path segments. */
+function validProjectPath(path: string): boolean {
+	const segments = path.split("/");
+	return (
+		segments.length >= 2 &&
+		segments.every((s) => /^[A-Za-z0-9_.-]+$/.test(s) && s !== "." && s !== "..")
+	);
+}
+
+/** One page (up to 100) of a project's issues, filtered by GitLab itself
+ * (labels mean every label). The public rung applies as in resolve: with
+ * no credential a public project lists anonymously from its own host. */
+async function listGitlab(
+	grammar: GitlabGrammar,
+	query: ReferenceListQuery,
+	port: ReferencePort,
+): Promise<SearchResult> {
+	const checked = checkListQuery(query);
+	if (!checked.ok) return checked;
+	const q = checked.query;
+	const host = readHost(grammar.served, q.host);
+	if (host === null || q.scope === undefined || !validProjectPath(q.scope)) {
+		return { ok: false, reason: "not_resolvable", field: "scope" };
+	}
+	const scope = q.scope;
+	const credential = await credentialFor(port, "gitlab", host, ["private-token", "bearer"]);
+	if (credential !== null && credential.kind === "unavailable") {
+		return { ok: false, reason: "not_resolvable", credentialDead: credential.credentialDead };
+	}
+	const token = credential ?? undefined;
+	const variables: Record<string, unknown> = {
+		fullPath: scope,
+		first: LIST_PAGE_SIZE,
+		after: q.cursor ?? null,
+		state: q.state === "open" ? "opened" : q.state,
+		sort: q.order === "created_asc" ? "CREATED_ASC" : q.order === "created_desc" ? "CREATED_DESC" : "UPDATED_DESC",
+	};
+	if (q.labels.length > 0) variables["labelName"] = q.labels;
+	if (q.assignee !== undefined) variables["assigneeUsernames"] = [q.assignee];
+	if (q.milestone !== undefined) variables["milestoneTitle"] = [q.milestone];
+	if (q.text !== undefined) variables["search"] = q.text;
+
+	const answer = await postGraphql(
+		providerFetch(port),
+		`${gitlabApiBase(host)}/api/graphql`,
+		gitlabHeaders(providerUserAgent(port), token),
+		PROJECT_ISSUES_QUERY,
+		variables,
+	);
+	if (!answer.ok) {
+		// The resolve's rules: 401 on a token = dead; 401/403/404 = hidden.
+		if (answer.status === 401 && token !== undefined) {
+			return { ok: false, reason: "not_resolvable", credentialDead: true };
+		}
+		if (answer.status === 401 || answer.status === 403 || answer.status === 404) {
+			return { ok: false, reason: "not_linked" };
+		}
+		return { ok: false, reason: "not_resolvable" };
+	}
+	if (answer.data === null) return { ok: false, reason: "not_resolvable" };
+	// A project this token (or the public rung) cannot see answers null.
+	const project = objectAt(answer.data, "project");
+	if (project === null) return { ok: false, reason: "not_linked" };
+	const connection = objectAt(project, "issues");
+	if (connection === null) return { ok: false, reason: "not_resolvable" };
+
+	const items: ExternalRefFacts[] = [];
+	for (const node of connectionNodes(connection)) {
+		const facts = listFacts(grammar, scope, node);
+		if (facts !== null && hasEveryLabel(facts.labels ?? [], q.labels)) items.push(facts);
+	}
+	const cursor = nextCursor(connection["pageInfo"]);
+	return { ok: true, items, ...(cursor === undefined ? {} : { cursor }) };
+}
+
+/** One list node as facts, or null when it is not an issue of `scope` on a
+ * served host. The canonical comes from the grammar, as a pasted URL's. */
+function listFacts(
+	grammar: GitlabGrammar,
+	scope: string,
+	node: Record<string, unknown>,
+): ExternalRefFacts | null {
+	const webUrl = str(node["webUrl"]);
+	const title = str(node["title"]);
+	const stateWord = str(node["state"]);
+	const state = stateWord === undefined ? null : gitlabState(stateWord);
+	if (webUrl === undefined || title === undefined || state === null) return null;
+	let ref: ExternalRef | null;
+	try {
+		ref = grammar.match(new URL(webUrl));
+	} catch {
+		return null;
+	}
+	const parsed = ref === null ? null : parseGitlabCanonical(ref);
+	if (ref === null || parsed === null || parsed.form !== "issues") return null;
+	if (parsed.projectPath.toLowerCase() !== scope.toLowerCase()) return null;
+	const leaf = parsed.projectPath.split("/").pop() ?? parsed.projectPath;
+	const milestone = str(objectAt(node, "milestone")?.["title"]);
+	return {
+		ref,
+		kind: "issue",
+		shortId: `${leaf}#${parsed.iid}`,
+		title,
+		state,
+		author: str(objectAt(node, "author")?.["username"]),
+		createdAt: str(node["createdAt"]),
+		updatedAt: str(node["updatedAt"]),
+		labels: connectionNames(node["labels"], "title"),
+		assignees: connectionNames(node["assignees"], "username"),
+		...(milestone === undefined ? {} : { milestone }),
+	};
+}
+
 function buildGitlabAdapter(grammar: GitlabGrammar): RefReadAdapter {
 	return {
 		kindOf: (ref) => (new URL(ref.url).pathname.includes("/merge_requests/") ? "change" : "issue"),
@@ -157,6 +303,7 @@ function buildGitlabAdapter(grammar: GitlabGrammar): RefReadAdapter {
 		match: grammar.match,
 		matchCodeLink: grammar.matchCodeLink,
 		resolve: (ref, port) => resolveGitlab(grammar.served, ref, port),
+		list: (query, port) => listGitlab(grammar, query, port),
 	} satisfies RefReadAdapter;
 }
 

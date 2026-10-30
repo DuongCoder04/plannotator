@@ -122,6 +122,13 @@ interface ExternalRefFactsFields {
 	 * resolve call. Non-meeting providers never set them. */
 	readonly attendeeCount?: number;
 	readonly durationMinutes?: number;
+	/** Issue filter facts, set by `list` (and only where the provider answers
+	 * them on the list call). Label names; assignee logins or usernames (a
+	 * Linear assignee's display name); the milestone title (a Linear
+	 * project milestone's name). */
+	readonly labels?: readonly string[];
+	readonly assignees?: readonly string[];
+	readonly milestone?: string;
 }
 
 /** A monitor cites its saved definition, never an alert occurrence. */
@@ -162,8 +169,10 @@ export type ResolveResult =
 			 * while ordinary transient failures still heal on the very next
 			 * request. */
 			readonly rateLimited?: boolean;
-			/** A picker input needs correction before the provider read can run. */
-			readonly field?: "scope" | "cursor";
+			/** A picker input needs correction before the provider read can run.
+			 * `filter`: a list filter (labels, assignee, milestone, text) is
+			 * empty or too long. */
+			readonly field?: "scope" | "cursor" | "filter";
 	  };
 
 /** Shared provider read failures. No provider response body or credential escapes. */
@@ -173,6 +182,34 @@ export type ExternalRefFailure = Extract<ResolveResult, { readonly ok: false }>;
 export type SearchResult =
 	| { readonly ok: true; readonly items: readonly ExternalRefFacts[]; readonly cursor?: string }
 	| ExternalRefFailure;
+
+/** The order of a `list` page. `created_asc` is oldest first (what an
+ * import that takes at most one page per run wants). */
+export type ReferenceListOrder = "updated_desc" | "created_desc" | "created_asc";
+
+/** A filtered issue list (`RefReadAdapter.list`). Every filter is
+ * optional; filters combine with AND, and `labels` means every label. */
+export interface ReferenceListQuery {
+	/** The repository or project: GitHub `owner/repo` and GitLab
+	 * `group/sub/project` (required); a Linear team key such as `ENG`
+	 * (optional: the whole workspace). */
+	readonly scope?: string;
+	/** One of the adapter's served hosts (default the public host). */
+	readonly host?: string;
+	/** Default `open`. Merged and draft are tones, never a state here. */
+	readonly state?: "open" | "closed" | "all";
+	readonly labels?: readonly string[];
+	/** A GitHub login, a GitLab username, or a Linear display name or email. */
+	readonly assignee?: string;
+	/** A milestone title (Linear: a project milestone name). */
+	readonly milestone?: string;
+	/** Free text. GitHub runs its search API only when this is set. */
+	readonly text?: string;
+	/** The previous page's `cursor`, with the same query. */
+	readonly cursor?: string;
+	/** Default `updated_desc`. */
+	readonly order?: ReferenceListOrder;
+}
 
 /** The provider's own scopes, such as repositories or projects. */
 export type ScopesResult =
@@ -219,6 +256,10 @@ export interface RefReadAdapter {
 		args: { query: string; scope?: string; cursor?: string; include?: "issues"; host?: string },
 		port: ReferencePort,
 	): Promise<SearchResult>;
+	/** One page (up to 100) of a scope's issues, filtered. Issues only: pull
+	 * and merge requests are never listed. Answers like `search`; `cursor`
+	 * is set when another page exists. */
+	list?(query: ReferenceListQuery, port: ReferencePort): Promise<SearchResult>;
 	/** Optional narrowing choices, on `options.host` (default the public
 	 * host). Absent method means no scope control. */
 	scopes?(port: ReferencePort, options?: { readonly host?: string }): Promise<ScopesResult>;

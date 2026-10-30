@@ -205,3 +205,13 @@ repo after placement, in commit order:
   every URL it matched). Additive contract fields: `search` args and
   `PullRef` take `host?`, `scopes` takes `options?: { host? }`, and
   `parseGithubCanonical` / `parseGitlabCanonical` answer `host`.
+- `list(query)` (plug point (b)) is in for GitHub, GitLab and Linear, close
+  to the suggested types: `ReferenceListQuery` also has `host` and `order`
+  (`updated_desc`, `created_desc`, `created_asc`); `RefReadAdapter.list?`
+  answers `SearchResult`; the facts gain `labels`, `assignees` and
+  `milestone`; `ResolveResult.field` gains `"filter"`. All three read
+  GraphQL (GitHub `repository.issues`, or `search` only with text; GitLab
+  `project.issues`; Linear `issues(filter:)`), 100 a page. Labels mean every
+  label on all three. Linear's `author` stays the assignee, else the
+  creator, as in resolve; `assignees` carries the assignee's display name.
+  The shared helpers are in the new `src/list-query.ts`.

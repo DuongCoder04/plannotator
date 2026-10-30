@@ -47,25 +47,14 @@ import {
 	type GithubPickerReads,
 	githubPickerReads,
 	githubScopes,
+	githubList,
 	githubSearch,
+	issueState,
 } from "./github-pulls.ts";
 
 // ── state mapping (the provider's own words, three tones) ───────────────────
 
-/** Issue state → {label, tone}. GitHub's word for any closed issue is
- * "Closed"; state_reason (completed | not_planned | duplicate | reopened |
- * null) is cheaply in the payload, so a not-planned or duplicate close
- * earns the closed tone and every other close the done tone. A null reason
- * is an issue closed before GitHub had close reasons, which GitHub itself
- * shows as completed. This is the one mapping: list rows and reference
- * chips both read it. */
-function issueState(state: string, stateReason: string | null): ExternalRefState {
-	if (state === "open") return { label: "Open", tone: "open" };
-	if (stateReason === "not_planned" || stateReason === "duplicate") {
-		return { label: "Closed", tone: "closed" };
-	}
-	return { label: "Closed", tone: "done" };
-}
+// issueState (the one issue mapping, shared with list rows) lives in github-pulls.ts.
 
 /** PR state → {label, tone}: merged → Merged/done, draft → Draft/open,
  * open → Open/open, closed-unmerged → Closed/closed (`merged` and `draft`
@@ -225,6 +214,8 @@ function buildGithubAdapter(
 		// and one repository's open pull requests.
 		scopes: picker.scopes,
 		search: picker.search,
+		// The filtered issue list (github-pulls.ts): GraphQL repository.issues.
+		list: picker.list,
 		// The guide run's reads (github-pull-diff.ts).
 		pulls,
 	} satisfies RefReadAdapter;
@@ -242,6 +233,6 @@ export function createGithubAdapter(options: GithubHostsOptions = {}): RefReadAd
 /** The github.com adapter. */
 export const githubAdapter: RefReadAdapter = buildGithubAdapter(
 	githubGrammar(),
-	{ scopes: githubScopes, search: githubSearch },
+	{ scopes: githubScopes, search: githubSearch, list: githubList },
 	{ summary: readPullSummary, diff: fetchPullDiff, files: listPullFiles },
 );

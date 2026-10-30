@@ -18,7 +18,8 @@ the Workspaces originals so Workspaces can adopt the package by re-import.
 | `hosts.ts` | The served-hosts rule the forge grammars and adapters share (the `hosts` option). |
 | `fetch.ts` | The outbound fetch policy: ten-second deadline, same-origin redirects only (at most 20), one log line with host, status and duration. |
 | `grammars/` | `github.ts`, `gitlab.ts`, `linear.ts`: URL recognition and canonical URLs (`githubGrammar({ hosts })`, `gitlabGrammar({ hosts })`). `git-branch.ts`: the branch-tail rules for code links. Pure functions, no fetch. |
-| `adapters/` | `github.ts` (resolve), `github-pulls.ts` (search, scopes), `github-pull-diff.ts` (pull summary, pinned diff, file list), `gitlab.ts` (resolve), `linear.ts` (resolve). |
+| `adapters/` | `github.ts` (resolve), `github-pulls.ts` (search, scopes, list), `github-pull-diff.ts` (pull summary, pinned diff, file list), `gitlab.ts` (resolve, list), `linear.ts` (resolve, list). |
+| `list-query.ts` | What the three `list` reads share: the query checks, the every-label rule, one GraphQL POST. |
 | `registry.ts` | `createReferenceRegistry(adapters)`, `createReferenceAdapters({ github, gitlab })` (the three adapters with extra hosts), and a default registry over the three adapters: `adapterFor`, `matchExternalRef`, `matchExternalRefCandidates`, `matchCodeLinkUrl`, `matchExternalRefUrl`. |
 | `picker-modes.ts` | The picker presentation rows for GitHub and Linear. GitLab falls to the paste default. |
 
@@ -78,6 +79,46 @@ if (found) {
 Adapters answer and never throw. A failure is `{ ok: false, reason }`, with
 `credentialDead: true` when the provider proved the credential dead, and
 `rateLimited: true` when GitHub rate-limited the read (403 or 429).
+
+## Listing issues
+
+`adapter.list(query, port)` answers one page (up to 100) of a scope's
+issues, filtered by the provider, in the same `SearchResult` shape as
+`search`. Pull and merge requests are never listed.
+
+```ts
+const page = await githubAdapter.list?.(
+  { scope: "acme/web", state: "open", labels: ["bug"], assignee: "mara", order: "created_asc" },
+  port,
+);
+// page.ok ? page.items (facts with labels, assignees, milestone) and page.cursor : page.field / page.reason
+```
+
+| Field | Meaning |
+| --- | --- |
+| `scope` | GitHub `owner/repo`, GitLab `group/sub/project` (both required); a Linear team key (optional). |
+| `host` | One of the adapter's served hosts (default the public host). |
+| `state` | `open` (default), `closed` or `all`. |
+| `labels` | Every label must be on the issue. |
+| `assignee` | A GitHub login, a GitLab username, or a Linear display name or email. |
+| `milestone` | A milestone title (Linear: a project milestone name). |
+| `text` | Free text. |
+| `order` | `updated_desc` (default), `created_desc`, or `created_asc` (oldest first). |
+| `cursor` | The previous page's `cursor`, with the same query. |
+
+- GitHub reads GraphQL `repository.issues` with `filterBy` and `orderBy`.
+  It uses the search API only when `text` is set. Quotes and colons in the
+  text and labels are removed, so they cannot add a qualifier. GitHub's
+  label filter matches any label, so the page is narrowed to every label
+  after the read. A milestone takes one lookup for its number first. There
+  is no anonymous rung.
+- GitLab reads GraphQL `project.issues` with `state`, `labelName`,
+  `assigneeUsernames`, `milestoneTitle`, `search` and `sort`. With no
+  credential, a public project lists anonymously from its own host.
+- Linear reads `issues(filter:)` in the credential's workspace (`account`).
+  Oldest first reads the last page and reverses it.
+- A bad cursor, or an empty or too-long filter, answers `field: "cursor"` or
+  `field: "filter"` before a credential is asked.
 
 ## The port
 
@@ -173,8 +214,7 @@ need `account`. GitHub and GitLab never send a `linear-api-key`.
   rest).
 - The web client's text scanners (`findExternalRefUrls` and the
   sentence-punctuation rules) and its string form of the code-link matcher.
-- A filtered `list` query with labels, assignees and milestone facts. This
-  is the next addition; `PROVENANCE.md` names where it plugs in.
+- Any write to a provider. Every call is a read.
 
 ## Development
 

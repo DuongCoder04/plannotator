@@ -27,10 +27,21 @@ import type {
 	ExternalRefFacts,
 	ExternalRefState,
 	RefReadAdapter,
+	ReferenceListQuery,
 	ResolveResult,
+	SearchResult,
 } from "../contract.ts";
 import { providerFetch } from "../fetch.ts";
 import { matchLinearUrl, parseLinearCanonical } from "../grammars/linear.ts";
+import {
+	checkListQuery,
+	connectionNames,
+	connectionNodes,
+	LIST_PAGE_SIZE,
+	nextCursor,
+	objectAt,
+	postGraphql,
+} from "../list-query.ts";
 import {
 	credentialFor,
 	type FetchLike,
@@ -236,6 +247,145 @@ async function resolveLinear(ref: ExternalRef, port: ReferencePort): Promise<Res
 	return { ok: true, facts };
 }
 
+// ── list(query): GraphQL issues(filter:) ────────────────────────────────────
+//
+// Linear pages Relay style (first/after and last/before) and orders by
+// createdAt or updatedAt, newest first. Oldest first (`created_asc`) reads
+// the LAST page of the createdAt order and reverses it; its cursor is the
+// page's startCursor, read with `before`.
+
+const LIST_ISSUES_QUERY = `query($first: Int, $after: String, $last: Int, $before: String, $filter: IssueFilter, $orderBy: PaginationOrderBy) {
+  issues(first: $first, after: $after, last: $last, before: $before, filter: $filter, orderBy: $orderBy) {
+    pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
+    nodes {
+      identifier title url createdAt updatedAt
+      state { name type }
+      assignee { name displayName } creator { name }
+      labels(first: 50) { nodes { name } }
+      projectMilestone { name }
+    }
+  }
+}`;
+
+/** A Linear team key ("ENG"). */
+const TEAM_KEY = /^[A-Za-z][A-Za-z0-9_]{0,15}$/;
+const CLOSED_TYPES = ["completed", "canceled"];
+
+/** One page (up to 100) of the credential's workspace issues, filtered by
+ * Linear itself. `scope` is a team key (optional). Like resolve: no public
+ * rung, and the credential's `account` binds the answer to its workspace. */
+async function listLinear(query: ReferenceListQuery, port: ReferencePort): Promise<SearchResult> {
+	const checked = checkListQuery(query);
+	if (!checked.ok) return checked;
+	const q = checked.query;
+	if (
+		(q.host !== undefined && q.host.toLowerCase() !== "linear.app") ||
+		(q.scope !== undefined && !TEAM_KEY.test(q.scope))
+	) {
+		return { ok: false, reason: "not_resolvable", field: "scope" };
+	}
+	const credential = await credentialFor(port, "linear", "linear.app", ["bearer", "linear-api-key"]);
+	if (credential === null) return { ok: false, reason: "not_linked" };
+	if (credential.kind === "unavailable") {
+		return { ok: false, reason: "not_resolvable", credentialDead: credential.credentialDead };
+	}
+	const workspace = credential.account?.toLowerCase();
+	if (workspace === undefined) return { ok: false, reason: "not_linked" };
+
+	const and: Record<string, unknown>[] = [];
+	if (q.scope !== undefined) and.push({ team: { key: { eqIgnoreCase: q.scope } } });
+	if (q.state !== "all") {
+		and.push({ state: { type: q.state === "open" ? { nin: CLOSED_TYPES } : { in: CLOSED_TYPES } } });
+	}
+	for (const label of q.labels) and.push({ labels: { some: { name: { eqIgnoreCase: label } } } });
+	if (q.assignee !== undefined) {
+		and.push({
+			assignee: {
+				or: [{ displayName: { eqIgnoreCase: q.assignee } }, { email: { eqIgnoreCase: q.assignee } }],
+			},
+		});
+	}
+	if (q.milestone !== undefined) {
+		and.push({ projectMilestone: { name: { eqIgnoreCase: q.milestone } } });
+	}
+	if (q.text !== undefined) {
+		and.push({
+			or: [{ title: { containsIgnoreCase: q.text } }, { description: { containsIgnoreCase: q.text } }],
+		});
+	}
+	const backward = q.order === "created_asc";
+	const variables: Record<string, unknown> = {
+		filter: and.length === 0 ? null : { and },
+		orderBy: q.order === "updated_desc" ? "updatedAt" : "createdAt",
+		...(backward
+			? { last: LIST_PAGE_SIZE, before: q.cursor ?? null }
+			: { first: LIST_PAGE_SIZE, after: q.cursor ?? null }),
+	};
+
+	const answer = await postGraphql(
+		providerFetch(port),
+		LINEAR_GRAPHQL_URL,
+		{ authorization: linearAuthorization(credential) },
+		LIST_ISSUES_QUERY,
+		variables,
+	);
+	if (!answer.ok) {
+		// A 401 on a token the port handed out as live: revoked.
+		return answer.status === 401
+			? { ok: false, reason: "not_resolvable", credentialDead: true }
+			: { ok: false, reason: "not_resolvable" };
+	}
+	const connection = objectAt(answer.data, "issues");
+	if (connection === null) return { ok: false, reason: "not_resolvable" };
+
+	const nodes = connectionNodes(connection);
+	if (backward) nodes.reverse();
+	const items: ExternalRefFacts[] = [];
+	for (const issue of nodes) {
+		const facts = linearListFacts(workspace, issue);
+		if (facts !== null) items.push(facts);
+	}
+	const cursor = nextCursor(connection["pageInfo"], backward ? "backward" : "forward");
+	return { ok: true, items, ...(cursor === undefined ? {} : { cursor }) };
+}
+
+/** One list node as facts, or null when its URL is not an issue in the
+ * credential's workspace. The canonical comes from the grammar. */
+function linearListFacts(workspace: string, issue: Record<string, unknown>): ExternalRefFacts | null {
+	const url = str(issue["url"]);
+	const title = str(issue["title"]);
+	const state = node(issue["state"]);
+	const label = str(state?.["name"]);
+	if (url === undefined || title === undefined || label === undefined) return null;
+	let ref: ExternalRef | null;
+	try {
+		ref = matchLinearUrl(new URL(url));
+	} catch {
+		return null;
+	}
+	const parsed = ref === null ? null : parseLinearCanonical(ref);
+	if (ref === null || parsed === null || parsed.item.form !== "issue" || parsed.workspace !== workspace) {
+		return null;
+	}
+	const assignee = node(issue["assignee"]);
+	const assigneeName = str(assignee?.["displayName"]);
+	const milestone = str(node(issue["projectMilestone"])?.["name"]);
+	return {
+		ref,
+		kind: "issue",
+		shortId: str(issue["identifier"]) ?? parsed.item.identifier,
+		title,
+		state: { label, tone: issueTone(str(state?.["type"])) },
+		// The resolve's rule, so a chip and a list row agree.
+		author: str(assignee?.["name"]) ?? str(node(issue["creator"])?.["name"]),
+		createdAt: str(issue["createdAt"]),
+		updatedAt: str(issue["updatedAt"]),
+		labels: connectionNames(issue["labels"], "name"),
+		assignees: assigneeName === undefined ? [] : [assigneeName],
+		...(milestone === undefined ? {} : { milestone }),
+	};
+}
+
 export const linearAdapter: RefReadAdapter = {
 	kindOf: (ref) => {
 		const form = new URL(ref.url).pathname.split("/")[2];
@@ -244,4 +394,5 @@ export const linearAdapter: RefReadAdapter = {
 	provider: "linear",
 	match: matchLinearUrl,
 	resolve: resolveLinear,
+	list: listLinear,
 } satisfies RefReadAdapter;
