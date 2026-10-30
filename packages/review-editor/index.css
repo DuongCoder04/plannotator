@@ -1721,6 +1721,8 @@ diffs-container {
 
 @media (max-width: 42rem) {
   .call-flow-header { align-items: stretch; flex-direction: column; }
+  /* In a column the 14rem basis would be a height. */
+  .call-flow-header > div:first-child { flex: none; }
   .call-flow-header-actions { align-self: stretch; justify-content: space-between; margin-left: 0; }
   .call-flow-legend-hint { width: 100%; margin-left: 0; }
   .call-flow-node-kind { display: none; }
