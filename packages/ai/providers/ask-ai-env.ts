@@ -17,7 +17,11 @@
  *  - `PLANNOTATOR_ASK_AI_CHILD=1`: the marker the rest honours
  *    (`isAskAiChild` in packages/shared/child-env.ts): the Inbox MCP shim
  *    lists no tools, the plan-review hook (`plannotator` with no arguments)
- *    exits 0 at once, and the OpenCode plugin and the mod stand down.
+ *    exits 0 at once, and the OpenCode plugin stands down.
+ *
+ * Codex does not pass the env to a stdio MCP server, so codex-app-server.ts
+ * also turns the Inbox server off by config (`codexAskAiConfigArgs`). Claude
+ * sessions disallow it by name (claude-agent-sdk.ts).
  *
  * Bun-free and Node-safe: vendored into the Pi extension.
  */

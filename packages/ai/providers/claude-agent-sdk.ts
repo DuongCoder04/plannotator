@@ -164,7 +164,17 @@ interface ClaudeSDKQueryOptions {
   strictMcpConfig?: boolean;
   /** The whole env of the `claude` process (the SDK does not merge it with process.env). */
   env: Record<string, string | undefined>;
+  disallowedTools: string[];
 }
+
+/**
+ * Removed from every Ask AI session whatever the person's settings allow: the
+ * Plannotator Inbox MCP server, by its whole-server name (`mcp__<server>`, a
+ * server-level spec the SDK's `disallowedTools` takes). This covers an
+ * HTTP-transport `plannotator-inbox` entry too, which the env marker
+ * (ask-ai-env.ts) cannot reach.
+ */
+const ASK_AI_DISALLOWED_TOOLS = ["mcp__plannotator-inbox"];
 
 // ---------------------------------------------------------------------------
 // Provider
@@ -465,6 +475,7 @@ class ClaudeAgentSDKSession extends BaseSession {
       ...(this.config.effort && { effort: this.config.effort }),
       maxTurns: this.config.maxTurns,
       allowedTools: this.config.allowedTools,
+      disallowedTools: ASK_AI_DISALLOWED_TOOLS,
       cwd: this.config.cwd,
       abortController: this._currentAbort!,
       includePartialMessages: true,

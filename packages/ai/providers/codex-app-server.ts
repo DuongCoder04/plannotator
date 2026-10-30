@@ -26,6 +26,9 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { BaseSession } from "../base-session.ts";
 import { buildEffectivePrompt, buildSystemPrompt } from "../context.ts";
 import type {
@@ -68,28 +71,106 @@ const FILE_APPROVAL_METHOD = "item/fileChange/requestApproval";
 // response shape from the two above ({permissions} grant, not {decision}).
 const PERMISSIONS_APPROVAL_METHOD = "item/permissions/requestApproval";
 
+/** The Inbox MCP server Plannotator connects to Codex (`INBOX_MCP_SERVER_NAME` in packages/server/inbox-agents.ts). */
+const CODEX_INBOX_SERVER = "plannotator-inbox";
+
 /**
- * Global `-c` overrides for every `codex app-server` Ask AI starts: they turn
- * off the Inbox MCP server Plannotator connects to Codex (`codex mcp add
- * plannotator-inbox`, `INBOX_MCP_SERVER_NAME` in
- * packages/server/inbox-agents.ts). The marker in the app-server's env
- * (ask-ai-env.ts) cannot do this: Codex starts a stdio MCP server with a
- * cleared environment that holds only HOME, PATH and a few others
+ * The global `-c` override every `codex app-server` that Ask AI starts gets.
+ * It turns off the Inbox MCP server. The marker in the app-server's env
+ * (ask-ai-env.ts) cannot do this, because Codex starts a stdio MCP server with
+ * a cleared environment that holds only HOME, PATH and a few others
  * (codex-rs/rmcp-client `create_env_for_mcp_server`). Codex hooks get the
  * whole env, so the Stop hook does see the marker.
  *
- * The value is a whole stdio server, so the override is valid whether or not
- * the person has that server. Codex deep-merges `-c` tables over config.toml:
- * an existing entry gets `enabled = false` (and this command), and when there
- * is no entry, a disabled stub is added. The stub also carries the marker in
- * its own `env`, so if a Codex ignored `enabled`, the shim it starts would
- * still list no tools. Literal strings and no spaces: the argument stays
+ * Codex deep-merges `-c` tables over config.toml and then rejects an entry
+ * that has both `command` and `url`, or neither. So:
+ *  - the person's entry has a `url` (the HTTP transport): only
+ *    `enabled=false`, because the entry already has its transport;
+ *  - otherwise: a whole disabled stdio server. It is merged over a stdio entry,
+ *    or added when there is none. Its own `env` carries the marker, so a Codex
+ *    that ignored `enabled` would still start a shim that lists no tools.
+ * Only `$CODEX_HOME/config.toml` is read. A `url` entry kept elsewhere (a
+ * project's `.codex/config.toml`) makes the stub invalid, and app-server exits
+ * before `initialize`. `CodexAppServerProcess` then starts it once more
+ * without the override. Literal strings and no spaces: the argument stays
  * unquoted on the cmd.exe line of a Windows `.cmd` shim.
  */
-export const CODEX_ASK_AI_CONFIG_ARGS: readonly string[] = [
-  "-c",
-  "mcp_servers.plannotator-inbox={command='plannotator',args=['inbox','mcp'],env={PLANNOTATOR_ASK_AI_CHILD='1'},enabled=false}",
-];
+export function codexAskAiConfigArgs(configText: string | null): string[] {
+  if (configText !== null && codexInboxEntryHasUrl(configText)) {
+    return ["-c", `mcp_servers.${CODEX_INBOX_SERVER}.enabled=false`];
+  }
+  return [
+    "-c",
+    `mcp_servers.${CODEX_INBOX_SERVER}={command='plannotator',args=['inbox','mcp'],env={PLANNOTATOR_ASK_AI_CHILD='1'},enabled=false}`,
+  ];
+}
+
+/** `$CODEX_HOME/config.toml` (a relative CODEX_HOME resolved against `cwd`, as Codex does), else `~/.codex/config.toml`; null when unreadable. Read only. */
+export function readCodexConfigText(cwd: string, env: Readonly<Record<string, string | undefined>> = process.env): string | null {
+  const home = env.CODEX_HOME?.trim();
+  try {
+    return readFileSync(join(home ? resolve(cwd, home) : join(homedir(), ".codex"), "config.toml"), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** A TOML key (`a."b-c".d`) as its parts; null when the text is not a plain key. */
+function tomlKeyPath(text: string): string[] | null {
+  const part = /\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*(\.|$)/y;
+  const parts: string[] = [];
+  let at = 0;
+  while (at < text.length) {
+    part.lastIndex = at;
+    const match = part.exec(text);
+    if (!match) return null;
+    parts.push(match[1] ?? match[2] ?? match[3]!);
+    at = part.lastIndex;
+    if (match[4] !== ".") break;
+  }
+  return parts.length > 0 && at >= text.length ? parts : null;
+}
+
+/** The first key of each top-level member of an inline table (`{ url = "…", env = { … } }`). */
+function inlineTableKeys(value: string): string[] {
+  let inner = value.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""').trim();
+  if (!inner.startsWith("{")) return [];
+  const close = inner.lastIndexOf("}");
+  inner = inner.slice(1, close < 0 ? undefined : close);
+  // Drop nested tables and arrays, innermost first, so only top-level members remain.
+  const nested = /[{[][^{}[\]]*[}\]]/;
+  while (nested.test(inner)) inner = inner.replace(new RegExp(nested.source, "g"), "");
+  return inner
+    .split(",")
+    .map((member) => tomlKeyPath(member.slice(0, Math.max(0, member.indexOf("="))))?.[0])
+    .filter((key): key is string => key !== undefined);
+}
+
+/**
+ * Whether config.toml's `mcp_servers.plannotator-inbox` has a `url`, in any
+ * form: its `[mcp_servers.plannotator-inbox]` table, an inline table, or
+ * dotted keys. A line scan, not a full TOML parser: something it cannot read
+ * counts as no `url`, and the retry covers that case.
+ */
+export function codexInboxEntryHasUrl(configText: string): boolean {
+  let table: string[] = [];
+  for (const raw of configText.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const header = /^\[\[?([^\]]*)\]\]?\s*(?:#.*)?$/.exec(line);
+    if (header) {
+      table = tomlKeyPath(header[1]!) ?? [""];
+      continue;
+    }
+    const eq = line.indexOf("=");
+    const key = eq > 0 ? tomlKeyPath(line.slice(0, eq)) : null;
+    if (!key) continue;
+    const path = [...table, ...key];
+    if (path[0] !== "mcp_servers" || path[1] !== CODEX_INBOX_SERVER) continue;
+    if (path.length > 2 ? path[2] === "url" : inlineTableKeys(line.slice(eq + 1)).includes("url")) return true;
+  }
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for testing)
@@ -315,7 +396,14 @@ export function mapApprovalRequest(
 // JSON-RPC over stdio (bidirectional: responses, notifications, server requests)
 // ---------------------------------------------------------------------------
 
-type NotificationListener = (notification: { method: string; params: RpcMessage }) => void;
+/** app-server, started with the `-c` overrides, exited before answering `initialize`. */
+class ExitedBeforeInitializeError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+}
+
+type NotificationListener =(notification: { method: string; params: RpcMessage }) => void;
 type RequestHandler = (method: string, id: string | number, params: RpcMessage) => void;
 
 class CodexAppServerProcess {
@@ -340,17 +428,32 @@ class CodexAppServerProcess {
    *  initialize wait (model discovery passes a short value so it can't hang). */
   start(codexPath: string, cwd: string, initTimeoutMs?: number): Promise<void> {
     if (!this.startPromise) {
-      this.startPromise = this.doStart(codexPath, cwd, initTimeoutMs).catch((err) => {
-        this.startPromise = null;
-        throw err;
-      });
+      const overrides = codexAskAiConfigArgs(readCodexConfigText(cwd));
+      const started: Promise<void> = this.doStart(codexPath, cwd, overrides, initTimeoutMs)
+        .catch((err) => {
+          if (!(err instanceof ExitedBeforeInitializeError)) throw err;
+          // An app-server that exits before answering `initialize` with the
+          // override may have rejected it as config (see codexAskAiConfigArgs).
+          // Start it once more without the override: Ask AI works as it did
+          // before the override existed. The failed attempt's kill() cleared
+          // startPromise; this start is still the one in flight.
+          this.startPromise = started;
+          return this.doStart(codexPath, cwd, [], initTimeoutMs);
+        })
+        .catch((err) => {
+          this.startPromise = null;
+          throw err;
+        });
+      this.startPromise = started;
     }
     return this.startPromise;
   }
 
-  private async doStart(codexPath: string, cwd: string, initTimeoutMs?: number): Promise<void> {
+  private async doStart(codexPath: string, cwd: string, overrides: readonly string[], initTimeoutMs?: number): Promise<void> {
+    this.buffer = "";
+    this.decoder = new TextDecoder();
     const commandPath = resolveWindowsCommandShim(codexPath);
-    const appServerArgs = [...CODEX_ASK_AI_CONFIG_ARGS, "app-server"];
+    const appServerArgs = [...overrides, "app-server"];
     const command =
       buildWindowsCommandScriptSpawnCommand(commandPath, appServerArgs) ?? [
         commandPath,
@@ -363,7 +466,7 @@ class CodexAppServerProcess {
       // stderr is "ignore", not "pipe": we never read it, and an un-drained
       // stderr pipe deadlocks the child once its buffer fills. The env turns
       // Plannotator's integration off in this Codex (ask-ai-env.ts): its hooks
-      // read the marker; the Inbox MCP server is off by CODEX_ASK_AI_CONFIG_ARGS.
+      // read the marker; the Inbox MCP server is off by the `-c` overrides.
       proc = spawn(file, args, { cwd, env: askAiChildEnv(), stdio: ["pipe", "pipe", "ignore"] });
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -372,12 +475,18 @@ class CodexAppServerProcess {
     }
 
     this.proc = proc;
+    let exited = false;
+    // A late event from an earlier process (the one a retry replaced) must not end this one.
+    const replaced = () => this.proc !== null && this.proc !== proc;
     // Cover every pipe BEFORE the spawn handshake: an `error` event on a child
     // stream with no listener becomes an uncaughtException and kills the host
     // process, not just this provider (#1378).
-    guardChildStreams(proc, CODEX_PROCESS_LABEL, (error) => this.failProcess(error));
+    guardChildStreams(proc, CODEX_PROCESS_LABEL, (error) => {
+      if (!replaced()) this.failProcess(error);
+    });
     proc.once("exit", () => {
-      this.handleProcessEnd(new Error("Codex app-server exited unexpectedly"));
+      exited = true;
+      if (!replaced()) this.handleProcessEnd(new Error("Codex app-server exited unexpectedly"));
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -415,6 +524,7 @@ class CodexAppServerProcess {
       if (typeof init.userAgent === "string") this.userAgent = init.userAgent;
     } catch (err) {
       this.kill();
+      if (exited && overrides.length > 0) throw new ExitedBeforeInitializeError(err);
       throw err;
     }
     this.send({ method: "initialized", params: {} });

@@ -24,6 +24,7 @@ import { INBOX_MAX_REQUEST_BYTES } from "@plannotator/shared/inbox/connection";
 import { INBOX_BRIDGE_POLL_PATH, parseInboxBridgeCommands } from "@plannotator/shared/inbox/connection";
 import { INBOX_AGENT_NAME, INBOX_HOST } from "../hooks/mod/inbox";
 import { OPENCODE_INBOX_AGENT_NAME, OPENCODE_INBOX_HOST } from "../../opencode-plugin/inbox";
+import { detachedInboxEnv } from "./inbox-command";
 import { fillInboxToolArguments, inboxCallHostSession, inboxHostSessionFromEnv, inboxQwenShimContext, INBOX_SESSION_HOST_NAMES, runInboxMcpShim } from "./inbox-mcp-shim";
 import { removeStubbedHtml, stubHookDistHtml } from "../../../tests/helpers/hook-dist-stub";
 import { type InboxEntry, inboxEntryOf, mustSignalInbox, signalProvenInbox, stopProvenInboxes } from "../../../tests/helpers/inbox-process";
@@ -394,6 +395,19 @@ describe("plannotator inbox mcp inside an agent Ask AI started (PLANNOTATOR_ASK_
     expect(readInboxRegistry(box.dataDir)).toBeNull();
     expect(existsSync(box.browserMarker)).toBe(false);
   }, 60_000);
+
+  test("an Inbox started from that agent's shell drops its switches; a person's own switches pass through", () => {
+    // The detached Inbox outlives the agent: its restarts, "Open in" terminals
+    // and Codex wakes would hand the switches to the person's real sessions.
+    const fromAskAi = detachedInboxEnv({ PATH: "/bin", PLANNOTATOR_ASK_AI_CHILD: "1", PLANNOTATOR_INBOX_TOOL: "0", PLANNOTATOR_AGENT_TOOL: "0" }, "/data");
+    expect(fromAskAi.PATH).toBe("/bin");
+    expect(fromAskAi.PLANNOTATOR_DATA_DIR).toBe("/data");
+    expect(["PLANNOTATOR_ASK_AI_CHILD", "PLANNOTATOR_INBOX_TOOL", "PLANNOTATOR_AGENT_TOOL"].filter((key) => key in fromAskAi)).toEqual([]);
+
+    const fromPerson = detachedInboxEnv({ PATH: "/bin", PLANNOTATOR_INBOX_TOOL: "0", PLANNOTATOR_AGENT_TOOL: "1" }, "/data");
+    expect(fromPerson.PLANNOTATOR_INBOX_TOOL).toBe("0");
+    expect(fromPerson.PLANNOTATOR_AGENT_TOOL).toBe("1");
+  });
 });
 
 describe("plannotator inbox mcp inside an agent session", () => {

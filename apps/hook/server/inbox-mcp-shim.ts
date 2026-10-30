@@ -233,9 +233,11 @@ export function fillInboxToolArguments(message: JsonRpc, cwd: string, own: strin
 
 /**
  * The shim's own answer inside an agent Ask AI started: an MCP server with no
- * tools. `initialize` is accepted, so the agent reports no failed MCP server;
- * `tools/list` is empty, `ping` answers, any other request is refused.
- * Notifications get nothing.
+ * tools. `initialize`, an empty `tools/list` and `ping` are answered; any
+ * other request is refused, and notifications get nothing. Clients built on
+ * gemini-cli (Qwen Code) still report a server with no tools, prompts or
+ * resources as an error and mark it disconnected. That is harmless: they go
+ * on without it.
  */
 export function askAiChildReply(message: JsonRpc): string | null {
   if (!message || typeof message !== "object" || !("id" in message) || typeof message.method !== "string") return null;
