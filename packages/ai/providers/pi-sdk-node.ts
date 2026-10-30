@@ -32,6 +32,7 @@ import {
 } from "./command-path.ts";
 import { createPiVersionProbe } from "./pi-version.ts";
 import { guardChildStreams, writeChildLine } from "./child-io.ts";
+import { askAiPiEnv } from "./pi-events.ts";
 
 // Re-export mapPiEvent from shared (runtime-agnostic)
 export { mapPiEvent } from "./pi-events.ts";
@@ -76,6 +77,8 @@ export class PiProcessNode {
 			// (same reasoning as codex-app-server.ts).
 			proc = spawn(file, args, {
 				cwd,
+				// Plannotator's tools off in this throwaway Pi: see askAiPiEnv.
+				env: askAiPiEnv(),
 				stdio: ["pipe", "pipe", "ignore"],
 			});
 		} catch (err) {
