@@ -52,6 +52,8 @@ export interface MachinesSectionProps {
 export function MachinesSection({ machines, via, onChanged }: MachinesSectionProps) {
   const remote = via !== 'local';
   const linked = machines.filter((machine) => !machine.self);
+  // Why this Inbox's own door is not on the tailnet (its port held by another mapping): linked machines cannot reach it until that is fixed.
+  const doorError = machines.find((machine) => machine.self)?.reason ?? null;
   const [linking, setLinking] = useState(false);
   const [offer, setOffer] = useState<MachineOffer | null>(null);
   const [offering, setOffering] = useState(false);
@@ -87,6 +89,12 @@ export function MachinesSection({ machines, via, onChanged }: MachinesSectionPro
         <div className="ib-callout" data-machines-remote="">
           <Icon name="lock" />
           <span>You opened this page over your tailnet. Linking and Unlink work only on this computer&apos;s own screen, so a code is never shown to another device.</span>
+        </div>
+      )}
+      {doorError && (
+        <div className="ib-callout ib-warn" role="alert" data-machines-door-error="">
+          <Icon name="warn" />
+          <span>This machine is not on your tailnet, so linked machines cannot reach it: {doorError}</span>
         </div>
       )}
       <div className="ib-card" aria-label="Linked machines">

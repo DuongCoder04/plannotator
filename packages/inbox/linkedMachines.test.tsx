@@ -269,11 +269,16 @@ test.skipIf(!hasDom)('Settings → Machines: each machine with its state and ver
   // MacBook holds an answer: the confirm says it will be lost before the second click. Mini holds none: no warning.
   const unlink = rows[0]!.querySelector<HTMLButtonElement>('.ib-del-l')!;
   expect(unlink.textContent).toBe('Unlink');
+  expect(unlink.getAttribute('aria-label')).toBe('Unlink MacBook');
   act(() => unlink.click());
   expect(unlink.textContent).toBe('Unlink? 1 waiting to send will be lost. Click again');
+  expect(unlink.getAttribute('aria-label')).toBe('Unlink MacBook: 1 waiting to send will be lost. Click again to unlink');
   const unlinkMini = rows[1]!.querySelector<HTMLButtonElement>('.ib-del-l')!;
   act(() => unlinkMini.click());
   expect(unlinkMini.textContent).toBe('Unlink? Click again');
+  expect(unlinkMini.getAttribute('aria-label')).toBe('Unlink Mini: click again to unlink');
+  // No door error while this machine is on the tailnet.
+  expect(document.querySelector('[data-machines-door-error]')).toBeNull();
   expect(posted).toHaveLength(0);
   // MacBook asleep could not be told: the section says it drops the link at its next contact.
   unlinkTold = false;
@@ -282,6 +287,15 @@ test.skipIf(!hasDom)('Settings → Machines: each machine with its state and ver
   expect(posted.map((p) => p.url)).toEqual([`/api/inbox/machines/${MAC}/unlink`]);
   expect(changed).toBe(1);
   expect(document.querySelector('[data-machine-unlinked]')!.textContent).toContain('MacBook could not be reached, so it drops the link the next time it is in touch');
+});
+
+test.skipIf(!hasDom)("Settings → Machines says why this machine is not on the tailnet when its door's port is held, as an alert", () => {
+  const reason = 'Another tailscale serve mapping now uses port 8444, where linked machines reach this Inbox.';
+  mount(<MachinesSection machines={[machine(SELF, 'Studio', 'online', { reason }), machine(MAC, 'MacBook', 'offline')]} via="local" onChanged={noop} />);
+  const alert = document.querySelector('[data-machines-door-error]')!;
+  expect(alert.getAttribute('role')).toBe('alert');
+  expect(alert.textContent).toContain(reason);
+  expect(alert.textContent).toContain('linked machines cannot reach it');
 });
 
 test.skipIf(!hasDom)("a thread that cannot open because its machine sleeps still shows the person's held answer, waiting, never delivered", () => {

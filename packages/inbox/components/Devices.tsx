@@ -42,7 +42,7 @@ export function UnlinkLink({ name, onRemove, warning }: { name: string; onRemove
       text="Unlink"
       label={`Unlink ${name}`}
       confirmText={confirmText}
-      confirmLabel={`Unlink ${name}: ${confirmText.slice('Unlink? '.length)}`}
+      confirmLabel={warning ? `Unlink ${name}: ${warning} Click again to unlink` : `Unlink ${name}: click again to unlink`}
     />
   );
 }
