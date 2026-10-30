@@ -107,6 +107,7 @@ import {
 import type { SemanticDiffAvailability, SemanticDiffResponse } from "@plannotator/shared/semantic-diff-types";
 import { CallFlowService } from "@plannotator/shared/call-flow";
 import { CallFlowInstallCoordinator, callFlowInstallOriginAllowed } from "@plannotator/shared/call-flow-install";
+import type { CallFlowInstallCoordinatorOptions } from "@plannotator/shared/call-flow-install";
 import { parseCallFlowInstallRequest, resolveCallFlowInstallTargets } from "@plannotator/shared/call-flow-languages";
 import type { CallFlowResponse } from "@plannotator/shared/call-flow-types";
 import {
@@ -228,6 +229,8 @@ export interface ReviewServerOptions {
   repoFilesLazyThreshold?: number;
   /** Tests only: how often a polled live listing looks (default `REPO_LIVE_POLL_MS`). */
   repoLivePollMs?: number;
+  /** Tests only: the Call flow install and Node preflight, so a test never starts a real install. */
+  callFlowInstall?: Pick<CallFlowInstallCoordinatorOptions, "install" | "preflight">;
   /** "Ask this session": the host bridge to the agent session that opened this review (see packages/ai/session-bridge.ts). */
   sessionBridge?: SessionBridge;
   /**
@@ -709,6 +712,7 @@ export async function startReviewServer(
   // 30 second runtime probe cache so the very next capability advert
   // resolves available without a server restart.
   const callFlowInstall = new CallFlowInstallCoordinator({
+    ...options.callFlowInstall,
     onSettled: (ok) => {
       if (ok) callFlowService.invalidateRuntimeState();
     },
