@@ -1,10 +1,11 @@
 /**
  * The badges at the top of an annotated document use the room the card has
  * and stop where the document's buttons start. A single file shows its
- * repository and branch, and a folder session shows the open file's name.
+ * repository and branch; a folder session's open file and a linked document
+ * show their file name, with the whole path on hover.
  *
  * Before, each chip had a fixed cap: the repository 140px, the branch 120px,
- * the file name 220px. A repository like `acme-corp/payments-service` was cut
+ * the file name 220px (200px for a linked document). A repository like `acme-corp/payments-service` was cut
  * with most of the row empty beside it. Now the chips grow to the buttons. When
  * the repository and branch do not both fit, the branch gives way first, down
  * to its icon and a letter or two, and only then the repository. The cluster's
@@ -12,8 +13,9 @@
  * the card narrows after first paint. Without that, a page opened at 1100px
  * ran the chips 50px under the buttons.
  *
- * Annotate, a single file in a git repository with a remote and a folder of
- * files, at 1440 by 900 (room for everything) and 1100 by 900 (not enough).
+ * Annotate, a single file in a git repository with a remote (and a document it
+ * links to) and a folder of files, at 1440 by 900 (room for everything) and
+ * 1100 by 900 (not enough).
  * Run against the compiled binary under a temp HOME and PLANNOTATOR_DATA_DIR,
  * headless. Build the binary first (see inbox.spec.ts).
  */
@@ -27,10 +29,10 @@ import { NO_BROWSER } from '../helpers/no-browser';
 const repo = resolve(__dirname, '../..');
 const binary = resolve(process.env.PLANNOTATOR_E2E_BINARY ?? join(repo, '.local/plannotator'));
 
-const DOC = '# Refund flow: partial captures\n\nHow a refund is split when the payment was captured in parts.\n';
 const BRANCH = 'fix/refund-partial-captures';
-// Longer than the old 220px cap, short enough for the row at 1440.
+// Longer than the old 220px cap (200px for a linked document), short enough for the row at 1440.
 const FOLDER_FILE = 'reconciling-refund-ledger-entries-design.md';
+const DOC = `# Refund flow: partial captures\n\nHow a refund is split when the payment was captured in parts.\n\nSee the [ledger design](design/${FOLDER_FILE}).\n`;
 // Too long for the row at 1100 by far.
 const FOLDER_FILE_LONG = 'design-reconciling-refund-ledger-entries-with-the-provider.md';
 
@@ -70,6 +72,8 @@ function buildRepo(root: string, name: string, remote: string): string {
   git(dir, ['config', 'user.name', 'Test']);
   git(dir, ['remote', 'add', 'origin', `https://github.com/${remote}.git`]);
   writeFileSync(join(dir, 'refund-flow.md'), DOC);
+  mkdirSync(join(dir, 'design'));
+  writeFileSync(join(dir, 'design', FOLDER_FILE), '# Ledger design\n\nHow each entry is matched.\n');
   git(dir, ['add', '-A']);
   git(dir, ['commit', '-q', '-m', 'initial']);
   return dir;
@@ -184,6 +188,21 @@ test('annotate a file: the repository and branch show whole when there is room, 
     f = await fit(page, titles);
     expect(f.gapToActions, `a narrower card: the badges end ${f.gapToActions}px before the buttons`).toBeGreaterThanOrEqual(0);
     expect(f.chips.branch!.cut, 'a narrower card: the branch gives way').toBe(true);
+    await page.context().close();
+
+    // A linked document: its file name, with the whole path on hover (the chip
+    // found by it). The name is cut only where the row ends at the buttons,
+    // never at a fixed width (the old cap was 200px).
+    page = await open(browser, session.url, WIDE);
+    await page.locator('main a', { hasText: 'ledger design' }).first().click();
+    await expect(page.locator('article[data-print-region="article"]:visible h1')).toHaveText(/^Ledger design/);
+    f = await fit(page, { linked: join(service, 'design', FOLDER_FILE) });
+    expect(f.chips.linked, 'the linked document chip, with its path on hover').not.toBeNull();
+    expect(f.chips.linked!.width, '1440: the linked document chip is wider than the old 200px cap').toBeGreaterThan(201);
+    const endsAtButtons = f.gapToActions !== null && f.gapToActions <= 12;
+    expect(!f.chips.linked!.cut || endsAtButtons,
+      `1440: the linked document's name is cut only at the buttons (${f.chips.linked!.width}px, ${f.gapToActions}px before them)`).toBe(true);
+    expect(f.gapToActions, '1440: the badges end before the buttons').toBeGreaterThanOrEqual(0);
     await page.context().close();
 
     // Opened narrow: the branch is cut, the repository is not, and nothing runs under the buttons.
