@@ -862,7 +862,10 @@ diffs-container {
   background: oklch(from var(--primary) l c h / 0.06);
 }
 
+/* Positioned so a coarse pointer's larger touch area (::after) is placed
+   around the chevron, not against the row. */
 .call-flow-expand {
+  position: relative;
   display: grid;
   width: var(--call-flow-toggle);
   min-height: var(--call-flow-row-height);
