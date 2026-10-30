@@ -505,11 +505,11 @@ export const ScopeSwitch: React.FC<{ model: ReviewPanelHeaderModel; width: numbe
           onClick={() => selectScope(model, 'all')}
           data-tree-scope="all"
           title={`Every file of the repository at the revision the diff reads${all !== undefined ? ` (${formatCount(all)} files)` : ''}`}
-          className={`relative min-w-0 ${narrow ? 'px-1.5' : 'pl-1.5 pr-2'} ${pill(scope === 'all')}`}
+          className={`relative min-w-0 ${narrow ? 'pl-1.5 pr-2.5' : 'pl-1.5 pr-3'} ${pill(scope === 'all')}`}
         >
           <span className="truncate">{narrow ? 'All' : 'All files'}</span>
           {all !== undefined && <span className="sr-only">{formatCount(all)}</span>}
-          {scope === 'all' && <LiveDot repo={model.repo} className="absolute top-1 right-0.5 flex" />}
+          {scope === 'all' && <LiveDot repo={model.repo} className="absolute top-1 right-1 flex" />}
         </button>
       </div>
       {listing && !listing.live && listing.truncated && (
