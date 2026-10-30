@@ -56,7 +56,7 @@ export function pinnedState(row: InboxListRow): PinnedState {
  */
 export function pinnedLabel(row: InboxListRow): string {
   const subject = row.subject ?? '(no subject)';
-  return threadChipName(row.thread_name, subject) ?? subject;
+  return (row.thread_name?.trim() ? threadChipName(row.thread_name, subject) : null) ?? subject;
 }
 
 /**

@@ -20,7 +20,7 @@ export interface PinnedRowProps {
   /** First or last pin: Move up or Move down is disabled. */
   first: boolean;
   last: boolean;
-  /** A phone: ⋯ always shown, the menu a sheet from the bottom edge titled by the subject, no right-click. */
+  /** A phone: ⋯ always shown, the menu a sheet from the bottom edge titled by the row's label, no right-click. */
   phone: boolean;
   onOpen: () => void;
   onAction: (action: PinnedAction) => void;
@@ -36,7 +36,7 @@ export interface PinnedRowProps {
  * list row would be. ⋯ beside it (the project row's pattern: two buttons side
  * by side) opens Unpin, Move up, Move down and Copy link; a right-click on the
  * row opens the same menu. On a phone ⋯ is always shown, 44 px, and the menu
- * is a bottom sheet titled by the subject.
+ * is a bottom sheet titled by the row's label.
  */
 export function PinnedRow(props: PinnedRowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -51,7 +51,7 @@ export function PinnedRow(props: PinnedRowProps) {
   const label = pinnedLabel(row);
   const items = (
     <PinnedMenuItems
-      subject={subject}
+      subject={label}
       first={props.first}
       last={props.last}
       onAction={(action) => {
@@ -106,13 +106,13 @@ export function PinnedRow(props: PinnedRowProps) {
         </button>
       </Tip>
       <Menu.Root open={menuOpen} onOpenChange={setMenuOpen} modal={false}>
-        <Menu.Trigger ref={more} className="ib-pmore" aria-label={`${subject} options`} data-pin-more={row.thread_id}>
+        <Menu.Trigger ref={more} className="ib-pmore" aria-label={`${label} options`} data-pin-more={row.thread_id}>
           <Icon name="dots" size={16} />
         </Menu.Trigger>
         <Menu.Portal container={portal ?? undefined}>
           {props.phone && <Menu.Backdrop className="ib-pm-scrim" />}
           <Menu.Positioner className="ib-pm-pos" side="bottom" align="start" sideOffset={4} data-phone={props.phone ? '' : undefined}>
-            <Menu.Popup className="ib-pm" aria-label={subject} data-pin-menu={row.thread_id}>
+            <Menu.Popup className="ib-pm" aria-label={label} data-pin-menu={row.thread_id}>
               {items}
             </Menu.Popup>
           </Menu.Positioner>
@@ -127,7 +127,7 @@ export function PinnedRow(props: PinnedRowProps) {
       <ContextMenu.Portal container={portal ?? undefined}>
         <ContextMenu.Positioner className="ib-pm-pos">
           {/* Focus goes back to the row's ⋯, never the page. */}
-          <ContextMenu.Popup className="ib-pm" aria-label={subject} data-pin-menu={row.thread_id} finalFocus={more}>
+          <ContextMenu.Popup className="ib-pm" aria-label={label} data-pin-menu={row.thread_id} finalFocus={more}>
             {items}
           </ContextMenu.Popup>
         </ContextMenu.Positioner>
@@ -139,7 +139,7 @@ export function PinnedRow(props: PinnedRowProps) {
 function PinnedMenuItems({ subject, first, last, onAction }: { subject: string; first: boolean; last: boolean; onAction: (action: PinnedAction) => void }) {
   return (
     <>
-      {/* The popup is named by the subject already (aria-label): the title is for the eye only (a phone's sheet). */}
+      {/* The popup is named by the label already (aria-label): the title is for the eye only (a phone's sheet). */}
       <div className="ib-pm-title" dir="auto" aria-hidden="true">
         {subject}
       </div>

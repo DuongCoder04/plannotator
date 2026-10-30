@@ -104,3 +104,22 @@ test.skipIf(!hasDom)('a subject that already starts with the name is shown once,
   expect(shown()).toBe(SUBJECT);
   expect(button().getAttribute('aria-label')!.split(SUBJECT).length).toBe(2);
 });
+
+test.skipIf(!hasDom)('a whitespace-only name falls back to the subject', () => {
+  draw(row('   '));
+  expect(shown()).toBe(SUBJECT);
+  expect(button().getAttribute('aria-label')!.split(SUBJECT).length).toBe(2);
+});
+
+test.skipIf(!hasDom)('a name that only starts the subject mid-word still shows, with the subject kept', () => {
+  draw(row('search', 'Searchable index: postings moved'));
+  expect(shown()).toBe('search');
+  expect(button().getAttribute('aria-label')).toContain('search, Searchable index: postings moved, billing-web');
+});
+
+test.skipIf(!hasDom)("the pin's ⋯ is labelled with the same label as the row", () => {
+  draw(row('session-refresh'));
+  expect(host!.querySelector('[data-pin-more]')!.getAttribute('aria-label')).toBe('session-refresh options');
+  draw(row(null));
+  expect(host!.querySelector('[data-pin-more]')!.getAttribute('aria-label')).toBe(`${SUBJECT} options`);
+});
