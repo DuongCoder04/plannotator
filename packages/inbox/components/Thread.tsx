@@ -18,6 +18,7 @@ import { NOT_ATTACHED_TITLE, attachmentDeepLink, attachmentDisplayPath, attachme
 import { InboxApiError, inboxApi, type AttachmentsModel, type TagMode } from '../api';
 import type { HtmlEmbedHost } from '@plannotator/ui/components/html-embed/HtmlEmbedBlock';
 import { annotationOf, attachmentFeedback, isFileComment } from '../attachments';
+import { linkReplyFeedback, resolveReplyLink } from '../replyFileLinks';
 import { AttachmentTiles, AttachmentsCount, changedCount } from './AttachmentTiles';
 import { AttachmentPane, type AttachmentPaneHandle } from './AttachmentPane';
 import type { OpenInSurface } from './OpenIn';
@@ -101,6 +102,8 @@ import { ActionChecklist, type ActionMark } from './ActionChecklist';
 import { actionForBlock } from '../actions';
 import { splitInboxSkillsBlock } from '@plannotator/core/skill-reference-block';
 import { Tip } from './Tip';
+import { ThreadChip } from './InboxList';
+import { threadChipName } from '../threadChip';
 import { OpenQuestionsButton, type OpenQuestionsDecide } from './OpenQuestions';
 import { fitWholeFootRow, footRowOpenQuestionsForm, footRowTokens, laidOutChildren, pillHitsButtons, type OpenQuestionsLabelForm } from '../footFit';
 import { clearPhoneHead, fitPhoneHead } from '../headFit';
@@ -305,6 +308,7 @@ export function MessageBody({
   onImage,
   pictureBadge,
   inlineRefOf,
+  replyFiles,
 }: {
   /**
    * The action items this person's message carried (approval
@@ -391,6 +395,19 @@ export function MessageBody({
    * tour passes its own, for images drawn from its assets.
    */
   inlineRefOf?: (src: string) => string | null;
+  /**
+   * The person's own reply (replyFileLinks.ts): the files its feedback text
+   * names (each "## <file>" heading of "Feedback on the attached files") are
+   * drawn as links that open the file beside the thread, at the version the
+   * comments were on, and a drawing's name shows the drawing. A heading that
+   * names no file the thread still has stays text. Display only. Absent: the
+   * text is drawn as written.
+   */
+  replyFiles?: {
+    files: readonly InboxAttachmentState[];
+    personMessageIds: ReadonlySet<string>;
+    onOpen: (attachment: InboxAttachmentState, version: 'current' | 'sent') => void;
+  };
 }) {
   // A person's message ends with the skills block the window pasted when it
   // was sent: folded behind one quiet line (SkillsLine). An agent's message
@@ -402,8 +419,20 @@ export function MessageBody({
     return actionsSent ? withoutInboxActionsSection(raw) : raw;
   }, [skills, message.body, actionsSent]);
   const replyParts = useMemo(() => sentReplyParts(message, sent, sentAnswers ?? []), [message, sent, sentAnswers]);
-  const shown = replyParts ? replyParts.words : sent;
-  const restShown = replyParts ? replyParts.rest : '';
+  // The files the reply's feedback names, as links (display only; replyFileLinks.ts).
+  // Only the person's own message: an agent's text is drawn as it wrote it, whatever its headings say.
+  const ownReply = message.author.kind === 'person';
+  const replyFileList = ownReply ? replyFiles?.files : undefined;
+  const replyPeople = ownReply ? replyFiles?.personMessageIds : undefined;
+  const linkFiles = useCallback(
+    (text: string) =>
+      replyFileList && replyPeople
+        ? linkReplyFeedback(text, { files: replyFileList, projectRoot, personMessageIds: replyPeople, replyAt: message.created_at })
+        : text,
+    [replyFileList, replyPeople, projectRoot, message.created_at],
+  );
+  const shown = useMemo(() => linkFiles(replyParts ? replyParts.words : sent), [linkFiles, replyParts, sent]);
+  const restShown = useMemo(() => (replyParts ? linkFiles(replyParts.rest) : ''), [linkFiles, replyParts]);
   const blocks = useMemo(() => parseMarkdownToBlocks(shown, { frontmatter: false }), [shown]);
   const restBlocks = useMemo(() => (restShown ? parseMarkdownToBlocks(restShown, { frontmatter: false }) : []), [restShown]);
   const refRepo = useRefRepo(repo);
@@ -563,8 +592,26 @@ export function MessageBody({
   // so raw-HTML blocks do not redraw their links on every pick.
   const openRef = useRef(onOpenAttachment);
   openRef.current = onOpenAttachment;
+  const openReplyFileRef = useRef(replyFiles?.onOpen);
+  openReplyFileRef.current = replyFiles?.onOpen;
   const resolveLocalLink = useCallback<LocalLinkResolver>(
     (href) => {
+      // A file the person's reply commented on (its feedback heading), or a drawing it carried.
+      const replyLink = replyFileList ? resolveReplyLink(href, replyFileList) : null;
+      if (replyLink?.kind === 'file') {
+        const { attachment: file, version } = replyLink;
+        const path = attachmentDisplayPath(file, projectRoot);
+        return {
+          kind: 'open',
+          title: version === 'sent' ? `Open the sent version of ${path} beside the thread` : openAttachmentTitle(path),
+          href: attachmentDeepLink(message.thread_id, file.id, version),
+          open: () => openReplyFileRef.current?.(file, version),
+        };
+      }
+      if (replyLink?.kind === 'markup') {
+        const src = replyLink.src;
+        return { kind: 'open', title: 'Show the drawing', href: src, open: () => setFallback({ src, alt: 'Your drawing' }) };
+      }
       const attachment = attachmentForLink(href, { attachments: message.attachments ?? [], root: projectRoot, base: message.base_path ?? null });
       if (!attachment) return { kind: 'unavailable', title: NOT_ATTACHED_TITLE };
       return {
@@ -574,7 +621,7 @@ export function MessageBody({
         open: () => openRef.current(attachment),
       };
     },
-    [message.attachments, message.base_path, message.thread_id, projectRoot],
+    [message.attachments, message.base_path, message.thread_id, projectRoot, replyFileList],
   );
   const renderFooter = useCallback(
     (question: IndexedQuestion) => {
@@ -1294,6 +1341,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   // look (the window's `lookSeq`, else the first thread this pane was given),
   // so the "New" marks last until the person leaves the thread.
   const one = thread.messages.length < 2;
+  // The thread's name as the list shows it: nothing when unnamed or when the subject already starts with it.
+  const nameChip = threadChipName(thread.thread_name, thread.subject ?? '(no subject)');
   // The agent sessions this thread involves (approval "inbox-tag-agents"): overlapping marks in the head.
   const participants = useMemo(() => threadParticipants(thread), [thread]);
   const lookRef = useRef<{ threadId: string; seq: number | null } | null>(null);
@@ -1577,6 +1626,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   /** Every file the viewer opens: the attached files and the images in the text. */
   const allFiles: InboxAttachmentState[] = useMemo(() => [...attachments, ...inlineImages], [attachments, inlineImages]);
   const records = files?.annotations ?? [];
+  /** The person's own messages: their images are named "image in my … message" in the feedback (replyFileLinks.ts). */
+  const personMessageIds = useMemo(() => new Set(thread.messages.filter((m) => m.author.kind === 'person').map((m) => m.id)), [thread.messages]);
 
   // The session that asked, and whether it is still there (only hosts whose
   // sessions poll the Inbox can be known to have ended). It is the session
@@ -1844,16 +1895,19 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   /** A tile, or a link in a message: the file as it is now, focus in its pane (a typed comment in the open file asks first). */
   /** `opening`: called only when the file does open (not after "Keep writing" on a typed comment). */
   /** `set`: a question's picture choices the viewer then steps through (optionSets.ts); absent: every file of the thread. */
-  const openFromMessage = (attachment: Pick<InboxAttachmentState, 'id' | 'kind' | 'ref'> & { name?: string }, view: FileView | null = null, opening?: () => void, set: string | null = null) => {
+  /** `version`: the version the agent sent (a file the person's reply names, commented at that version, or moved since). */
+  const openFromMessage = (attachment: Pick<InboxAttachmentState, 'id' | 'kind' | 'ref'> & { name?: string }, view: FileView | null = null, opening?: () => void, set: string | null = null, version: 'current' | 'sent' = 'current') => {
     const go = () => {
       opening?.();
-      openFile(attachment, 'current', null, view, set);
+      openFile(attachment, version, null, view, set);
       setPaneFocus((n) => n + 1);
     };
     const pane = paneRef.current;
     if (pane && file && file.id !== attachment.id) pane.leave(attachment.name ?? allFiles.find((a) => a.id === attachment.id)?.name ?? 'that file', go);
     else go();
   };
+  /** A file the person's sent reply names (its feedback heading): beside the thread, at the version the comments were on. */
+  const openFromReply = (attachment: InboxAttachmentState, version: 'current' | 'sent') => openFromMessage(attachment, null, undefined, null, version);
   const openRecord = (record: InboxAnnotationRecord) => {
     // A comment on a guided review's diff: open that guide.
     if (record.guide) {
@@ -1942,7 +1996,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       }
     }
     return attachmentFeedback(pending, allFiles, texts, thread.project.root, {
-      personMessageIds: new Set(thread.messages.filter((m) => m.author.kind === 'person').map((m) => m.id)),
+      personMessageIds,
       // A comment that tags agents is marked in the export (approval "inbox-tag-agents").
       tagNames: (ids) => ids.map((id) => tagOpts.find((o) => o.id === id)?.label ?? 'an agent'),
     });
@@ -3985,25 +4039,32 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             )}
           </div>
         )}
-        {!one && (
+        {/* The thread's name first (the list's own pill and rule), then the count and time; a one-message thread has only the name. */}
+        {(!one || nameChip) && (
           <div className="ib-tmeta" data-thread-meta="">
-            {participants.length > 1 && (
-              <>
-                <span className="ib-tg-hwho" data-thread-participants="">
-                  <TagStack participants={participants} />
-                  <span>{participantsWords(participants)}</span>
-                </span>
+            <ThreadChip name={nameChip} lead="Thread name: " />
+            {/* The rest of the line moves as one beside the name: a name that leaves too little room sends it all to the next line, never one dot. */}
+            {!one && (
+              <span className="ib-tmeta-rest" data-thread-meta-rest="">
+                {participants.length > 1 && (
+                  <>
+                    <span className="ib-tg-hwho" data-thread-participants="">
+                      <TagStack participants={participants} />
+                      <span>{participantsWords(participants)}</span>
+                    </span>
+                    <span className="ib-tdot" aria-hidden="true" />
+                  </>
+                )}
+                <span>{plural(thread.messages.length, 'message')}</span>
                 <span className="ib-tdot" aria-hidden="true" />
-              </>
-            )}
-            <span>{plural(thread.messages.length, 'message')}</span>
-            <span className="ib-tdot" aria-hidden="true" />
-            <span>{spanWords(root.created_at, thread.messages[thread.messages.length - 1]!.created_at)}</span>
-            {showNew && (
-              <>
-                <span className="ib-tdot" aria-hidden="true" />
-                <b>{fresh.size} new since you looked</b>
-              </>
+                <span>{spanWords(root.created_at, thread.messages[thread.messages.length - 1]!.created_at)}</span>
+                {showNew && (
+                  <>
+                    <span className="ib-tdot" aria-hidden="true" />
+                    <b>{fresh.size} new since you looked</b>
+                  </>
+                )}
+              </span>
             )}
           </div>
         )}
@@ -4305,6 +4366,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                   message={message}
                   sentAnswers={message.author.kind === 'person' ? (sentAnswersByReply.get(message.id) ?? NO_SENT_ANSWERS) : undefined}
                   sentActions={message.author.kind === 'person' ? sentActionsByReply.get(message.id) : undefined}
+                  replyFiles={message.author.kind === 'person' ? { files: allFiles, personMessageIds, onOpen: openFromReply } : undefined}
                   onJumpQuestion={jumpTo}
                   projectRoot={thread.project.root}
                   repo={thread.project.repo ?? null}

@@ -435,7 +435,7 @@ test('a small phone (320, 360): the subject gives way first; the marks, the badg
 });
 
 // Last, so its threads change no test above.
-test('desktop, rows whose count has words (a draft, Undelivered, action items): the full words, every column lined up at 1440 and 900, the subject the widest; beside a thread the short forms', async () => {
+test('desktop, rows whose count has words (a draft, Undelivered) or open action items (the box pill): the full words, every column lined up at 1440 and 900, the subject the widest; beside a thread the short forms and the pill', async () => {
   const { page } = world;
   const deploy = scratchProject(world.src, 'deploy-app');
   const claude = world.agents[0]!;
@@ -458,10 +458,14 @@ test('desktop, rows whose count has words (a draft, Undelivered, action items): 
   });
   // The full words in a row's name (a draft's "·" is not read: "Draft Your reply, …").
   const named = (full: RegExp) => new RegExp(full.source.slice(1, -1).replace(' · ', ' (?:· )?'));
+  // Open action items are no words (approval "inbox-row-action-icon", 2026-10-29): the box pill, beside `?N`, in the
+  // open counts' column before the time. [row, its pill's number, its `?N` (0: none), the row's name]
+  const counted: [string, number, number, RegExp][] = [
+    [one.thread_id as string, 1, 0, /1 action to do/],
+    [both.thread_id as string, 1, 1, /1 action to do 1 question/],
+  ];
   // [row, the two-line row's short form, the wide row's full words (also the row's name)]
   const expected: [string, RegExp, RegExp][] = [
-    [one.thread_id as string, /^1 action$/, /^1 action item$/],
-    [both.thread_id as string, /^1 action1$/, /^1 question, 1 action item$/],
     [world.news, /^Draft$/, /^Draft · Your reply, 2 picks, 3 comments$/],
     [world.pair, /^Undelivered 1[45]m$/, /^Undelivered 1[45] min$/],
     [world.long, /^Undelivered 1d$/, /^Undelivered 1 day$/],
@@ -483,6 +487,13 @@ test('desktop, rows whose count has words (a draft, Undelivered, action items): 
         if (full) await expect(row.locator('.ib-cw > .ib-c > [aria-hidden="true"], .ib-cw .ib-sr')).toHaveCount(0);
         else expect(await row.locator('.ib-cw > .ib-c').evaluate((c) => c.getBoundingClientRect().width)).toBeLessThanOrEqual(124.5);
         await expect(row).toHaveAccessibleName(named(words));
+      }
+      for (const [id, actions, questions, name] of counted) {
+        const row = page.locator(`.ib-row[data-thread-id="${id}"]`);
+        await expect(row.locator('.ib-cw')).toHaveText('');
+        await expect(row.locator('.ib-cq > [data-action-count]')).toHaveAttribute('data-action-count', String(actions));
+        await expect(row.locator('.ib-cq > .ib-qn')).toHaveCount(questions);
+        await expect(row).toHaveAccessibleName(name);
       }
       if (full) await expect(page.locator('.ib-row .ib-bwords').first()).toBeVisible();
       else await expect(page.locator('.ib-row .ib-bwords')).toHaveCount(0);
@@ -530,9 +541,9 @@ test('desktop, rows whose count has words (a draft, Undelivered, action items): 
     await page.setViewportSize({ width: 1000, height: 900 });
     await page.goto(`${world.url}#project=${projects.find((p) => p.name === 'deploy-app')!.id}`);
     await expect.poll(() => page.locator('.ib-lbody').evaluate((el) => el.clientWidth)).toBeLessThan(900);
-    for (const [id, short] of expected.slice(0, 2)) {
+    for (const [id, actions] of counted) {
       const row = page.locator(`.ib-row[data-thread-id="${id}"]`);
-      await expect(row.locator('.ib-cw .ib-cs')).toHaveText(short);
+      await expect(row.locator('.ib-cq > [data-action-count]')).toHaveAttribute('data-action-count', String(actions));
       await expect(row.locator('.ib-cfull, .ib-bwords')).toHaveCount(0);
       expect(await row.locator('.ib-cw').evaluate((c) => c.getBoundingClientRect().width)).toBeLessThanOrEqual(124.5);
     }
@@ -543,7 +554,22 @@ test('desktop, rows whose count has words (a draft, Undelivered, action items): 
     // reply, 2 picks, 3 comments" would leave it a sliver).
     await page.goto(`${world.url}#thread=${world.stopped}`);
     await expect(page.locator(`.ib-nrow[data-thread-id="${world.news}"] [data-draft-label]`)).toHaveText('Draft');
-    await expect(page.locator(`.ib-nrow[data-thread-id="${both.thread_id}"] .ib-cs > .ib-qn svg`)).toBeVisible();
+    // The open counts end line 2: the action pill, then `?N` when a question waits too, never cut.
+    for (const [id, actions, questions, name] of counted) {
+      const row = page.locator(`.ib-nrow[data-thread-id="${id}"]`);
+      await expect(row).toHaveAccessibleName(name);
+      const tail = await row.locator('.ib-l2').evaluate((l) => {
+        const kids = [...l.children];
+        const pill = l.querySelector<HTMLElement>(':scope > [data-action-count]')!;
+        const lr = l.getBoundingClientRect();
+        return {
+          order: kids.slice(kids.indexOf(pill)).map((c) => (c === pill ? `action ${pill.dataset.actionCount}` : c.classList.contains('ib-qn') ? `?${(c as HTMLElement).dataset.openCount}` : c.className)),
+          inside: kids.every((c) => c.getBoundingClientRect().right <= lr.right + 0.5),
+        };
+      });
+      expect(tail.order, id).toEqual(questions ? [`action ${actions}`, `?${questions}`] : [`action ${actions}`]);
+      expect(tail.inside, id).toBe(true);
+    }
     for (const [id, short, full] of expected) {
       await expect(page.locator(`.ib-nrow[data-thread-id="${id}"]`)).toHaveAccessibleName(named(full));
       const line = await page.locator(`.ib-nrow[data-thread-id="${id}"] .ib-l2`).evaluate((l) => {
