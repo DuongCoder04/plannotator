@@ -1440,6 +1440,9 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .ib-prow .ib-paired { display: inline-flex; align-items: center; gap: 5px; color: var(--foreground); }
 .ib-prow .ib-paired .ib-ic { color: var(--success, var(--primary)); }
 /* Settings → Machines: the link form and this machine's link code, inside the card, ruled like its rows. */
+/* Settings → Machines: what was waiting for a machine no longer linked, under its own line, words kept whole. */
+.ib-sgroup > p.ib-mnote { margin-top: 18px; }
+.ib-prow .ib-desc.ib-held-words { color: var(--foreground); }
 .ib-mform { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--ib-hair); }
 .ib-mform:last-child { border-bottom: 0; }
 .ib-mform .ib-l { font-size: var(--ib-fs-14, 14px); font-weight: 500; color: var(--foreground); }

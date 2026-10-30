@@ -17,12 +17,16 @@ let selfMachine: string | null = null;
 /** Ids that belong to another machine, and which. An id never seen here is this Inbox's. */
 const owners = new Map<string, string>();
 /**
- * Ids this Inbox's own answers named (its rows in the merged list, its own thread reads). Local evidence wins for
- * good: no other machine's answer can claim one of these, so a linked machine never takes over a local route.
+ * Ids this Inbox's own answers named (its list rows, archived rows, pins, thread reads, its own events). They are
+ * local for good: no linked machine's row, answer or frame can claim one. The server refuses to forward a route to
+ * an id its store holds as well (`id_is_local`), whatever this map says.
  */
 const local = new Set<string>();
-/** Ids the merged list attributed to a machine. */
-const listed = new Set<string>();
+/**
+ * Ids two linked machines both claimed. Neither gets them: their routes go nowhere, and a read or write of one is
+ * refused here with a plain error (`machine_conflict`). No first or last claim wins.
+ */
+const contested = new Set<string>();
 
 const MACHINE_ID = /^ibx_[0-9A-HJKMNP-TV-Z]{26}$/;
 
@@ -31,20 +35,26 @@ export function setSelfMachine(id: string | null | undefined): void {
   if (typeof id === 'string' && MACHINE_ID.test(id)) selfMachine = id;
 }
 
+/** This Inbox's id once the merged list named it. */
+export function selfMachineId(): string | null {
+  return selfMachine;
+}
+
 /**
  * Remember that `ids` belong to `machine` (nothing for this Inbox's own, or for no machine). An id this Inbox named
- * stays this Inbox's, and an id another machine already holds stays with it: a linked machine can claim only ids
- * nobody else holds, never shadow a local one or another machine's.
+ * stays this Inbox's. An id another linked machine already claimed is contested: it routes to neither.
  */
-export function rememberMachine(ids: Iterable<string>, machine: string | null | undefined, fromList = false): void {
+export function rememberMachine(ids: Iterable<string>, machine: string | null | undefined): void {
   if (!machine || machine === selfMachine || !MACHINE_ID.test(machine)) return;
   for (const id of ids) {
-    if (!id || local.has(id)) continue;
-    // The merged list (`fromList`) is this Inbox's own account of which link sent which row: it settles an earlier
-    // claim from an answer or a frame.
-    if (fromList ? listed.has(id) && owners.get(id) !== machine : owners.has(id)) continue;
+    if (!id || local.has(id) || contested.has(id)) continue;
+    const held = owners.get(id);
+    if (held && held !== machine) {
+      owners.delete(id);
+      contested.add(id);
+      continue;
+    }
     owners.set(id, machine);
-    if (fromList) listed.add(id);
   }
 }
 
@@ -54,13 +64,23 @@ export function rememberLocal(ids: Iterable<string>): void {
     if (!id) continue;
     local.add(id);
     owners.delete(id);
-    listed.delete(id);
+    contested.delete(id);
   }
 }
 
-/** The machine that owns `id`, or null for this Inbox. */
+/** The machine that owns `id`, or null for this Inbox (and for a contested id, which `isContested` tells). */
 export function machineOf(id: string | null | undefined): string | null {
   return (id && owners.get(id)) ?? null;
+}
+
+/** Two linked machines claimed `id`: it opens on neither. */
+export function isContested(id: string | null | undefined): boolean {
+  return !!id && contested.has(id);
+}
+
+/** `/api/inbox/m/<machine>/<route>` → `/api/inbox/<route>`: this Inbox's own URL for a forwarded one. */
+export function localRoute(url: string): string {
+  return url.replace(/^\/api\/inbox\/m\/ibx_[0-9A-HJKMNP-TV-Z]{26}\//, '/api/inbox/');
 }
 
 /** Tests only: forget every machine. */
@@ -68,7 +88,7 @@ export function resetMachineRoutes(): void {
   selfMachine = null;
   owners.clear();
   local.clear();
-  listed.clear();
+  contested.clear();
 }
 
 /**

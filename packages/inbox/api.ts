@@ -6,7 +6,7 @@
  */
 
 import { isActionRecord, questionsOnly, splitThreadActions } from './actions';
-import { inboxUrl, machineOf, rememberLocal, rememberMachine, setSelfMachine } from './inboxUrl';
+import { inboxUrl, isContested, localRoute, machineOf, rememberLocal, rememberMachine, selfMachineId, setSelfMachine } from './inboxUrl';
 import type {
   InboxCardMark,
   InboxDecisionsModel,
@@ -137,6 +137,8 @@ export interface OutboxView {
   words?: string | null;
   /** The thread it is about, as this window named it when it pressed Send. Absent from an older Inbox. */
   thread?: string | null;
+  /** The machine's name, kept once its link went (an Unlink here or on that machine). */
+  machine_name?: string | null;
 }
 
 /** `POST /api/inbox/machines/offer`: this machine's one-time link code for another. */
@@ -556,24 +558,60 @@ function forwardedTo(path: string): string | null {
  */
 const ROUTED_ID_KEYS = new Set(['id', 'thread_id', 'message_id', 'attachment_id', 'annotation_id', 'project_id', 'upload_id', 'markup_id']);
 
-export function idsIn(value: unknown, out: Set<string> = new Set(), depth = 0): Set<string> {
+export function idsIn(value: unknown, out: Set<string> = new Set(), depth = 0, onlyLocal = false): Set<string> {
   if (depth > 12 || value === null || typeof value !== 'object') return out;
   if (Array.isArray(value)) {
-    for (const item of value) idsIn(item, out, depth + 1);
+    for (const item of value) idsIn(item, out, depth + 1, onlyLocal);
     return out;
   }
+  // In this Inbox's own answer, a record another machine sent (a merged row or project, an outbox entry) is that
+  // machine's: its ids are not this Inbox's.
+  const owner = (value as { machine?: unknown }).machine;
+  if (onlyLocal && typeof owner === 'string' && owner !== selfMachineId()) return out;
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
     if (typeof item === 'string') {
       if (ROUTED_ID_KEYS.has(key) && /^[A-Za-z0-9_-]{16,80}$/.test(item) && !item.startsWith('ibx_')) out.add(item);
-    } else idsIn(item, out, depth + 1);
+    } else idsIn(item, out, depth + 1, onlyLocal);
   }
   return out;
 }
 
+/** The ids of this Inbox's own records in one of its answers: local for good (inboxUrl.ts `rememberLocal`). */
+export function localIdsIn(value: unknown): Set<string> {
+  return idsIn(value, new Set(), 0, true);
+}
+
+/** Two linked machines claim the thread, message, file or project a path names: it goes to neither (inboxUrl.ts). */
+export const CONFLICT_TEXT = 'Two linked machines both claim this thread, so it opens on neither. Unlink the one that should not have it.';
+function refuseContested(path: string): void {
+  const named = /^\/api\/inbox\/(?:threads|messages|attachments|projects)\/([^/?]+)/.exec(path)?.[1];
+  if (named && isContested(decodeURIComponent(named))) throw new InboxApiError(409, 'machine_conflict', CONFLICT_TEXT);
+}
+
+
+/**
+ * The server refused a forward because the id is this Inbox's (`id_is_local`): it is local from now on, and the read
+ * or write goes to this Inbox instead.
+ */
+async function localInstead(response: Response): Promise<boolean> {
+  if (response.status !== 409) return false;
+  const body = (await response
+    .clone()
+    .json()
+    .catch(() => ({}))) as { code?: unknown; id?: unknown };
+  if (body.code !== 'id_is_local' || typeof body.id !== 'string') return false;
+  rememberLocal([body.id]);
+  return true;
+}
+
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const answer = await readJson<T>(await fetch(path, { headers: { Accept: 'application/json' }, cache: 'no-store', signal }));
+  refuseContested(path);
   const machine = forwardedTo(path);
+  const response = await fetch(path, { headers: { Accept: 'application/json' }, cache: 'no-store', signal });
+  if (machine && (await localInstead(response))) return get<T>(localRoute(path), signal);
+  const answer = await readJson<T>(response);
   if (machine) rememberMachine(idsIn(answer), machine);
+  else rememberLocal(localIdsIn(answer));
   return answer;
 }
 
@@ -595,6 +633,7 @@ export class InboxHeldError extends InboxApiError {
 /** What a held write says, by its machine's state. */
 export function heldWords(machine: Pick<MachineView, 'name' | 'state'> | null): string {
   const name = machine?.name ?? 'the other machine';
+  if (machine?.state === 'revoked') return `Not sent: ${name} removed the link. Link it again to send.`;
   return machine && machine.state !== 'online' && machine.state !== 'connecting'
     ? `Waiting for ${name}: this applies when ${name} is back.`
     : `Sending to ${name}: this applies once ${name} confirms.`;
@@ -655,6 +694,7 @@ export function pageServerSession(): string | null {
 export type TagMode = 'ask' | 'add' | 'handoff';
 
 async function post<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  refuseContested(path);
   const machine = forwardedTo(path);
   // A write to another machine is keyed end to end (rule 1): the window's own key, or one made for it here.
   const sent = machine && typeof body.idempotency_key !== 'string' ? { ...body, idempotency_key: crypto.randomUUID() } : body;
@@ -663,12 +703,24 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<T> 
     headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...(machine ? threadHeader(path) : {}) },
     body: JSON.stringify(pageSession ? { ...sent, serverSession: pageSession } : sent),
   });
+  if (machine && (await localInstead(response))) return post<T>(localRoute(path), body);
   if (machine && response.status === 202) {
     const held = (await response.json().catch(() => ({}))) as { outbox?: OutboxView; machine?: MachineView | null };
-    if (held.outbox) throw new InboxHeldError(held.outbox, held.machine ?? null);
+    if (held.outbox) {
+      const entry = held.outbox;
+      // Still on its way: held. A key sent before and already settled (replayed) says how it ended instead.
+      if (entry.state === 'queued' || entry.state === 'sending') throw new InboxHeldError(entry, held.machine ?? null);
+      if (entry.state === 'delivered') {
+        rememberMachine(idsIn(entry.answer), machine);
+        return entry.answer as T;
+      }
+      const why = entry.answer && typeof entry.answer === 'object' ? (entry.answer as { error?: unknown }).error : null;
+      throw new InboxApiError(409, 'not_delivered', typeof why === 'string' && why ? why : `Not delivered to ${held.machine?.name ?? 'the other machine'}.`);
+    }
   }
   const answer = await readJson<T>(response);
   if (machine) rememberMachine(idsIn(answer), machine);
+  else rememberLocal(localIdsIn(answer));
   return answer;
 }
 
@@ -701,10 +753,11 @@ const projectUrl = (projectId: string, rest = '') => inboxUrl(`/projects/${encod
 function learnMachines(model: ListModel): void {
   setSelfMachine(model.self);
   const rows = model.sections.flatMap((section) => section.threads);
-  // This Inbox's own rows and projects first: a linked machine's row with the same id never takes one over.
-  rememberLocal([...rows.filter((row) => !row.machine || row.machine === model.self).map((row) => row.thread_id), ...model.projects.filter((p) => !p.machine || p.machine === model.self).map((p) => p.id)]);
-  for (const row of rows) rememberMachine([row.thread_id], row.machine, true);
-  for (const project of model.projects) rememberMachine([project.id], project.machine, true);
+  // This Inbox's own rows and projects first, every id in them (a row's delivery and message ids too): a linked
+  // machine's row with the same id never takes one over. Two linked machines naming one id leave it contested.
+  rememberLocal(localIdsIn(model));
+  for (const row of rows) rememberMachine([row.thread_id], row.machine);
+  for (const project of model.projects) rememberMachine([project.id], project.machine);
 }
 
 /** A file's query: the page session, and for another machine the key its door asks of every write. */
@@ -1419,6 +1472,8 @@ export function dispatchInboxFrame(frame: InboxEventFrame, handlers: InboxEventH
       } catch {
         // A malformed frame still refreshes the list.
       }
+      // This Inbox's own record: every id in it is local for good (another machine's arrive as `machine` frames).
+      if (parsed) rememberLocal(localIdsIn(parsed));
       handlers.onRecord(parsed);
       return;
     }

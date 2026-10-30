@@ -314,6 +314,19 @@ test("2c. a fresh load of another machine's thread opens it: a reload, and a new
   }
 });
 
+test("2d. right after Studio restarts, a reload of MacBook's thread opens it once MacBook's list is in: never \"deleted\"", async () => {
+  const subject = 'Ledger export: keep the CSV columns stable?';
+  await page.goto(`${studio.url}#thread=${macThread}`);
+  await expect(page.locator('section.ib-pane .ib-subject')).toHaveText(subject);
+  // A restart (an update does the same): Studio's merged list has no MacBook rows until it reads MacBook's list again.
+  await stopScratchInbox(studio.dataDir);
+  start(studio);
+  await page.goto(`${studio.url}#thread=${macThread}`);
+  await page.reload();
+  await expect(page.locator('section.ib-pane .ib-subject')).toHaveText(subject, { timeout: 30_000 });
+  await expect(page.locator('[data-thread-wait="missing"]')).toHaveCount(0);
+});
+
 test("3. answering MacBook's thread from Studio wakes MacBook's agent", async () => {
   const onMac = await agentOn(macbook);
   const waiting = onMac.waitForReply(macThread, 45);
@@ -381,6 +394,26 @@ test('4. MacBook asleep: greyed rows under "MacBook asleep since"; an answer wai
   const back = await agentOn(macbook);
   const woke = await back.waitForReply(macHeldThread, 15);
   expect(woke.status).toBe('replied');
+});
+
+test('4b. a pick for MacBook while it sleeps says it is waiting, stays picked, and is saved there when MacBook is back', async () => {
+  await page.goto(`${studio.url}#thread=${macWaiting}`);
+  const pane = page.locator('section.ib-pane');
+  await expect(pane.locator('.ib-subject')).toHaveText('Stripe API version: pin or follow?');
+  await stopScratchInbox(macbook.dataDir);
+  await expect.poll(() => stateOf(studio, macbook), { timeout: 30_000 }).toBe('offline');
+  await pane.getByRole('radio', { name: /^Pin/ }).click();
+  await expect(page.locator('.ib-toast')).toContainText('Waiting for MacBook: this applies when MacBook is back.');
+  await expect(pane.getByRole('radio', { name: /^Pin/ })).toBeChecked();
+  start(macbook);
+  await expect.poll(() => stateOf(studio, macbook), { timeout: 45_000 }).toBe('online');
+  await expect
+    .poll(async () => {
+      const there = await json<{ thread: { messages: { questions?: { answer: unknown }[] }[] } }>(macbook, `/api/inbox/threads/${macWaiting}`);
+      return there.thread.messages.some((m) => (m.questions ?? []).some((q) => q.answer !== null && q.answer !== undefined));
+    }, { timeout: 30_000 })
+    .toBe(true);
+  await expect(pane.getByRole('radio', { name: /^Pin/ })).toBeChecked();
 });
 
 test('5. the Machines filter, and Hide offline machines', async () => {

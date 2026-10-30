@@ -90,6 +90,8 @@ export interface OutboxEntry {
    * shows a held answer even when that thread cannot open. Never sent on; absent from an older entry.
    */
   thread?: string | null;
+  /** The machine's name, kept when its link went (dropMachine), so what was not sent can still say where it was going. */
+  machine_name?: string | null;
 }
 
 /** What one try got back: the owner's status and JSON body, or `null` when the machine could not be reached. */
@@ -362,10 +364,17 @@ export class InboxOutbox {
    * "not delivered" when no request ever left, "may have been delivered"
    * when one did (rule 10).
    */
-  dropMachine(machine: string): OutboxEntry[] {
+  dropMachine(machine: string, name: string | null = null): OutboxEntry[] {
     const at = this.now().toISOString();
     return this.list(machine, "pending").map((entry) =>
-      this.save({ ...entry, state: "dropped", settled_at: at, notice: { kind: entry.left ? "may_have_been_delivered" : "not_delivered", at } }),
+      this.save({
+        ...entry,
+        state: "dropped",
+        settled_at: at,
+        notice: { kind: entry.left ? "may_have_been_delivered" : "not_delivered", at },
+        // The machine is forgotten with its link: its name stays with what was not sent to it.
+        ...(name ? { machine_name: name } : {}),
+      }),
     );
   }
 

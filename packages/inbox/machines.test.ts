@@ -10,8 +10,8 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { InboxListRow, InboxListSection } from '@plannotator/core/inbox-types';
-import { idsIn, inboxApi, type MachineView, type OutboxView } from './api';
-import { inboxUrl, machineOf, rememberMachine, resetMachineRoutes, setSelfMachine } from './inboxUrl';
+import { idsIn, InboxApiError, inboxApi, type MachineView, type OutboxView } from './api';
+import { inboxUrl, isContested, machineOf, rememberMachine, resetMachineRoutes, setSelfMachine } from './inboxUrl';
 import { filterMachineRows, machineCounts, machineProjectNames, machinesModel, outboxLine, threadAwayLine, threadOutbox } from './machines';
 
 const SELF = `ibx_01K${'0'.repeat(22)}S`;
@@ -186,27 +186,99 @@ describe("thread ids: a linked machine never takes over this machine's", () => {
     machines: [],
   };
 
-  test('a colliding id in the merged list stays local; a later answer or event from a linked machine cannot claim it either', async () => {
+  /** The window's fetch, answered by `answer` for the time of `run`; every URL it asked, in order. */
+  async function withFetch(answer: (url: string) => Response, run: () => Promise<unknown>): Promise<string[]> {
+    const asked: string[] = [];
     const realFetch = globalThis.fetch;
-    globalThis.fetch = (async () => new Response(JSON.stringify(listModel), { headers: { 'Content-Type': 'application/json' } })) as unknown as typeof fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      asked.push(String(input));
+      return answer(String(input));
+    }) as unknown as typeof fetch;
     try {
-      await inboxApi.list();
+      await run().catch(() => {});
     } finally {
       globalThis.fetch = realFetch;
     }
+    return asked;
+  }
+  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  const listOf = (rows: Record<string, unknown>[]) => ({ self: SELF, sections: [{ id: 'needs_you', threads: rows }], projects: [], machines: [] });
+  const ROW = (thread: string, owner?: string, extra: Record<string, unknown> = {}) => ({
+    thread_id: thread,
+    section: 'needs_you',
+    project: { id: owner ? REMOTE_PROJECT : LOCAL_PROJECT, name: 'billing-svc' },
+    ...(owner ? { machine: owner } : {}),
+    ...extra,
+  });
+
+  test('a peer listing a local active id: the id stays local, and no later answer or frame from a linked machine claims it', async () => {
+    await withFetch(() => json(listModel), () => inboxApi.list());
     expect(machineOf(LOCAL)).toBeNull();
     expect(machineOf(LOCAL_PROJECT)).toBeNull();
     expect(machineOf(REMOTE)).toBe(MAC);
-    // A forwarded answer or a `machine` frame naming the local id: still local, so a reply to it stays here.
     rememberMachine([LOCAL], MAC);
-    rememberMachine([LOCAL], MINI, true);
+    rememberMachine([LOCAL], MINI);
     expect(machineOf(LOCAL)).toBeNull();
     expect(inboxUrl(`/threads/${LOCAL}/read`, undefined, machineOf(LOCAL))).toBe(`/api/inbox/threads/${LOCAL}/read`);
-    // Nor can one linked machine take another's thread: Mini naming MacBook's id leaves it with MacBook.
-    rememberMachine([REMOTE], MINI);
-    rememberMachine([REMOTE], MINI, true);
-    expect(machineOf(REMOTE)).toBe(MAC);
   });
+
+  test("a peer listing a local archived id: the archived list made it local, so an unarchive or a reply stays here", async () => {
+    const ARCHIVED = 'thr_01KARCHIVED00000000000001';
+    await withFetch(() => json({ threads: [{ thread_id: ARCHIVED, project: { id: LOCAL_PROJECT } }], total: 1 }), () => inboxApi.archived());
+    await withFetch(() => json(listOf([ROW(ARCHIVED, MAC)])), () => inboxApi.list());
+    expect(machineOf(ARCHIVED)).toBeNull();
+  });
+
+  test('a peer listing a local pinned id (a pinned row of this machine, a pin-only one included) cannot take it', async () => {
+    const PINNED = 'thr_01KPINNED000000000000001';
+    // This machine's pinned row and MacBook's copy of it, in either order in the same list.
+    await withFetch(() => json(listOf([ROW(PINNED, MAC), ROW(PINNED, undefined, { pinned_at: '2026-10-30T10:00:00.000Z' })])), () => inboxApi.list());
+    expect(machineOf(PINNED)).toBeNull();
+  });
+
+  test('a peer event naming a local message id, then Send now from the row: it goes to this Inbox', async () => {
+    const MESSAGE = 'msg_01KLOCALDELIVERY000000001';
+    // The list row carries its delivery's message id: local, though its thread was never opened here.
+    await withFetch(() => json(listOf([ROW(LOCAL, undefined, { delivery: { message_id: MESSAGE, state: 'queued' } })])), () => inboxApi.list());
+    rememberMachine([MESSAGE], MAC);
+    expect(machineOf(MESSAGE)).toBeNull();
+    const asked = await withFetch(() => json({ ok: true }), () => inboxApi.sendNow(MESSAGE));
+    expect(asked).toEqual([`/api/inbox/messages/${MESSAGE}/send-now`]);
+  });
+
+  test('the server says an id is this machine\'s (id_is_local): the window stops forwarding it and asks this Inbox', async () => {
+    const UNSEEN = 'msg_01KUNSEENLOCAL000000000001';
+    rememberMachine([UNSEEN], MAC);
+    const asked = await withFetch(
+      (url) => (url.includes('/m/') ? json({ error: 'That is on this computer.', code: 'id_is_local', id: UNSEEN }, 409) : json({ ok: true })),
+      () => inboxApi.sendNow(UNSEEN),
+    );
+    expect(asked).toEqual([`/api/inbox/m/${MAC}/messages/${UNSEEN}/send-now`, `/api/inbox/messages/${UNSEEN}/send-now`]);
+    expect(machineOf(UNSEEN)).toBeNull();
+  });
+
+  for (const [first, second] of [
+    [MAC, MINI],
+    [MINI, MAC],
+  ] as const) {
+    test(`two peers claiming one id (${first === MAC ? 'MacBook' : 'Mini'} first): it routes to neither, and opening it is refused plainly`, async () => {
+      await withFetch(() => json(listOf([ROW(REMOTE, first), ROW(REMOTE, second)])), () => inboxApi.list());
+      expect(machineOf(REMOTE)).toBeNull();
+      expect(isContested(REMOTE)).toBe(true);
+      // A later list in the other order, or a frame from either, gives it to no one.
+      await withFetch(() => json(listOf([ROW(REMOTE, second), ROW(REMOTE, first)])), () => inboxApi.list());
+      rememberMachine([REMOTE], first);
+      expect(machineOf(REMOTE)).toBeNull();
+      let refused: unknown = null;
+      const asked = await withFetch(
+        () => json({}),
+        () => inboxApi.thread(REMOTE).catch((cause) => (refused = cause)),
+      );
+      expect(asked).toEqual([]);
+      expect(refused).toBeInstanceOf(InboxApiError);
+      expect((refused as InboxApiError).code).toBe('machine_conflict');
+    });
+  }
 
   test('a forwarded answer teaches only its routed id fields, never any string under a key ending in _id', () => {
     const ids = idsIn({

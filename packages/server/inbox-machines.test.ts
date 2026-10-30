@@ -31,6 +31,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { TailscaleRunner } from "@plannotator/shared/tailscale";
+import { InboxStore } from "@plannotator/shared/inbox/store";
 import { startInboxServer } from "./inbox";
 import { createInboxDevices } from "./inbox-devices";
 import {
@@ -660,6 +661,82 @@ describe("the tailnet door with Phones off, in process", () => {
       const kept = await fetch(`http://127.0.0.1:${inbox.port}/api/inbox/m/${OTHER}/attachments/att_y/image`);
       expect(kept.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox allow-scripts");
       await kept.arrayBuffer();
+    } finally {
+      inbox.stop();
+      peer.stop(true);
+    }
+  }, 60_000);
+
+  test("a peer can never take this Inbox's ids: its rows naming them are dropped, and no route to them is forwarded (active, archived, pinned)", async () => {
+    const dataDir = scratch("plannotator-machines-own-ids-");
+    // This Inbox's own threads: one active, one archived, one pinned.
+    const store = InboxStore.open(dataDir);
+    const project = store.ensureProject({ name: "billing-svc", root: "/work/billing-svc" });
+    // One session each, so each is its own thread.
+    const agent = (session: string) => ({ kind: "agent" as const, host: "claude-code", session, name: null });
+    const active = store.sendMessage({ project_id: project.id, author: agent("ses_active"), body: "Active" }).message.id;
+    const archived = store.sendMessage({ project_id: project.id, author: agent("ses_archived"), body: "Archived" }).message.id;
+    const pinned = store.sendMessage({ project_id: project.id, author: agent("ses_pinned"), body: "Pinned" }).message.id;
+    store.resolveThread(archived, true);
+    store.setPinned(pinned, true);
+    const own = [active, archived, pinned];
+    // A peer that lists rows with those ids (and one of its own), and records every other request that reaches it.
+    const reached: string[] = [];
+    const row = (id: string) => ({ thread_id: id, subject: "Mine now", section: "waiting", project: { id: project.id, name: "billing-svc" } });
+    const peer = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      fetch(req) {
+        const route = new URL(req.url).pathname.replace("/api/inbox/device/", "");
+        if (route === "health") return Response.json({ ok: true, inbox_id: OTHER, machine_links: 1, version: "peer" });
+        if (route === "events") return new Response(new ReadableStream({ start: (c) => c.enqueue(new TextEncoder().encode(`event: hello\ndata: {"cursor":0}\n\n`)) }), { headers: { "Content-Type": "text/event-stream" } });
+        if (route === "threads") return Response.json({ cursor: 1, sections: [{ id: "waiting", threads: [...own.map(row), row("msg_01KPEEROWN0000000000000001")] }], projects: [{ id: project.id, name: "billing-svc" }] });
+        reached.push(`${req.method} ${route}`);
+        return Response.json({ ok: true });
+      },
+    });
+    const link = { id: OTHER, name: "Mini", token: "tok_x", transport: { kind: "tailnet", url: `http://127.0.0.1:${peer.port}` }, device_id: null, linked_at: "2026-10-30T00:00:00Z" };
+    mkdirSync(join(dataDir, "inbox"), { recursive: true });
+    writeFileSync(join(dataDir, "inbox", "machines.json"), JSON.stringify({ v: 1, self: { id: "ibx_01K00000000000000000000001" }, links: [link] }), { mode: 0o600 });
+    const inbox = await startInboxServer({ dataDir, binaryPath: null, phones: false, tailscale: scriptedTailscale().run });
+    const base = `http://127.0.0.1:${inbox.port}`;
+    try {
+      const merged = await waitFor("the peer's list in the merged list", async () => {
+        const model = (await (await fetch(`${base}/api/inbox/threads?machines=1&archived=include`)).json()) as Json;
+        const rows = (model.sections as Json[]).flatMap((s) => s.threads as Json[]);
+        return rows.some((r) => r.machine === OTHER) ? rows : null;
+      });
+      // The peer's own row is merged; none of its rows with this Inbox's ids is, and this Inbox's project stays its own.
+      for (const id of own) expect(merged.filter((r) => r.thread_id === id).every((r) => r.machine !== OTHER)).toBe(true);
+      const { serverSession } = (await (await fetch(`${base}/api/inbox/health`)).json()) as Json;
+      for (const id of own) {
+        for (const [method, route, body] of [
+          ["GET", `threads/${id}`, null],
+          ["POST", `messages/${id}/reply`, { words: "x", seen_through_seq: 1, idempotency_key: `k-${id}` }],
+          ["POST", `messages/${id}/picks`, { picks: [], idempotency_key: `p-${id}` }],
+          ["POST", `messages/${id}/send-now`, { idempotency_key: `s-${id}` }],
+          ["POST", `threads/${id}/read`, { idempotency_key: `r-${id}` }],
+          ["POST", `messages/${id}/resolve`, { resolved: true, idempotency_key: `a-${id}` }],
+        ] as const) {
+          const answer = await fetch(`${base}/api/inbox/m/${OTHER}/${route}`, {
+            method,
+            headers: { "Content-Type": "application/json", Origin: base },
+            ...(body ? { body: JSON.stringify({ serverSession, ...body }) } : {}),
+          });
+          expect(answer.status).toBe(409);
+          expect(((await answer.json()) as Json).code).toBe("id_is_local");
+        }
+      }
+      // A write naming a local message in its body (an annotation) is refused the same way.
+      const annotation = await fetch(`${base}/api/inbox/m/${OTHER}/annotations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: base },
+        body: JSON.stringify({ serverSession, message_id: active, idempotency_key: "n-1" }),
+      });
+      expect(annotation.status).toBe(409);
+      expect(reached).toEqual([]);
+      expect(existsSync(join(dataDir, "inbox", "outbox", `${OTHER}.jsonl`))).toBe(false);
     } finally {
       inbox.stop();
       peer.stop(true);

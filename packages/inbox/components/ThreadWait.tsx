@@ -14,7 +14,7 @@ import { HeldWrites } from './HeldWrites';
  */
 export function ThreadWait(props: {
   /** Why the thread is not on screen yet; null while its read is on its way. */
-  load: { state: 'failed' | 'missing'; error: string } | null;
+  load: { state: 'failed' | 'missing' | 'refused'; error: string } | null;
   onRetry: () => void;
   onClose: () => void;
   /** Called as it gives way (the thread landed, or it closed) while focus is inside it. */
@@ -40,6 +40,14 @@ export function ThreadWait(props: {
         {load?.state === 'missing' ? (
           <>
             <span>This thread is not in the Inbox. It may have been deleted.</span>
+            <button type="button" className="ib-btn" onClick={props.onClose} data-thread-wait-close="">
+              Close
+            </button>
+          </>
+        ) : load?.state === 'refused' ? (
+          // Linked machines: two of them claim this thread, so it opens on neither. Said plainly, not retried.
+          <>
+            <span data-thread-wait-refused="">{load.error}</span>
             <button type="button" className="ib-btn" onClick={props.onClose} data-thread-wait-close="">
               Close
             </button>

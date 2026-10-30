@@ -17,7 +17,7 @@ import { INBOX_AUTO_SEND_ACK_NOTES, inboxAskingMessage, wholeMinutes, isInboxNot
 import type { LocalLinkResolver } from '@plannotator/ui/components/LocalLinkContext';
 import { NOT_ATTACHED_TITLE, attachmentDeepLink, attachmentDisplayPath, attachmentForLink, openAttachmentTitle, useRefRepo } from '../links';
 import { InboxApiError, InboxHeldError, inboxApi, type AttachmentsModel, type MachineView, type OutboxView, type TagMode } from '../api';
-import { awayLine } from '../machines';
+import { awayLine, outboxLine } from '../machines';
 import { HeldWrites } from './HeldWrites';
 import type { HtmlEmbedHost } from '@plannotator/ui/components/html-embed/HtmlEmbedBlock';
 import { annotationOf, attachmentFeedback, isFileComment } from '../attachments';
@@ -2620,6 +2620,27 @@ export function ThreadPane({ notice, thread, machine = null, outbox = NO_OUTBOX,
     return undefined;
   };
 
+  /**
+   * Picks held for another machine (linked machines), by outbox key: drawn as picked until that machine answers. One
+   * it refused, or that could not go, is unpicked again and the person is told; a delivered one is the thread's own.
+   */
+  const heldPicks = useRef(new Map<string, { id: string; answer: QuestionAnswer | null }>());
+  useEffect(() => {
+    for (const entry of outbox) {
+      const held = heldPicks.current.get(entry.key);
+      if (!held || entry.state === 'queued' || entry.state === 'sending') continue;
+      heldPicks.current.delete(entry.key);
+      if (entry.state === 'delivered') continue;
+      setPending((current) => {
+        if (current.get(held.id) !== held.answer) return current;
+        const next = new Map(current);
+        next.delete(held.id);
+        return next;
+      });
+      onToast?.({ icon: 'warn', lead: `Pick not saved. ${outboxLine(entry, machine)?.text ?? `Not delivered to ${machine?.name ?? 'the other machine'}.`}`, wrap: true });
+    }
+  }, [outbox, machine, onToast]);
+
   const pick = (messageId: string, key: string, answer: QuestionAnswer | null) => {
     const id = `${messageId}/${key}`;
     setPending((current) => new Map(current).set(id, answer));
@@ -2641,6 +2662,8 @@ export function ThreadPane({ notice, thread, machine = null, outbox = NO_OUTBOX,
       } catch (cause) {
         if (cause instanceof InboxHeldError) {
           held = true;
+          heldPicks.current.set(cause.outbox.key, { id, answer });
+          onToast?.({ icon: 'clock', lead: cause.message, wrap: true });
           return;
         }
         // The agent replaced the question meanwhile: reading the thread again redraws it as Replaced.

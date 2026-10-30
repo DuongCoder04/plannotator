@@ -74,6 +74,7 @@ const stored = new Map<string, string>();
 let savedFetch: typeof fetch;
 const posted: { url: string; body: Record<string, unknown> }[] = [];
 let unlinkTold = true;
+let notices: OutboxView[] = [];
 
 beforeEach(() => {
   if (!hasDom) return;
@@ -81,10 +82,13 @@ beforeEach(() => {
   setStorageBackend({ getItem: (k) => stored.get(k) ?? null, setItem: (k, v) => void stored.set(k, v), removeItem: (k) => void stored.delete(k) });
   posted.length = 0;
   unlinkTold = true;
+  notices = [];
   savedFetch = globalThis.fetch;
   // Settings → Machines' writes: recorded, answered as the server does.
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    // Reads (the outbox Settings → Machines shows) are answered, not recorded.
+    if ((init?.method ?? 'GET') === 'GET') return new Response(JSON.stringify(url.endsWith('/outbox') ? { waiting: [], notices } : {}), { status: 200 });
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
     posted.push({ url, body });
     if (url.endsWith('/machines/link')) {
@@ -309,6 +313,45 @@ test.skipIf(!hasDom)("a thread that cannot open because its machine sleeps still
   const shown = document.querySelector('[data-thread-wait-held] [data-outbox="k1"]')!;
   expect(shown.querySelector('.ib-held-words')!.textContent).toBe('Ship the ledger fix');
   expect(shown.querySelector('[data-outbox-line]')!.textContent).toBe('Will send when MacBook is back');
+});
+
+test.skipIf(!hasDom)('Settings → Machines keeps what was not sent to a machine no longer linked: its words to copy, until dismissed', async () => {
+  const MINI = `ibx_01K${'0'.repeat(22)}N`;
+  const dropped = (key: string, owner: string, words: string | null, name: string | null): OutboxView => ({
+    key,
+    machine: owner,
+    route: words ? 'messages/msg_far/reply' : 'threads/msg_far/read',
+    state: 'dropped',
+    queued_at: SINCE,
+    settled_at: SINCE,
+    status: null,
+    answer: null,
+    notice: { kind: 'not_delivered', at: SINCE },
+    dismissed: false,
+    words,
+    thread: 'msg_far',
+    machine_name: name,
+  });
+  // Mini unlinked this computer while two writes waited for it; MacBook is still linked (its notice shows in its thread).
+  notices = [dropped('k-mini', MINI, 'Rotate the certs Thursday.', 'Mini'), dropped('k-read', MINI, null, 'Mini'), dropped('k-mac', MAC, 'Keep the order.', null)];
+  mount(<MachinesSection machines={[machine(SELF, 'Studio', 'online'), machine(MAC, 'MacBook', 'online')]} via="local" onChanged={noop} />);
+  await settle();
+  const rows = [...document.querySelectorAll('[data-machines-unsent] [data-unsent]')];
+  expect(rows.map((r) => r.getAttribute('data-unsent'))).toEqual(['k-mini', 'k-read']);
+  expect(rows[0]!.querySelector('.ib-l')!.textContent).toStartWith('Not sent to Mini');
+  expect(rows[0]!.querySelector('.ib-held-words')!.textContent).toBe('Rotate the certs Thursday.');
+  expect(rows[0]!.querySelector('.ib-copy')).not.toBeNull();
+  act(() => rows[0]!.querySelector<HTMLButtonElement>('[data-unsent-dismiss]')!.click());
+  await settle();
+  expect(posted.map((p) => p.url)).toEqual(['/api/inbox/outbox/k-mini/dismiss']);
+  expect([...document.querySelectorAll('[data-unsent]')].map((r) => r.getAttribute('data-unsent'))).toEqual(['k-read']);
+});
+
+test.skipIf(!hasDom)('a thread two linked machines both claim says so in its place, with Close and no "Try again"', () => {
+  mount(<ThreadWait load={{ state: 'refused', error: 'Two linked machines both claim this thread, so it opens on neither.' }} onRetry={noop} onClose={noop} onFocusLeaving={noop} />);
+  expect(document.querySelector('[data-thread-wait-refused]')!.textContent).toBe('Two linked machines both claim this thread, so it opens on neither.');
+  expect(document.querySelector('[data-thread-wait-close]')).not.toBeNull();
+  expect(document.querySelector('[data-thread-wait-retry]')).toBeNull();
 });
 
 test.skipIf(!hasDom)('"Show link code" says, before the click, that it puts this Inbox on the tailnet', () => {

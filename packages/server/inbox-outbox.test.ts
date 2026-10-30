@@ -94,6 +94,16 @@ describe("the window's view of a held write", () => {
   });
 });
 
+describe("an unlink keeps what was not sent", () => {
+  test("the dropped entries keep their words and the machine's name, as notices until dismissed", () => {
+    const outbox = InboxOutbox.open(dataDir());
+    outbox.submit(B, "messages/m1/reply", reply("k1", "Ship it Thursday"), "thr_01K00000000000000000000001");
+    outbox.dropMachine(B, "MacBook");
+    const [notice] = outbox.notices().map(outboxView);
+    expect(notice).toMatchObject({ state: "dropped", words: "Ship it Thursday", machine_name: "MacBook", notice: { kind: "not_delivered" } });
+  });
+});
+
 describe("rule 2: one queue per machine, one request at a time", () => {
   test("oldest first; each waits for the one before it to have a definite answer", async () => {
     const outbox = InboxOutbox.open(dataDir());

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
-import { InboxApiError, inboxApi, type MachineOffer, type MachineView } from '../api';
+import { InboxApiError, inboxApi, type MachineOffer, type MachineView, type OutboxView } from '../api';
 import { shortTime } from '../format';
 import { Icon } from '../icons';
 import { machineStatus } from '../machines';
-import { CodeBox } from './ConnectPicker';
+import { CodeBox, CopyButton } from './ConnectPicker';
 import { RemoveLink } from './Devices';
 
 /**
@@ -208,8 +208,79 @@ export function MachinesSection({ machines, via, onChanged }: MachinesSectionPro
           <span>{error}</span>
         </div>
       )}
+      <UnsentWrites linked={machines} />
     </section>
   );
+}
+
+/**
+ * What was waiting for a machine when its link went (an Unlink here, or one done on that machine): never dropped
+ * silently. Its words stay here to copy, until the person dismisses them. Read from the outbox when the page opens,
+ * and again when a machine leaves the list.
+ */
+function UnsentWrites({ linked }: { linked: readonly MachineView[] }) {
+  const [entries, setEntries] = useState<OutboxView[]>([]);
+  const ids = linked.map((m) => m.id).join('|');
+  useEffect(() => {
+    let live = true;
+    inboxApi.outbox().then(
+      ({ notices }) => {
+        if (live) setEntries(notices ?? []);
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [ids]);
+  const known = new Set(linked.map((m) => m.id));
+  const unsent = entries.filter((entry) => entry.notice !== null && !entry.dismissed && !known.has(entry.machine));
+  if (unsent.length === 0) return null;
+  return (
+    <>
+      <p className="ib-mnote">Not sent: these were waiting for a machine that is no longer linked. Copy the words to send them another way.</p>
+      <div className="ib-card" aria-label="Not sent" data-machines-unsent="">
+        {unsent.map((entry) => (
+          <div className="ib-prow" key={entry.key} data-unsent={entry.key}>
+            <span className="ib-txt">
+              <span className="ib-l">
+                {entry.notice?.kind === 'may_have_been_delivered' ? 'May have reached' : 'Not sent to'} {entry.machine_name ?? 'a machine no longer linked'} · {shortTime(entry.queued_at)}
+              </span>
+              {entry.words ? (
+                <span className="ib-desc ib-held-words" dir="auto">
+                  {entry.words}
+                </span>
+              ) : (
+                <span className="ib-desc">{unsentWhat(entry.route)}</span>
+              )}
+            </span>
+            <span className="ib-ctl">
+              {entry.words && <CopyButton text={entry.words} />}
+              <button
+                type="button"
+                className="ib-btn ib-ghost"
+                data-unsent-dismiss=""
+                onClick={() => {
+                  setEntries((current) => current.filter((e) => e.key !== entry.key));
+                  void inboxApi.dismissOutbox(entry.key).catch(() => {});
+                }}
+              >
+                Dismiss
+              </button>
+            </span>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/** A held write with no words, said by what it did. */
+function unsentWhat(route: string): string {
+  if (/\/picks$/.test(route)) return 'A pick';
+  if (/\/(read|seen)$/.test(route)) return 'Mark read';
+  if (/\/resolve$/.test(route)) return 'Archive';
+  return 'A change';
 }
 
 /** Link a machine: paste its link code, or type its address and six digits. Only the Link button sends. */

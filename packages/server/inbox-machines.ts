@@ -60,6 +60,17 @@ export interface InboxMachineDoor {
   closeTailnetIfUnused: () => void;
 }
 
+/** The id kinds a forwarded route names in its first segments. */
+export type HeldKind = "threads" | "messages" | "attachments" | "projects";
+const HELD_KINDS = new Set<string>(["threads", "messages", "attachments", "projects"]);
+const safeDecode = (segment: string): string => {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+};
+
 export interface InboxMachinesContext {
   dataDir: string;
   serverSession: string;
@@ -67,6 +78,11 @@ export interface InboxMachinesContext {
   door: InboxMachineDoor;
   readBody: (req: Request) => Promise<Record<string, unknown>>;
   json: (body: unknown, status?: number) => Response;
+  /**
+   * Whether this Inbox's own store holds an id (archived and pinned threads included). The forward refuses a route
+   * whose thread, message, file or project is this machine's: whatever a window believes, it never goes to a peer.
+   */
+  holds?: (kind: HeldKind, id: string) => boolean;
   /** Tests: the links' clocks. */
   timings?: Partial<PeerLinkTimings>;
   now?: () => Date;
@@ -115,6 +131,8 @@ export interface OutboxView {
   words: string | null;
   /** The thread it is about, as the window named it (null: not named, or an older entry). */
   thread: string | null;
+  /** The machine's name once its link is gone (null while linked: the window knows it). */
+  machine_name: string | null;
 }
 
 /** At most this much of a held write's words rides its view. */
@@ -139,6 +157,7 @@ export const outboxView = (entry: OutboxEntry): OutboxView => ({
   dismissed: entry.dismissed,
   words: wordsOf(entry.body),
   thread: entry.thread ?? null,
+  machine_name: entry.machine_name ?? null,
 });
 
 const FORWARD = /^\/api\/inbox\/m\/(ibx_[0-9A-HJKMNP-TV-Z]{26})\/(.+)$/;
@@ -283,7 +302,7 @@ export function createInboxMachines(context: InboxMachinesContext) {
     peers.delete(id);
     const link = links.remove(id);
     if (link?.device_id) context.door.revokeDevice(link.device_id);
-    outbox.dropMachine(id);
+    outbox.dropMachine(id, link?.name ?? null);
     // The last link gone: with Phones off the tailnet door has nothing left to serve.
     context.door.closeTailnetIfUnused();
     machinesChanged();
@@ -500,6 +519,13 @@ export function createInboxMachines(context: InboxMachinesContext) {
     if (route === "events" || route === "pair" || route === "link-back" || route === "unlink" || route === "revoke") {
       return json({ error: "Not a forwarded route.", code: "not_found" }, 404);
     }
+    // This machine's own thread, message, file or project never goes to a peer, whatever the window learned: a
+    // linked machine that lists or names one of this Inbox's ids cannot take its reads or writes.
+    const local = (id: unknown): id is string => typeof id === "string" && id !== "" && (context.holds?.("messages", id) ?? false);
+    const ownId = HELD_KINDS.has(segments[0]!) && segments[1] ? safeDecode(segments[1]) : null;
+    if (ownId && context.holds?.(segments[0] as HeldKind, ownId)) {
+      return json({ error: "That is on this computer, not on another machine.", code: "id_is_local", id: ownId }, 409);
+    }
     const offline = () =>
       json({ error: `${links.get(machine)?.name ?? "That machine"} cannot be reached now.`, code: "machine_offline", machine: machinesView().find((m) => m.id === machine) }, 503);
     if (req.method === "GET") {
@@ -536,6 +562,10 @@ export function createInboxMachines(context: InboxMachinesContext) {
     // Every other write is a JSON body, whatever its Content-Type says, and goes through the outbox.
     const body = await context.readBody(req);
     if (checkServerSession(body, context.serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
+    // A write that names its thread or message in the body (an annotation, a new message) is refused the same way.
+    for (const key of ["thread_id", "message_id", "reply_to"] as const) {
+      if (local(body[key])) return json({ error: "That is on this computer, not on another machine.", code: "id_is_local", id: body[key] }, 409);
+    }
     // This Inbox's page session means nothing to the other machine's Inbox, and its drafts stay on this computer.
     delete body.serverSession;
     if (route === "messages") delete body.draft_id;
