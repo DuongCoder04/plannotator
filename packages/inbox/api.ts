@@ -436,7 +436,7 @@ export interface PairingChecks {
     https_certs: boolean | null;
     /** A port the door may take (8443 to 8450) is free or already the Inbox's. */
     port_free: boolean | null;
-    /** The port it would take; absent from an older Inbox. */
+    /** The port it would take, or (with `port_free: false`) its kept port another mapping now holds; absent from an older Inbox. */
     https_port?: number | null;
     error: string | null;
   };

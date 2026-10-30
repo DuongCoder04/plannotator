@@ -21,15 +21,16 @@
  *
  * The tailnet. "Reach from my tailnet" opens a second loopback listener that
  * serves the door and nothing else, and publishes THAT port at
- * `https://<MagicDNS name>:8443` through `tailscale serve` (never funnel),
- * or on the next free port up to 8450 when another mapping holds 8443
- * (inbox-tailnet-door.ts; the address carries the port).
+ * `https://<MagicDNS name>:8443` through `tailscale serve` (never funnel).
+ * When another mapping holds 8443 at the first publish, the next free port up
+ * to 8450; that port then sticks (the address carries it), and a later start
+ * that finds it held refuses rather than move (inbox-tailnet-door.ts).
  * `tailscale serve` passes the client's Host header through, so the socket,
  * not a header, keeps tailnet requests on the door. The switch is kept in
- * inbox.json as `tailnet: { https_port, door_port }`; the mapping the Inbox
- * made, and only that, in `inbox/tailnet-door.json`. Published at each
- * start, taken down (listener and mapping) when the switch goes off and at
- * each clean stop.
+ * inbox.json as `tailnet: { https_port, door_port }`; the port and the
+ * mapping the Inbox made, and only that, in `inbox/tailnet-door.json`.
+ * Published at each start, taken down (listener and mapping) when the switch
+ * goes off and at each clean stop.
  *
  * The Wi-Fi. "Reach from this Wi-Fi" opens a TLS listener on every interface
  * that serves the same door-only handler, with a pinned self-signed
@@ -58,7 +59,7 @@ import {
   publicDevice,
   type InboxDevice,
 } from "@plannotator/shared/inbox/devices";
-import { updateOwnInboxRegistry, type InboxRegistryEntry } from "@plannotator/shared/inbox/registry";
+import { readInboxRegistry, updateOwnInboxRegistry, type InboxRegistryEntry } from "@plannotator/shared/inbox/registry";
 import { InboxError, inboxDir } from "@plannotator/shared/inbox/schema";
 import { INBOX_DEVICE_MARKUP_MAX_BYTES } from "@plannotator/shared/inbox/markups";
 import { INBOX_UPLOAD_MAX_BYTES } from "@plannotator/shared/inbox/uploads";
@@ -75,12 +76,16 @@ import {
 import { isSameOriginOrNoOrigin } from "@plannotator/shared/request-origin";
 import { enableTailscaleServe, TailscaleServeError, takeDownOwnServeMapping } from "./tailscale-serve";
 import {
+  adoptLegacyTailnetDoor,
   chooseTailnetDoorPort,
   clearTailnetDoorRecord,
+  hasTailnetDoorRecord,
   INBOX_TAILNET_HTTPS_PORTS,
   INBOX_TAILNET_PORT_RANGE,
+  legacyTailnetDoorRecord,
   readTailnetDoorRecord,
   writeTailnetDoorRecord,
+  type TailnetDoorRecord,
 } from "./inbox-tailnet-door";
 
 /** The pairing offer's lifetime (limit, contract section 1): long enough to fetch a phone. */
@@ -432,18 +437,41 @@ function bearer(req: Request): string | null {
 
 /**
  * Take down the door mapping this Inbox recorded (inbox-tailnet-door.ts),
- * only while it still points where the record says: anything else on that
- * port is someone else's and is never touched. The record goes once the
- * mapping is down or gone, and stays when Tailscale could not say or could
- * not remove it. Nothing is spawned when there is no record. Also
- * `uninstall --purge`, with the Inbox stopped.
+ * only while it still points exactly where the record says: anything else on
+ * that port is someone else's and is never touched. With no record yet, an
+ * older build's inbox.json `tailnet` is read as one, once
+ * (`adoptLegacyTailnetDoor`). The record keeps the port and says the mapping
+ * is gone once it is down or found gone; it is unchanged when Tailscale could
+ * not say or could not remove it. Nothing is spawned when there is nothing
+ * recorded. Also `uninstall --purge`, with the Inbox stopped (`legacy`: that
+ * data dir's inbox.json `tailnet`).
  */
-export function takeDownInboxTailnet(dataDir: string, run: TailscaleRunner = runTailscale): "removed" | "none" | "failed" {
-  const record = readTailnetDoorRecord(dataDir);
-  if (!record) return "none";
+export function takeDownInboxTailnet(
+  dataDir: string,
+  run: TailscaleRunner = runTailscale,
+  legacy: InboxRegistryEntry["tailnet"] = readInboxRegistry(dataDir)?.tailnet,
+): "removed" | "none" | "failed" {
+  let record = readTailnetDoorRecord(dataDir);
+  if (!record && !hasTailnetDoorRecord(dataDir)) {
+    if (!legacy?.door_port) return "none";
+    const status = run(["serve", "status", "--json"], TAILSCALE_SERVE_TIMEOUT_MS);
+    if (status.error || status.status !== 0) return "failed";
+    record = adoptLegacyTailnetDoor(dataDir, legacy, status.stdout);
+  }
+  if (!record?.published) return "none";
   const result = takeDownOwnServeMapping(run, record.https_port, [record.target]);
-  if (result !== "failed") clearTailnetDoorRecord(dataDir);
+  if (result !== "failed") writeTailnetDoorRecord(dataDir, { ...record, published: false });
   return result;
+}
+
+/** Why the door's port could not be taken (inbox-tailnet-door.ts), in the window's words. */
+class DoorPortError extends Error {
+  constructor(
+    readonly code: "tailnet_port_taken" | "tailnet_port_held" | "tailnet_port_raced",
+    message: string,
+  ) {
+    super(message);
+  }
 }
 
 export function createInboxDevices(context: InboxDevicesContext) {
@@ -954,10 +982,14 @@ export function createInboxDevices(context: InboxDevicesContext) {
   /** The tailnet HTTPS port the door is published on this run, while it is. */
   let doorHttpsPort: number | null = null;
 
-  /** The tailnet port the door would take now, from `tailscale serve status --json` (the record's own mapping, else the first free port). */
-  const doorPortIn = (serveStatus: string) =>
-    chooseTailnetDoorPort(serveStatus, readTailnetDoorRecord(context.dataDir), context.registry().tailnet?.https_port);
+  /** The record, or (no record yet) what an older build's inbox.json `tailnet` says, never written here: the pairing checks only read. */
+  const recordFor = (serveStatus: string): TailnetDoorRecord | null =>
+    hasTailnetDoorRecord(context.dataDir) ? readTailnetDoorRecord(context.dataDir) : legacyTailnetDoorRecord(context.registry().tailnet, serveStatus);
 
+  /** The tailnet port the door would take now, from `tailscale serve status --json`: the kept port, else (first publish) the first free one. */
+  const doorPortIn = (serveStatus: string) => chooseTailnetDoorPort(serveStatus, recordFor(serveStatus));
+
+  /** The switch: inbox.json's `tailnet`. Off also forgets the door's port, so the next first publish chooses again. */
   const saveSwitch = (on: boolean) => {
     const value = on && doorServer ? { https_port: doorHttpsPort ?? INBOX_TAILNET_HTTPS_PORT, door_port: doorServer.port as number } : undefined;
     const apply = (target: InboxRegistryEntry) => {
@@ -967,15 +999,14 @@ export function createInboxDevices(context: InboxDevicesContext) {
     // Never another Inbox's entry, never into a removed data folder.
     updateOwnInboxRegistry(context.dataDir, context.registry().serverSession, apply);
     apply(context.registry());
+    if (!on) clearTailnetDoorRecord(context.dataDir);
   };
 
+  /** Who reaches the door on its port, for the words of a refusal. */
+  const reachers = () => (phonesOn ? "linked machines and paired phones" : "linked machines");
+
   const tailnetWords = (error: unknown): { code: string; message: string } => {
-    if (error instanceof TailscaleServeError && error.code === "conflict") {
-      return {
-        code: "tailnet_port_taken",
-        message: `Other tailscale serve mappings already use every port the Inbox can take (${INBOX_TAILNET_PORT_RANGE}). The Inbox never replaces them: remove one with "tailscale serve --https=${INBOX_TAILNET_HTTPS_PORT} off" if nothing needs it.`,
-      };
-    }
+    if (error instanceof DoorPortError) return { code: error.code, message: error.message };
     const detail = error instanceof Error ? error.message.replace(/^--tailscale:\s*/, "") : String(error);
     // Linux: `tailscale serve` needs root unless the person made their user the operator once.
     const linux =
@@ -986,26 +1017,53 @@ export function createInboxDevices(context: InboxDevicesContext) {
   };
 
   /**
-   * Open the door listener and point a tailnet mapping at it, on the first
-   * port it may take (inbox-tailnet-door.ts), then record that mapping as
-   * this Inbox's. On failure the listener closes, the record stays as it
-   * was, and the error is kept for the window.
+   * Open the door listener and point a tailnet mapping at it, on its port
+   * (inbox-tailnet-door.ts: the kept one, else the first free one). The
+   * record is written before `tailscale serve` runs, so a crash between the
+   * two never leaves a mapping the Inbox does not own; when serve fails, the
+   * record goes back to what it was. On failure the listener closes and the
+   * error is kept for the window.
    */
   const publish = (): { ok: true } | { ok: false; code: string; message: string } => {
     try {
       const status = tailscale(["serve", "status", "--json"], TAILSCALE_SERVE_TIMEOUT_MS);
       if (status.error || status.status !== 0) throw new TailscaleServeError("unavailable", `--tailscale: ${describeTailscaleFailure(status)}`);
-      const port = doorPortIn(status.stdout);
+      // An older build's inbox.json record, read once (inbox-tailnet-door.ts).
+      const record = adoptLegacyTailnetDoor(context.dataDir, context.registry().tailnet, status.stdout);
+      const port = chooseTailnetDoorPort(status.stdout, record);
       if (port.state === "malformed") {
         throw new TailscaleServeError(
           "malformed",
           "--tailscale: could not parse `tailscale serve status --json` output; refusing to modify the serve config. Inspect it with `tailscale serve status`.",
         );
       }
-      if (port.state === "taken") throw new TailscaleServeError("conflict", `--tailscale: tailscale serve already routes ports ${INBOX_TAILNET_PORT_RANGE}.`);
+      if (port.state === "taken") {
+        throw new DoorPortError(
+          "tailnet_port_taken",
+          `Other tailscale serve mappings already use every port the Inbox can take (${INBOX_TAILNET_PORT_RANGE}). The Inbox never replaces them: free one of them if nothing needs it ("tailscale serve status" lists them).`,
+        );
+      }
+      if (port.state === "held") {
+        const move = phonesOn ? "turn Tailscale off and on again here, then pair your phones and link your machines again" : "unlink each machine, then link it again";
+        throw new DoorPortError(
+          "tailnet_port_held",
+          `Another tailscale serve mapping now uses port ${port.port}, where ${reachers()} reach this Inbox. The Inbox never replaces it, and does not move to another port on its own: free port ${port.port} if nothing needs it ("tailscale serve status" lists it). To move this Inbox to a new port instead, ${move}.`,
+        );
+      }
       const doorPort = openDoorListener();
-      const { url } = enableTailscaleServe(doorPort, tailscale, { httpsPort: port.port, ownTargets: port.own ? [port.own] : [], persist: true });
-      writeTailnetDoorRecord(context.dataDir, { https_port: port.port, target: `http://127.0.0.1:${doorPort}` });
+      writeTailnetDoorRecord(context.dataDir, { https_port: port.port, target: `http://127.0.0.1:${doorPort}`, published: true });
+      let url: string;
+      try {
+        ({ url } = enableTailscaleServe(doorPort, tailscale, { httpsPort: port.port, ownTargets: port.own ? [port.own] : [], persist: true }));
+      } catch (error) {
+        if (record) writeTailnetDoorRecord(context.dataDir, record);
+        else clearTailnetDoorRecord(context.dataDir);
+        // Free a moment ago, someone else's now: the race between reading the status and serving.
+        if (error instanceof TailscaleServeError && error.code === "conflict") {
+          throw new DoorPortError("tailnet_port_raced", `Port ${port.port} was just taken by another tailscale serve mapping. Try again.`);
+        }
+        throw error;
+      }
       doorHttpsPort = port.port;
       const served = new URL(url);
       tailnet.address = `${served.hostname}:${served.port || "443"}`;
@@ -1039,7 +1097,7 @@ export function createInboxDevices(context: InboxDevicesContext) {
 
   /** Take this Inbox's own mapping down (the recorded one, never someone else's); the listener closes unless the take-down failed. */
   const unpublish = (): "removed" | "none" | "failed" => {
-    const result = takeDownInboxTailnet(context.dataDir, tailscale);
+    const result = takeDownInboxTailnet(context.dataDir, tailscale, context.registry().tailnet);
     if (result === "failed") return result;
     closeDoorListener();
     hangup(false);
@@ -1052,24 +1110,30 @@ export function createInboxDevices(context: InboxDevicesContext) {
    * At start: the switch was on, so point the mapping at a fresh door
    * listener before anything else uses it. If that fails, a mapping the last
    * run left (a crash, kill -9) is taken down, so it never points at a dead
-   * port for longer than this start.
+   * port for longer than this start. With Phones off and no machine linked,
+   * nothing is published, and such a leftover is taken down too.
    */
   const startTailnet = () => {
-    if (!context.registry().tailnet) return;
+    const kept = context.registry().tailnet;
+    if (!kept) return;
     // Phones off: the door is published only for linked machines.
-    if (!phonesOn && !context.machines?.()?.hasLinks()) return;
+    if (!phonesOn && !context.machines?.()?.hasLinks()) {
+      takeDownInboxTailnet(context.dataDir, tailscale, kept);
+      return;
+    }
     tailnet.on = true;
     if (publish().ok) saveSwitch(true);
-    else takeDownInboxTailnet(context.dataDir, tailscale);
+    else takeDownInboxTailnet(context.dataDir, tailscale, kept);
   };
 
   /**
    * A clean stop (quit, the stop route, a restart to update, which runs this
    * before it starts the new binary) takes the mapping and the door listener
    * down, so nothing is published while the Inbox is stopped. The switch stays
-   * on in inbox.json (with the port, so the next start publishes the same
-   * address when it can); a take-down that failed here keeps its record, so
-   * the next start or `uninstall --purge` does it.
+   * on in inbox.json, and the record keeps the port, so the next start
+   * publishes the same address; a take-down that failed here leaves the
+   * record saying the mapping may exist, so the next start or
+   * `uninstall --purge` does it.
    */
   const stopTailnet = () => {
     if (tailnet.address === null && !doorServer) return;
@@ -1222,6 +1286,8 @@ export function createInboxDevices(context: InboxDevicesContext) {
       return found.deviceId ?? null;
     },
     tailnetAddress: () => tailnet.address,
+    /** Why the door is not published, while it should be (a port held, Tailscale stopped), in the window's words. */
+    tailnetError: () => tailnet.error,
     publishTailnet: (): { ok: true; address: string } | { ok: false; message: string } => {
       if (tailnet.address) return { ok: true, address: tailnet.address };
       const result = publish();

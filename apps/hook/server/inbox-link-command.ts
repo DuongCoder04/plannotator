@@ -57,7 +57,8 @@ function fail(message: string): number {
 }
 
 function describeMachine(machine: Json): string {
-  const state = machine.self ? "this computer" : machine.state === "offline" ? `offline since ${machine.since}${machine.reason ? ` (${machine.reason})` : ""}` : machine.state;
+  // This computer's reason: why its door is not published (its port held by another mapping).
+  const state = machine.self ? `this computer${machine.reason ? ` (${machine.reason})` : ""}` : machine.state === "offline" ? `offline since ${machine.since}${machine.reason ? ` (${machine.reason})` : ""}` : machine.state;
   const way = machine.self ? "" : machine.both_ways ? ", both ways" : ", one way";
   const waiting = machine.waiting ? `, ${machine.waiting} waiting to send` : "";
   return `${machine.name}  ${machine.id}  ${state}${way}${waiting}${machine.address ? `  ${machine.address}` : ""}`;
