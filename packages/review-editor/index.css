@@ -2422,3 +2422,271 @@ diffs-container {
 .review-comment-markdown {
   overflow-wrap: anywhere;
 }
+
+/* =====================================================
+   The code review sidebar (approved design record
+   "review-sidebar-aligned"). Two left edges for the whole panel: containers
+   (row fills, the Go to file field, the pills) on x = 8, content (icons,
+   chevrons, tab text, the sentence, the progress words) on x = 16; labels on
+   x = 34. Numbers in two right-aligned columns ending on the row's right
+   edge. One spacing scale: 12 px between sections, 8 or 4 between related
+   rows, 28 px rows touching. One line: the tabs' track (plus the sticky
+   block's edge while files scroll under it). Selected and pressed states are
+   a quiet grey fill: no coloured bars, no added borders, glows or gradients.
+   Unlayered on purpose: these win over the shared .file-tree-item rules
+   (theme.css) and the Tailwind utilities in the rows.
+   ===================================================== */
+.review-sidebar {
+  --sidebar-fill-faint: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --sidebar-fill: color-mix(in oklab, var(--foreground) 6%, transparent);
+  --sidebar-fill-strong: color-mix(in oklab, var(--foreground) 9%, transparent);
+  --sidebar-line: color-mix(in oklab, var(--foreground) 9%, transparent);
+  --sidebar-text-tertiary: color-mix(in oklab, var(--muted-foreground) 85%, var(--background));
+  background: var(--background);
+  border-right-color: color-mix(in oklab, var(--border) 50%, transparent);
+}
+
+/* The tools and progress rows stuck over the list: a hairline only while
+   files are scrolled under them. */
+.review-sticky-tools {
+  transition: box-shadow 150ms ease-out;
+}
+.review-sticky-tools[data-stuck] {
+  box-shadow: 0 1px 0 var(--sidebar-line);
+}
+/* Keep a row brought into view clear of the sticky block. */
+.review-sidebar :is(.file-tree-item, .review-folder-row, .panel-section-heading) {
+  scroll-margin-top: 64px;
+}
+
+/* File rows: 28 px, touching; the selected row a grey fill. A row with
+   comments or a staged file keeps no tint (its badge and + say it). */
+.review-sidebar .file-tree-item {
+  min-height: 28px;
+  padding-top: 0;
+  padding-bottom: 0;
+  padding-right: 8px;
+  gap: 6px;
+  border-radius: 6px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+.review-sidebar .file-tree-item.has-annotations,
+.review-sidebar .file-tree-item.staged {
+  background: transparent;
+}
+.review-sidebar .file-tree-item:hover {
+  background: var(--sidebar-fill);
+  color: var(--foreground);
+}
+.review-sidebar .file-tree-item.scroll-active {
+  background: color-mix(in oklab, var(--foreground) 3%, transparent);
+}
+.review-sidebar .file-tree-item.active,
+.review-sidebar .file-tree-item.active.has-annotations,
+.review-sidebar .file-tree-item.staged.active {
+  background: var(--sidebar-fill-strong);
+  color: var(--foreground);
+}
+.review-sidebar .file-tree-item.active .stage-plus:not(:hover) {
+  border-color: var(--border);
+}
+.review-sidebar .file-tree-item:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--primary) 70%, transparent);
+  outline-offset: -2px;
+}
+
+/* A file row's lead: [viewed][git add][letter] name [badges]. The room the
+   12 px indent costs comes out of the gaps around the change letter and the
+   comment badge, so names keep their width. */
+.review-file-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.review-change-letter {
+  display: flex;
+  flex-shrink: 0;
+  margin: 0 -2px;
+}
+.review-file-row-main > .truncate ~ * {
+  margin-left: -2px;
+}
+
+/* 24 px targets for the 16 px Viewed and Git add controls (WCAG 2.2): the
+   hit area grows 4 px each way, and 2 px more space keeps the two from
+   overlapping. */
+.review-sidebar .file-tree-item :is([role="checkbox"], .stage-plus) {
+  position: relative;
+}
+.review-sidebar .file-tree-item :is([role="checkbox"], .stage-plus)::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+}
+.review-sidebar .file-tree-item [role="checkbox"] {
+  margin-right: 2px;
+}
+
+/* The +/- number columns (CountColumns). The panel sets the widths from its
+   widest numbers (--count-add-w / --count-del-w). */
+.review-count-columns {
+  display: grid;
+  grid-template-columns:
+    minmax(var(--count-add-w, 3ch), max-content)
+    minmax(var(--count-del-w, 3ch), max-content);
+  column-gap: 4px;
+  justify-items: end;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.review-count-columns[data-count-columns="quiet"],
+.review-count-columns[data-count-columns="quiet"] :is(.additions, .deletions),
+.review-kind-viewed {
+  color: var(--sidebar-text-tertiary);
+}
+.review-kind-viewed {
+  font-size: 11px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+/* All files' "changed on disk" dot on a changed row: just left of the + column,
+   whose width the panel sets. 11 px so `ch` in the widths is the numbers' ch.
+   Without numbers (a narrow panel) it takes their place. */
+.review-on-disk-dot {
+  font-size: 11px;
+  right: calc(8px + var(--count-del-w, 3ch) + 4px + var(--count-add-w, 3ch) + 6px);
+}
+.review-sidebar[data-compact-rows] .review-on-disk-dot {
+  right: 8px;
+}
+/* The name ends before the dot instead of running under it. */
+[data-repo-changed]:has(> .review-on-disk-dot) .review-file-row-main {
+  padding-right: 10px;
+}
+
+/* Folder rows of the Changes tree: the chevron on the content edge, the name
+   on the label edge; tertiary grey, lighter than a group heading. */
+.review-folder-row {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  color: var(--sidebar-text-tertiary);
+  transition: background-color 120ms, color 120ms;
+}
+.review-folder-row:hover {
+  background: var(--sidebar-fill);
+  color: var(--foreground);
+}
+.review-folder-row:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--primary) 70%, transparent);
+  outline-offset: -2px;
+}
+
+/* Group headings (PanelSectionHeader): flush, heavier and darker than
+   folders. The chevron after the label shows on a folded group, on hover and
+   on keyboard focus, and always on touch screens. */
+.panel-section-heading {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+  color: color-mix(in oklab, var(--foreground) 78%, var(--background));
+  transition: background-color 120ms, color 120ms;
+}
+.panel-section-heading:hover {
+  background: var(--sidebar-fill);
+  color: var(--foreground);
+}
+.panel-section-heading:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--primary) 70%, transparent);
+  outline-offset: -2px;
+}
+.panel-heading-icon {
+  width: 12px;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+  color: var(--sidebar-text-tertiary);
+}
+.panel-section-heading:hover .panel-heading-icon {
+  color: var(--muted-foreground);
+}
+.panel-heading-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+}
+.panel-heading-chevron {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  margin-left: -2px;
+  color: var(--sidebar-text-tertiary);
+  opacity: 0;
+  transform: rotate(90deg);
+  transition: opacity 120ms, transform 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+.panel-section-heading[data-collapsed] .panel-heading-chevron {
+  opacity: 1;
+  transform: none;
+}
+.panel-section-heading:is(:hover, :focus-visible) .panel-heading-chevron {
+  opacity: 1;
+  color: var(--muted-foreground);
+}
+@media (hover: none) {
+  .panel-heading-chevron {
+    opacity: 1;
+  }
+}
+
+/* A narrow panel (COMPACT_ROWS_WIDTH): headings, folders and files drop their
+   numbers so names keep the room; All changes keeps its totals, the
+   heading's spoken name keeps its numbers, and the progress line wraps
+   between its parts. */
+.review-sidebar[data-compact-rows] :is(.file-tree-item, .review-folder-row) > .review-count-columns,
+.review-sidebar[data-compact-rows] .panel-section-heading [data-kind-counts],
+.review-sidebar[data-compact-rows] [data-progress-dot] {
+  display: none;
+}
+
+/* Groups: 12 px between them. */
+.review-panel-group + .review-panel-group {
+  margin-top: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .review-sticky-tools,
+  .review-folder-row,
+  .panel-section-heading,
+  .panel-heading-chevron {
+    transition: none;
+  }
+}

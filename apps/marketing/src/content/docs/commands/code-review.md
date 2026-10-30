@@ -254,7 +254,7 @@ content changes under a refresh loses its checkmark, because a check on code
 the agent just rewrote is misleading.
 
 It is on by default, and there are two off switches: **Settings → Review →
-Auto-mark viewed**, and the **Auto-mark viewed** row in the gear popover above
+Auto-mark viewed**, and the **Auto-mark viewed** item in the **…** menu above
 the file list. The first time it fires, a toast points at both.
 
 ### Optional analysis layers
@@ -278,9 +278,11 @@ Call Flow is syntactic and does not resolve types, imports, runtime dispatch, or
 
 ### Panel views
 
-The left panel has three views. **Tree** is the default. The tabs at the top are session-scoped — glancing at another view never changes your saved default (change that in Settings → Review).
+The left panel has three views. **Tree** is the default. At the very top, **Go to file…** opens Go to File (⌘P / Ctrl+P). The view tabs under it are session-scoped — glancing at another view never changes your saved default (change that in Settings → Review). Left and Right arrows move between the tabs; Enter or Space opens one.
 
-Under the tabs, the comparison reads as one sentence, for example **All changes ⌄ since main ⌄**: click the first words to pick which changes are shown, and the branch to pick what they are compared with. A long branch name keeps its start and end; hover it for the full name. Below that, **Changes** and **All files** switch the tree between the files this review changes and every file of the repository, and the search button opens Go to File (⌘P / Ctrl+P). The **All changes** row in the list opens every change of the review in one scrolling view.
+Under the tabs, the comparison reads as one sentence, for example **All changes ⌄ since main ⌄**: click the first words to pick which changes are shown, and the branch to pick what they are compared with. A long branch name keeps its start and end; hover it for the full name. The **All changes** row below opens every change of the review in one scrolling view.
+
+Above the files, a row that stays in view while you scroll holds **Changes** and **All files** (the files this review changes, or every file of the repository), Search in diff, Collapse all, and a **…** menu with Copy all diffs, Auto-mark viewed, Group by kind and the per-file Viewed and Git add buttons. Under it, the progress reads "0 of 12 viewed · 1 staged", with the eye that hides viewed files.
 
 - **Git status** — your changes grouped the way `git status` groups them: **Committed / Changes / Untracked**. Each row shows viewed state, a stage/unstage button, the change-type letter, and +/- counts. Only available with the "All changes" diff.
 - **Tree** (default) — the classic file tree over whichever diff type you've selected.
