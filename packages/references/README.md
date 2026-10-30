@@ -42,6 +42,13 @@ const registry = createReferenceRegistry(
 
 - A host is a bare lowercase hostname: no scheme, port or path. Anything
   else throws a `TypeError` when the adapter is built.
+  `createReferenceAdapters` also throws when a host is named for both
+  forges, or is another provider's host (`github.com`, `gitlab.com`,
+  `linear.app`, or their `www.` forms).
+- `resolve` reads only a ref whose URL is the canonical its grammar mints
+  (matching the URL again gives back the same URL). A hand-made ref, or
+  one on a host the adapter does not serve, answers `not_resolvable` before
+  any credential is asked.
 - A canonical URL keeps the host it was matched on. On `github.com` and
   `gitlab.com`, keys and URLs are the same as before. On another host the
   key starts with `host:` (`github.acme.corp:acme/web#12`), so the same

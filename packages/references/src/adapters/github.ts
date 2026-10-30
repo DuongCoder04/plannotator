@@ -38,7 +38,7 @@ import {
 	type GithubHostsOptions,
 	parseGithubCanonical,
 } from "../grammars/github.ts";
-import { servedHost, type ServedHosts } from "../hosts.ts";
+import { isMintedCanonical, servedHost } from "../hosts.ts";
 import { credentialFor, type ReferencePort } from "../port.ts";
 import { fetchPullDiff, githubPullReads, listPullFiles, readPullSummary } from "./github-pull-diff.ts";
 import {
@@ -97,12 +97,15 @@ function str(value: unknown): string | undefined {
 // ── resolve ─────────────────────────────────────────────────────────────────
 
 async function resolveGithub(
-	served: ServedHosts,
+	grammar: GithubGrammar,
 	ref: ExternalRef,
 	port: ReferencePort,
 ): Promise<ResolveResult> {
+	const served = grammar.served;
 	const parsed = parseGithubCanonical(ref);
-	if (parsed === null) return { ok: false, reason: "not_resolvable" };
+	if (parsed === null || !isMintedCanonical(grammar.match, ref.url)) {
+		return { ok: false, reason: "not_resolvable" };
+	}
 	// The canonical URL's host picks the API and the credential; a ref on a
 	// host this adapter does not serve is never read.
 	const host = servedHost(served, parsed.host);
@@ -209,7 +212,7 @@ function buildGithubAdapter(
 		provider: "github",
 		match: grammar.match,
 		matchCodeLink: grammar.matchCodeLink,
-		resolve: (ref, port) => resolveGithub(grammar.served, ref, port),
+		resolve: (ref, port) => resolveGithub(grammar, ref, port),
 		// The picker reads (github-pulls.ts): the installation's repositories,
 		// and one repository's open pull requests.
 		scopes: picker.scopes,

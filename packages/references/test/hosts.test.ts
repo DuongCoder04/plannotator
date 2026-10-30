@@ -100,6 +100,43 @@ describe("host-aware grammars", () => {
 		expect(registry.matchCodeLinkUrl(new URL(`https://${GLSM}/a/b`))?.provider).toBe("gitlab");
 		expect(matchExternalRef(new URL(`https://${GHES}/a/b/issues/1`))).toBeNull();
 	});
+
+	it("the registry refuses a host named for both forges, or one another provider owns", () => {
+		const cases: Array<[string, Parameters<typeof createReferenceAdapters>[0]]> = [
+			["both forges", { github: { hosts: [GHES] }, gitlab: { hosts: [GHES.toUpperCase()] } }],
+			["gitlab.com as GitHub", { github: { hosts: ["gitlab.com"] } }],
+			["www.gitlab.com as GitHub", { github: { hosts: ["www.gitlab.com"] } }],
+			["github.com as GitLab", { gitlab: { hosts: ["github.com"] } }],
+			["linear.app as GitLab", { gitlab: { hosts: ["linear.app"] } }],
+		];
+		for (const [name, hosts] of cases) {
+			expect(() => createReferenceAdapters(hosts), name).toThrow(TypeError);
+		}
+		// A forge's own www. alias is its public host, not a clash.
+		expect(() => createReferenceAdapters({ github: { hosts: ["www.github.com", GHES] }, gitlab: { hosts: [GLSM] } })).not.toThrow();
+	});
+});
+
+describe("resolve reads only a canonical the grammar mints", () => {
+	it("a hand-made ref whose URL is not its grammar's canonical is not_resolvable, with no credential asked and no fetch", async () => {
+		const gh = fakeProvider();
+		const port = makePort(gh.fetch, async (_provider, host) => ({ kind: "bearer", token: "token-any", host }));
+		const github = createGithubAdapter({ hosts: [GHES] });
+		const gitlab = createGitlabAdapter({ hosts: [GLSM] });
+		const forged: Array<[RefReadAdapter, string]> = [
+			[github, `https://${GHES}/o/r%2F..%2F..%2Fx/issues/1`],
+			[github, `https://${GHES}/o/r/issues/1/../../../x`],
+			[github, `https://${GHES}/o/r/issues/1?x=1`],
+			[gitlab, `https://${GLSM}/g/p%2F..%2Fx/-/issues/1`],
+			[gitlab, `https://${GLSM}/g/p/-/work_items/1`],
+		];
+		for (const [adapter, url] of forged) {
+			const ref: ExternalRef = { provider: adapter.provider, key: "x", url };
+			expect(await adapter.resolve(ref, port), url).toEqual({ ok: false, reason: "not_resolvable" });
+		}
+		expect(port.asked).toEqual([]);
+		expect(gh.calls).toEqual([]);
+	});
 });
 
 describe("GitHub Enterprise reads", () => {

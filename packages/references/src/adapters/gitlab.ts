@@ -32,7 +32,7 @@ import {
 	type GitlabHostsOptions,
 	parseGitlabCanonical,
 } from "../grammars/gitlab.ts";
-import { apiOrigin, readHost, servedHost, type ServedHosts } from "../hosts.ts";
+import { apiOrigin, isMintedCanonical, readHost, servedHost } from "../hosts.ts";
 import {
 	checkListQuery,
 	connectionNames,
@@ -92,12 +92,15 @@ function str(value: unknown): string | undefined {
 // ── resolve ─────────────────────────────────────────────────────────────────
 
 async function resolveGitlab(
-	served: ServedHosts,
+	grammar: GitlabGrammar,
 	ref: ExternalRef,
 	port: ReferencePort,
 ): Promise<ResolveResult> {
+	const served = grammar.served;
 	const parsed = parseGitlabCanonical(ref);
-	if (parsed === null) return { ok: false, reason: "not_resolvable" };
+	if (parsed === null || !isMintedCanonical(grammar.match, ref.url)) {
+		return { ok: false, reason: "not_resolvable" };
+	}
 	// The canonical URL's host picks the API and the credential; a ref on a
 	// host this adapter does not serve is never read.
 	const host = servedHost(served, parsed.host);
@@ -325,7 +328,7 @@ function buildGitlabAdapter(grammar: GitlabGrammar): RefReadAdapter {
 		provider: "gitlab",
 		match: grammar.match,
 		matchCodeLink: grammar.matchCodeLink,
-		resolve: (ref, port) => resolveGitlab(grammar.served, ref, port),
+		resolve: (ref, port) => resolveGitlab(grammar, ref, port),
 		list: (query, port) => listGitlab(grammar, query, port),
 	} satisfies RefReadAdapter;
 }

@@ -20,8 +20,12 @@ import type { CodeLinkProviderId, CodeLinkRef, ExternalRef, ProviderId, RefReadA
 import { createGithubAdapter, githubAdapter } from "./adapters/github.ts";
 import { createGitlabAdapter, gitlabAdapter } from "./adapters/gitlab.ts";
 import { linearAdapter } from "./adapters/linear.ts";
-import type { GithubHostsOptions } from "./grammars/github.ts";
-import type { GitlabHostsOptions } from "./grammars/gitlab.ts";
+import { GITHUB_PUBLIC_HOST, type GithubHostsOptions } from "./grammars/github.ts";
+import { GITLAB_PUBLIC_HOST, type GitlabHostsOptions } from "./grammars/gitlab.ts";
+import { servedHosts } from "./hosts.ts";
+
+/** Linear's one host. */
+const LINEAR_HOST = "linear.app";
 
 /** The three adapters this package carries, in their match order. */
 export const REFERENCE_ADAPTERS: readonly RefReadAdapter[] = [
@@ -37,10 +41,25 @@ export interface ReferenceAdapterHosts {
 }
 
 /** The same three adapters, in the same order, with GitHub Enterprise and
- * self-managed GitLab hosts added. Hosts are disjoint by construction only
- * if the consumer keeps them so: a host named for both forges is claimed by
- * GitHub first. Throws a TypeError for a host that is not a bare hostname. */
+ * self-managed GitLab hosts added. Hosts stay disjoint: throws a TypeError
+ * for a host that is not a bare hostname, a host named for both forges, or
+ * a host another provider owns (github.com, gitlab.com, linear.app and
+ * their `www.` forms). */
 export function createReferenceAdapters(hosts: ReferenceAdapterHosts = {}): readonly RefReadAdapter[] {
+	const github = servedHosts(GITHUB_PUBLIC_HOST, hosts.github?.hosts);
+	const gitlab = servedHosts(GITLAB_PUBLIC_HOST, hosts.gitlab?.hosts);
+	const publicHosts = [GITHUB_PUBLIC_HOST, GITLAB_PUBLIC_HOST, LINEAR_HOST];
+	/** A host another provider's public host (or its `www.` form) is. */
+	const othersPublic = (host: string, own: string) =>
+		publicHosts.some((p) => p !== own && (host === p || host === `www.${p}`));
+	const clash = (host: string) =>
+		new TypeError(`hosts: "${host}" is served by another provider; hosts must be disjoint`);
+	for (const host of github.all) {
+		if (gitlab.all.has(host) || othersPublic(host, GITHUB_PUBLIC_HOST)) throw clash(host);
+	}
+	for (const host of gitlab.all) {
+		if (othersPublic(host, GITLAB_PUBLIC_HOST)) throw clash(host);
+	}
 	return [createGithubAdapter(hosts.github), createGitlabAdapter(hosts.gitlab), linearAdapter];
 }
 

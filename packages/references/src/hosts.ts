@@ -56,6 +56,18 @@ export function hostKey(served: ServedHosts, host: string, key: string): string 
 	return host === served.publicHost ? key : `${host}:${key}`;
 }
 
+/** True when `url` is a canonical the grammar mints: matching it again
+ * gives back the same URL. A resolve reads only such a ref, so a crafted
+ * ref (an encoded `..` in a path segment, say) never reaches an API path
+ * the grammar would not produce. */
+export function isMintedCanonical(match: (url: URL) => { readonly url: string } | null, url: string): boolean {
+	try {
+		return match(new URL(url))?.url === url;
+	} catch {
+		return false;
+	}
+}
+
 /** The providers `apiOrigin` answers for. */
 export type ApiOriginProvider = "github" | "gitlab" | "linear";
 
