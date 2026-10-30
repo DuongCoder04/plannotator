@@ -631,8 +631,21 @@ export function createInboxUpdates(options: InboxUpdatesOptions) {
       if (tickTimer) clearInterval(tickTimer);
       if (fastTimer) clearTimeout(fastTimer);
     },
-    /** Update now: the install script for the newest release, once (update.lock). */
-    updateNow(): ManualUpdateOutcome {
+    /**
+     * Update now: the install script for the newest release, once (update.lock).
+     * With update checks off the known release may be weeks old, so the
+     * person's click asks GitHub once first and installs the newest answer;
+     * when that check fails (offline), the release already known is installed.
+     * With checks on, the cache is at most 10 minutes old and is used as is.
+     */
+    async updateNow(): Promise<ManualUpdateOutcome> {
+      if (release && !checksOn()) {
+        try {
+          await runReleaseCheck({ dataDir: options.dataDir, now, enabled: () => true, force: true, ...sources });
+        } catch {
+          // The known release stands.
+        }
+      }
       const outcome = startManualUpdate({
         currentVersion: release ? options.version : undefined,
         dataDir: options.dataDir,

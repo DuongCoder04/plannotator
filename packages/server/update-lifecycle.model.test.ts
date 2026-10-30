@@ -570,9 +570,17 @@ class ToggleChecks implements Cmd {
 class UpdateNow implements Cmd {
   check = (m: Model) => m.ib.alive && (uiState(m) === "available" || uiState(m) === "failed") && m.latest > m.ib.runs;
   async run(m: Model, r: Real) {
+    // With checks off the click asks GitHub once first (the person's own request).
+    if (!m.checksOn) releaseCheck(m, 10, true);
     const launched = launch(m, m.latest, true);
-    const outcome = r.updates!.updateNow();
-    expect(outcome.outcome).toBe(launched ? "launched" : "locked");
+    r.explicit = true;
+    try {
+      const outcome = await r.updates!.updateNow();
+      expect(outcome.outcome).toBe(launched ? "launched" : "locked");
+      await settle(r);
+    } finally {
+      r.explicit = false;
+    }
   }
   toString = () => "UpdateNow";
 }

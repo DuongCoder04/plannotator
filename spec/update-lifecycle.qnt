@@ -434,11 +434,16 @@ module updateLifecycle {
   action doCheckNow: bool = all { s.ibAlive, s' = (checkNow(s)).with("act", "CheckNow") }
 
   // Update now in the sidebar (inbox-updates.ts:608): pressable when available or failed.
+  // With checks off the click asks GitHub once first (inbox-updates.ts updateNow)
+  // and installs the newest answer; a failed check keeps the release known.
+  pure def updateNowChecked(st: Sys): Sys =
+    val checked = if (st.checksOn) st else releaseCheck(st, CHECK_INTERVAL, true, true)
+    launch(checked, checked.latest, true)
   action doUpdateNow: bool = all {
     s.ibAlive,
     Set("available", "failed").contains(uiState(s)),
     s.latest > s.ibRuns,
-    s' = (launch(s, s.latest, true)).with("act", "UpdateNow"),
+    s' = (updateNowChecked(s)).with("act", "UpdateNow"),
   }
 
   // A review window's Update (auto-update.ts:1243) or `plannotator update`: no UI gate.

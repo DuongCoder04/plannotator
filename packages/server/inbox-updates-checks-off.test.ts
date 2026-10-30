@@ -34,6 +34,7 @@ let saved: { [key: string]: string | undefined };
 let gh: ReturnType<typeof Bun.serve>;
 let latestTag: string;
 let ghRequests: number;
+let ghDown: boolean;
 let tagRequests: string[];
 let launches: InstallerLaunch[];
 const servers: InboxServer[] = [];
@@ -52,6 +53,7 @@ beforeEach(() => {
   process.env.PLANNOTATOR_BROWSER = NO_BROWSER;
   latestTag = "0.28.39";
   ghRequests = 0;
+  ghDown = false;
   tagRequests = [];
   launches = [];
   // The fake GitHub: the "latest release" redirect and the API, counted.
@@ -60,6 +62,7 @@ beforeEach(() => {
     hostname: "127.0.0.1",
     fetch: (req) => {
       ghRequests++;
+      if (ghDown) return new Response("unavailable", { status: 503 });
       if (new URL(req.url).pathname.startsWith("/api/")) return Response.json({ tag_name: `v${latestTag}`, body: "" });
       return new Response(null, { status: 302, headers: { location: `${base()}/backnotprop/plannotator/releases/tag/v${latestTag}` } });
     },
@@ -178,6 +181,30 @@ describe("update checks off (PLANNOTATOR_UPDATE_CHECK=0)", () => {
     expect(ghRequests).toBe(0);
     expect(tagRequests).toEqual([]);
     expect((await post(server, "/api/inbox/update")).status).toBe(200);
+    expect(launches.map((l) => l.version)).toEqual(["v0.28.39"]);
+  });
+
+  test("Update with checks off asks GitHub once first and installs the newest answer, not a weeks-old cached release", async () => {
+    writeUpdateState({ latestRelease: { tag: "0.28.39", fetchedAt: T0 - 30 * 24 * 60 * 60_000 } }, dataDir);
+    latestTag = "0.28.41";
+    const server = await start();
+    expect((await waitFor(() => health(server), (u) => u?.state === "available"))?.version).toBe("0.28.39");
+    expect(ghRequests).toBe(0);
+    const res = await post(server, "/api/inbox/update");
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { version: string }).version).toBe("0.28.41");
+    expect(ghRequests).toBeGreaterThan(0);
+    expect(launches.map((l) => l.version)).toEqual(["v0.28.41"]);
+  });
+
+  test("and when that check fails (offline), Update installs the release already known", async () => {
+    writeUpdateState({ latestRelease: { tag: "0.28.39", fetchedAt: T0 - 30 * 24 * 60 * 60_000 } }, dataDir);
+    ghDown = true;
+    const server = await start();
+    await waitFor(() => health(server), (u) => u?.state === "available");
+    const res = await post(server, "/api/inbox/update");
+    expect(res.status).toBe(200);
+    expect(ghRequests).toBeGreaterThan(0);
     expect(launches.map((l) => l.version)).toEqual(["v0.28.39"]);
   });
 

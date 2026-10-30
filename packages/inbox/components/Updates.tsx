@@ -331,16 +331,19 @@ export function UpdateDialog({ details, update, error, busy, onUpdateNow, onRemi
           <input
             type="checkbox"
             checked={auto.on}
-            disabled={auto.env !== null}
+            // Auto-update needs update checks: with them off it could never act (as Settings → About says).
+            disabled={auto.env !== null || details?.check.on === false}
             onChange={(event) => onAutoUpdate(event.target.checked)}
             data-auto-update-checkbox=""
           />
           <span>
             Install new versions automatically
             <small>
-              {auto.env !== null
-                ? `PLANNOTATOR_AUTO_UPDATE is set in this Inbox's environment, so it is ${auto.env ? 'on' : 'off'}.`
-                : 'At most once a day, never while another review is open. Change it in Settings.'}
+              {details?.check.on === false
+                ? `Needs update checks, which are off${details.check.env === false ? ': this Inbox started with PLANNOTATOR_UPDATE_CHECK=0' : ''}.`
+                : auto.env !== null
+                  ? `PLANNOTATOR_AUTO_UPDATE is set in this Inbox's environment, so it is ${auto.env ? 'on' : 'off'}.`
+                  : 'At most once a day, never while another review is open. Change it in Settings.'}
             </small>
           </span>
         </label>
@@ -824,7 +827,7 @@ export function checksOffWords(details: UpdateDetails | null): ReactNode {
         Update checks are off: this Inbox started with <code>PLANNOTATOR_UPDATE_CHECK=0</code>. Restart it without that to turn them back on.
       </>
     );
-  return 'Update checks are off. Turn them back on in Settings → About.';
+  return 'Update checks are off. Turn on "Tell me when a new version is out" in Settings → About to check again.';
 }
 
 /**
