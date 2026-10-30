@@ -204,6 +204,7 @@ import type { GoalSetupBundle } from '@plannotator/shared/goal-setup';
 import type { AIContext } from '@plannotator/core/ai-context';
 import type { CommentAskAIContext } from '@plannotator/ui/components/CommentPopover';
 import {
+  basenameFromPath,
   hasSourceSaveConflictSnapshot,
   isSourceSaveFilePath,
   type SourceSaveCapability,
@@ -2288,7 +2289,7 @@ const App: React.FC = () => {
     if (bundleIndex >= 0) return null;
     const root = bundleBackPath ?? sourceFilePath;
     if (!root) return 'Back';
-    return `Back to ${root.split('/').pop() || root}`;
+    return `Back to ${basenameFromPath(root)}`;
   }, [isHtmlSurface, linkedDocHook.isActive, sourceFilePath, bundleIndex, bundleBackPath]);
 
   // Wrap linked doc back to also clear file browser active file
