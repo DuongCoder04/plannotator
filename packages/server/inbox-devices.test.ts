@@ -941,20 +941,27 @@ describe("the device door, in process", () => {
       await Bun.sleep(150);
       expect(atRestart).toBeUndefined();
 
-      // After a crash (kill -9): the mapping still points at the dead run's door listener.
+      // The mapping the Inbox made is recorded: port and target. A clean stop removes the mapping and the record.
+      const recordFile = join(dataDir, "inbox", "tailnet-door.json");
       const crashed = await startInboxServer({ dataDir, binaryPath: null, phones: true, tailscale });
       const deadDoor = serve.get(8443)!;
+      const record = readFileSync(recordFile, "utf8");
+      expect(JSON.parse(record)).toEqual({ v: 1, https_port: 8443, target: deadDoor });
       crashed.stop();
+      expect(existsSync(recordFile)).toBe(false);
+      // After a crash (kill -9) both stay: the mapping still points at the dead run's door listener.
       serve.set(8443, deadDoor);
+      writeFileSync(recordFile, record);
       // The next start that cannot publish takes that leftover down rather than leave it.
       down.serve = true;
       const unpublished = await startInboxServer({ dataDir, binaryPath: null, phones: true, tailscale });
       expect(serve.has(8443)).toBe(false);
+      expect(existsSync(recordFile)).toBe(false);
       unpublished.stop();
       down.serve = false;
-      // With the Inbox stopped, uninstall --purge's take-down finds it by door_port.
-      const leftover = `http://127.0.0.1:${JSON.parse(readFileSync(join(dataDir, "inbox", "inbox.json"), "utf8")).tailnet.door_port}`;
-      serve.set(8443, leftover);
+      // With the Inbox stopped, uninstall --purge's take-down finds it by its record.
+      serve.set(8443, deadDoor);
+      writeFileSync(recordFile, record);
       expect(takeDownInboxTailnet(dataDir, tailscale)).toBe("removed");
       expect(serve.has(8443)).toBe(false);
       expect(takeDownInboxTailnet(dataDir, tailscale)).toBe("none");

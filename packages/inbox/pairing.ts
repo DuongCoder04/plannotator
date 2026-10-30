@@ -101,9 +101,13 @@ export function tailscaleCheckLines(checks: PairingChecks['tailscale']): CheckLi
           text: 'HTTPS certificates are off for your tailnet.',
           fix: 'Turn on HTTPS Certificates in the Tailscale admin console (DNS), then Check again.',
         });
-      if (checks.port_free === true) lines.push({ status: 'ok', text: 'Port 8443 is free for the Inbox' });
+      if (checks.port_free === true) lines.push({ status: 'ok', text: `Port ${checks.https_port ?? 8443} is free for the Inbox` });
       else if (checks.port_free === false)
-        lines.push({ status: 'fail', text: 'Another tailscale serve mapping uses port 8443.', fix: 'Remove it with "tailscale serve --https=8443 off" if nothing needs it.' });
+        lines.push({
+          status: 'fail',
+          text: 'Other tailscale serve mappings use every port the Inbox can take (8443 to 8450).',
+          fix: 'Remove one with "tailscale serve --https=8443 off" if nothing needs it.',
+        });
       return lines;
     }
   }
