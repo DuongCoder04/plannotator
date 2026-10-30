@@ -26,7 +26,7 @@
  *     contact.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -622,6 +622,43 @@ describe("the tailnet door with Phones off, in process", () => {
       expect(await fetch(`${doorUrl}/api/inbox/device/health`).then(() => "open", () => "closed")).toBe("closed");
     } finally {
       inbox.stop();
+    }
+  }, 60_000);
+
+  test("a far answer with a permissive CSP still carries sandbox here: the far directives are kept, sandbox is added", async () => {
+    const dataDir = scratch("plannotator-machines-csp-");
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+    // A linked peer (old, buggy or hostile) that serves an SVG under `default-src *` and no sandbox.
+    const peer = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      fetch(req) {
+        const route = new URL(req.url).pathname.replace("/api/inbox/device/", "");
+        if (route === "health") return Response.json({ ok: true, inbox_id: OTHER, machine_links: 1, version: "peer" });
+        if (route === "events") return new Response(new ReadableStream({ start: (c) => c.enqueue(new TextEncoder().encode(`event: hello\ndata: {"cursor":0}\n\n`)) }), { headers: { "Content-Type": "text/event-stream" } });
+        if (route === "threads") return Response.json({ cursor: 0, sections: [], projects: [] });
+        if (route === "attachments/att_x/image") return new Response(svg, { headers: { "Content-Type": "image/svg+xml", "Content-Security-Policy": "default-src *" } });
+        if (route === "attachments/att_y/image") return new Response(svg, { headers: { "Content-Type": "image/svg+xml", "Content-Security-Policy": "default-src 'none'; sandbox allow-scripts" } });
+        return Response.json({ code: "device_route_not_found" }, { status: 404 });
+      },
+    });
+    const link = { id: OTHER, name: "Mini", token: "tok_x", transport: { kind: "tailnet", url: `http://127.0.0.1:${peer.port}` }, device_id: null, linked_at: "2026-10-30T00:00:00Z" };
+    mkdirSync(join(dataDir, "inbox"), { recursive: true });
+    writeFileSync(join(dataDir, "inbox", "machines.json"), JSON.stringify({ v: 1, self: { id: "ibx_01K00000000000000000000001" }, links: [link] }), { mode: 0o600 });
+    const inbox = await startInboxServer({ dataDir, binaryPath: null, phones: false, tailscale: scriptedTailscale().run });
+    try {
+      const forwarded = await fetch(`http://127.0.0.1:${inbox.port}/api/inbox/m/${OTHER}/attachments/att_x/image`);
+      expect(forwarded.status).toBe(200);
+      expect(await forwarded.text()).toBe(svg);
+      expect(forwarded.headers.get("content-security-policy")).toBe("default-src *; sandbox");
+      // A far CSP that already sandboxes is kept as it is.
+      const kept = await fetch(`http://127.0.0.1:${inbox.port}/api/inbox/m/${OTHER}/attachments/att_y/image`);
+      expect(kept.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox allow-scripts");
+      await kept.arrayBuffer();
+    } finally {
+      inbox.stop();
+      peer.stop(true);
     }
   }, 60_000);
 

@@ -141,13 +141,17 @@ const PASS_RESPONSE = [
 ];
 
 /**
- * The far door's answer as the window gets it, from this Inbox's origin: its
- * own CSP when it sent one, else `sandbox`, so nothing another machine serves
- * (an SVG, an HTML asset, an older Inbox's answer) can run script here.
+ * The far door's answer as the window gets it, from this Inbox's origin. Its
+ * CSP always holds `sandbox`: the far CSP's directives are kept, and
+ * `sandbox` is added when it lacks one, so nothing another machine serves (an
+ * SVG, an HTML asset, an older, buggy or hostile Inbox's answer with a
+ * permissive CSP) can run script here.
  */
 function passAnswer(response: Response): Response {
   const headers = pick(response.headers, PASS_RESPONSE);
-  if (!headers["content-security-policy"]) headers["content-security-policy"] = "sandbox";
+  const csp = headers["content-security-policy"]?.trim() ?? "";
+  const directives = csp.split(";").map((d) => d.trim().split(/\s+/)[0]!.toLowerCase());
+  if (!directives.includes("sandbox")) headers["content-security-policy"] = csp ? `${csp.replace(/;\s*$/, "")}; sandbox` : "sandbox";
   if (!headers["x-content-type-options"]) headers["x-content-type-options"] = "nosniff";
   return new Response(response.body, { status: response.status, headers });
 }
