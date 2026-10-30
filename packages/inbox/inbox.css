@@ -2629,6 +2629,11 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
    16 px, so iOS never zooms the page when one takes focus. */
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
   .pn-inbox { height: var(--ib-vvh, 100%); background: var(--card); -webkit-tap-highlight-color: transparent; }
+  /* The page canvas: Safari paints it past the visual viewport, under its bars and between the window and the
+     keyboard (iOS 26: about 100 px above the keyboard's ˄ ˅ ✓ bar, the owner's probe). The surface that meets the
+     keyboard is the card (the reply foot, the compose and search sheets), so the canvas is the card too, and no
+     dark band shows there. theme.css's `body` paints --background; the desktop keeps it. */
+  html:has(.pn-inbox), body:has(.pn-inbox) { background-color: var(--card); }
   .ib-main { padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left); gap: 0; position: relative; overflow: hidden; }
   /* One screen at a time: the pane is the screen, edge to edge, with no card around it. */
   .ib-main > :is(.ib-listcol, .ib-pane, .ib-view, .ib-spage, .ib-dpage, .ib-wn, .ib-bpage) { border-radius: 0; box-shadow: none; }
