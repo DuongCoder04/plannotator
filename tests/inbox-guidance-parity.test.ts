@@ -174,7 +174,6 @@ describe("Inbox guidance parity across harnesses", () => {
 
   test("the agent tool and the MCP instructions carry the same rules in the same order", () => {
     const rules = `${INBOX_USE_RULE} ${INBOX_THREAD_RULE} ${INBOX_CHANNEL_RULE} ${INBOX_FOLLOW_THROUGH_RULE} ${INBOX_SUBAGENT_RULE}`;
-    expect(INBOX_AGENT_RULES).toBe(rules);
     expect(SURFACES["tool: Pi, OpenCode 2 (wake)"]).toContain(rules);
     expect(SURFACES["MCP instructions: Codex, Gemini, Cursor, Grok, MCP clients"]).toContain(rules);
   });

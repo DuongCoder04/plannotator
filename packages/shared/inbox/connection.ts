@@ -321,11 +321,11 @@ export const INBOX_AGENT_RULES = `${INBOX_USE_RULE} ${INBOX_THREAD_RULE} ${INBOX
 /**
  * What the agent tool says, before the per-action lines. Fixed text. Room for
  * INBOX_THREAD_RULE under Claude Code's 2,048 characters came from this first
- * sentence's ", without blocking this session" (the rules already say go on
- * with other work, the wake note to keep working) and get_guide_brief's lead.
+ * sentence's ", without blocking this session", restored in shorter form as
+ * "nothing blocks" by shortening the help line, and from get_guide_brief's lead.
  */
 export const INBOX_TOOL_LEAD =
-  `The Plannotator Inbox on this machine: message the person and get their answer later. ${INBOX_AGENT_RULES} Set \`action\` to a tool below, with its fields.`
+  `The Plannotator Inbox on this machine: message the person, get their answer later; nothing blocks. ${INBOX_AGENT_RULES} Set \`action\` to a tool below, with its fields.`
 
 /**
  * Fixed text: how a reply comes back. The connection delivers the person's
@@ -342,7 +342,7 @@ export const INBOX_TOOL_WAKE_NOTE =
  * examples), so an agent that needs more reads it once instead of every
  * request carrying it.
  */
-export const INBOX_TOOL_HELP_NOTE = "Every field and the full question syntax: `plannotator inbox --help`."
+export const INBOX_TOOL_HELP_NOTE = "Every field and question syntax: `plannotator inbox --help`."
 
 /**
  * Fixed text, one line: the agent tool's description carries it while the
