@@ -9,7 +9,7 @@ import { agentName, formatCount, shortTime, waitCount } from '../format';
 import { reaskRowLine, sentRowLine, undeliveredLabel } from '../deliveryLine';
 import { sentRecipientsWords } from '../tags';
 import { TagStack } from './TagPicker';
-import { Tip } from './Tip';
+import { ProjectTipText, Tip } from './Tip';
 import { AuthorMark, Icon } from '../icons';
 import { ListColumnEdge } from '../shell/ListColumnEdge';
 import { SidebarTrigger, useSidebar } from '../shell/sidebar';
@@ -31,7 +31,7 @@ import { listMoveIndex, listStops, LIST_STOPS, type ListMove } from '../listKeys
 
 export interface InboxListProps {
   title: string;
-  /** The project's folder, `~/src/billing-svc`, when one project is shown. */
+  /** The project's folder, `~/src/billing-svc`, when one project is shown: in the title's tooltip, never drawn in the header. */
   path: string | null;
   sections: readonly InboxListSection[];
   /** One project is shown: its rows drop the project label. */
@@ -764,8 +764,8 @@ export function InboxList(props: InboxListProps) {
         <SidebarTrigger />
         {props.onRefresh ? (
           <h1 dir="auto" className="ib-lhead-h">
-            {/* The full name in the tooltip too, for a project name the header cuts. */}
-            <Tip content={props.title === 'Inbox' ? 'Refresh' : `Refresh ${props.title}`}>
+            {/* The full name in the tooltip too, for a project name the header cuts; a project's folder is there as well, never beside the name. */}
+            <Tip content={props.path ? <ProjectTipText name={`Refresh ${props.title}`} root={props.path} /> : props.title === 'Inbox' ? 'Refresh' : `Refresh ${props.title}`}>
               <button
                 type="button"
                 className="ib-lhead-title"
@@ -780,7 +780,7 @@ export function InboxList(props: InboxListProps) {
             </Tip>
           </h1>
         ) : (
-          <Tip content={props.title} cut>
+          <Tip content={props.path ? <ProjectTipText name={props.title} root={props.path} /> : props.title} cut={!props.path}>
             <h1 dir="auto">{props.title}</h1>
           </Tip>
         )}
@@ -789,11 +789,6 @@ export function InboxList(props: InboxListProps) {
           <span id={refreshHintId} hidden>
             Refresh the list
           </span>
-        )}
-        {props.path && (
-          <Tip content={props.path} cut>
-            <span className="ib-path">{props.path}</span>
-          </Tip>
         )}
         {/* Search shows where New message does: a phone always, a wider window only while the main sidebar (which holds its own Search) is closed. */}
         {props.onSearch && headerCompose && (
