@@ -460,9 +460,15 @@ test.skipIf(!hasDom)('a rail that never draws leaves the Contents button and she
   await renderPane(PLAN);
   await layOutPage(1000, 820);
   expect(railOf()).toBeNull();
+  // While the rail may still be on its way, no stand-in flashes.
+  expect(host!.querySelector('[data-contents-open], [data-contents-show]')).toBeNull();
+  // Past the rail's wait (its 2 s idle cap and a measure): the button and the sheet.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 2_600));
+  });
   click(host!.querySelector('[data-contents-open]'));
   expect(entries(document.querySelector('[data-contents="sheet"]'))).toEqual(HEADINGS);
-});
+}, 10_000);
 
 test.skipIf(!hasDom)('Hide and Show move focus to the control that takes their place', async () => {
   await renderPane(PLAN, { full: true });

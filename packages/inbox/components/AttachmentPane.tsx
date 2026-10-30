@@ -137,6 +137,9 @@ const TOOLS_CHORD = inboxFileViewerShortcuts.shortcuts.toggleTools.bindings[0]!;
  */
 const CLOSING_COMPOSERS = '[data-comment-popover], [data-diagram-composer], [data-annotation-id], [data-code-annotation-id]';
 
+/** How long the contents rail may take to load (its idle wait is 2 s at most) and measure before the Contents button stands in. */
+const RAIL_WAIT_MS = 2500;
+
 /** Drafts that close themselves on this same Escape (their own window listener): the selection toolbar, the quick-label picker. */
 const SELF_CLOSING_DRAFTS = '[data-pn-annotation-toolbar-row], [data-quick-label-picker]';
 
@@ -1302,31 +1305,55 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const [contentsShown, setContentsShown] = useContentsShown();
   const hasContents = view !== null && kind === 'markdown' && showsContents(documentBlocks);
   const docKey = `${attachment.id}:${view?.version ?? ''}:${view?.attachment.current?.sha256 ?? ''}`;
-  // What the rail last said about this document (null: not measured yet). Until it says it fits, the Contents
-  // button and sheet stand in for it, so a rail that never loads still leaves a way to Contents.
+  // What the rail last said about this document (null: not measured yet).
   const [railFit, setRailFit] = useState<{ key: string; fits: boolean } | null>(null);
   const railFits = railFit?.key === docKey ? railFit.fits : null;
-  const contentsButton: ContentsButtonMode | null = !hasContents
-    ? null
-    : phone || railFits !== true
-      ? 'sheet'
-      : !contentsShown
-        ? 'show'
-        : null;
   // Side by side on a laptop (owner's pick, 2026-10-30): the page's column keeps its left edge and gives up just
   // enough on its right for the rail's 68 px gutter (inbox.css `data-contents-gutter`), so the rail shows beside
   // it. Only for a file with a rail that is not hidden, and only where the rail can show at all (a page at least
-  // 480 px wide, its own rule); elsewhere the column is today's and the Contents button stands in.
+  // 480 px wide, its own rule, measured on the same box: the scroll element's border box); elsewhere the column
+  // is today's. So in Side by side the layout, not the rail's last measure, says whether the rail fits: a hidden
+  // rail measures a column without the gutter.
   const [docWidth, setDocWidth] = useState(0);
   useLayoutEffect(() => {
     if (!scrollViewport) return;
-    const measure = () => setDocWidth(scrollViewport.clientWidth);
+    const measure = () => setDocWidth(scrollViewport.getBoundingClientRect().width);
     measure();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
     observer?.observe(scrollViewport);
     return () => observer?.disconnect();
   }, [scrollViewport]);
-  const railGutter = hasContents && !full && !phone && contentsShown && docWidth >= RAIL_MIN_PAGE_WIDTH;
+  const sideFits = !full && !phone && docWidth >= RAIL_MIN_PAGE_WIDTH;
+  const railGutter = hasContents && sideFits && contentsShown;
+  // The rail loads once the page is idle (2 s at most) and then measures. While it may still be on its way no
+  // stand-in shows (no button flashes before the rail); past that, a rail that never drew leaves the Contents
+  // button and sheet. The wait starts again for each file and each Hide or Show.
+  const railWaitKey = `${docKey}:${contentsShown}`;
+  const [railWaited, setRailWaited] = useState<string | null>(null);
+  useEffect(() => {
+    if (!hasContents || phone) return;
+    const timer = setTimeout(() => setRailWaited(railWaitKey), RAIL_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [hasContents, phone, railWaitKey]);
+  const waited = railWaited === railWaitKey;
+  // The Contents button over the file (ContentsPanel.tsx): on a phone, the sheet; hidden, Show wherever the rail
+  // would fit (Side by side by its layout, Full screen by the rail's measure), else the sheet; shown, nothing while
+  // the rail is there or on its way, and the sheet where it does not fit or never drew.
+  const contentsButton: ContentsButtonMode | null = !hasContents
+    ? null
+    : phone
+      ? 'sheet'
+      : !contentsShown
+        ? sideFits || railFits === true
+          ? 'show'
+          : railFits === false || waited
+            ? 'sheet'
+            : null
+        : railFits === true
+          ? null
+          : (railFits === false && !sideFits) || waited
+            ? 'sheet'
+            : null;
   // Hide and Show remove the control that has focus: focus moves to the one that takes its place (the Show
   // button; the rail's current tick).
   const contentsFocusRef = useRef<'show' | 'rail' | null>(null);
@@ -1338,17 +1365,23 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     contentsFocusRef.current = 'rail';
     setContentsShown(true);
   }, [setContentsShown]);
+  // The request waits until its target has drawn: Side by side, a shown rail measures again (the gutter is back)
+  // before its ticks draw. A new file drops it.
+  useEffect(() => {
+    contentsFocusRef.current = null;
+  }, [docKey]);
   useEffect(() => {
     const want = contentsFocusRef.current;
     if (want === null) return;
-    contentsFocusRef.current = null;
     const area = docAreaRef.current;
     const target =
       want === 'show'
         ? area?.querySelector<HTMLElement>('[data-contents-show]')
         : area?.querySelector<HTMLElement>('.pn-contents-rail [data-contents-index][tabindex="0"]');
-    target?.focus({ preventScroll: true });
-  }, [contentsShown]);
+    if (!target) return;
+    contentsFocusRef.current = null;
+    target.focus({ preventScroll: true });
+  }, [contentsShown, railFits, contentsButton]);
   const refRepo = useRefRepo(props.repo);
   const wrapCode = useMemo(() => view !== null && isCode && hasLineLongerThan(view.text, CODE_WRAP_LINE_CHARS), [view, isCode]);
   // Code comments drawn under their lines; one whose lines no longer read as they did is unanchored, and so is a text

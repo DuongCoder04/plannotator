@@ -1635,7 +1635,8 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .ib-docscroll:has([data-popout]) { z-index: 7; }
 /* The file area is a stacking context of its own in Side by side too (fold, full screen and phones set their
    own below), so the contents rail (z 20 inside it) stays under the pane's stepping bar and its list. While a
-   popout is open the area rises with it, above the bar, and the rail is hidden: the popout is modal. */
+   popout is open the rail is hidden, in every layout; in Side by side only, the area also rises with the popout
+   above the bar (fold's and full screen's own rules below keep their area at z 0, as before). */
 .ib-view .ib-docarea { isolation: isolate; z-index: 0; }
 .ib-view .ib-docarea:has([data-popout]) { z-index: 7; }
 .ib-docarea:has([data-popout]) .pn-contents-rail { visibility: hidden; }

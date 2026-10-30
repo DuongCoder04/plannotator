@@ -7,7 +7,9 @@
  * heading picked there scrolls the document to it and is the one marked.
  * Side by side on a laptop (1440, 1512) the page's column keeps its left edge
  * and narrows on its right so the rail fits beside it (the owner's pick); a
- * file without a rail keeps today's column. Where the page is too narrow even
+ * file without a rail keeps today's column. Hide leaves Show (focused) and
+ * Show brings the rail back (its current tick focused), across a reload too.
+ * Where the gutter is too short even
  * so, the rail yields and the Contents button opens the rail's headings as a
  * sheet. On a phone the button and sheet: opened
  * mid-document it marks the section being read, its rows are 44 px touch
@@ -218,6 +220,41 @@ for (const [width, height, scheme] of [[1440, 900, 'light'], [1440, 900, 'dark']
     }, scheme);
   });
 }
+
+test('side by side at 1440: Hide then Show, focus following each; reloaded with the rail hidden, Show is offered and works', async ({ browser }) => {
+  await withPlan(browser, { width: 1440, height: 900 }, 'side', async (page, pane) => {
+    const { rail, ticks } = await railParts(pane);
+    const show = pane.locator('[data-contents-show]');
+    await ticks.first().click();
+    await expect(rail).toHaveAttribute('data-revealed', '');
+    await rail.locator('[data-contents-hide]').focus();
+    await page.keyboard.press('Enter');
+    await expect(rail).toHaveCount(0);
+    // The column widens back without the gutter; Show stays, with focus, and no sheet button replaces it.
+    await page.waitForTimeout(500);
+    await expect(show).toBeVisible();
+    await expect(show).toBeFocused();
+    await expect(pane.locator('[data-contents-open]')).toHaveCount(0);
+
+    await page.keyboard.press('Enter');
+    await expect(rail).toBeVisible();
+    await expect(rail.locator('[data-contents-index][aria-current="location"]')).toBeFocused();
+    await expect(show).toHaveCount(0);
+
+    // Hidden again, then a reload: the choice is remembered, Show is offered (not the sheet) and works.
+    await rail.locator('[data-contents-index]').first().click();
+    await rail.locator('[data-contents-hide]').click();
+    await expect(show).toBeVisible();
+    await page.reload();
+    await expect(pane.locator('[data-doc-text-root]')).toContainText('Refund worker plan');
+    await page.waitForTimeout(500);
+    await expect(show).toBeVisible();
+    await expect(pane.locator('[data-contents-open], nav[aria-label="Document contents"]')).toHaveCount(0);
+    await show.click();
+    await expect(rail).toBeVisible();
+    await expect(rail.locator('[data-contents-index][aria-current="location"]')).toBeFocused();
+  });
+});
 
 test('side by side at 1440: a file without a rail keeps today\'s column', async ({ browser }) => {
   const short = '# Refund worker plan\n\nMove refunds to a background worker.\n\n## Context\n\nInline today.\n\n## Design\n\nA worker.\n';
