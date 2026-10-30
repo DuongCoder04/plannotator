@@ -24,7 +24,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { INBOX_TOOL_BOARD_OFF_NOTE, inboxAgentTool, inboxToolCall, parseInboxToolList } from "@plannotator/shared/inbox/connection";
+import { INBOX_AGENT_RULES, INBOX_TOOL_BOARD_OFF_NOTE, inboxAgentTool, inboxToolCall, parseInboxToolList } from "@plannotator/shared/inbox/connection";
 import { inboxAgentTool as modAgentTool } from "../../apps/hook/hooks/mod/inbox-contract";
 import { startInboxServer, type InboxServer } from "./inbox";
 import { INBOX_BOARD_OFF_TEXT } from "./inbox-mcp";
@@ -120,6 +120,8 @@ test("off → on → off → on: the next tools/list follows; a session's cached
   expect((cached.inputSchema.properties as Record<string, { enum?: string[] }>).action!.enum).toContain("card");
   // On, the card action's own line says it: no Board-off line.
   expect(cached.description).not.toContain(INBOX_TOOL_BOARD_OFF_NOTE);
+  // With the card action's line, still every rule (the work-stream one too) inside Claude Code's 2,048 characters.
+  expect(cached.description).toContain(INBOX_AGENT_RULES);
   expect(cached.description.length).toBeLessThan(2048);
 
   // on → off: every card kept, the tool gone from the next list, the cached call refused, nothing written.

@@ -67,14 +67,16 @@ import {
  * window and where a question's recommendation goes (v2, never released, had
  * those two lines after v1's). v4 (2026-10-27): v3 plus the follow-through
  * line (INBOX_FOLLOW_THROUGH_RULE) after the reply line; v3 shipped in
- * 0.28.34 and is on users' disks. An earlier block Plannotator wrote is brought
+ * 0.28.34 and is on users' disks. v5 (2026-10-29): v4 plus the work-stream
+ * line (INBOX_THREAD_RULE) after the follow-through line; v4 shipped in
+ * 0.28.36 and is on users' disks. An earlier block Plannotator wrote is brought
  * up to date at the Inbox's next start (refreshInboxNotes) or when the note
  * is added again (`--notes`, the Settings switch); a block the person edited
  * never is. Every version's text is frozen as literals and its block's hash
  * pinned (inbox-agent-notes-refresh.test.ts): a released note's bytes never
  * change without a new version, or the notes on disk would read as edited.
  */
-export const INBOX_NOTE_VERSION = 4;
+export const INBOX_NOTE_VERSION = 5;
 const noteStart = (version: number) =>
   `<!-- plannotator-inbox:start v${version} · added by Plannotator. Remove it in the Inbox's Settings or with \`plannotator uninstall\` -->`;
 export const INBOX_NOTE_START = noteStart(INBOX_NOTE_VERSION);
@@ -108,6 +110,19 @@ const INBOX_NOTE_BODY_V3 = [
   'In a `:::question` block, put your recommendation on its own line after the choices as `Recommended: <label>`; never write "(recommended)" in a choice label.',
 ].join("\n");
 
+/** v4's body, exactly as 0.28.36 through 0.28.38 wrote it (on users' disks; frozen as literals so such a block still reads as Plannotator's own). */
+const INBOX_NOTE_BODY_V4 = [
+  "## Plannotator Inbox",
+  "",
+  "The person keeps a Plannotator Inbox on this computer: a window where they read what agents send and answer when they can.",
+  "If you have a `plannotator_inbox` tool or a `plannotator-inbox` MCP server, use its `send_message` to ask a decision only they can make (as a `:::question` block) or to hand over finished long work (put the files to read in `attachments`). Then keep working.",
+  "Their reply comes back to this session by itself where your agent supports that; otherwise call `wait_for_reply`.",
+  "Be proactive about Inbox updates and about replying to the person through the Inbox when you think they would want you to. Don't withhold important updates or decisions, and don't batch updates to send later: proactivity is better than procrastination.",
+  "A decision you sent to the Inbox stays there. When the person writes in this chat, say what is waiting there (a short summary and the thread's link), but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar): that blocks the chat and splits the answer. Ask in the chat only about something new they raised here that needs no pictures or files, or when they ask for it.",
+  "Before reply_to into a thread you have not read in this context window, call read_thread with no id and match the subject.",
+  'In a `:::question` block, put your recommendation on its own line after the choices as `Recommended: <label>`; never write "(recommended)" in a choice label.',
+].join("\n");
+
 /**
  * The note (DESIGN.md section 2.3): true with or without the tool, so a
  * session without it is not misled. Loaded in every session of the agent, so
@@ -116,6 +131,8 @@ const INBOX_NOTE_BODY_V3 = [
  * there, the chat only says what waits. v4 (the owner, 2026-10-27): be
  * proactive in the Inbox, the one wording of INBOX_FOLLOW_THROUGH_RULE
  * (kept a literal here; tests/inbox-guidance-parity.test.ts holds it equal).
+ * v5 (the owner, 2026-10-29): one thread per work stream, the one wording of
+ * INBOX_THREAD_RULE (a literal too, held equal by the same test).
  */
 export const INBOX_NOTE_BODY = [
   "## Plannotator Inbox",
@@ -124,6 +141,7 @@ export const INBOX_NOTE_BODY = [
   "If you have a `plannotator_inbox` tool or a `plannotator-inbox` MCP server, use its `send_message` to ask a decision only they can make (as a `:::question` block) or to hand over finished long work (put the files to read in `attachments`). Then keep working.",
   "Their reply comes back to this session by itself where your agent supports that; otherwise call `wait_for_reply`.",
   "Be proactive about Inbox updates and about replying to the person through the Inbox when you think they would want you to. Don't withhold important updates or decisions, and don't batch updates to send later: proactivity is better than procrastination.",
+  "One thread per work stream, unless the person says otherwise.",
   "A decision you sent to the Inbox stays there. When the person writes in this chat, say what is waiting there (a short summary and the thread's link), but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar): that blocks the chat and splits the answer. Ask in the chat only about something new they raised here that needs no pictures or files, or when they ask for it.",
   "Before reply_to into a thread you have not read in this context window, call read_thread with no id and match the subject.",
   'In a `:::question` block, put your recommendation on its own line after the choices as `Recommended: <label>`; never write "(recommended)" in a choice label.',
@@ -139,6 +157,7 @@ export const INBOX_NOTE_EARLIER_BLOCKS: readonly string[] = [
   `${noteStart(1)}\n${INBOX_NOTE_BODY_V1}\n${INBOX_NOTE_END}`,
   `${noteStart(2)}\n${INBOX_NOTE_BODY_V2}\n${INBOX_NOTE_END}`,
   `${noteStart(3)}\n${INBOX_NOTE_BODY_V3}\n${INBOX_NOTE_END}`,
+  `${noteStart(4)}\n${INBOX_NOTE_BODY_V4}\n${INBOX_NOTE_END}`,
 ];
 
 export const INBOX_AGENT_NOTES_FILE = "agent-notes.json";
