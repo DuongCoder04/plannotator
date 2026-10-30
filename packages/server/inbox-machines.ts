@@ -38,6 +38,14 @@ import { checkTailnetAddress } from "./inbox-transport-tailnet";
 export const MACHINE_WRITE_WAIT_MS = 4_000;
 /** How long Unlink waits for the other machine to hear it before it unlinks here anyway (the other side learns at its next contact). */
 const UNLINK_TELL_MS = 5_000;
+/**
+ * The other machine's `unlink` arrives on this Inbox's tailnet door. When it
+ * was the last link, that door comes down, but only this long after the
+ * answer left: closing the listener (and taking the serve mapping down)
+ * under the request would cut the answer, and the other side would report
+ * this machine as not reached.
+ */
+const UNLINKED_DOOR_CLOSE_MS = 1_000;
 const PAIR_MS = 15_000;
 /** A file sent to another machine: the time until its answer's headers (the upload itself). */
 const UPLOAD_MS = 10 * 60_000;
@@ -172,6 +180,8 @@ export function createInboxMachines(context: InboxMachinesContext) {
   const listeners = new Set<(frame: MachineFrame) => void>();
   /** An offer that published the door: the door comes down when it expires unused. */
   let offerTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The door's close after the other machine's `unlink` was answered (UNLINKED_DOOR_CLOSE_MS). */
+  let doorCloseTimer: ReturnType<typeof setTimeout> | null = null;
   let lastMachines = "";
   const startedAt = new Date().toISOString();
   const json = context.json;
@@ -252,16 +262,27 @@ export function createInboxMachines(context: InboxMachinesContext) {
    * Rules 4 and 13, this side: the link goes, the other machine's device on
    * this door goes, and every write held for it ends with its notice.
    */
-  const forget = (id: string): InboxLinkRecord | null => {
+  const forget = (id: string, closeDoor: "now" | "after_answer" = "now"): InboxLinkRecord | null => {
     peers.get(id)?.stop();
     peers.delete(id);
     const link = links.remove(id);
     if (link?.device_id) context.door.revokeDevice(link.device_id);
     outbox.dropMachine(id);
     // The last link gone: with Phones off the tailnet door has nothing left to serve.
-    context.door.closeTailnetIfUnused();
+    if (closeDoor === "now") context.door.closeTailnetIfUnused();
+    else closeDoorAfterAnswer();
     machinesChanged();
     return link;
+  };
+
+  /** Close the door once the answer on it has left (the check runs then: a link or offer made meanwhile keeps it up). */
+  const closeDoorAfterAnswer = () => {
+    if (doorCloseTimer) clearTimeout(doorCloseTimer);
+    doorCloseTimer = setTimeout(() => {
+      doorCloseTimer = null;
+      context.door.closeTailnetIfUnused();
+    }, UNLINKED_DOOR_CLOSE_MS);
+    doorCloseTimer.unref?.();
   };
 
   // ── Linking (rule 4 of section 4: one code links both ways) ──
@@ -403,18 +424,26 @@ export function createInboxMachines(context: InboxMachinesContext) {
     }
   };
 
+  /**
+   * Tell the other machine to drop this link. Told is its door's answer: 200
+   * (it forgot the link) or 401 (it no longer knows this token). Only the
+   * status counts, never the body: the answer may be its door's last before
+   * it closes, so a connection that ends after it changes nothing.
+   */
   const tellUnlink = async (transport: ReturnType<typeof openTransport>, token: string): Promise<boolean> => {
+    let response: Response;
     try {
-      const response = await transport.request("unlink", "", {
+      response = await transport.request("unlink", "", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: "{}",
         signal: AbortSignal.timeout(UNLINK_TELL_MS),
       });
-      return response.ok || response.status === 401;
     } catch {
       return false;
     }
+    response.body?.cancel().catch(() => {});
+    return response.ok || response.status === 401;
   };
 
   /**
@@ -450,10 +479,13 @@ export function createInboxMachines(context: InboxMachinesContext) {
     }
   };
 
-  /** The other machine unlinked: forget it here too (rule 13). */
+  /**
+   * The other machine unlinked: forget it here too (rule 13). This answer
+   * goes out on the door it came in on, so the door closes after it.
+   */
   const unlinkedBy = (deviceId: string): Response => {
     const record = links.list().find((l) => l.device_id === deviceId);
-    if (record) forget(record.id);
+    if (record) forget(record.id, "after_answer");
     else context.door.revokeDevice(deviceId);
     return json({ unlinked: true });
   };
@@ -613,6 +645,12 @@ export function createInboxMachines(context: InboxMachinesContext) {
   const stop = () => {
     if (offerTimer) clearTimeout(offerTimer);
     offerTimer = null;
+    // A door close still waiting runs now, so a stop never leaves the switch on for a door with nothing to serve.
+    if (doorCloseTimer) {
+      clearTimeout(doorCloseTimer);
+      doorCloseTimer = null;
+      context.door.closeTailnetIfUnused();
+    }
     for (const peer of peers.values()) peer.stop();
     peers.clear();
     listeners.clear();

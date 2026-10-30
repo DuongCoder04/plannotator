@@ -32,7 +32,7 @@ import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { TailscaleRunner } from "@plannotator/shared/tailscale";
 import { startInboxServer } from "./inbox";
-import { createInboxDevices } from "./inbox-devices";
+import { createInboxDevices, takeDownInboxTailnet } from "./inbox-devices";
 import {
   createInboxWorld,
   destroyInboxWorld,
@@ -623,6 +623,129 @@ describe("the tailnet door with Phones off, in process", () => {
     } finally {
       inbox.stop();
     }
+  }, 60_000);
+
+  test("Unlink through the other machine's real tailnet door says it was told, though that was its last link and its door comes down", async () => {
+    const tsA = scriptedTailscale();
+    const dataA = scratch("plannotator-machines-unlink-a-");
+    const a = await startInboxServer({ dataDir: dataA, binaryPath: null, phones: false, tailscale: tsA.run });
+    const b = await startInboxServer({ dataDir: scratch("plannotator-machines-unlink-b-"), binaryPath: null, phones: false, tailscale: scriptedTailscale().run });
+    try {
+      const session = async (port: number) => ((await (await fetch(`http://127.0.0.1:${port}/api/inbox/health`)).json()) as Json).serverSession as string;
+      const post = async (port: number, path: string, body: Json) =>
+        fetch(`http://127.0.0.1:${port}${path}`, { method: "POST", body: JSON.stringify({ serverSession: await session(port), ...body }) });
+      // A publishes its door (the door-only listener tailscale serve points at) and offers.
+      const offered = (await (await post(a.port, "/api/inbox/machines/offer", { tailscale: true })).json()) as Json;
+      const doorA = tsA.serve.get(8443)!;
+      expect(doorA).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(doorA).not.toBe(`http://127.0.0.1:${a.port}`);
+      // B links through A's door listener, as a tailnet peer would; A links back to B.
+      const linked = await post(b.port, "/api/inbox/machines/link", { link: offered.link, address: doorA, back: `http://127.0.0.1:${b.port}` });
+      expect(linked.status).toBe(201);
+      expect(((await linked.json()) as Json).machine).toMatchObject({ id: offered.machine.id, both_ways: true });
+
+      // B unlinks. A forgets its only link, so its door comes down, but only after its answer has gone out.
+      const unlinked = await post(b.port, `/api/inbox/machines/${offered.machine.id}/unlink`, {});
+      expect(unlinked.status).toBe(200);
+      expect(((await unlinked.json()) as Json).told).toBe(true);
+      expect(((await (await fetch(`http://127.0.0.1:${a.port}/api/inbox/machines`)).json()) as Json).machines).toHaveLength(1);
+      await waitFor("A's door to come down", () => !tsA.serve.has(8443), 10_000);
+      expect(await fetch(`${doorA}/api/inbox/device/health`).then(() => "open", () => "closed")).toBe("closed");
+      expect(inboxJson(dataA).tailnet).toBeUndefined();
+    } finally {
+      a.stop();
+      b.stop();
+    }
+  }, 60_000);
+
+  test("8443 held by another mapping: the door takes 8444, the code and the way back carry it, a restart keeps it, and 8443 is never touched", async () => {
+    const dataDir = scratch("plannotator-machines-port-");
+    const tailscale = scriptedTailscale();
+    const theirs = "http://127.0.0.1:62440";
+    tailscale.serve.set(8443, theirs);
+    // The other machine: it pairs, answers health, and keeps the code it is handed to link back.
+    const handed: string[] = [];
+    const peer = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      async fetch(req) {
+        const route = new URL(req.url).pathname.replace("/api/inbox/device/", "");
+        if (route === "pair") return Response.json({ token: "tok_peer", computer: { name: "Mini" } }, { status: 201 });
+        if (route === "health") return Response.json({ ok: true, inbox_id: OTHER, machine_links: 1, version: "peer" });
+        if (route === "link-back") {
+          handed.push(String(((await req.json()) as Json).link));
+          return Response.json({ machine: { id: OTHER, name: "Mini" } }, { status: 201 });
+        }
+        return Response.json({ code: "device_route_not_found" }, { status: 404 });
+      },
+    });
+    let inbox = await startInboxServer({ dataDir, binaryPath: null, phones: false, tailscale: tailscale.run });
+    try {
+      const base = `http://127.0.0.1:${inbox.port}`;
+      const { serverSession } = (await (await fetch(`${base}/api/inbox/health`)).json()) as Json;
+      const offered = (await (await fetch(`${base}/api/inbox/machines/offer`, { method: "POST", body: JSON.stringify({ serverSession, tailscale: true }) })).json()) as Json;
+      expect(offered.tailnet).toBe("laptop.tail0000.ts.net:8444");
+      expect(offered.link).toContain(`tailnet=${encodeURIComponent("laptop.tail0000.ts.net:8444")}`);
+      const door = tailscale.serve.get(8444)!;
+      expect(door).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(door).not.toBe(`http://127.0.0.1:${inbox.port}`);
+      expect(tailscale.serve.get(8443)).toBe(theirs);
+      expect(tailscale.doorCalls()).toEqual([]);
+      // What the Inbox made is recorded, port and target; the switch keeps the port.
+      expect(JSON.parse(readFileSync(join(dataDir, "inbox", "tailnet-door.json"), "utf8"))).toEqual({ v: 1, https_port: 8444, target: door });
+      expect(inboxJson(dataDir).tailnet.https_port).toBe(8444);
+
+      // Linking: the way back handed to the other machine carries the port.
+      const linked = await fetch(`${base}/api/inbox/machines/link`, { method: "POST", body: JSON.stringify({ serverSession, link: offered.link.replace(/id=[^&]+/, `id=${OTHER}`), address: `http://127.0.0.1:${peer.port}` }) });
+      expect(linked.status).toBe(201);
+      expect(handed).toHaveLength(1);
+      expect(handed[0]).toContain(`tailnet=${encodeURIComponent("https://laptop.tail0000.ts.net:8444")}`);
+
+      // A clean stop takes down 8444 only, and the record with it.
+      inbox.stop();
+      expect(tailscale.serve.has(8444)).toBe(false);
+      expect(tailscale.serve.get(8443)).toBe(theirs);
+      expect(existsSync(join(dataDir, "inbox", "tailnet-door.json"))).toBe(false);
+      // 8443 freed meanwhile: the next start still takes 8444, so the address the other machine keeps still works.
+      tailscale.serve.delete(8443);
+      inbox = await startInboxServer({ dataDir, binaryPath: null, phones: false, tailscale: tailscale.run });
+      expect(tailscale.serve.get(8444)).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(tailscale.serve.has(8443)).toBe(false);
+    } finally {
+      inbox.stop();
+      peer.stop(true);
+    }
+  }, 60_000);
+
+  test("a stale mapping on 8443 that points at the port the door listener binds is not the Inbox's: never adopted, re-pointed or removed", async () => {
+    const dataDir = scratch("plannotator-machines-stale-");
+    const tailscale = scriptedTailscale();
+    // The door listener binds the port inbox.json kept; someone's dead mapping on 8443 points at that same port,
+    // and the Inbox never recorded it as its own.
+    const port = closedPort();
+    const stale = `http://127.0.0.1:${port}`;
+    let inbox = await startInboxServer({ dataDir, binaryPath: null, phones: false, tailscale: tailscale.run });
+    inbox.stop();
+    writeFileSync(join(dataDir, "inbox", "inbox.json"), JSON.stringify({ ...inboxJson(dataDir), tailnet: { https_port: 8443, door_port: port } }));
+    const link = { id: OTHER, name: "Mini", token: "tok_x", transport: { kind: "tailnet", url: `http://127.0.0.1:${closedPort()}` }, device_id: null, linked_at: "2026-10-30T00:00:00Z" };
+    writeFileSync(join(dataDir, "inbox", "machines.json"), JSON.stringify({ v: 1, self: { id: "ibx_01K00000000000000000000001" }, links: [link] }), { mode: 0o600 });
+    tailscale.serve.set(8443, stale);
+    inbox = await startInboxServer({ dataDir, binaryPath: null, phones: false, tailscale: tailscale.run });
+    try {
+      // The door did bind that port, and still went to 8444.
+      expect(tailscale.serve.get(8444)).toBe(stale);
+      expect(tailscale.serve.get(8443)).toBe(stale);
+      expect(tailscale.doorCalls()).toEqual([]);
+      expect(JSON.parse(readFileSync(join(dataDir, "inbox", "tailnet-door.json"), "utf8"))).toEqual({ v: 1, https_port: 8444, target: stale });
+    } finally {
+      inbox.stop();
+    }
+    // Its own came down; the stale one stays, and uninstall --purge leaves it too.
+    expect(tailscale.serve.has(8444)).toBe(false);
+    expect(tailscale.serve.get(8443)).toBe(stale);
+    expect(takeDownInboxTailnet(dataDir, tailscale.run)).toBe("none");
+    expect(tailscale.serve.get(8443)).toBe(stale);
   }, 60_000);
 
   test("a far answer with a permissive CSP still carries sandbox here: the far directives are kept, sandbox is added", async () => {

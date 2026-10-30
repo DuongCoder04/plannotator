@@ -23,8 +23,8 @@ export const INBOX_LINK_USAGE = [
   "  plannotator inbox link --offer [--tailscale]",
   "                                  Print a one-time link code (10 minutes) to paste on",
   "                                  another machine. --tailscale first publishes this",
-  "                                  Inbox's door on your tailnet (port 8443), so the",
-  "                                  code carries its address.",
+  "                                  Inbox's door on your tailnet (port 8443, or the next",
+  "                                  free one up to 8450), so the code carries its address.",
   "  plannotator inbox link <code> [--address <host:port>] [--back <host:port>] [--one-way]",
   "                                  Link with the machine that printed <code>: each",
   "                                  Inbox then shows both machines' threads. --address",
@@ -114,7 +114,11 @@ export async function runInboxLinkCommand(args: readonly string[], ensureRunning
       if (answer.status !== 201) return fail(answer.body.error ?? `The Inbox answered ${answer.status}.`);
       if (answer.body.tailnet_error) process.stderr.write(`${answer.body.tailnet_error}\n`);
       if (!answer.body.tailnet) {
-        process.stderr.write("This code carries no tailnet address: on the other machine, add --address <this machine>.ts.net:8443, or run this again with --tailscale.\n");
+        process.stderr.write(
+          tailscale
+            ? "This code carries no tailnet address: this Inbox could not publish its door on your tailnet (the reason is above). Fix that and run this again.\n"
+            : "This code carries no tailnet address: run this again with --tailscale to publish this Inbox's door on your tailnet.\n",
+        );
       }
       process.stderr.write(`On the other machine, within 10 minutes, run:\n  plannotator inbox link '<the code below>'\nSix digits, for typing it in Settings: ${answer.body.code}\n`);
       process.stdout.write(`${answer.body.link}\n`);

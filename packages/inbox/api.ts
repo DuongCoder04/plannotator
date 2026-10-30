@@ -434,7 +434,10 @@ export interface PairingChecks {
     state: 'running' | 'stopped' | 'signed_out' | 'needs_approval' | 'starting' | 'cli_missing' | 'no_answer' | 'unknown';
     login: string | null;
     https_certs: boolean | null;
+    /** A port the door may take (8443 to 8450) is free or already the Inbox's. */
     port_free: boolean | null;
+    /** The port it would take; absent from an older Inbox. */
+    https_port?: number | null;
     error: string | null;
   };
 }
