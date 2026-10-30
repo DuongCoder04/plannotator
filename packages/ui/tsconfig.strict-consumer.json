@@ -66,6 +66,9 @@
     "hooks/useFileBrowser.ts",
     "hooks/useResizablePanel.ts",
     "hooks/useActiveSection.ts",
+    "components/MarkdownContentsRail.tsx",
+    "components/DeferredMarkdownContentsRail.tsx",
+    "components/DocumentContents.tsx",
     "hooks/useScrollViewport.ts",
     "utils/annotationHelpers.ts",
     "config/index.ts"
