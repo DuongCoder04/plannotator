@@ -26,9 +26,6 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
 import { BaseSession } from "../base-session.ts";
 import { buildEffectivePrompt, buildSystemPrompt } from "../context.ts";
 import type {
@@ -47,7 +44,7 @@ import {
   resolveWindowsCommandShim,
 } from "./command-path.ts";
 import { guardChildStreams, writeChildLine } from "./child-io.ts";
-import { askAiChildEnv } from "./ask-ai-env.ts";
+import { askAiChildEnv, codexAskAiConfigArgs, readCodexConfigTexts } from "./ask-ai-env.ts";
 import { CODEX_FALLBACK_MODELS, cliVersionFrom, effortList, type CatalogModel } from "@plannotator/core/model-catalog";
 
 const PROVIDER_NAME = "codex-sdk";
@@ -71,108 +68,9 @@ const FILE_APPROVAL_METHOD = "item/fileChange/requestApproval";
 // response shape from the two above ({permissions} grant, not {decision}).
 const PERMISSIONS_APPROVAL_METHOD = "item/permissions/requestApproval";
 
-/** The Inbox MCP server Plannotator connects to Codex (`INBOX_MCP_SERVER_NAME` in packages/server/inbox-agents.ts). */
-const CODEX_INBOX_SERVER = "plannotator-inbox";
-
-/**
- * The global `-c` override every `codex app-server` that Ask AI starts gets.
- * It turns off the Inbox MCP server. The marker in the app-server's env
- * (ask-ai-env.ts) cannot do this, because Codex starts a stdio MCP server with
- * a cleared environment that holds only HOME, PATH and a few others
- * (codex-rs/rmcp-client `create_env_for_mcp_server`). Codex hooks get the
- * whole env, so the Stop hook does see the marker.
- *
- * Codex deep-merges `-c` tables over config.toml and then rejects an entry
- * that has both `command` and `url`, or neither. So:
- *  - the person's entry has a `url` (the HTTP transport): only
- *    `enabled=false`, because the entry already has its transport;
- *  - otherwise: a whole disabled stdio server. It is merged over a stdio entry,
- *    or added when there is none. Its own `env` carries the marker, so a Codex
- *    that ignored `enabled` would still start a shim that lists no tools.
- * Known gap, not handled: only `$CODEX_HOME/config.toml` is read. A `url`
- * entry for `plannotator-inbox` in a project's `.codex/config.toml` makes the
- * stub invalid, and app-server (without `--strict-config`) then warns
- * "Invalid configuration; using defaults." and runs that Ask AI session on
- * Codex's default config. That is rare. Literal strings and no spaces: the
- * argument stays unquoted on the cmd.exe line of a Windows `.cmd` shim.
- */
-export function codexAskAiConfigArgs(configText: string | null): string[] {
-  if (configText !== null && codexInboxEntryHasUrl(configText)) {
-    return ["-c", `mcp_servers.${CODEX_INBOX_SERVER}.enabled=false`];
-  }
-  return [
-    "-c",
-    `mcp_servers.${CODEX_INBOX_SERVER}={command='plannotator',args=['inbox','mcp'],env={PLANNOTATOR_ASK_AI_CHILD='1'},enabled=false}`,
-  ];
-}
-
-/** `$CODEX_HOME/config.toml` (a relative CODEX_HOME resolved against `cwd`, as Codex does), else `~/.codex/config.toml`; null when unreadable. Read only. */
-export function readCodexConfigText(cwd: string, env: Readonly<Record<string, string | undefined>> = process.env): string | null {
-  const home = env.CODEX_HOME?.trim();
-  try {
-    return readFileSync(join(home ? resolve(cwd, home) : join(homedir(), ".codex"), "config.toml"), "utf8");
-  } catch {
-    return null;
-  }
-}
-
-/** A TOML key (`a."b-c".d`) as its parts; null when the text is not a plain key. */
-function tomlKeyPath(text: string): string[] | null {
-  const part = /\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*(\.|$)/y;
-  const parts: string[] = [];
-  let at = 0;
-  while (at < text.length) {
-    part.lastIndex = at;
-    const match = part.exec(text);
-    if (!match) return null;
-    parts.push(match[1] ?? match[2] ?? match[3]!);
-    at = part.lastIndex;
-    if (match[4] !== ".") break;
-  }
-  return parts.length > 0 && at >= text.length ? parts : null;
-}
-
-/** The first key of each top-level member of an inline table (`{ url = "…", env = { … } }`). */
-function inlineTableKeys(value: string): string[] {
-  let inner = value.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""').trim();
-  if (!inner.startsWith("{")) return [];
-  const close = inner.lastIndexOf("}");
-  inner = inner.slice(1, close < 0 ? undefined : close);
-  // Drop nested tables and arrays, innermost first, so only top-level members remain.
-  const nested = /[{[][^{}[\]]*[}\]]/;
-  while (nested.test(inner)) inner = inner.replace(new RegExp(nested.source, "g"), "");
-  return inner
-    .split(",")
-    .map((member) => tomlKeyPath(member.slice(0, Math.max(0, member.indexOf("="))))?.[0])
-    .filter((key): key is string => key !== undefined);
-}
-
-/**
- * Whether config.toml's `mcp_servers.plannotator-inbox` has a `url`, in any
- * form: its `[mcp_servers.plannotator-inbox]` table, an inline table, or
- * dotted keys. A line scan, not a full TOML parser: something it cannot read
- * counts as no `url` (the same gap as a project config, see
- * `codexAskAiConfigArgs`).
- */
-export function codexInboxEntryHasUrl(configText: string): boolean {
-  let table: string[] = [];
-  for (const raw of configText.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const header = /^\[\[?([^\]]*)\]\]?\s*(?:#.*)?$/.exec(line);
-    if (header) {
-      table = tomlKeyPath(header[1]!) ?? [""];
-      continue;
-    }
-    const eq = line.indexOf("=");
-    const key = eq > 0 ? tomlKeyPath(line.slice(0, eq)) : null;
-    if (!key) continue;
-    const path = [...table, ...key];
-    if (path[0] !== "mcp_servers" || path[1] !== CODEX_INBOX_SERVER) continue;
-    if (path.length > 2 ? path[2] === "url" : inlineTableKeys(line.slice(eq + 1)).includes("url")) return true;
-  }
-  return false;
-}
+// The `-c` override that turns the Inbox MCP server off lives in
+// ask-ai-env.ts, so the review server's `codex exec` jobs use it too.
+export { codexAskAiConfigArgs, codexInboxEntryHasUrl, readCodexConfigTexts } from "./ask-ai-env.ts";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for testing)
@@ -433,7 +331,7 @@ class CodexAppServerProcess {
 
   private async doStart(codexPath: string, cwd: string, initTimeoutMs?: number): Promise<void> {
     const commandPath = resolveWindowsCommandShim(codexPath);
-    const appServerArgs = [...codexAskAiConfigArgs(readCodexConfigText(cwd)), "app-server"];
+    const appServerArgs = [...codexAskAiConfigArgs(readCodexConfigTexts(cwd)), "app-server"];
     const command =
       buildWindowsCommandScriptSpawnCommand(commandPath, appServerArgs) ?? [
         commandPath,

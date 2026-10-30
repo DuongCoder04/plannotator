@@ -6,14 +6,14 @@
  * OpenCode provider's call in opencode-sdk.test.ts.
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { createOpencodeServer } from "@opencode-ai/sdk/server";
 import { isAskAiChild } from "../../shared/child-env.ts";
 import { askAiChildEnv, withAskAiChildEnv } from "./ask-ai-env.ts";
 import { ClaudeAgentSDKProvider } from "./claude-agent-sdk.ts";
-import { CodexAppServerProvider, codexAskAiConfigArgs } from "./codex-app-server.ts";
+import { CodexAppServerProvider, codexAskAiConfigArgs, readCodexConfigTexts } from "./codex-app-server.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "plannotator-ask-ai-env-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -125,8 +125,8 @@ function mergeTables(base: Record<string, unknown>, overlay: Record<string, unkn
 	}
 }
 
-/** The `plannotator-inbox` entry Codex would build from `config` plus the override Ask AI chooses for it. */
-function inboxEntryAfterOverride(config: string | null): Record<string, unknown> | undefined {
+/** The `plannotator-inbox` entry Codex would build from `config` (one file, or the person's then the project's) plus the override Ask AI chooses for it. */
+function inboxEntryAfterOverride(config: string | null | string[]): Record<string, unknown> | undefined {
 	const [flag, override] = codexAskAiConfigArgs(config);
 	expect(flag).toBe("-c");
 	const eq = override!.indexOf("=");
@@ -135,7 +135,10 @@ function inboxEntryAfterOverride(config: string | null): Record<string, unknown>
 	const path = override!.slice(0, eq).split(".");
 	for (const part of path.slice(0, -1)) at = (at[part] = {}) as Record<string, unknown>;
 	at[path.at(-1)!] = (Bun.TOML.parse(`v = ${override!.slice(eq + 1)}`) as { v: unknown }).v;
-	const merged = (config === null ? {} : Bun.TOML.parse(config)) as Record<string, unknown>;
+	const merged: Record<string, unknown> = {};
+	for (const text of config === null ? [] : typeof config === "string" ? [config] : config) {
+		mergeTables(merged, Bun.TOML.parse(text) as Record<string, unknown>);
+	}
 	mergeTables(merged, layer);
 	return (merged.mcp_servers as Record<string, Record<string, unknown>> | undefined)?.["plannotator-inbox"];
 }
@@ -160,6 +163,41 @@ describe("Codex: `codex app-server`", () => {
 				transports: 1,
 			});
 		}
+	});
+
+	test("a url entry in a project's .codex/config.toml gets only enabled=false", () => {
+		const person = `model = "gpt-6-sol"\n\n[mcp_servers.other]\ncommand = "other"\n`;
+		const projectUrl = `[mcp_servers.plannotator-inbox]\nurl = "http://127.0.0.1:59812/mcp"\n`;
+		for (const [name, configs] of Object.entries({ "person's config, project's url": [person, projectUrl], "project's url only": [projectUrl] })) {
+			const entry = inboxEntryAfterOverride(configs);
+			expect({ name, enabled: entry?.enabled, transports: ["command", "url"].filter((key) => entry && key in entry).length }).toEqual({
+				name,
+				enabled: false,
+				transports: 1,
+			});
+		}
+	});
+
+	test("reads $CODEX_HOME's config and each .codex/config.toml from cwd up to the git root, as Codex does", () => {
+		const root = mkdtempSync(join(dir, "codex-walk-"));
+		const write = (folder: string, text: string) => {
+			mkdirSync(folder, { recursive: true });
+			writeFileSync(join(folder, "config.toml"), text);
+		};
+		const home = join(root, "codex-home");
+		write(home, "# home");
+		write(join(root, ".codex"), "# above the root");
+		mkdirSync(join(root, "repo", ".git"), { recursive: true });
+		writeFileSync(join(root, "repo", ".git", "HEAD"), "ref: refs/heads/main\n");
+		write(join(root, "repo", ".codex"), "# repo");
+		write(join(root, "repo", "sub", ".codex"), "# sub");
+		expect(readCodexConfigTexts(join(root, "repo", "sub"), { CODEX_HOME: home })).toEqual(["# home", "# sub", "# repo"]);
+		// The .codex that is CODEX_HOME is read once.
+		expect(readCodexConfigTexts(join(root, "repo"), { CODEX_HOME: join(root, "repo", ".codex") })).toEqual(["# repo"]);
+		// No git root above: only cwd's own .codex.
+		write(join(root, "loose", ".codex"), "# loose");
+		write(join(root, "loose", "sub", ".codex"), "# loose sub");
+		expect(readCodexConfigTexts(join(root, "loose", "sub"), { CODEX_HOME: home })).toEqual(["# home", "# loose sub"]);
 	});
 
 	test.if(posix)("runs with the switches in its env and the override before `app-server`", async () => {
