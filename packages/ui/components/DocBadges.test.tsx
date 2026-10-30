@@ -80,7 +80,8 @@ describe('DocBadges open-in placement', () => {
     const repository = exactText('plannotator/workspaces');
     const branch = exactText('rooms/resurrect');
     const button = openInButton();
-    const repositoryRow = repository.parentElement;
+    // The repository and branch share a box of their own, so the branch can give way first.
+    const repositoryRow = repository.parentElement?.parentElement;
 
     expect(repositoryRow).not.toBeNull();
     expect(repositoryRow?.contains(branch)).toBe(true);

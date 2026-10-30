@@ -949,6 +949,9 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
+    // The card too: when it narrows (the sidebar opens, the layout settles after
+    // first paint) the actions float moves without changing size.
+    ro.observe(article);
     if (actions) ro.observe(actions);
     window.addEventListener('resize', measure);
     return () => { ro.disconnect(); window.removeEventListener('resize', measure); };

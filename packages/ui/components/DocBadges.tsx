@@ -21,6 +21,7 @@ import type { PlanDiffStats } from '../utils/planDiffEngine';
 import { hostnameOrFallback } from '@plannotator/core/project';
 import { basenameFromPath } from '@plannotator/core/source-save';
 import { OpenInAppButton } from './OpenInAppButton';
+import { HostTitle } from './HostTitle';
 
 export interface LinkedDocBadgeInfo {
   filepath: string;
@@ -104,24 +105,32 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
           under the action buttons. The Viewer-owned header measures and wraps
           the complete badge set, so its `header` layout keeps this context. */}
       {repoInfo && !linkedDocInfo && !isRow && (
-        <div className="flex items-center gap-1.5">
-          <span
-            className="px-1.5 py-0.5 bg-muted/50 rounded truncate max-w-[140px]"
-            title={repoInfo.display}
-          >
-            {repoInfo.display}
-          </span>
-          {repoInfo.branch && (
-            <span
-              className="px-1.5 py-0.5 bg-muted/30 rounded max-w-[120px] flex items-center gap-1 overflow-hidden"
-              title={repoInfo.branch}
-            >
-              <svg className="w-2.5 h-2.5 flex-shrink-0" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" />
-              </svg>
-              <span className="truncate">{repoInfo.branch}</span>
-            </span>
-          )}
+        <div className="flex min-w-0 max-w-full items-center gap-1.5">
+          {/* No fixed caps: the chips take the room the cluster has. When it runs
+              out, the branch gives way first, down to its icon and a letter or
+              two, and only then the repository: the repository never shrinks,
+              but stops short of the branch's floor (4.5em) and the gap. */}
+          <div className="flex min-w-0 items-center gap-1.5">
+            <HostTitle title={repoInfo.display} cut>
+              <span
+                className={`truncate px-1.5 py-0.5 bg-muted/50 rounded ${
+                  repoInfo.branch ? 'flex-shrink-0 max-w-[calc(100%_-_4.5em_-_0.375rem)]' : 'min-w-0'
+                }`}
+              >
+                {repoInfo.display}
+              </span>
+            </HostTitle>
+            {repoInfo.branch && (
+              <HostTitle title={repoInfo.branch} cut>
+                <span className="min-w-[4.5em] px-1.5 py-0.5 bg-muted/30 rounded flex items-center gap-1 overflow-hidden">
+                  <svg className="w-2.5 h-2.5 flex-shrink-0" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" />
+                  </svg>
+                  <span className="truncate">{repoInfo.branch}</span>
+                </span>
+              </HostTitle>
+            )}
+          </div>
           {/* Markdown/text annotate sessions have no separate source badge, so
               keep the open-in control attached to the repository context. */}
           {canOpenInApp && !sourceInfo && openInButton}
@@ -213,12 +222,12 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
                 Close
               </button>
             )}
-            <span
-              className="min-w-0 truncate rounded bg-muted/50 px-1.5 py-0.5 text-[9px] text-muted-foreground"
-              title={linkedDocInfo.filepath}
-            >
-              {basenameFromPath(linkedDocInfo.filepath)}
-            </span>
+            {/* The hover text is the whole path, so it shows whether or not the name is cut. */}
+            <HostTitle title={linkedDocInfo.filepath}>
+              <span className="min-w-0 truncate rounded bg-muted/50 px-1.5 py-0.5 text-[9px] text-muted-foreground">
+                {basenameFromPath(linkedDocInfo.filepath)}
+              </span>
+            </HostTitle>
             {openInButton}
           </div>
         ) : (
@@ -245,12 +254,11 @@ export const DocBadges: React.FC<DocBadgesProps> = ({
             <span className="px-1.5 py-0.5 bg-primary/10 text-primary/80 rounded flex-shrink-0">
               {linkedDocInfo.label || 'Linked File'}
             </span>
-            <span
-              className="min-w-0 px-1.5 py-0.5 bg-muted/50 text-muted-foreground rounded truncate"
-              title={linkedDocInfo.filepath}
-            >
-              {basenameFromPath(linkedDocInfo.filepath)}
-            </span>
+            <HostTitle title={linkedDocInfo.filepath}>
+              <span className="min-w-0 px-1.5 py-0.5 bg-muted/50 text-muted-foreground rounded truncate">
+                {basenameFromPath(linkedDocInfo.filepath)}
+              </span>
+            </HostTitle>
             {openInButton}
           </div>
         )
