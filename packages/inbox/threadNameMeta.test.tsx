@@ -170,7 +170,9 @@ test.skipIf(!hasDom)('the top bar always shows the thread name; with no name it 
   await render(thread('session-refresh', 1));
   expect(bar()!.textContent).toBe('session-refresh');
   expect(bar()!.hasAttribute('data-on')).toBe(true);
-  expect(bar()!.title).toBe('session-refresh');
+  expect(bar()!.hasAttribute('title')).toBe(false);
+  sized(bar()!, 900, 120);
+  expect(await tooltipOf(bar()!)).toBe('session-refresh');
   expect(host!.querySelector('h2.ib-subject')!.textContent).toBe(SUBJECT);
   // Unnamed, at the top: hidden, so the subject does not show twice; scrolled away: the subject.
   draw(thread(null, 3));
