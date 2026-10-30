@@ -2,7 +2,9 @@
 // Cut: the connect step (OAuth code exchange, installation binding, install URLs) and the App token mint; the port supplies the token.
 //
 // The GitHub adapter, read side. Everything GitHub-specific on the read
-// side lives here and in the github grammar.
+// side lives here and in the github grammar. createGithubAdapter({ hosts })
+// also serves GitHub Enterprise hosts; each item reads its own host's API
+// (githubApiBase) with a credential asked for that host.
 //
 // The resolve ladder now sits behind the port. Workspaces' ladder was: an
 // org connection mints a per-call App installation token; with no
@@ -26,13 +28,27 @@ import type {
 	ExternalRef,
 	ExternalRefFacts,
 	ExternalRefState,
+	PullReads,
 	RefReadAdapter,
 	ResolveResult,
 } from "../contract.ts";
-import { matchGithubCodeLink, matchGithubUrl, parseGithubCanonical } from "../grammars/github.ts";
+import {
+	type GithubGrammar,
+	githubGrammar,
+	type GithubHostsOptions,
+	parseGithubCanonical,
+} from "../grammars/github.ts";
+import { servedHost, type ServedHosts } from "../hosts.ts";
 import { credentialFor, type ReferencePort } from "../port.ts";
-import { fetchPullDiff, listPullFiles, readPullSummary } from "./github-pull-diff.ts";
-import { githubApi, githubHeaders, githubScopes, githubSearch } from "./github-pulls.ts";
+import { fetchPullDiff, githubPullReads, listPullFiles, readPullSummary } from "./github-pull-diff.ts";
+import {
+	githubApi,
+	githubHeaders,
+	type GithubPickerReads,
+	githubPickerReads,
+	githubScopes,
+	githubSearch,
+} from "./github-pulls.ts";
 
 // ── state mapping (the provider's own words, three tones) ───────────────────
 
@@ -91,22 +107,27 @@ function str(value: unknown): string | undefined {
 
 // ── resolve ─────────────────────────────────────────────────────────────────
 
-async function resolveGithub(ref: ExternalRef, port: ReferencePort): Promise<ResolveResult> {
+async function resolveGithub(
+	served: ServedHosts,
+	ref: ExternalRef,
+	port: ReferencePort,
+): Promise<ResolveResult> {
 	const parsed = parseGithubCanonical(ref);
 	if (parsed === null) return { ok: false, reason: "not_resolvable" };
+	// The canonical URL's host picks the API and the credential; a ref on a
+	// host this adapter does not serve is never read.
+	const host = servedHost(served, parsed.host);
+	if (host === null) return { ok: false, reason: "not_resolvable" };
 
 	// The ladder: the port's credential (an installation or a user token),
 	// or no credential = the anonymous last rung.
-	const credential = await credentialFor(port, "github", new URL(ref.url).hostname.toLowerCase(), [
-		"installation",
-		"bearer",
-	]);
+	const credential = await credentialFor(port, "github", host, ["installation", "bearer"]);
 	if (credential !== null && credential.kind === "unavailable") {
 		return { ok: false, reason: "not_resolvable", credentialDead: credential.credentialDead };
 	}
 	const authorization = credential === null ? undefined : `Bearer ${credential.token}`;
 
-	const api = githubApi(port);
+	const api = githubApi(port, host);
 	const repoBase = `${api.base}/repos/${parsed.owner}/${parsed.repo}`;
 	const endpoint =
 		parsed.form === "pull" ? `${repoBase}/pulls/${parsed.n}` : `${repoBase}/issues/${parsed.n}`;
@@ -189,16 +210,38 @@ async function resolveGithub(ref: ExternalRef, port: ReferencePort): Promise<Res
 	return { ok: true, facts };
 }
 
-export const githubAdapter: RefReadAdapter = {
-	kindOf: (ref) => (new URL(ref.url).pathname.includes("/pull/") ? "change" : "issue"),
-	provider: "github",
-	match: matchGithubUrl,
-	matchCodeLink: matchGithubCodeLink,
-	resolve: resolveGithub,
-	// The picker reads (github-pulls.ts): the installation's repositories,
-	// and one repository's open pull requests.
-	scopes: githubScopes,
-	search: githubSearch,
-	// The guide run's reads (github-pull-diff.ts).
-	pulls: { summary: readPullSummary, diff: fetchPullDiff, files: listPullFiles },
-} satisfies RefReadAdapter;
+function buildGithubAdapter(
+	grammar: GithubGrammar,
+	picker: GithubPickerReads,
+	pulls: PullReads,
+): RefReadAdapter {
+	return {
+		kindOf: (ref) => (new URL(ref.url).pathname.includes("/pull/") ? "change" : "issue"),
+		provider: "github",
+		match: grammar.match,
+		matchCodeLink: grammar.matchCodeLink,
+		resolve: (ref, port) => resolveGithub(grammar.served, ref, port),
+		// The picker reads (github-pulls.ts): the installation's repositories,
+		// and one repository's open pull requests.
+		scopes: picker.scopes,
+		search: picker.search,
+		// The guide run's reads (github-pull-diff.ts).
+		pulls,
+	} satisfies RefReadAdapter;
+}
+
+/** A GitHub adapter serving github.com plus `options.hosts` (GitHub
+ * Enterprise Server hosts, or *.ghe.com). Each host reads its own API
+ * (githubApiBase) with a credential asked for that host. Throws a TypeError
+ * for a host that is not a bare hostname. */
+export function createGithubAdapter(options: GithubHostsOptions = {}): RefReadAdapter {
+	const grammar = githubGrammar(options);
+	return buildGithubAdapter(grammar, githubPickerReads(grammar), githubPullReads(grammar.served));
+}
+
+/** The github.com adapter. */
+export const githubAdapter: RefReadAdapter = buildGithubAdapter(
+	githubGrammar(),
+	{ scopes: githubScopes, search: githubSearch },
+	{ summary: readPullSummary, diff: fetchPullDiff, files: listPullFiles },
+);

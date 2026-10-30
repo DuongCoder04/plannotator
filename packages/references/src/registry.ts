@@ -17,9 +17,11 @@
 // accident: keep hosts disjoint, or order them on purpose.
 
 import type { CodeLinkProviderId, CodeLinkRef, ExternalRef, ProviderId, RefReadAdapter } from "./contract.ts";
-import { githubAdapter } from "./adapters/github.ts";
-import { gitlabAdapter } from "./adapters/gitlab.ts";
+import { createGithubAdapter, githubAdapter } from "./adapters/github.ts";
+import { createGitlabAdapter, gitlabAdapter } from "./adapters/gitlab.ts";
 import { linearAdapter } from "./adapters/linear.ts";
+import type { GithubHostsOptions } from "./grammars/github.ts";
+import type { GitlabHostsOptions } from "./grammars/gitlab.ts";
 
 /** The three adapters this package carries, in their match order. */
 export const REFERENCE_ADAPTERS: readonly RefReadAdapter[] = [
@@ -27,6 +29,20 @@ export const REFERENCE_ADAPTERS: readonly RefReadAdapter[] = [
 	gitlabAdapter,
 	linearAdapter,
 ];
+
+/** The hosts each forge serves beside its public host. */
+export interface ReferenceAdapterHosts {
+	readonly github?: GithubHostsOptions;
+	readonly gitlab?: GitlabHostsOptions;
+}
+
+/** The same three adapters, in the same order, with GitHub Enterprise and
+ * self-managed GitLab hosts added. Hosts are disjoint by construction only
+ * if the consumer keeps them so: a host named for both forges is claimed by
+ * GitHub first. Throws a TypeError for a host that is not a bare hostname. */
+export function createReferenceAdapters(hosts: ReferenceAdapterHosts = {}): readonly RefReadAdapter[] {
+	return [createGithubAdapter(hosts.github), createGitlabAdapter(hosts.gitlab), linearAdapter];
+}
 
 /** Whether a provider is one a code-link store admits: the narrowing from
  * the full adapter union to the forge trio. A future adapter that grows a

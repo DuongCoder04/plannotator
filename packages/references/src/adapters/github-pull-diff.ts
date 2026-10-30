@@ -31,7 +31,9 @@
 
 import { formatDiffMetadataPathToken, formatPatchPathToken } from "@plannotator/core/diff-paths";
 
-import type { ExternalRefFailure } from "../contract.ts";
+import type { ExternalRefFailure, PullReads, PullRef } from "../contract.ts";
+import { GITHUB_PUBLIC_HOST } from "../grammars/github.ts";
+import { readHost, servedHosts, type ServedHosts } from "../hosts.ts";
 import type { ReferencePort } from "../port.ts";
 import { failure, get, type GithubApi, githubApi, githubAuth, REPO, str } from "./github-pulls.ts";
 
@@ -112,7 +114,7 @@ async function read(
 	return {
 		ok: true,
 		title,
-		url: `https://github.com/${repo}/pull/${number}`,
+		url: `https://${api.host}/${repo}/pull/${number}`,
 		state: body?.merged === true ? "merged" : body?.state === "open" ? "open" : "closed",
 		author: str(body?.user?.login) ?? null,
 		baseRef,
@@ -125,19 +127,24 @@ async function read(
 	};
 }
 
-function valid(pull: { readonly repo: string; readonly number: number }): boolean {
-	return REPO.test(pull.repo) && Number.isInteger(pull.number) && pull.number >= 1;
+/** The host a valid pull is read on (default github.com), or null for an
+ * invalid pull or a host these reads do not serve. */
+function pullHost(served: ServedHosts, pull: PullRef): string | null {
+	if (!REPO.test(pull.repo) || !Number.isInteger(pull.number) || pull.number < 1) return null;
+	return readHost(served, pull.host);
 }
 
 /** One pull request's facts, without its diff. */
-export async function readPullSummary(
-	pull: { readonly repo: string; readonly number: number },
+async function summaryOn(
+	served: ServedHosts,
+	pull: PullRef,
 	port: ReferencePort,
 ): Promise<PullSummaryResult> {
-	if (!valid(pull)) return { ok: false, reason: "not_linked" };
-	const auth = await githubAuth(port);
+	const host = pullHost(served, pull);
+	if (host === null) return { ok: false, reason: "not_linked" };
+	const auth = await githubAuth(port, host);
 	if (!auth.ok) return auth;
-	const api = githubApi(port);
+	const api = githubApi(port, host);
 	return read(
 		`/repos/${pull.repo}/pulls/${pull.number}`,
 		pull.repo,
@@ -148,14 +155,16 @@ export async function readPullSummary(
 }
 
 /** Read one pull request's diff, pinned to one base and head commit. */
-export async function fetchPullDiff(
-	pull: { readonly repo: string; readonly number: number },
+async function diffOn(
+	served: ServedHosts,
+	pull: PullRef,
 	port: ReferencePort,
 ): Promise<PullDiffResult> {
-	if (!valid(pull)) return { ok: false, reason: "not_linked" };
-	const auth = await githubAuth(port);
+	const host = pullHost(served, pull);
+	if (host === null) return { ok: false, reason: "not_linked" };
+	const auth = await githubAuth(port, host);
 	if (!auth.ok) return auth;
-	const api = githubApi(port);
+	const api = githubApi(port, host);
 	const path = `/repos/${pull.repo}/pulls/${pull.number}`;
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		const before = await read(path, pull.repo, pull.number, auth.authorization, api);
@@ -270,14 +279,16 @@ export type PullFilesResult =
 /** Every file a pull request changes (GET .../pulls/{n}/files, every page up
  * to GitHub's own 3,000-file cap), with the head it was listed at: what an
  * agent's patch for this PR is checked against (submit_guide). */
-export async function listPullFiles(
-	pull: { readonly repo: string; readonly number: number },
+async function filesOn(
+	served: ServedHosts,
+	pull: PullRef,
 	port: ReferencePort,
 ): Promise<PullFilesResult> {
-	if (!valid(pull)) return { ok: false, reason: "not_linked" };
-	const auth = await githubAuth(port);
+	const host = pullHost(served, pull);
+	if (host === null) return { ok: false, reason: "not_linked" };
+	const auth = await githubAuth(port, host);
 	if (!auth.ok) return auth;
-	const api = githubApi(port);
+	const api = githubApi(port, host);
 	const path = `/repos/${pull.repo}/pulls/${pull.number}`;
 	const summary = await read(path, pull.repo, pull.number, auth.authorization, api);
 	if (!summary.ok) return summary;
@@ -290,3 +301,25 @@ export async function listPullFiles(
 	}
 	return { ok: true, files, headSha: summary.headSha };
 }
+
+/** The pull reads for `served` hosts. A pull's `host` (default github.com)
+ * picks the API and the credential; a host not served is not_linked with
+ * no credential asked. */
+export function githubPullReads(served: ServedHosts): PullReads {
+	return {
+		summary: (pull, port) => summaryOn(served, pull, port),
+		diff: (pull, port) => diffOn(served, pull, port),
+		files: (pull, port) => filesOn(served, pull, port),
+	};
+}
+
+const DEFAULT_PULL_READS = githubPullReads(servedHosts(GITHUB_PUBLIC_HOST));
+
+/** One github.com pull request's facts, without its diff. */
+export const readPullSummary: PullReads["summary"] = DEFAULT_PULL_READS.summary;
+
+/** Read one github.com pull request's diff, pinned to one base and head commit. */
+export const fetchPullDiff: PullReads["diff"] = DEFAULT_PULL_READS.diff;
+
+/** Every file a github.com pull request changes, with the head it was listed at. */
+export const listPullFiles: PullReads["files"] = DEFAULT_PULL_READS.files;

@@ -212,13 +212,16 @@ export interface CodeLinkRef {
 export interface RefReadAdapter {
 	/** Provider-native search or listing. Empty query uses the provider's default list.
 	 * `include: "issues"` is GitHub's alone (a `#` list of open issues and pull
-	 * requests together). Other providers ignore it. */
+	 * requests together). Other providers ignore it. `host` picks one of the
+	 * adapter's served hosts (default the public host); a host it does not
+	 * serve answers `field: "scope"`. */
 	search?(
-		args: { query: string; scope?: string; cursor?: string; include?: "issues" },
+		args: { query: string; scope?: string; cursor?: string; include?: "issues"; host?: string },
 		port: ReferencePort,
 	): Promise<SearchResult>;
-	/** Optional narrowing choices. Absent method means no scope control. */
-	scopes?(port: ReferencePort): Promise<ScopesResult>;
+	/** Optional narrowing choices, on `options.host` (default the public
+	 * host). Absent method means no scope control. */
+	scopes?(port: ReferencePort, options?: { readonly host?: string }): Promise<ScopesResult>;
 	/** A forge's pull request reads for guided reviews: its facts and its
 	 * diff pinned to one base and head. Only GitHub implements it
 	 * (adapters/github-pull-diff.ts). */
@@ -246,6 +249,9 @@ export interface RefReadAdapter {
 export interface PullRef {
 	readonly repo: string;
 	readonly number: number;
+	/** The item host (default github.com): a GitHub Enterprise host the
+	 * adapter serves. A host it does not serve answers not_linked. */
+	readonly host?: string;
 }
 
 /** See RefReadAdapter.pulls. The answer shapes are the GitHub module's own,

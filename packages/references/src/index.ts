@@ -31,14 +31,39 @@ export {
 } from "./port.ts";
 export { DEFAULT_USER_AGENT, externalRefsFetch, providerFetch, providerUserAgent } from "./fetch.ts";
 export { parseBranchTail } from "./grammars/git-branch.ts";
-export { matchGithubCodeLink, matchGithubUrl, parseGithubCanonical } from "./grammars/github.ts";
-export { matchGitlabCodeLink, matchGitlabUrl, parseGitlabCanonical } from "./grammars/gitlab.ts";
+export { type ServedHosts } from "./hosts.ts";
+export {
+	GITHUB_PUBLIC_HOST,
+	type GithubGrammar,
+	githubGrammar,
+	type GithubHostsOptions,
+	matchGithubCodeLink,
+	matchGithubUrl,
+	parseGithubCanonical,
+} from "./grammars/github.ts";
+export {
+	GITLAB_PUBLIC_HOST,
+	type GitlabGrammar,
+	gitlabGrammar,
+	type GitlabHostsOptions,
+	matchGitlabCodeLink,
+	matchGitlabUrl,
+	parseGitlabCanonical,
+} from "./grammars/gitlab.ts";
 export { type LinearItem, matchLinearUrl, parseLinearCanonical } from "./grammars/linear.ts";
-export { githubAdapter } from "./adapters/github.ts";
-export { githubScopes, githubSearch } from "./adapters/github-pulls.ts";
+export { createGithubAdapter, githubAdapter } from "./adapters/github.ts";
+export {
+	githubApiBase,
+	githubGraphqlUrl,
+	type GithubPickerReads,
+	githubPickerReads,
+	githubScopes,
+	githubSearch,
+} from "./adapters/github-pulls.ts";
 export {
 	fetchPullDiff,
 	GITHUB_DIFF_FILE_CEILING,
+	githubPullReads,
 	listPullFiles,
 	type PullDiffResult,
 	type PullFilesResult,
@@ -46,12 +71,14 @@ export {
 	type PullSummaryResult,
 	readPullSummary,
 } from "./adapters/github-pull-diff.ts";
-export { gitlabAdapter } from "./adapters/gitlab.ts";
+export { createGitlabAdapter, gitlabAdapter, gitlabApiBase } from "./adapters/gitlab.ts";
 export { linearAdapter } from "./adapters/linear.ts";
 export {
 	adapterFor,
 	allAdapters,
+	createReferenceAdapters,
 	createReferenceRegistry,
+	type ReferenceAdapterHosts,
 	matchCodeLinkUrl,
 	matchExternalRef,
 	matchExternalRefCandidates,

@@ -192,3 +192,16 @@ repo after placement, in commit order:
   same `external_ref_provider_call` event and fields). A `log` that throws
   is ignored. The GitHub reads share a small `GithubApi` value (base,
   wrapped fetch, user agent) in place of a bare fetcher.
+- The `hosts` option (plug point (a) below the differences) is in:
+  `githubGrammar({ hosts })`, `gitlabGrammar({ hosts })`,
+  `createGithubAdapter({ hosts })`, `createGitlabAdapter({ hosts })` and
+  `createReferenceAdapters({ github, gitlab })`, sharing one rule in the new
+  `src/hosts.ts`. The default grammars and adapters serve the public hosts
+  only, with byte-identical canonicals and keys. A configured host's key is
+  `host:` + the Workspaces key form. The GitHub API base is per host
+  (`githubApiBase`: `api.github.com`, `{host}/api/v3`, `api.{host}` for
+  `*.ghe.com`); GitLab reads `https://{item host}` with or without a token
+  (Workspaces read `gitlab.com` anonymously, which was the same host for
+  every URL it matched). Additive contract fields: `search` args and
+  `PullRef` take `host?`, `scopes` takes `options?: { host? }`, and
+  `parseGithubCanonical` / `parseGitlabCanonical` answer `host`.

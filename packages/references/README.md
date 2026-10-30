@@ -15,14 +15,45 @@ the Workspaces originals so Workspaces can adopt the package by re-import.
 | --- | --- |
 | `contract.ts` | `ExternalRef`, `ExternalRefFacts`, `ExternalRefState`, `ResolveResult`, `SearchResult`, `ScopesResult`, the code-link types, and `RefReadAdapter` (the read half of the adapter interface). |
 | `port.ts` | `ReferencePort`, `ReferenceCredential` and `credentialFor`. |
+| `hosts.ts` | The served-hosts rule the forge grammars and adapters share (the `hosts` option). |
 | `fetch.ts` | The outbound fetch policy: ten-second deadline, same-origin redirects only (at most 20), one log line with host, status and duration. |
-| `grammars/` | `github.ts`, `gitlab.ts`, `linear.ts`: URL recognition and canonical URLs. `git-branch.ts`: the branch-tail rules for code links. Pure functions, no fetch. |
+| `grammars/` | `github.ts`, `gitlab.ts`, `linear.ts`: URL recognition and canonical URLs (`githubGrammar({ hosts })`, `gitlabGrammar({ hosts })`). `git-branch.ts`: the branch-tail rules for code links. Pure functions, no fetch. |
 | `adapters/` | `github.ts` (resolve), `github-pulls.ts` (search, scopes), `github-pull-diff.ts` (pull summary, pinned diff, file list), `gitlab.ts` (resolve), `linear.ts` (resolve). |
-| `registry.ts` | `createReferenceRegistry(adapters)` and a default registry over the three adapters: `adapterFor`, `matchExternalRef`, `matchExternalRefCandidates`, `matchCodeLinkUrl`, `matchExternalRefUrl`. |
+| `registry.ts` | `createReferenceRegistry(adapters)`, `createReferenceAdapters({ github, gitlab })` (the three adapters with extra hosts), and a default registry over the three adapters: `adapterFor`, `matchExternalRef`, `matchExternalRefCandidates`, `matchCodeLinkUrl`, `matchExternalRefUrl`. |
 | `picker-modes.ts` | The picker presentation rows for GitHub and Linear. GitLab falls to the paste default. |
 
-Hosts are fixed: `github.com`, `gitlab.com`, `linear.app` (each with its
-`www.` form). Self-managed GitLab and GitHub Enterprise URLs stay plain links.
+## Hosts
+
+By default the hosts are `github.com`, `gitlab.com` and `linear.app` (each
+with its `www.` form). GitHub Enterprise and self-managed GitLab hosts are
+added per adapter:
+
+```ts
+import { createReferenceAdapters, createReferenceRegistry } from "@plannotator/references";
+
+const registry = createReferenceRegistry(
+  createReferenceAdapters({
+    github: { hosts: ["github.acme.corp"] },
+    gitlab: { hosts: ["gitlab.acme.corp"] },
+  }),
+);
+```
+
+- A host is a bare lowercase hostname: no scheme, port or path. Anything
+  else throws a `TypeError` when the adapter is built.
+- A canonical URL keeps the host it was matched on. On `github.com` and
+  `gitlab.com`, keys and URLs are the same as before. On another host the
+  key starts with `host:` (`github.acme.corp:acme/web#12`), so the same
+  path on two hosts never shares a key.
+- Each item is read from its own host's API, with a credential asked for
+  that host: `api.github.com`; `https://{host}/api/v3` (GitHub Enterprise
+  Server); `https://api.{host}` (`*.ghe.com`); `https://{host}/api/v4`
+  (GitLab). `githubApiBase(host)` and `gitlabApiBase(host)` return the
+  origin, so a port can bind its fetch to it.
+- `search`, `scopes` and the pull reads take an optional `host` (default the
+  public host). For a host the adapter does not serve, the answer is a
+  scope error (or `not_linked` for a pull). No credential is asked and no
+  fetch runs.
 
 ## Quick use
 
@@ -67,7 +98,7 @@ type ReferenceCredentialAnswer =
 ```
 
 An adapter asks for a credential with the provider id and the host of the
-canonical URL it is resolving (`"github.com"`, `"gitlab.com"`, `"linear.app"`).
+canonical URL it is resolving (`"github.com"`, `"gitlab.com"`, `"linear.app"`, or a configured host).
 
 | Provider | Kinds it sends | Header | No credential (`null`) |
 | --- | --- | --- | --- |
@@ -142,9 +173,8 @@ need `account`. GitHub and GitLab never send a `linear-api-key`.
   rest).
 - The web client's text scanners (`findExternalRefUrls` and the
   sentence-punctuation rules) and its string form of the code-link matcher.
-- A `hosts` option for self-managed instances, and a filtered `list` query
-  with labels, assignees and milestone facts. These are the next additions;
-  `PROVENANCE.md` names where each one plugs in.
+- A filtered `list` query with labels, assignees and milestone facts. This
+  is the next addition; `PROVENANCE.md` names where it plugs in.
 
 ## Development
 

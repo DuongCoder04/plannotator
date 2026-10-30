@@ -2,7 +2,8 @@
 // Cut: the form connect (baseUrl normalization, the /api/v4/user probe) and the sealed-secret parsing; the port supplies the token and its host.
 //
 // The GitLab adapter, read side: gitlab.com issues and merge requests,
-// resolved over plain REST.
+// resolved over plain REST. createGitlabAdapter({ hosts }) also serves
+// self-managed instances; each item reads its own host's API.
 //
 // PUBLIC RUNG ON: public gitlab.com projects answer with no credential at
 // all ("return only public data when authentication isn't provided"), and
@@ -23,10 +24,21 @@ import type {
 	ResolveResult,
 } from "../contract.ts";
 import { providerFetch, providerUserAgent } from "../fetch.ts";
-import { matchGitlabCodeLink, matchGitlabUrl, parseGitlabCanonical } from "../grammars/gitlab.ts";
+import {
+	type GitlabGrammar,
+	gitlabGrammar,
+	type GitlabHostsOptions,
+	parseGitlabCanonical,
+} from "../grammars/gitlab.ts";
+import { servedHost, type ServedHosts } from "../hosts.ts";
 import { credentialFor, type ReferenceCredential, type ReferencePort } from "../port.ts";
 
-const DEFAULT_BASE_URL = "https://gitlab.com";
+/** The origin a GitLab item host serves its API from: the host itself
+ * (`/api/v4` and `/api/graphql` live under it). A port that binds its
+ * fetch to the API origin reads the origin from here. */
+export function gitlabApiBase(host: string): string {
+	return `https://${host}`;
+}
 
 /** PRIVATE-TOKEN is the documented header for personal, group and project
  * access tokens (any `read_api` token). A `bearer` credential (an OAuth
@@ -66,23 +78,30 @@ function str(value: unknown): string | undefined {
 
 // ── resolve ─────────────────────────────────────────────────────────────────
 
-async function resolveGitlab(ref: ExternalRef, port: ReferencePort): Promise<ResolveResult> {
+async function resolveGitlab(
+	served: ServedHosts,
+	ref: ExternalRef,
+	port: ReferencePort,
+): Promise<ResolveResult> {
 	const parsed = parseGitlabCanonical(ref);
 	if (parsed === null) return { ok: false, reason: "not_resolvable" };
+	// The canonical URL's host picks the API and the credential; a ref on a
+	// host this adapter does not serve is never read.
+	const host = servedHost(served, parsed.host);
+	if (host === null) return { ok: false, reason: "not_resolvable" };
 
 	// The ladder: a credential whose host IS this URL's host reads with its
 	// token; everything else (no credential, or a credential for another
 	// instance, which credentialFor drops) rides the public rung
 	// unauthenticated: the credential never leaves its own instance.
-	const credential = await credentialFor(port, "gitlab", new URL(ref.url).hostname.toLowerCase(), [
-		"private-token",
-		"bearer",
-	]);
+	const credential = await credentialFor(port, "gitlab", host, ["private-token", "bearer"]);
 	if (credential !== null && credential.kind === "unavailable") {
 		return { ok: false, reason: "not_resolvable", credentialDead: credential.credentialDead };
 	}
 	const token = credential ?? undefined;
-	const base = token === undefined ? DEFAULT_BASE_URL : `https://${token.host}`;
+	// The item host's own API, with or without a token (credentialFor only
+	// returns a credential whose host is this host).
+	const base = gitlabApiBase(host);
 
 	// The namespaced-path rule: the whole project path, URL-encoded, is the id.
 	const endpoint =
@@ -131,10 +150,22 @@ async function resolveGitlab(ref: ExternalRef, port: ReferencePort): Promise<Res
 	return { ok: true, facts };
 }
 
-export const gitlabAdapter: RefReadAdapter = {
-	kindOf: (ref) => (new URL(ref.url).pathname.includes("/merge_requests/") ? "change" : "issue"),
-	provider: "gitlab",
-	match: matchGitlabUrl,
-	matchCodeLink: matchGitlabCodeLink,
-	resolve: resolveGitlab,
-} satisfies RefReadAdapter;
+function buildGitlabAdapter(grammar: GitlabGrammar): RefReadAdapter {
+	return {
+		kindOf: (ref) => (new URL(ref.url).pathname.includes("/merge_requests/") ? "change" : "issue"),
+		provider: "gitlab",
+		match: grammar.match,
+		matchCodeLink: grammar.matchCodeLink,
+		resolve: (ref, port) => resolveGitlab(grammar.served, ref, port),
+	} satisfies RefReadAdapter;
+}
+
+/** A GitLab adapter serving gitlab.com plus `options.hosts` (self-managed
+ * instances). Each host reads its own API with a credential asked for that
+ * host. Throws a TypeError for a host that is not a bare hostname. */
+export function createGitlabAdapter(options: GitlabHostsOptions = {}): RefReadAdapter {
+	return buildGitlabAdapter(gitlabGrammar(options));
+}
+
+/** The gitlab.com adapter. */
+export const gitlabAdapter: RefReadAdapter = buildGitlabAdapter(gitlabGrammar());
