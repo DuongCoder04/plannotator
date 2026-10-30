@@ -17,6 +17,8 @@ export function ThreadWait(props: {
   onClose: () => void;
   /** Called as it gives way (the thread landed, or it closed) while focus is inside it. */
   onFocusLeaving: () => void;
+  /** The thread is on a linked machine that is away: its line ("MacBook asleep since 10:42 AM"), said in place of the failed read. */
+  away?: string | null;
 }) {
   const { load } = props;
   const ref = useRef<HTMLDivElement>(null);
@@ -34,6 +36,14 @@ export function ThreadWait(props: {
         {load?.state === 'missing' ? (
           <>
             <span>This thread is not in the Inbox. It may have been deleted.</span>
+            <button type="button" className="ib-btn" onClick={props.onClose} data-thread-wait-close="">
+              Close
+            </button>
+          </>
+        ) : load?.state === 'failed' && props.away ? (
+          // Still read again on the same schedule, so the thread opens once that machine is back.
+          <>
+            <span data-thread-wait-away="">{props.away}</span>
             <button type="button" className="ib-btn" onClick={props.onClose} data-thread-wait-close="">
               Close
             </button>

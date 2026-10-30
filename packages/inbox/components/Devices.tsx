@@ -12,8 +12,8 @@ function grouped(hex: string): string {
   return hex.match(/.{1,4}/g)?.join(' ') ?? hex;
 }
 
-/** Remove, asked twice like Delete thread: "Remove? Click again", then the phone's token stops working. */
-function RemoveLink({ name, onRemove }: { name: string; onRemove: () => Promise<void> }) {
+/** Remove, asked twice like Delete thread: "Remove? Click again", then the phone's token stops working. Settings → Machines says Unlink. */
+export function RemoveLink({ name, onRemove, verb = 'Remove' }: { name: string; onRemove: () => Promise<void>; verb?: string }) {
   const [state, setState] = useState<'idle' | 'confirm' | 'busy'>('idle');
   useEffect(() => {
     if (state !== 'confirm') return;
@@ -25,7 +25,7 @@ function RemoveLink({ name, onRemove }: { name: string; onRemove: () => Promise<
       type="button"
       className={`ib-del-l${state === 'confirm' ? ' ib-confirm' : ''}`}
       disabled={state === 'busy'}
-      aria-label={state === 'confirm' ? `Remove ${name}: click again to remove` : `Remove ${name}`}
+      aria-label={state === 'confirm' ? `${verb} ${name}: click again to ${verb.toLowerCase()}` : `${verb} ${name}`}
       onClick={() => {
         if (state === 'idle') return setState('confirm');
         if (state !== 'confirm') return;
@@ -33,7 +33,7 @@ function RemoveLink({ name, onRemove }: { name: string; onRemove: () => Promise<
         onRemove().finally(() => setState('idle'));
       }}
     >
-      {state === 'confirm' ? 'Remove? Click again' : 'Remove'}
+      {state === 'confirm' ? `${verb}? Click again` : verb}
     </button>
   );
 }

@@ -10,7 +10,7 @@
  * Decisions page (`#decisions=…`) opens the list.
  */
 
-import { inboxUrl } from './inboxUrl';
+import { inboxUrl, machineOf } from './inboxUrl';
 import type { ActionMark } from './components/ActionChecklist';
 import { isMootNoteRefusal } from './actionSaves';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
@@ -34,10 +34,13 @@ import {
   subscribeInboxEvents,
   type AgentToolHost,
   type ListModel,
+  type MachineView,
+  type OutboxView,
   type SettingsModel,
   type UpdateDetails,
   type WhatsNewModel,
 } from './api';
+import { filterMachineRows, machineCounts, machineProjectNames, machinesModel, threadAwayLine, threadOutbox } from './machines';
 import { discardPreparedInboxEvents, prepareInboxEvents } from './sharedEvents';
 import { addOwnThreads, adoptKeepingOpen, drawnSection, filterSections, heldNotice, markHeldRowArchived, putRowBack, refreshHeldRows, settleOwn, settlesOnBack, settleThread, showBroughtIn, waitingCount, type OpenThread } from './held';
 import { hasMovingDelivery } from './rowDelivery';
@@ -99,7 +102,6 @@ import { movePin, unpinnedWhere } from './pins';
 import type { PinnedAction } from './components/PinnedRow';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
 import { newBatchId, projectAllArchived, projectBatchToast, projectsWithReadable, shownProjects, type ProjectAction } from './projectMenu';
-import { windowProjectNames } from './projectLabels';
 import { lookBoundary } from './folding';
 import { latestAgentSeq } from './seenOnSight';
 import { isPhone, isTouchPhone, trackKeyboard, usePhone } from './phone';
@@ -177,6 +179,8 @@ configurePlannotatorUI({
 });
 
 const SIDEBAR_OPEN_COOKIE = 'plannotator-inbox-sidebar-open';
+/** The list's ⋯ "Hide offline machines" (linked machines): kept in this browser, like the sidebar's state. */
+const HIDE_AWAY_MACHINES_COOKIE = 'plannotator-inbox-hide-offline-machines';
 /** The session the person last sent a new message to: first in the To picker and the palette's "Message <host>" while it is live; never put in To by itself. */
 const COMPOSE_LAST_COOKIE = 'plannotator-inbox-compose-last';
 /** How often the Drafts page reads its drafts again, so each chip follows its session. */
@@ -228,6 +232,11 @@ interface Route {
   /** The release whose notes the What's new page shows (`#whats-new=0.28.12`). */
   version?: string | null;
   project: string | null;
+  /**
+   * Linked machines: the list shows one machine's threads (`#machine=ibx_…`), the sidebar's Machines filter. Beside
+   * `project`, never instead of it.
+   */
+  machine?: string | null;
   thread: string | null;
   /**
    * An attachment open beside the thread: `file=att_…`, `v=sent` for the version the agent sent, `at=` an annotation to show,
@@ -276,6 +285,7 @@ function routeOf(fullHash: string): Route {
   return {
     page: 'inbox',
     project: params.get('project'),
+    machine: params.get('machine'),
     thread,
     file: fileId ? { id: fileId, version: params.get('v') === 'sent' ? 'sent' : 'current', focus: params.get('at'), linked: params.get('linked'), view: parseFileView(params.get('view')), set: params.get('set') } : null,
     guide: thread ? params.get('guide') : null,
@@ -302,6 +312,7 @@ function hashOf(route: Route): string {
   else if (route.page === 'tour') hash = `tour=${route.step ?? 1}`;
   else {
     const params = new URLSearchParams();
+    if (route.machine) params.set('machine', route.machine);
     if (route.project) params.set('project', route.project);
     if (route.thread) params.set('thread', route.thread);
     if (route.thread && route.msg) params.set('msg', route.msg);
@@ -521,6 +532,50 @@ function Inbox() {
     storage.setItem(SIDEBAR_OPEN_COOKIE, String(next));
   }, []);
   const [latest, setLatest] = useState<ListModel | null>(null);
+  /**
+   * Linked machines (docs/agent-guides/inbox-machines.md): every machine and its state, from the merged list and
+   * the stream's `machines` frames. Nothing draws from it while no machine is linked (machines.ts).
+   */
+  const [machineViews, setMachineViews] = useState<MachineView[] | null>(null);
+  const machines = useMemo(() => machinesModel(machineViews), [machineViews]);
+  const machinesRef = useRef(machines);
+  machinesRef.current = machines;
+  /** Writes held for other machines, by key (the outbox's own frames keep it): "Sending…" until their machine answers. */
+  const [outbox, setOutbox] = useState<ReadonlyMap<string, OutboxView>>(() => new Map());
+  /** The list's ⋯ menu "Hide offline machines": this browser's choice, like the sidebar's open sections. */
+  const [hideAway, setHideAwayState] = useState(() => storage.getItem(HIDE_AWAY_MACHINES_COOKIE) === 'true');
+  const setHideAway = useCallback((next: boolean) => {
+    setHideAwayState(next);
+    storage.setItem(HIDE_AWAY_MACHINES_COOKIE, String(next));
+  }, []);
+  // Once a machine is linked: the writes this Inbox holds for one, and the notices about ones that did not land.
+  // The `outbox` frames keep them from then on.
+  const anyMachineLinked = machines.linked.length > 0;
+  useEffect(() => {
+    if (!anyMachineLinked) return;
+    let live = true;
+    inboxApi
+      .outbox()
+      .then(({ waiting, notices }) => {
+        if (!live) return;
+        setOutbox((current) => {
+          const next = new Map(current);
+          for (const entry of [...waiting, ...notices]) if (!next.has(entry.key)) next.set(entry.key, entry);
+          return next;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [anyMachineLinked]);
+  const dismissOutbox = useCallback((key: string) => {
+    setOutbox((current) => {
+      const entry = current.get(key);
+      return entry ? new Map(current).set(key, { ...entry, dismissed: true }) : current;
+    });
+    void inboxApi.dismissOutbox(key).catch(() => {});
+  }, []);
   /**
    * Decision mode (experimental, approval "inbox-decision-mode"): the
    * projection while the feature is on, and the sitting (open, or tucked
@@ -877,6 +932,8 @@ function Inbox() {
       // Before the render: what waits on this read (Mark read after a look, markRead) reads the rows it brought.
       latestRef.current = next;
       setLatest(next);
+      // Linked machines: the merged list names every machine and its state (an older Inbox names none).
+      if (next.machines) setMachineViews(next.machines);
       if (adopt && slide) armSlide();
       // Show's light for a refresh (clicking Inbox): the rows it brings in, against the list on screen now.
       if (adopt && refresh?.light) showFrom.current = shownRef.current;
@@ -1210,6 +1267,11 @@ function Inbox() {
     let draftsTimer: ReturnType<typeof setTimeout> | null = null;
     let pinsTimer: ReturnType<typeof setTimeout> | null = null;
     let cardsTimer: ReturnType<typeof setTimeout> | null = null;
+    let machinesTimer: ReturnType<typeof setTimeout> | null = null;
+    let machineThreadTimer: ReturnType<typeof setTimeout> | null = null;
+    /** The machines as last read (state and list cursor each), and whether one was linked. */
+    let machinesSignature = '';
+    let machinesLinked = false;
     let cancelled = false;
     // Listen to the tabs' shared stream before the first read, so nothing passed on between the read and the subscription is lost (sharedEvents.ts).
     prepareInboxEvents();
@@ -1284,6 +1346,34 @@ function Inbox() {
         },
         // Every (re)connect: the permission now, since a reconnect's URL may be stale.
         onConnect: reportWindow,
+        // Linked machines. A record from another machine: a live one rings like this Inbox's own (a resync after a
+        // reconnect never does), and the open thread follows when it is that machine's. Its row moves once this Inbox
+        // has read that machine's list again, which the `machines` frame says.
+        onMachine: (frame) => {
+          if (frame.live && frame.record) observeEvent(frame.record);
+          const open = routeRef.current.thread;
+          if (!open || machineOf(open) !== frame.machine) return;
+          if (machineThreadTimer) clearTimeout(machineThreadTimer);
+          machineThreadTimer = setTimeout(() => void refreshThread(open), 80);
+        },
+        onMachines: (next) => {
+          setMachineViews(next);
+          // A machine's state or its list moved: read the merged list. Only while a machine is (or just was) linked,
+          // so an Inbox that never links reads nothing more than before.
+          const linked = next.some((m) => !m.self);
+          const signature = next.map((m) => `${m.id}:${m.state}:${m.list_cursor ?? ''}`).join('|');
+          if ((!linked && !machinesLinked) || signature === machinesSignature) return;
+          machinesLinked = linked;
+          machinesSignature = signature;
+          if (machinesTimer) clearTimeout(machinesTimer);
+          machinesTimer = setTimeout(() => void refreshList(false).then((list) => list && flushNotifications(list)), 60);
+        },
+        onOutbox: (entry) => {
+          setOutbox((current) => new Map(current).set(entry.key, entry));
+          // Delivered: the reply is in that machine's thread now; the open thread shows it there.
+          const open = routeRef.current.thread;
+          if (entry.state === 'delivered' && open && machineOf(open) === entry.machine) void refreshThread(open);
+        },
       }, windowReport());
     })();
     return () => {
@@ -1295,6 +1385,8 @@ function Inbox() {
       if (draftsTimer) clearTimeout(draftsTimer);
       if (cardsTimer) clearTimeout(cardsTimer);
       if (pinsTimer) clearTimeout(pinsTimer);
+      if (machinesTimer) clearTimeout(machinesTimer);
+      if (machineThreadTimer) clearTimeout(machineThreadTimer);
     };
   }, [refreshList, refreshSettings, refreshThread, refreshDrafts, refreshCards, refreshDecisions, observeEvent, flushNotifications, setNotifyReach, windowReport, reportWindow]);
 
@@ -1375,15 +1467,16 @@ function Inbox() {
   // slide); where the thread covered the list, COVERED_LIST_SETTLES decides.
   // After a keyboard close, focus that the closed pane took with it goes to
   // the thread's row.
-  const lastRoute = useRef({ page: route.page, project: route.project ?? null, thread: route.thread });
+  const lastRoute = useRef({ page: route.page, project: route.project ?? null, machine: route.machine ?? null, thread: route.thread });
   /** The docked sidebar is held closed beside a file (#1871); the close gives it back, so the settle waits for its spring. */
   const sidebarHeldNow = useRef(false);
   useLayoutEffect(() => {
     const before = lastRoute.current;
-    const now = { page: route.page, project: route.project ?? null, thread: route.thread };
+    const now = { page: route.page, project: route.project ?? null, machine: route.machine ?? null, thread: route.thread };
     lastRoute.current = now;
-    if (before.page === now.page && before.project === now.project && before.thread === now.thread) return;
-    if (!(before.page === 'inbox' && now.page === 'inbox' && before.project === now.project)) {
+    if (before.page === now.page && before.project === now.project && before.machine === now.machine && before.thread === now.thread) return;
+    // Another project or machine (the sidebar's filters) is another list: it shows whole.
+    if (!(before.page === 'inbox' && now.page === 'inbox' && before.project === now.project && before.machine === now.machine)) {
       settleList('all', false);
       return;
     }
@@ -1435,7 +1528,7 @@ function Inbox() {
     }
     if (prefersReducedMotion()) settleList('own', false);
     else settleTimer.current = setTimeout(() => settleList('own', true), sidebarHeldNow.current ? SETTLE_AFTER_SIDEBAR_MS : SETTLE_BEAT_MS);
-  }, [route.page, route.project, route.thread, settleList, cancelSettle]);
+  }, [route.page, route.project, route.machine, route.thread, settleList, cancelSettle]);
 
   useEffect(() => {
     if (route.page === 'settings') {
@@ -1864,7 +1957,7 @@ function Inbox() {
     covering.thread = stack.thread;
   }, [stack.thread]);
 
-  const openRow = (row: InboxListRow) => go({ page: 'inbox', project: route.project, thread: row.thread_id });
+  const openRow = (row: InboxListRow) => go({ page: 'inbox', project: route.project, machine: route.machine, thread: row.thread_id });
 
   const patchQuestions = (messageId: string, questions: InboxQuestion[]) => {
     setThread((current) =>
@@ -2058,7 +2151,7 @@ function Inbox() {
             onReply: () => {
               void (async () => {
                 await markRead(threadId, false);
-                if (routeRef.current.thread !== threadId) go({ page: 'inbox', project: routeRef.current.project, thread: threadId });
+                if (routeRef.current.thread !== threadId) go({ page: 'inbox', project: routeRef.current.project, machine: routeRef.current.machine, thread: threadId });
                 setReplyFor(threadId);
               })();
             },
@@ -2467,7 +2560,7 @@ function Inbox() {
       const from = section(now.thread);
       if (into && from && into !== from) say(into);
       askArrivalFocus(fromList ? null : step.to);
-      writeRoute({ page: 'inbox', project: now.project, thread: step.to }, { replace: true });
+      writeRoute({ page: 'inbox', project: now.project, machine: now.machine, thread: step.to }, { replace: true });
       if (fromList) {
         requestAnimationFrame(() => requestAnimationFrame(() => {
           const list = listBody(rootRef.current);
@@ -2833,13 +2926,23 @@ function Inbox() {
   const sidebarKeeps = (route.page === 'inbox' || route.page === 'tour') && !(route.page === 'inbox' && route.thread && route.card) ? route.project : null;
   // One name per project for the whole window (windowProjectNames): the sidebar, the rows, the pins, the list's
   // title and "N new in …" all read it, so the held list and the live sidebar never name a project two ways.
+  // Linked machines: the machine the list shows (the sidebar's Machines filter), and a project of another machine
+  // named with that machine ("billing-svc · MacBook") wherever the list shows more than one machine.
+  const filterMachine = route.page === 'inbox' && route.machine ? (machines.all.find((m) => m.id === route.machine) ?? null) : null;
   const projectNames = useMemo(
-    () => windowProjectNames({ projects, sidebar: shownProjects(projects, sidebarKeeps), sections: shown ?? [], pins: pinRows }),
-    [projects, sidebarKeeps, shown, pinRows],
+    () => machineProjectNames({ projects, sidebar: shownProjects(projects, sidebarKeeps), sections: shown ?? [], pins: pinRows }, machines, !filterMachine),
+    [projects, sidebarKeeps, shown, pinRows, machines, filterMachine],
   );
-  // The list's name: Inbox, or the project's window name; its back buttons read the same.
-  const listTitle = filterProject ? (projectNames.get(filterProject.id) ?? filterProject.name) : 'Inbox';
-  const notice = shown && latest ? heldNotice(filterSections(shown, route.project), filterSections(latest.sections, route.project), openedHere.current, heldOpen(), projectNames).text : null;
+  /** The sidebar's Machines counts: rows waiting on the person per machine, as Projects counts them. */
+  const sidebarMachineCounts = useMemo(() => machineCounts(latestSections, machines), [latestSections, machines]);
+  /** One project's rows, then one machine's, then without the machines the person hid while away. */
+  const filterList = useCallback(
+    (sections: readonly InboxListSection[]) => filterMachineRows(filterSections(sections, route.project), machines, filterMachine?.id ?? null, hideAway),
+    [route.project, machines, filterMachine, hideAway],
+  );
+  // The list's name: Inbox, or the project's window name (or the machine's); its back buttons read the same.
+  const listTitle = filterProject ? (projectNames.get(filterProject.id) ?? filterProject.name) : filterMachine ? filterMachine.name : 'Inbox';
+  const notice = shown && latest ? heldNotice(filterList(shown), filterList(latest.sections), openedHere.current, heldOpen(), projectNames).text : null;
   const firstRun = latest !== null && projects.length === 0;
   // Tidy (2026-10-28): the list header's and the Board's ⋮ menu, each reading who it would ask in its scope.
   const listTidy = useTidy(route.page === 'inbox' ? (route.project ?? null) : null, 'list', shown, route.page === 'inbox' && !firstRun);
@@ -3535,6 +3638,11 @@ function Inbox() {
         agents={agents}
         onAgents={setAgents}
         onPrompts={(prompts) => setSettings((current) => (current ? { ...current, prompts } : current))}
+        machines={machineViews ?? undefined}
+        onMachinesChanged={() => {
+          inboxApi.machines().then((next) => setMachineViews(next.machines), () => {});
+          void refreshList(false);
+        }}
         onToggleTailscale={(next, replaceExposed) => void toggleTailscale(next, replaceExposed)}
         tailscaleBusy={tailscaleBusy}
         permission={notifications.permission}
@@ -3713,9 +3821,13 @@ function Inbox() {
           // One project's list: its window name, the path beside it.
           title={listTitle}
           path={filterProject ? tildePath(filterProject.root, settings?.home) : null}
-          sections={filterSections(shown, route.project)}
+          sections={filterList(shown)}
           filtered={filterProject !== null}
           projectNames={projectNames}
+          machines={machines}
+          machineScope={filterMachine?.id ?? null}
+          hideAway={hideAway}
+          onHideAway={setHideAway}
           // A stacked thread covers the list, which keeps its own width (and scroll) under it.
           narrow={route.thread !== null && !stack.thread}
           selectedThreadId={route.thread}
@@ -3774,6 +3886,7 @@ function Inbox() {
           <ThreadWait
             key={route.thread}
             load={threadLoad?.threadId === route.thread ? threadLoad : null}
+            away={threadAwayLine(machines.linked.find((m) => m.id === machineOf(route.thread!)))}
             onFocusLeaving={() => {
               focusThreadSubject.current = true;
             }}
@@ -3809,7 +3922,11 @@ function Inbox() {
             onAction={(messageId, key, mark) => markAction(messageId, key, mark)}
             onArchive={(next) => void archive(thread.thread_id, thread.messages[0]!.id, next)}
             pinned={pinnedIds.has(thread.thread_id)}
-            onPin={pinsOn ? (next) => setPin(thread, next) : undefined}
+            // Pins are this Inbox's own: another machine's thread is pinned on that machine (PLAN Phase 2).
+            onPin={pinsOn && !machineOf(thread.thread_id) ? (next) => setPin(thread, next) : undefined}
+            machine={machines.linked.find((m) => m.id === machineOf(thread.thread_id)) ?? null}
+            outbox={threadOutbox(outbox, thread)}
+            onDismissOutbox={dismissOutbox}
             replyRequest={replyFor}
             draftChanged={draftChanged}
             onReplyOpened={() => setReplyFor(null)}
@@ -3966,8 +4083,17 @@ function Inbox() {
           <Sidebar
             page={route.page === 'tour' ? 'inbox' : fromCard ? 'board' : route.page}
             projectId={route.project}
+            machineId={route.page === 'inbox' ? (filterMachine?.id ?? null) : null}
             inboxCount={waitingCount(latestSections)}
-            projects={projects}
+            // One machine's list: that machine's projects only.
+            projects={filterMachine ? projects.filter((p) => (p.machine ?? machines.self) === filterMachine.id) : projects}
+            machines={machines}
+            machineCounts={sidebarMachineCounts}
+            onMachine={(machineId) =>
+              route.page === 'inbox' && route.project === null && route.machine === machineId
+                ? void refreshInbox(null, route.thread !== null)
+                : leave({ page: 'inbox', project: null, machine: machineId, thread: null })
+            }
             projectNames={projectNames}
             projectCounts={projectCounts}
             projectsReadable={projectsReadable}
@@ -3987,9 +4113,9 @@ function Inbox() {
             // The Board (approval "inbox-board"): a row only while the person has it on; no count (the header has it).
             onBoard={boardEnabled ? () => leave({ page: 'board', project: null, thread: null }) : undefined}
             // On the list it shows, Inbox (or a project) refreshes; with a thread open it closes it as before, and refreshes.
-            onInbox={() => (route.page === 'inbox' && route.project === null ? void refreshInbox(null, route.thread !== null) : leave({ page: 'inbox', project: null, thread: null }))}
+            onInbox={() => (route.page === 'inbox' && route.project === null && !route.machine ? void refreshInbox(null, route.thread !== null) : leave({ page: 'inbox', project: null, thread: null }))}
             onProject={(projectId) =>
-              route.page === 'inbox' && route.project === projectId ? void refreshInbox(projectId, route.thread !== null) : leave({ page: 'inbox', project: projectId, thread: null })
+              route.page === 'inbox' && route.project === projectId ? void refreshInbox(projectId, route.thread !== null) : leave({ page: 'inbox', project: projectId, machine: filterMachine?.id ?? null, thread: null })
             }
             refreshes={route.page === 'inbox' && route.thread === null}
             refreshSpin={refreshSpin}

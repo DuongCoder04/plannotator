@@ -16,7 +16,8 @@ import { capQuestionPrompt, emptyQuestionAnswer, indexQuestionBlocks, isQuestion
 import { INBOX_AUTO_SEND_ACK_NOTES, inboxAskingMessage, wholeMinutes, isInboxNote, isInboxTextKind, readInboxAttachmentKind, type InboxAnnotationRecord, type InboxAttachment, type InboxAttachmentState, type InboxInlineImage, type InboxQuestionState } from '@plannotator/core/inbox-types';
 import type { LocalLinkResolver } from '@plannotator/ui/components/LocalLinkContext';
 import { NOT_ATTACHED_TITLE, attachmentDeepLink, attachmentDisplayPath, attachmentForLink, openAttachmentTitle, useRefRepo } from '../links';
-import { InboxApiError, inboxApi, type AttachmentsModel, type TagMode } from '../api';
+import { InboxApiError, inboxApi, type AttachmentsModel, type MachineView, type OutboxView, type TagMode } from '../api';
+import { awayLine, outboxLine } from '../machines';
 import type { HtmlEmbedHost } from '@plannotator/ui/components/html-embed/HtmlEmbedBlock';
 import { annotationOf, attachmentFeedback, isFileComment } from '../attachments';
 import { linkReplyFeedback, resolveReplyLink } from '../replyFileLinks';
@@ -130,6 +131,7 @@ const NOT_SENT_STATUS = { label: 'Draft', tone: 'open' } as const;
 const NO_IDS: ReadonlySet<string> = new Set();
 /** The reply box starts with no files: they come only from a paste (compose's tiles and upload path). */
 const NO_UPLOADS: InboxUpload[] = [];
+const NO_OUTBOX: readonly OutboxView[] = [];
 
 /** The fold state of one open thread: in memory only, decided once when the thread opens. */
 interface FoldState {
@@ -846,6 +848,17 @@ export interface ThreadPaneProps {
   notice?: React.ReactNode;
   thread: InboxThread;
   /**
+   * Linked machines: the machine whose thread this is, when it is another machine (null: this machine's own).
+   * The meta line under the subject names it, or says it is away since when.
+   */
+  machine?: MachineView | null;
+  /**
+   * Writes held for that machine about this thread (machines.ts `threadOutbox`): the person's words still on their
+   * way ("Sending to MacBook…", "Will send when MacBook is back"), or a write that did not land, with Dismiss.
+   */
+  outbox?: readonly OutboxView[];
+  onDismissOutbox?: (key: string) => void;
+  /**
    * The thread's list row's `sent`: the person's reply is the last message
    * (the Inbox's own notes read past), and when the agent read it (by the
    * store's seq, so a reply the agent was not given still reads as unread),
@@ -1178,7 +1191,7 @@ async function replyLanded(threadId: string, key: string): Promise<'yes' | 'no' 
 
 const THREAD_GONE_TEXT = 'This thread was deleted, so nothing was sent.';
 
-export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, drawn = null, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', cardChip, phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, linkOf, fullFromSide = false, fullExitFile = null, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts, decide = null }: ThreadPaneProps) {
+export function ThreadPane({ notice, thread, machine = null, outbox = NO_OUTBOX, onDismissOutbox, sent, onQuestions, onChanged, draftChanged = 0, onClose, file, onOpenFile, onOpenGuide, lookSeq, seenThrough = null, onSeen, covered = false, onScreenChange, row, drawn = null, onMarkRead, onAck, onAction, onArchive, pinned = false, onPin, replyRequest, onReplyOpened, backLabel = 'Inbox', cardChip, phone = false, stacked = false, fileStacked = false, remote = false, onBackToList, onToast, linkOf, fullFromSide = false, fullExitFile = null, landing = null, onLanded, artifacts: artifactsRoute = false, onArtifacts, decide = null }: ThreadPaneProps) {
   // "Open in" (OpenIn.tsx): apps on this computer; a new tab only through the tailnet or on a phone.
   const openIn: OpenInSurface | undefined = phone || remote === true ? 'tab' : remote === null ? undefined : 'apps';
   const root = thread.messages[0]!;
@@ -1254,7 +1267,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
    * box: Cancel, Escape, a Send and another thread forget them.
    */
   // A paste is said in the thread's polite live region ("Attached pasted-image-….png").
-  const replyFiles = useComposeFiles(NO_UPLOADS, { onPasted: (names) => announce(attachedAnnouncement(names)) });
+  const replyFiles = useComposeFiles(NO_UPLOADS, { onPasted: (names) => announce(attachedAnnouncement(names)), machine: machine?.id ?? null });
   const replyUploads = replyFiles.uploaded.map((upload) => upload.upload_id);
   // The sessions the reply box's text tags with `@` (approval "inbox-tag-agents"), as the field reports them.
   const [taggedIds, setTaggedIds] = useState<readonly string[]>([]);
@@ -3994,6 +4007,12 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       <div className={`ib-pbody${one ? '' : ' ib-folding'}`} ref={bodyRef} hidden={artifactsOn}>
         {/* A focus target (the way back's fallback, a stacked thread), never a tab stop. */}
         <h2 className="ib-subject" dir="auto" tabIndex={-1}>{thread.subject ?? '(no subject)'}</h2>
+        {machine && (
+          // Another machine's thread: which machine, or since when it is away (its rows are greyed in the list).
+          <div className="ib-tmeta" data-thread-machine={machine.id} data-away={awayLine(machine) ? '' : undefined}>
+            <span>{awayLine(machine) ?? `On ${machine.name}`}</span>
+          </div>
+        )}
         {cardChip ? <div className="ib-tmeta" data-thread-card-row="">{cardChip}</div> : null}
         {notice}
         {startedTo && (
@@ -4534,6 +4553,43 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             </article>,
           );
           return before;
+        })}
+        {/* Linked machines: what the person sent to this machine's thread that its Inbox has not taken yet, drawn
+            as their own reply is, with the outbox's state in place of the delivery line: "Sending…" until the
+            other machine's Inbox answers, never "Delivered" before (rule 12). Delivered, it is the thread's own. */}
+        {outbox.map((entry) => {
+          const line = outboxLine(entry, machine);
+          if (!line) return null;
+          const state = (
+            <div className="ib-delivered" data-delivery={line.tone === 'failed' ? 'undelivered' : 'queued'} data-outbox-line="">
+              <span className="ib-dl-main">
+                <Icon name={line.tone === 'failed' ? 'warn' : machine?.state === 'online' ? 'send' : 'clock'} size={14} />
+                <span className="ib-dl-text">{line.text}</span>
+              </span>
+              {line.tone === 'failed' && onDismissOutbox && (
+                <button type="button" className="ib-sendnow" data-outbox-dismiss="" onClick={() => onDismissOutbox(entry.key)}>
+                  Dismiss
+                </button>
+              )}
+            </div>
+          );
+          if (!entry.words) return <div key={entry.key} data-outbox={entry.key} data-outbox-state={entry.state}>{state}</div>;
+          return (
+            <article key={entry.key} className="ib-message" data-author="person" data-outbox={entry.key} data-outbox-state={entry.state}>
+              <div className="ib-fline ib-is-open">
+                <span className="ib-mk ib-big" aria-hidden="true">
+                  <Icon name="reply" />
+                </span>
+                <span className="ib-fl-nm ib-who">You</span>
+              </div>
+              <div className="ib-msg">
+                <p className="ib-held-words" dir="auto">
+                  {entry.words}
+                </p>
+                {state}
+              </div>
+            </article>
+          );
         })}
         {showNew && !phone && newPill}
         <div className="ib-sr" aria-live="polite" data-fold-live="">

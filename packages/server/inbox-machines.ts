@@ -91,6 +91,12 @@ export interface MachineView {
   both_ways: boolean;
   /** Writes held for it (rule 12: "Will send when … is back"). */
   waiting: number;
+  /**
+   * The cursor of its list this Inbox holds (null: none yet). It moves when
+   * that list is read again, so the window's `machines` frame tells it to
+   * read the merged list once the far rows changed, not before.
+   */
+  list_cursor: number | null;
 }
 
 export interface OutboxView {
@@ -104,7 +110,17 @@ export interface OutboxView {
   answer: unknown;
   notice: OutboxEntry["notice"];
   dismissed: boolean;
+  /** The words a held reply or message carries, so the window can show what waits (null for any other write). */
+  words: string | null;
 }
+
+/** At most this much of a held write's words rides its view. */
+const OUTBOX_WORDS_SHOWN = 2_000;
+
+const wordsOf = (body: Record<string, unknown>): string | null => {
+  const words = typeof body.words === "string" ? body.words : typeof body.body === "string" ? body.body : null;
+  return words === null ? null : words.slice(0, OUTBOX_WORDS_SHOWN);
+};
 
 const outboxView = (entry: OutboxEntry): OutboxView => ({
   key: entry.key,
@@ -117,6 +133,7 @@ const outboxView = (entry: OutboxEntry): OutboxView => ({
   answer: entry.answer,
   notice: entry.notice,
   dismissed: entry.dismissed,
+  words: wordsOf(entry.body),
 });
 
 const FORWARD = /^\/api\/inbox\/m\/(ibx_[0-9A-HJKMNP-TV-Z]{26})\/(.+)$/;
@@ -192,6 +209,7 @@ export function createInboxMachines(context: InboxMachinesContext) {
       address: context.door.tailnetAddress(),
       both_ways: true,
       waiting: 0,
+      list_cursor: null,
     },
     ...links.list().map((link) => {
       const peer = peers.get(link.id);
@@ -206,6 +224,7 @@ export function createInboxMachines(context: InboxMachinesContext) {
         address: openTransport(link.transport).describe(),
         both_ways: link.device_id !== null,
         waiting: outbox.list(link.id, "pending").length,
+        list_cursor: peer?.list?.cursor ?? null,
       } satisfies MachineView;
     }),
   ];

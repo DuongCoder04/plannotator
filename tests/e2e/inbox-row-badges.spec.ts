@@ -529,7 +529,7 @@ test('desktop, rows whose count has words (a draft, Undelivered) or open action 
   // server sent: each needs a live session or the window's own reply box to arise for real
   // (tests/e2e/inbox-undelivered.spec.ts, inbox-replaced.spec.ts).
   const waitFor = (min: number) => ({ kind: 'reply', state: 'queued', reason: 'working', send_now: false, message_id: 'msg_waiting', at: null, host: 'claude-code', name: 'Claude Code', waiting_since: new Date(Date.now() - min * 60_000).toISOString(), steerable: false, auto_send_at: null });
-  await page.route('**/api/inbox/threads?archived=exclude', async (route) => {
+  await page.route('**/api/inbox/threads?archived=exclude*', async (route) => {
     const response = await route.fetch();
     const model = (await response.json()) as { sections: { threads: Record<string, unknown>[] }[] };
     for (const row of model.sections.flatMap((s) => s.threads)) {
@@ -684,7 +684,7 @@ test('desktop, rows whose count has words (a draft, Undelivered) or open action 
       if (!line.whole) expect(line.subject, `${id}: the preview keeps its room in a ${line.line} px line`).toBeGreaterThanOrEqual(120);
     }
   } finally {
-    await page.unroute('**/api/inbox/threads?archived=exclude');
+    await page.unroute('**/api/inbox/threads?archived=exclude*');
   }
   expect(world.errors).toEqual([]);
 });

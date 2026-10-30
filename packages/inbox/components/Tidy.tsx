@@ -90,7 +90,20 @@ const runLabel = (run: InboxTidyRun) => `Tidy · ${run.done}/${run.agents.length
  * The header's ⋮: Tidy (with its count, or the run's progress) and Refresh.
  * `className` places it in its header (the list's or the Board's).
  */
-export function TidyMenu({ tidy, phone, onRefresh, className }: { tidy: TidyController; phone: boolean; onRefresh: () => void; className: string }) {
+export function TidyMenu({
+  tidy,
+  phone,
+  onRefresh,
+  className,
+  hideAway,
+}: {
+  tidy: TidyController;
+  phone: boolean;
+  onRefresh: () => void;
+  className: string;
+  /** Linked machines: "Hide offline machines", checked while their rows are hidden. Absent (nothing linked): no item. */
+  hideAway?: { on: boolean; onChange: (hide: boolean) => void };
+}) {
   const trigger = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [popOpen, setPopOpen] = useState(false);
@@ -133,6 +146,23 @@ export function TidyMenu({ tidy, phone, onRefresh, className }: { tidy: TidyCont
                 <Icon name="refresh" size={15} />
                 Refresh
               </Menu.Item>
+              {hideAway && (
+                <>
+                  <Menu.Separator className="ib-pm-sep" />
+                  <Menu.CheckboxItem
+                    className="ib-pmi"
+                    label="Hide offline machines"
+                    checked={hideAway.on}
+                    onCheckedChange={(checked: boolean) => hideAway.onChange(checked)}
+                    closeOnClick
+                    data-hide-offline-machines=""
+                  >
+                    <Icon name="eyeOff" size={15} />
+                    <span className="ib-pmi-l">Hide offline machines</span>
+                    {hideAway.on && <Icon name="check" size={15} className="ib-pmi-check" />}
+                  </Menu.CheckboxItem>
+                </>
+              )}
             </Menu.Popup>
           </Menu.Positioner>
         </Menu.Portal>

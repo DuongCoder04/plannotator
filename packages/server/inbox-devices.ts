@@ -307,8 +307,14 @@ export const MACHINE_PLATFORM = "machine";
 /** Machine offers kept, open or redeemed (a CLI offer and a link-back can be open at once). */
 const MACHINE_OFFERS_KEPT = 8;
 
-/** The computer's name as the phone shows it: macOS's ComputerName, else the host name's first label. */
+/**
+ * The computer's name as a phone and a linked machine show it: PLANNOTATOR_MACHINE_NAME when set (a headless box
+ * whose host name says nothing, two Inboxes on one computer in a test), else macOS's ComputerName, else the host
+ * name's first label.
+ */
 function computerName(): string {
+  const named = process.env.PLANNOTATOR_MACHINE_NAME?.trim();
+  if (named) return named.slice(0, 64);
   if (process.platform === "darwin") {
     try {
       const out = spawnSync("scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 2000, env: childEnv() });
