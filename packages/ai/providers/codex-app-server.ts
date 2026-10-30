@@ -89,14 +89,12 @@ const CODEX_INBOX_SERVER = "plannotator-inbox";
  *  - otherwise: a whole disabled stdio server. It is merged over a stdio entry,
  *    or added when there is none. Its own `env` carries the marker, so a Codex
  *    that ignored `enabled` would still start a shim that lists no tools.
- * Only `$CODEX_HOME/config.toml` is read. A `url` entry kept elsewhere (a
- * project's `.codex/config.toml`) makes the stub invalid. A Codex that exits
- * on that (or on `-c` itself) before `initialize`, and says why on stderr
- * (`codexRefusedOverrides`), is started once more without the override. A
- * current app-server without `--strict-config` does not exit: it warns
- * "Invalid configuration; using defaults." and runs. Literal strings and no
- * spaces: the argument stays unquoted on the cmd.exe line of a Windows `.cmd`
- * shim.
+ * Known gap, not handled: only `$CODEX_HOME/config.toml` is read. A `url`
+ * entry for `plannotator-inbox` in a project's `.codex/config.toml` makes the
+ * stub invalid, and app-server (without `--strict-config`) then warns
+ * "Invalid configuration; using defaults." and runs that Ask AI session on
+ * Codex's default config. That is rare. Literal strings and no spaces: the
+ * argument stays unquoted on the cmd.exe line of a Windows `.cmd` shim.
  */
 export function codexAskAiConfigArgs(configText: string | null): string[] {
   if (configText !== null && codexInboxEntryHasUrl(configText)) {
@@ -106,18 +104,6 @@ export function codexAskAiConfigArgs(configText: string | null): string[] {
     "-c",
     `mcp_servers.${CODEX_INBOX_SERVER}={command='plannotator',args=['inbox','mcp'],env={PLANNOTATOR_ASK_AI_CHILD='1'},enabled=false}`,
   ];
-}
-
-/**
- * Does the stderr of an app-server that exited before `initialize` say it
- * refused the `-c` override? Codex names the server or the key path in a
- * config error ("url is not supported for stdio", "invalid transport",
- * "error parsing -c overrides"), and an old CLI without `-c` names the flag.
- * A Codex that fails for any other reason says none of these, and is not
- * started a second time.
- */
-export function codexRefusedOverrides(stderr: string): boolean {
-  return /plannotator-inbox|mcp_servers|-c overrides|'-c'|not supported for stdio|invalid transport/.test(stderr);
 }
 
 /** `$CODEX_HOME/config.toml` (a relative CODEX_HOME resolved against `cwd`, as Codex does), else `~/.codex/config.toml`; null when unreadable. Read only. */
@@ -165,7 +151,8 @@ function inlineTableKeys(value: string): string[] {
  * Whether config.toml's `mcp_servers.plannotator-inbox` has a `url`, in any
  * form: its `[mcp_servers.plannotator-inbox]` table, an inline table, or
  * dotted keys. A line scan, not a full TOML parser: something it cannot read
- * counts as no `url`, and the retry covers that case.
+ * counts as no `url` (the same gap as a project config, see
+ * `codexAskAiConfigArgs`).
  */
 export function codexInboxEntryHasUrl(configText: string): boolean {
   let table: string[] = [];
@@ -411,13 +398,6 @@ export function mapApprovalRequest(
 // JSON-RPC over stdio (bidirectional: responses, notifications, server requests)
 // ---------------------------------------------------------------------------
 
-/** app-server, started with the `-c` overrides, exited before answering `initialize`. */
-class ExitedBeforeInitializeError extends Error {
-  constructor(cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause), { cause });
-  }
-}
-
 type NotificationListener =(notification: { method: string; params: RpcMessage }) => void;
 type RequestHandler = (method: string, id: string | number, params: RpcMessage) => void;
 
@@ -443,32 +423,17 @@ class CodexAppServerProcess {
    *  initialize wait (model discovery passes a short value so it can't hang). */
   start(codexPath: string, cwd: string, initTimeoutMs?: number): Promise<void> {
     if (!this.startPromise) {
-      const overrides = codexAskAiConfigArgs(readCodexConfigText(cwd));
-      const started: Promise<void> = this.doStart(codexPath, cwd, overrides, initTimeoutMs)
-        .catch((err) => {
-          if (!(err instanceof ExitedBeforeInitializeError)) throw err;
-          // The app-server exited before answering `initialize` and its stderr
-          // says it refused the override (codexRefusedOverrides). Start it
-          // once more without the override: Ask AI works as it did
-          // before the override existed. The failed attempt's kill() cleared
-          // startPromise; this start is still the one in flight.
-          this.startPromise = started;
-          return this.doStart(codexPath, cwd, [], initTimeoutMs);
-        })
-        .catch((err) => {
-          this.startPromise = null;
-          throw err;
-        });
-      this.startPromise = started;
+      this.startPromise = this.doStart(codexPath, cwd, initTimeoutMs).catch((err) => {
+        this.startPromise = null;
+        throw err;
+      });
     }
     return this.startPromise;
   }
 
-  private async doStart(codexPath: string, cwd: string, overrides: readonly string[], initTimeoutMs?: number): Promise<void> {
-    this.buffer = "";
-    this.decoder = new TextDecoder();
+  private async doStart(codexPath: string, cwd: string, initTimeoutMs?: number): Promise<void> {
     const commandPath = resolveWindowsCommandShim(codexPath);
-    const appServerArgs = [...overrides, "app-server"];
+    const appServerArgs = [...codexAskAiConfigArgs(readCodexConfigText(cwd)), "app-server"];
     const command =
       buildWindowsCommandScriptSpawnCommand(commandPath, appServerArgs) ?? [
         commandPath,
@@ -478,14 +443,11 @@ class CodexAppServerProcess {
     let proc: ChildProcess;
     try {
       const [file, ...args] = command;
-      // stderr is piped only when there are overrides, to tell whether an early
-      // exit refused them; the listener below drains it for the process's whole
-      // life (an un-drained pipe deadlocks the child once its buffer fills).
-      // The env turns Plannotator's integration off in this Codex
-      // (ask-ai-env.ts): its hooks read the marker; the Inbox MCP server is off
-      // by the `-c` overrides.
-      const stderr = overrides.length > 0 ? "pipe" : "ignore";
-      proc = spawn(file, args, { cwd, env: askAiChildEnv(), stdio: ["pipe", "pipe", stderr] });
+      // stderr is "ignore", not "pipe": we never read it, and an un-drained
+      // stderr pipe deadlocks the child once its buffer fills. The env turns
+      // Plannotator's integration off in this Codex (ask-ai-env.ts): its hooks
+      // read the marker; the Inbox MCP server is off by the `-c` overrides.
+      proc = spawn(file, args, { cwd, env: askAiChildEnv(), stdio: ["pipe", "pipe", "ignore"] });
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       this.handleProcessEnd(error);
@@ -493,25 +455,13 @@ class CodexAppServerProcess {
     }
 
     this.proc = proc;
-    let exited = false;
-    // A late event from an earlier process (the one a retry replaced) must not end this one.
-    const replaced = () => this.proc !== null && this.proc !== proc;
     // Cover every pipe BEFORE the spawn handshake: an `error` event on a child
     // stream with no listener becomes an uncaughtException and kills the host
     // process, not just this provider (#1378).
-    guardChildStreams(proc, CODEX_PROCESS_LABEL, (error) => {
-      if (!replaced()) this.failProcess(error);
-    });
+    guardChildStreams(proc, CODEX_PROCESS_LABEL, (error) => this.failProcess(error));
     proc.once("exit", () => {
-      exited = true;
-      if (!replaced()) this.handleProcessEnd(new Error("Codex app-server exited unexpectedly"));
+      this.handleProcessEnd(new Error("Codex app-server exited unexpectedly"));
     });
-    // The start of stderr, kept until `initialize` is answered, then dropped.
-    let startupStderr: string | null = "";
-    proc.stderr?.on("data", (chunk: Buffer) => {
-      if (startupStderr !== null && startupStderr.length < 8192) startupStderr += chunk.toString("utf8");
-    });
-    const closed = new Promise<void>((resolveClosed) => proc.once("close", () => resolveClosed()));
 
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => {
@@ -548,18 +498,7 @@ class CodexAppServerProcess {
       if (typeof init.userAgent === "string") this.userAgent = init.userAgent;
     } catch (err) {
       this.kill();
-      // Retry without the overrides only when they are the reason: a Codex
-      // that fails for any other reason (not installed right, crashes, exits
-      // at once) would fail the same way again, and would run twice.
-      if (exited && overrides.length > 0) {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([closed, new Promise<void>((r) => { timer = setTimeout(r, 1000); })]);
-        clearTimeout(timer);
-        if (codexRefusedOverrides(startupStderr ?? "")) throw new ExitedBeforeInitializeError(err);
-      }
       throw err;
-    } finally {
-      startupStderr = null;
     }
     this.send({ method: "initialized", params: {} });
   }

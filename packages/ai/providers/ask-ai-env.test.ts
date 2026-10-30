@@ -58,7 +58,7 @@ describe("the marker the integrations read", () => {
 	});
 });
 
-/** A fake `codex app-server`: answers initialize and model/list. With FAIL_WITH_OVERRIDE set, a run started with `-c` prints it to stderr and exits 1. */
+/** A fake `codex app-server`: answers initialize and model/list. */
 function fakeCodex(envFile: string, argvFile: string): string {
 	const script = join(dir, "fake-codex-app-server.mjs");
 	writeFileSync(
@@ -85,7 +85,6 @@ process.stdin.on("data", (d) => {
 			"#!/bin/sh",
 			recordSwitches(envFile),
 			`printf 'RUN %s\\n' "$*" >> '${argvFile}'`,
-			`if [ -n "$FAIL_WITH_OVERRIDE" ] && [ "$1" = "-c" ]; then printf '%s\\n' "$FAIL_WITH_OVERRIDE" >&2; exit 1; fi`,
 			`exec '${process.execPath}' '${script}'`,
 		].join("\n") + "\n",
 	);
@@ -181,39 +180,6 @@ describe("Codex: `codex app-server`", () => {
 		expect(runs[0]!.endsWith(" app-server")).toBe(true);
 	}, 15_000);
 
-	// Started once more without the override only when its stderr says it
-	// refused it. A Codex that fails for another reason runs once: model
-	// discovery (and every Ask AI start) must not spawn it twice.
-	test.if(posix)("an app-server that exits before `initialize` is started again without the override only when it refused the override", async () => {
-		const cases = {
-			"refused the override": {
-				stderr: "Error loading config.toml: url is not supported for stdio\nin `mcp_servers.plannotator-inbox`",
-				runs: ["-c", "app-server"],
-				modelsSource: "discovered",
-			},
-			"failed for another reason": {
-				stderr: "Error: failed to load auth: permission denied",
-				runs: ["-c"],
-				modelsSource: "fallback",
-			},
-		};
-		for (const [name, expected] of Object.entries(cases)) {
-			const envFile = join(dir, `codex-retry-env-${expected.runs.length}.txt`);
-			const argvFile = join(dir, `codex-retry-argv-${expected.runs.length}.txt`);
-			const provider = new CodexAppServerProvider({ type: "codex-sdk", codexExecutablePath: fakeCodex(envFile, argvFile) });
-			let modelsSource: string | undefined;
-			await inCodexSandbox(null, { FAIL_WITH_OVERRIDE: expected.stderr }, async () => {
-				try {
-					await provider.fetchModels().catch(() => {});
-					modelsSource = provider.modelsSource;
-				} finally {
-					provider.dispose();
-				}
-			});
-			const runs = codexRuns(argvFile).map((run) => (run.startsWith("-c ") ? "-c" : run));
-			expect({ name, runs, modelsSource }).toEqual({ name, runs: expected.runs, modelsSource: expected.modelsSource });
-		}
-	}, 20_000);
 });
 
 describe("Claude: the Agent SDK's `claude`", () => {
