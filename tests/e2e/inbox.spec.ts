@@ -338,7 +338,12 @@ test('a project folder filters the list and the sections still apply', async () 
 
   await side(page).getByRole('button', { name: /^docs-site(?: \d+)?$/ }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'docs-site' })).toBeVisible();
-  await expect(page.locator('.ib-path')).toHaveText(new RegExp(`docs-site$`));
+  // The header shows the name alone; the folder is the second line of the title's tooltip.
+  await expect(page.locator('.ib-lhead .ib-path')).toHaveCount(0);
+  await expect(page.locator('.ib-lhead')).not.toContainText('/');
+  await page.getByRole('heading', { level: 1, name: 'docs-site' }).hover();
+  await expect(page.locator('[data-project-tip] .ib-tip-path')).toHaveText(/docs-site$/);
+  await page.mouse.move(5, 5);
   await expect(page.locator('.ib-lbody [data-thread-id]')).toHaveCount(1);
   await expect(page.locator('.ib-band')).toHaveText([/^Holding up work\s*1$/]);
 
