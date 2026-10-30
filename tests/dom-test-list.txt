@@ -62,6 +62,7 @@ packages/inbox/codeAttachment.test.tsx
 packages/inbox/copyFile.test.tsx
 packages/inbox/fileViewClean.test.tsx
 packages/inbox/links.test.tsx
+packages/inbox/replyFileLinks.test.tsx
 packages/inbox/issueRefs.test.tsx
 packages/inbox/attachmentKinds.test.tsx
 packages/inbox/updates.test.tsx
@@ -132,6 +133,7 @@ packages/inbox/projectMenu.test.tsx
 packages/inbox/rowMenu.test.tsx
 packages/inbox/copyMessage.test.tsx
 packages/inbox/pinnedThreads.test.tsx
+packages/inbox/pinnedRowLabel.test.tsx
 packages/inbox/fileBack.test.tsx
 packages/inbox/archived.test.tsx
 packages/inbox/openStaysPut.test.tsx
@@ -140,6 +142,7 @@ packages/inbox/pullToRefresh.test.tsx
 packages/inbox/threadReadRetry.test.tsx
 packages/inbox/tabCountWindow.test.tsx
 packages/inbox/phoneList.test.tsx
+packages/inbox/listHeaderPath.test.tsx
 packages/inbox/listLabels.test.tsx
 packages/inbox/projectLabelRows.test.tsx
 packages/inbox/projectLabelHeld.test.tsx

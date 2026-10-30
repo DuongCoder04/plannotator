@@ -32,6 +32,17 @@ export const TOUR_MARKUP_BASE = 'inbox-tour-markup:';
 const INBOX_MARKUP_PATH_RE = /[\\/]inbox[\\/]markups[\\/]([0-9a-f]{64}\.(?:png|jpg|webp))$/;
 const MESSAGE_ID_RE = /^msg_[0-9A-Za-z]+$/;
 
+/** A marked-up image's file name (`<sha256>.png`) from the path a comment carries in the data dir; null for any other path. */
+export function inboxMarkupName(path: string): string | null {
+  return INBOX_MARKUP_PATH_RE.exec(path)?.[1] ?? null;
+}
+
+/** Where a marked-up image a comment carries (its path in the data dir) is shown back, by its file name; null for any other path. */
+export function inboxMarkupUrl(path: string): string | null {
+  const name = inboxMarkupName(path);
+  return name ? `/api/inbox/markups/${name}` : null;
+}
+
 /** The `imageBaseDir` a message body is drawn with. */
 export function inboxMessageImageBase(messageId: string): string {
   return `${MESSAGE_BASE_PREFIX}${messageId}`;
@@ -68,8 +79,8 @@ export const inboxImageSrcResolver: ImageSrcResolver = (path, base) => {
   if (/^(https?:)?\/\//i.test(path)) return path;
   // A marked-up image the person drew on an image attachment: kept in the
   // Inbox's data dir, shown back by its file name only.
-  const markup = INBOX_MARKUP_PATH_RE.exec(path);
-  if (markup) return `/api/inbox/markups/${markup[1]}`;
+  const markup = inboxMarkupUrl(path);
+  if (markup) return markup;
   // A drawing the person made in the tour (kept in memory only): never for a real message's body, and only while the tour holds it.
   if (path.startsWith(TOUR_MARKUP_BASE) && !base?.startsWith(MESSAGE_BASE_PREFIX)) {
     const kept = tourMarkupUrl(path);
