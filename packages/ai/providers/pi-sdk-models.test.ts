@@ -28,6 +28,7 @@ appendFileSync(
   JSON.stringify({
     PLANNOTATOR_INBOX_TOOL: process.env.PLANNOTATOR_INBOX_TOOL ?? null,
     PLANNOTATOR_AGENT_TOOL: process.env.PLANNOTATOR_AGENT_TOOL ?? null,
+    PLANNOTATOR_ASK_AI_CHILD: process.env.PLANNOTATOR_ASK_AI_CHILD ?? null,
   }) + "\\n",
 );
 let buffer = "";
@@ -210,7 +211,7 @@ for (const [runtime, Provider] of [
 				// The model probe and the session.
 				expect(spawned.length).toBe(2);
 				for (const env of spawned) {
-					expect(env).toEqual({ PLANNOTATOR_INBOX_TOOL: "0", PLANNOTATOR_AGENT_TOOL: "0" });
+					expect(env).toEqual({ PLANNOTATOR_INBOX_TOOL: "0", PLANNOTATOR_AGENT_TOOL: "0", PLANNOTATOR_ASK_AI_CHILD: "1" });
 				}
 			});
 			// Only the child's env: the host's own switches are untouched.

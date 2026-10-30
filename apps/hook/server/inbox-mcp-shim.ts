@@ -27,6 +27,10 @@
  * and an MCP client that wants its threads across restarts passes
  * `agent_session` itself.
  *
+ * Inside an agent Plannotator's Ask AI started (`PLANNOTATOR_ASK_AI_CHILD=1`,
+ * `isAskAiChild`), the shim is an MCP server with no tools and never starts
+ * or reaches the Inbox (`askAiChildReply`).
+ *
  * stdout carries JSON-RPC only; anything else goes to stderr.
  */
 
@@ -170,6 +174,12 @@ export interface InboxMcpShimOptions {
   hostSession?: InboxHostSession | null;
   /** Where a Qwen Code session is read at each call (`inboxQwenShimContext`); absent: Qwen only through `hostSession`. */
   qwen?: InboxQwenShimContext | null;
+  /**
+   * The shim runs in an agent Plannotator's Ask AI started (`isAskAiChild`):
+   * it answers on its own with no tools (`askAiChildReply`), and never starts
+   * or reaches the Inbox.
+   */
+  askAiChild?: boolean;
   /** Default: process stdin / stdout. */
   input?: ReadableStream<Uint8Array>;
   write?: (line: string) => void;
@@ -221,6 +231,35 @@ export function fillInboxToolArguments(message: JsonRpc, cwd: string, own: strin
   return { ...message, params: { ...message.params, arguments: args } };
 }
 
+/**
+ * The shim's own answer inside an agent Ask AI started: an MCP server with no
+ * tools. `initialize`, an empty `tools/list` and `ping` are answered; any
+ * other request is refused, and notifications get nothing. Clients built on
+ * gemini-cli (Qwen Code) still report a server with no tools, prompts or
+ * resources as an error and mark it disconnected. That is harmless: they go
+ * on without it.
+ */
+export function askAiChildReply(message: JsonRpc): string | null {
+  if (!message || typeof message !== "object" || !("id" in message) || typeof message.method !== "string") return null;
+  const result = (value: Record<string, unknown>) => JSON.stringify({ jsonrpc: "2.0", id: message.id ?? null, result: value });
+  switch (message.method) {
+    case "initialize": {
+      const requested = message.params?.protocolVersion;
+      return result({
+        protocolVersion: typeof requested === "string" ? requested : "2025-06-18",
+        capabilities: { tools: {} },
+        serverInfo: { name: "plannotator-inbox", version: "1.0.0" },
+      });
+    }
+    case "tools/list":
+      return result({ tools: [] });
+    case "ping":
+      return result({});
+    default:
+      return rpcError(message.id, "The Plannotator Inbox is off in an agent that Plannotator's Ask AI started.", -32601);
+  }
+}
+
 /** The JSON-RPC messages in an SSE body (`data:` lines, joined per event). */
 function sseMessages(text: string): string[] {
   const out: string[] = [];
@@ -255,6 +294,11 @@ export async function runInboxMcpShim(options: InboxMcpShimOptions): Promise<voi
       message = JSON.parse(raw) as JsonRpc;
     } catch {
       write(rpcError(null, "Parse error", -32700));
+      return;
+    }
+    if (options.askAiChild) {
+      const reply = askAiChildReply(message);
+      if (reply) write(reply);
       return;
     }
     const isRequest = message && typeof message === "object" && "id" in message && typeof message.method === "string";

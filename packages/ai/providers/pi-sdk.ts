@@ -28,7 +28,7 @@ import {
 	resolveWindowsCommandShim,
 } from "./command-path.ts";
 import { createPiVersionProbe } from "./pi-version.ts";
-import { askAiPiEnv } from "./pi-events.ts";
+import { askAiChildEnv } from "./ask-ai-env.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -72,8 +72,11 @@ class PiProcess {
 				cwd,
 				// The LIVE env, never Bun's startup env (which still holds the
 				// variables the CLI scrubbed, like the bridge token): see
-				// packages/shared/child-env.ts. Plannotator's tools off: see askAiPiEnv.
-				env: askAiPiEnv(),
+				// packages/shared/child-env.ts. Plannotator's integration off
+				// (ask-ai-env.ts): Pi's RPC mode reports `ctx.hasUI`, so the
+				// Plannotator Pi extension would otherwise take this throwaway
+				// process for a person's session and connect it to the Inbox.
+				env: askAiChildEnv(),
 				stdin: "pipe",
 				stdout: "pipe",
 				stderr: "ignore",
