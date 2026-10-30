@@ -93,9 +93,7 @@ export function keyboardLayout(
  * document element, so the reply box and compose sit directly on the keyboard
  * and their top bars stay in view. iOS Safari does not resize the layout for
  * the keyboard; it pans the page instead, which the reset to the top undoes
- * (the window never scrolls as a whole). Chrome on Android resizes the layout
- * itself (index.html's interactive-widget=resizes-content), so nothing is
- * covered there and this stays idle. Returns the cleanup.
+ * (the window never scrolls as a whole). Returns the cleanup.
  */
 export function trackKeyboard(): () => void {
   const vv = typeof window !== 'undefined' ? window.visualViewport : null;

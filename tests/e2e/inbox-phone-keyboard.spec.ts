@@ -11,8 +11,8 @@
  *   viewport starts below the bar (offsetTop is the bar, not a pan) and ends
  *   at the keyboard. The old rule sized the window to visualViewport.height
  *   from the top of the page, so it ended offsetTop px above the keyboard.
- * - The keyboard alone (older iOS after the scroll back, Chrome on Android
- *   without resizes-content): offsetTop 0.
+ * - The keyboard alone (older iOS after the scroll back, Chrome on Android):
+ *   offsetTop 0.
  *
  * In both, the composer's bottom edge equals the visual viewport's bottom
  * (offsetTop + height) within 2 px, and the composer's top bar (compose's
