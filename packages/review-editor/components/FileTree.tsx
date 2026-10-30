@@ -44,7 +44,7 @@ interface FileTreeProps {
   /** A file of the listing open outside the diff, highlighted in All files. */
   activeRepoPath?: string | null;
   /** Split the tree into Code / Tests / Generated blocks when the change holds
-   *  two or more kinds ("Group by kind" in Tree controls). */
+   *  two or more kinds ("Group by kind" in the list options menu). */
   groupByKind?: boolean;
   onToggleGroupByKind?: () => void;
   /** The server's generated set: which files form the Generated block. */
