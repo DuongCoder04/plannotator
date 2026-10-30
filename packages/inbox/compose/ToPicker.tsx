@@ -1,16 +1,17 @@
 import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { HostMark, Icon } from '../icons';
-import { isTextCut, Tip } from '../components/Tip';
+import { isTextCut, ProjectTipText, Tip } from '../components/Tip';
 import { tildePath } from '../format';
 import { splitPath } from '../agents';
-import { filterGroups, hostLabel, pickerRows, type ComposeGroup, type ComposeTarget } from './model';
+import { filterGroups, hostLabel, pickerRows, splitProjectName, type ComposeGroup, type ComposeTarget } from './model';
 
 /**
  * The To picker (compose; approval "inbox-compose-to-picker"): a filter field
  * over one listbox of live sessions, one line each: the agent's mark and
  * name, the project, its folder (muted, cut in the middle), a check on the
- * chosen one. A start time shows only where one project has two or more live
- * sessions. The current project first, then the most recently active.
+ * chosen one. On a phone two lines each (inbox.css): the project's whole name
+ * goes under the agent, since To there has room for only part of it. A start
+ * time shows only where one project has two or more live sessions. The current project first, then the most recently active.
  * ↓ ↑ move a wrapping highlight, Enter picks, Escape closes the picker only
  * (the dialog stays), typing filters by host, project and last subject.
  * With nobody in To it opens with no row highlighted, so Enter picks nothing
@@ -168,6 +169,44 @@ export function ToPicker({
       </div>
     </div>
   );
+}
+
+/**
+ * To's detail after the agent's name, always one line: "· main · workspaces/worktrees".
+ * The folder's own name stays whole while it fits; the parents (`splitProjectName`)
+ * give way first, cut with "…", and drop out entirely once only a sliver of them
+ * would show (they wrap onto a line the box hides); a folder name too long for
+ * the row is then cut with its own "…". The whole name and folder in a tooltip while
+ * anything is cut; on a phone the picker shows it whole.
+ */
+export function SessionDetail({ name, root, suffix }: { name: string; root: string | null; suffix?: string }) {
+  const { folder, parents } = splitProjectName(name);
+  return (
+    <Tip content={root ? <ProjectTipText name={name} root={root} /> : name} when={detailCut}>
+      <span className="ib-cp-tod" data-compose-detail="">
+        {/* The spaces read in the text (copy, `textContent`); the gaps draw them. */}
+        <span className="ib-cp-tdsep">{'· '}</span>
+        <span className="ib-cp-tdw">
+          <bdi className="ib-cp-tdf" data-cut="">
+            {folder}
+          </bdi>
+          {parents && (
+            <span className="ib-cp-tdp" data-cut="">
+              {' · '}
+              <bdi>{parents}</bdi>
+            </span>
+          )}
+        </span>
+        {suffix && <span className="ib-cp-tdsuf">{` · ${suffix}`}</span>}
+      </span>
+    </Tip>
+  );
+}
+
+/** Whether any part of To's detail is cut or dropped (wrapped below the one line the box shows). */
+function detailCut(trigger: Element): boolean {
+  const bottom = (trigger.querySelector('.ib-cp-tdw') ?? trigger).getBoundingClientRect().bottom;
+  return [...trigger.querySelectorAll('[data-cut]')].some((part) => isTextCut(part) || part.getBoundingClientRect().top >= bottom - 1);
 }
 
 /** A project folder on one line, cut in the middle: the leading folders shrink with "…", the last name stays; the whole path in a tooltip while it is cut. */
