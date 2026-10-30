@@ -214,11 +214,18 @@ export const THREAD_READ_TIMEOUT_MS = 8000;
 const FIRST_LIST_WAIT_MS = 10_000;
 /** How long "Not sent to MacBook: it is no longer linked." stays: long enough to read and go to Settings. */
 const UNSENT_TOAST_MS = 12_000;
+/**
+ * How long a 404 waits, after a start, for linked machines whose lists this Inbox has not read yet (one asleep may hold
+ * the thread). After that it says the thread is not here; a later list that names its machine opens it there.
+ */
+const UNLISTED_WAIT_MS = 120_000;
 /** Why the open thread is not on screen yet: its read failed (read again soon), or the server has no such thread. */
 interface ThreadLoad {
   threadId: string;
   state: 'failed' | 'missing' | 'refused';
   error: string;
+  /** Failed only because linked machines have not sent their lists yet: what it waits for, said in place of the error. */
+  waiting?: string | null;
 }
 
 interface Route {
@@ -673,6 +680,11 @@ function Inbox() {
   const focusThreadSubject = useRef(false);
   /** Try again on the placeholder: the open effect reads the thread at once. */
   const [threadRetry, setThreadRetry] = useState(0);
+  /** When the open thread's first 404 waited for linked machines' lists (UNLISTED_WAIT_MS); cleared as it opens or closes. */
+  const unlistedSince = useRef<{ threadId: string; at: number } | null>(null);
+  useEffect(() => {
+    unlistedSince.current = null;
+  }, [route.thread]);
   /**
    * The open thread's "new since you looked" boundary (folding.ts), from
    * before this look, and `through`: what the window's looks this visit cover
@@ -1085,6 +1097,7 @@ function Inbox() {
     const askedOwner = machineOf(threadId);
     try {
       const next = await inboxApi.thread(threadId, THREAD_READ_TIMEOUT_MS);
+      if (unlistedSince.current?.threadId === threadId) unlistedSince.current = null;
       if (routeRef.current.thread === threadId && mine > threadReadApplied.current) {
         threadReadApplied.current = mine;
         threadLoaded.current = next.thread;
@@ -1100,7 +1113,7 @@ function Inbox() {
     } catch (cause) {
       // Not on this Inbox, asked before the list named each id's machine: once the first list is read (it may have landed
       // while this read was out; else wait a few seconds at most), read the thread on the machine it names.
-      let unlisted = false;
+      let waiting: string | null = null;
       if (cause instanceof InboxApiError && cause.status === 404 && !askedOwner) {
         if (!machineOf(threadId) && !firstList.current!.done) {
           let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1109,15 +1122,22 @@ function Inbox() {
         }
         if (machineOf(threadId) && routeRef.current.thread === threadId) return refreshThread(threadId);
         // Just started (a restart, an update): a linked machine whose list this Inbox has not read yet may hold it.
-        // Not "deleted" then: read again on the usual schedule, and the thread opens once that list names it.
-        unlisted = (latestRef.current?.machines ?? []).some((m) => !m.self && m.list_cursor === null);
+        // Not "deleted" then: read again on the usual schedule, and the thread opens once that list names it. Only a
+        // machine that can still send one counts (one that needs an update or removed the link never will), and only
+        // for UNLISTED_WAIT_MS; after that it is missing, and a later list naming its machine opens it there (refreshList).
+        const unread = (latestRef.current?.machines ?? []).filter((m) => !m.self && m.list_cursor === null && m.state !== 'needs_update' && m.state !== 'revoked');
+        const since = unlistedSince.current?.threadId === threadId ? unlistedSince.current.at : Date.now();
+        unlistedSince.current = { threadId, at: since };
+        if (unread.length > 0 && Date.now() - since < UNLISTED_WAIT_MS) {
+          waiting = unread.length === 1 ? `Waiting for ${unread[0]!.name}: this thread may be there.` : 'Waiting for linked machines: this thread may be on one of them.';
+        }
       }
       if (routeRef.current.thread === threadId && mine > threadReadApplied.current) {
-        const missing = cause instanceof InboxApiError && cause.status === 404 && !unlisted;
+        const missing = cause instanceof InboxApiError && cause.status === 404 && !waiting;
         // Two linked machines claim it: it opens on neither, and says so (no retry would change that).
         const refused = cause instanceof InboxApiError && cause.code === 'machine_conflict';
         if (missing) setThread(null);
-        setThreadLoad({ threadId, state: refused ? 'refused' : missing ? 'missing' : 'failed', error: cause instanceof Error ? cause.message : String(cause) });
+        setThreadLoad({ threadId, state: refused ? 'refused' : missing ? 'missing' : 'failed', error: cause instanceof Error ? cause.message : String(cause), waiting });
       }
       return null;
     }
@@ -3487,7 +3507,7 @@ function Inbox() {
   const threadAway = openOwner ? threadAwayLine(openOwner) : null;
   // Or two linked machines claim it, which the thread's place says plainly.
   const openWaits = !!route.thread && !(thread && thread.thread_id === route.thread) && threadLoad?.threadId === route.thread;
-  const awayWait = openWaits && ((!!threadAway && threadLoad?.state === 'failed') || threadLoad?.state === 'refused');
+  const awayWait = openWaits && (((!!threadAway || !!threadLoad?.waiting) && threadLoad?.state === 'failed') || threadLoad?.state === 'refused');
   // The screen on top, which a phone shows alone (inbox.css): the list, a thread, a file.
   // A thread is on top once it has loaded, so a phone keeps the list until there is a thread to show (or its machine is away).
   const view =

@@ -610,8 +610,9 @@ async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, { headers: { Accept: 'application/json' }, cache: 'no-store', signal });
   if (machine && (await localInstead(response))) return get<T>(localRoute(path), signal);
   const answer = await readJson<T>(response);
+  // Local ids come only from this Inbox's own records (list rows, the archived list, thread reads, its own
+  // events): any other answer can echo another machine's id (a kept draft names its project).
   if (machine) rememberMachine(idsIn(answer), machine);
-  else rememberLocal(localIdsIn(answer));
   return answer;
 }
 
@@ -719,8 +720,9 @@ async function post<T>(path: string, body: Record<string, unknown>): Promise<T> 
     }
   }
   const answer = await readJson<T>(response);
+  // Local ids come only from this Inbox's own records (list rows, the archived list, thread reads, its own
+  // events): any other answer can echo another machine's id (a kept draft names its project).
   if (machine) rememberMachine(idsIn(answer), machine);
-  else rememberLocal(localIdsIn(answer));
   return answer;
 }
 
@@ -934,7 +936,11 @@ export const inboxApi = {
     if (input.offset) query.set('offset', String(input.offset));
     if (input.limit) query.set('limit', String(input.limit));
     const qs = query.toString();
-    return get<ArchivedModel>(inboxUrl('/threads/archived', qs));
+    return get<ArchivedModel>(inboxUrl('/threads/archived', qs)).then((model) => {
+      // This Inbox's archived threads: local for good, so no linked machine can claim one.
+      rememberLocal(localIdsIn(model));
+      return model;
+    });
   },
   /** One thread; with `timeoutMs`, a read with no answer by then fails (InboxReadTimeout) instead of waiting for good. */
   // A thread's action items move out of `questions` into `actions` here (actions.ts), so nothing that picks or sends answers meets one.

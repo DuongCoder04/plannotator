@@ -14,7 +14,7 @@ import { HeldWrites } from './HeldWrites';
  */
 export function ThreadWait(props: {
   /** Why the thread is not on screen yet; null while its read is on its way. */
-  load: { state: 'failed' | 'missing' | 'refused'; error: string } | null;
+  load: { state: 'failed' | 'missing' | 'refused'; error: string; waiting?: string | null } | null;
   onRetry: () => void;
   onClose: () => void;
   /** Called as it gives way (the thread landed, or it closed) while focus is inside it. */
@@ -52,10 +52,12 @@ export function ThreadWait(props: {
               Close
             </button>
           </>
-        ) : load?.state === 'failed' && props.away ? (
-          // Still read again on the same schedule, so the thread opens once that machine is back.
+        ) : load?.state === 'failed' && (props.away || load.waiting) ? (
+          // Still read again on the same schedule, so the thread opens once that machine is back (or its list names it).
           <>
-            <span data-thread-wait-away="">{props.away}</span>
+            <span data-thread-wait-away={props.away ? '' : undefined} data-thread-wait-unlisted={props.away ? undefined : ''}>
+              {props.away || load.waiting}
+            </span>
             <button type="button" className="ib-btn" onClick={props.onClose} data-thread-wait-close="">
               Close
             </button>

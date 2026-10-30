@@ -735,6 +735,20 @@ describe("the tailnet door with Phones off, in process", () => {
         body: JSON.stringify({ serverSession, message_id: active, idempotency_key: "n-1" }),
       });
       expect(annotation.status).toBe(409);
+      // And a new message into this Inbox's project, and a project route.
+      const message = await fetch(`${base}/api/inbox/m/${OTHER}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: base },
+        body: JSON.stringify({ serverSession, project_id: project.id, body: "x", idempotency_key: "m-1" }),
+      });
+      expect(message.status).toBe(409);
+      expect(((await message.json()) as Json).id).toBe(project.id);
+      const projectRead = await fetch(`${base}/api/inbox/m/${OTHER}/projects/${project.id}/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: base },
+        body: JSON.stringify({ serverSession, batch_id: "b1", idempotency_key: "pr-1" }),
+      });
+      expect(projectRead.status).toBe(409);
       expect(reached).toEqual([]);
       expect(existsSync(join(dataDir, "inbox", "outbox", `${OTHER}.jsonl`))).toBe(false);
     } finally {

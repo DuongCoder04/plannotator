@@ -2624,22 +2624,33 @@ export function ThreadPane({ notice, thread, machine = null, outbox = NO_OUTBOX,
    * Picks held for another machine (linked machines), by outbox key: drawn as picked until that machine answers. One
    * it refused, or that could not go, is unpicked again and the person is told; a delivered one is the thread's own.
    */
-  const heldPicks = useRef(new Map<string, { id: string; answer: QuestionAnswer | null }>());
-  useEffect(() => {
-    for (const entry of outbox) {
+  const heldPicks = useRef(new Map<string, { id: string; answer: QuestionAnswer | null; revision: number }>());
+  const outboxNow = useRef(outbox);
+  outboxNow.current = outbox;
+  const machineNow = useRef(machine);
+  machineNow.current = machine;
+  const onToastNow = useRef(onToast);
+  onToastNow.current = onToast;
+  /** Settles held picks the outbox says are done: a delivered one is the thread's own; any other is unpicked, with a toast. */
+  const settleHeldPicks = useCallback((entries: readonly OutboxView[]) => {
+    for (const entry of entries) {
       const held = heldPicks.current.get(entry.key);
       if (!held || entry.state === 'queued' || entry.state === 'sending') continue;
       heldPicks.current.delete(entry.key);
       if (entry.state === 'delivered') continue;
+      // It never applied there: the next pick goes with the revision that machine still has.
+      if (revisions.current.get(held.id) === held.revision + 1) revisions.current.delete(held.id);
       setPending((current) => {
         if (current.get(held.id) !== held.answer) return current;
         const next = new Map(current);
         next.delete(held.id);
         return next;
       });
-      onToast?.({ icon: 'warn', lead: `Pick not saved. ${outboxLine(entry, machine)?.text ?? `Not delivered to ${machine?.name ?? 'the other machine'}.`}`, wrap: true });
+      const away = machineNow.current;
+      onToastNow.current?.({ icon: 'warn', lead: `Pick not saved. ${outboxLine(entry, away)?.text ?? `Not delivered to ${away?.name ?? 'the other machine'}.`}`, wrap: true });
     }
-  }, [outbox, machine, onToast]);
+  }, []);
+  useEffect(() => settleHeldPicks(outbox), [outbox, settleHeldPicks]);
 
   const pick = (messageId: string, key: string, answer: QuestionAnswer | null) => {
     const id = `${messageId}/${key}`;
@@ -2662,8 +2673,12 @@ export function ThreadPane({ notice, thread, machine = null, outbox = NO_OUTBOX,
       } catch (cause) {
         if (cause instanceof InboxHeldError) {
           held = true;
-          heldPicks.current.set(cause.outbox.key, { id, answer });
-          onToast?.({ icon: 'clock', lead: cause.message, wrap: true });
+          heldPicks.current.set(cause.outbox.key, { id, answer, revision });
+          // Queued picks on one question apply there in order: the next one goes with the revision this one makes.
+          revisions.current.set(id, revision + 1);
+          onToastNow.current?.({ icon: 'clock', lead: cause.message, wrap: true });
+          // The outbox may have settled it already (its frame came before this answer).
+          settleHeldPicks(outboxNow.current);
           return;
         }
         // The agent replaced the question meanwhile: reading the thread again redraws it as Replaced.

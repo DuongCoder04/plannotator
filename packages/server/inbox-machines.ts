@@ -61,8 +61,16 @@ export interface InboxMachineDoor {
 }
 
 /** The id kinds a forwarded route names in its first segments. */
-export type HeldKind = "threads" | "messages" | "attachments" | "projects";
-const HELD_KINDS = new Set<string>(["threads", "messages", "attachments", "projects"]);
+export type HeldKind = "threads" | "messages" | "attachments" | "projects" | "annotations";
+const HELD_KINDS = new Set<string>(["threads", "messages", "attachments", "projects", "annotations"]);
+/** The body fields a forwarded write names an id in, and the kind each is. */
+const BODY_IDS = [
+  ["thread_id", "messages"],
+  ["message_id", "messages"],
+  ["reply_to", "messages"],
+  ["attachment_id", "attachments"],
+  ["project_id", "projects"],
+] as const;
 const safeDecode = (segment: string): string => {
   try {
     return decodeURIComponent(segment);
@@ -80,9 +88,9 @@ export interface InboxMachinesContext {
   json: (body: unknown, status?: number) => Response;
   /**
    * Whether this Inbox's own store holds an id (archived and pinned threads included). The forward refuses a route
-   * whose thread, message, file or project is this machine's: whatever a window believes, it never goes to a peer.
+   * whose thread, message, file, comment or project is this machine's: whatever a window believes, it never goes to a peer.
    */
-  holds?: (kind: HeldKind, id: string) => boolean;
+  holds: (kind: HeldKind, id: string) => boolean;
   /** Tests: the links' clocks. */
   timings?: Partial<PeerLinkTimings>;
   now?: () => Date;
@@ -521,9 +529,8 @@ export function createInboxMachines(context: InboxMachinesContext) {
     }
     // This machine's own thread, message, file or project never goes to a peer, whatever the window learned: a
     // linked machine that lists or names one of this Inbox's ids cannot take its reads or writes.
-    const local = (id: unknown): id is string => typeof id === "string" && id !== "" && (context.holds?.("messages", id) ?? false);
     const ownId = HELD_KINDS.has(segments[0]!) && segments[1] ? safeDecode(segments[1]) : null;
-    if (ownId && context.holds?.(segments[0] as HeldKind, ownId)) {
+    if (ownId && context.holds(segments[0] as HeldKind, ownId)) {
       return json({ error: "That is on this computer, not on another machine.", code: "id_is_local", id: ownId }, 409);
     }
     const offline = () =>
@@ -562,9 +569,10 @@ export function createInboxMachines(context: InboxMachinesContext) {
     // Every other write is a JSON body, whatever its Content-Type says, and goes through the outbox.
     const body = await context.readBody(req);
     if (checkServerSession(body, context.serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
-    // A write that names its thread or message in the body (an annotation, a new message) is refused the same way.
-    for (const key of ["thread_id", "message_id", "reply_to"] as const) {
-      if (local(body[key])) return json({ error: "That is on this computer, not on another machine.", code: "id_is_local", id: body[key] }, 409);
+    // A write that names this Inbox's thread, message, file or project in its body (a comment, a new message) is refused the same way.
+    for (const [key, held] of BODY_IDS) {
+      const id = body[key];
+      if (typeof id === "string" && id !== "" && context.holds(held, id)) return json({ error: "That is on this computer, not on another machine.", code: "id_is_local", id }, 409);
     }
     // This Inbox's page session means nothing to the other machine's Inbox, and its drafts stay on this computer.
     delete body.serverSession;

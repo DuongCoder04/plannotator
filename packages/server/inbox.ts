@@ -3421,7 +3421,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       door: devices.machineDoor,
       readBody,
       json,
-      holds: (kind, id) => (kind === "projects" ? store.project(id) !== null : kind === "attachments" ? store.attachment(id) !== null : store.message(id) !== null),
+      holds: (kind, id) =>
+        kind === "projects" ? store.project(id) !== null : kind === "attachments" ? store.attachment(id) !== null : kind === "annotations" ? store.annotation(id) !== null : store.message(id) !== null,
       timings: options.machineLinkTimings,
     });
     if (phonesOn) {

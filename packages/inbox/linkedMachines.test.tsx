@@ -354,6 +354,13 @@ test.skipIf(!hasDom)('a thread two linked machines both claim says so in its pla
   expect(document.querySelector('[data-thread-wait-retry]')).toBeNull();
 });
 
+test.skipIf(!hasDom)("a 404 while a linked machine's list is not in yet says what it waits for, never the read's error", () => {
+  mount(<ThreadWait load={{ state: 'failed', error: 'No thread msg_x.', waiting: 'Waiting for MacBook: this thread may be there.' }} onRetry={noop} onClose={noop} onFocusLeaving={noop} />);
+  expect(document.querySelector('[data-thread-wait-unlisted]')!.textContent).toBe('Waiting for MacBook: this thread may be there.');
+  expect(document.querySelector('[data-thread-wait]')!.textContent).not.toContain('No thread');
+  expect(document.querySelector('[data-thread-wait-close]')).not.toBeNull();
+});
+
 test.skipIf(!hasDom)('"Show link code" says, before the click, that it puts this Inbox on the tailnet', () => {
   mount(<MachinesSection machines={[machine(SELF, 'Studio', 'online')]} via="local" onChanged={noop} />);
   expect(document.querySelector('[data-machine-offer-row] .ib-desc')!.textContent).toContain('puts this Inbox on your tailnet');

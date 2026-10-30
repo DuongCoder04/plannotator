@@ -102,6 +102,33 @@ describe("an unlink keeps what was not sent", () => {
     const [notice] = outbox.notices().map(outboxView);
     expect(notice).toMatchObject({ state: "dropped", words: "Ship it Thursday", machine_name: "MacBook", notice: { kind: "not_delivered" } });
   });
+
+  test("a drain that meets the other side's Unlink drops first; forgetting the link then names those entries", async () => {
+    const outbox = InboxOutbox.open(dataDir());
+    outbox.submit(B, "messages/m1/reply", reply("k1", "Ship it Thursday"));
+    outbox.submit(B, "messages/m1/reply", reply("k2", "And the notes"));
+    expect(await outbox.drain(B, owner({ status: 401, body: { code: "device_revoked" } }).send)).toBe("revoked");
+    expect(outbox.notices().map((entry) => entry.machine_name ?? null)).toEqual([null, null]);
+    // The link is forgotten with its name (inbox-machines.ts `forget`).
+    outbox.dropMachine(B, "MacBook");
+    expect(outbox.notices().map(outboxView).map((view) => [view.words, view.machine_name])).toEqual([
+      ["Ship it Thursday", "MacBook"],
+      ["And the notes", "MacBook"],
+    ]);
+  });
+
+  test("what was not sent because the link went stays past the notice keep, until dismissed", () => {
+    const dir = dataDir();
+    let clock = new Date("2026-10-01T00:00:00Z");
+    const outbox = InboxOutbox.open(dir, () => clock);
+    outbox.submit(B, "messages/m1/reply", reply("k1", "Ship it Thursday"));
+    outbox.dropMachine(B, "MacBook");
+    clock = new Date(clock.getTime() + 90 * 24 * 3600_000);
+    const reopened = InboxOutbox.open(dir, () => clock);
+    expect(reopened.notices().map((entry) => entry.key)).toEqual(["k1"]);
+    reopened.dismiss("k1");
+    expect(InboxOutbox.open(dir, () => clock).list(B)).toEqual([]);
+  });
 });
 
 describe("rule 2: one queue per machine, one request at a time", () => {

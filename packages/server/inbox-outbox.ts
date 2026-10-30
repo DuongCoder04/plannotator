@@ -366,6 +366,8 @@ export class InboxOutbox {
    */
   dropMachine(machine: string, name: string | null = null): OutboxEntry[] {
     const at = this.now().toISOString();
+    // Ended earlier without a name (a drain that met the other side's Unlink): its name too, now it is known.
+    if (name) for (const entry of this.list(machine)) if (entry.state === "dropped" && !entry.machine_name) this.save({ ...entry, machine_name: name });
     return this.list(machine, "pending").map((entry) =>
       this.save({
         ...entry,
@@ -455,6 +457,8 @@ export class InboxOutbox {
     const keep = (entry: OutboxEntry) => {
       if (pending(entry)) return true;
       const settled = entry.settled_at ? Date.parse(entry.settled_at) : now;
+      // Not sent because the link went: its words are the only copy, so it stays until the person dismisses it.
+      if (entry.state === "dropped" && !entry.dismissed) return true;
       if (entry.notice !== null && !entry.dismissed) return now - settled < OUTBOX_KEEP_NOTICE_MS;
       return now - settled < OUTBOX_KEEP_SETTLED_MS;
     };

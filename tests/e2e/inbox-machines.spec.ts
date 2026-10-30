@@ -17,7 +17,9 @@
  *  2. Linked: the merged list labels another machine's rows like the project
  *     label ("billing-svc · MacBook"), this machine's not; Machines in the
  *     sidebar; a thread from another machine says "On MacBook". A fresh load
- *     of that thread (a reload, a new tab) opens it.
+ *     of that thread (a reload, a new tab) opens it; after a restart with
+ *     MacBook asleep, it waits for MacBook's list (never "deleted") and
+ *     opens once MacBook is back.
  *  3. Answering MacBook's thread from Studio wakes MacBook's agent.
  *  4. MacBook asleep: its rows greyed under "MacBook asleep since …"; an
  *     answer is held ("Will send when MacBook is back", never delivered), and
@@ -314,17 +316,32 @@ test("2c. a fresh load of another machine's thread opens it: a reload, and a new
   }
 });
 
-test("2d. right after Studio restarts, a reload of MacBook's thread opens it once MacBook's list is in: never \"deleted\"", async () => {
+test("2d. right after Studio restarts with MacBook asleep, a reload of MacBook's thread waits for MacBook's list: never \"deleted\"", async () => {
   const subject = 'Ledger export: keep the CSV columns stable?';
   await page.goto(`${studio.url}#thread=${macThread}`);
   await expect(page.locator('section.ib-pane .ib-subject')).toHaveText(subject);
-  // A restart (an update does the same): Studio's merged list has no MacBook rows until it reads MacBook's list again.
+  // MacBook sleeps, then Studio restarts (an update does the same): Studio's merged list has no MacBook rows, and gets
+  // none until MacBook is back, so the reloaded window cannot tell whose thread this is.
+  await stopScratchInbox(macbook.dataDir);
   await stopScratchInbox(studio.dataDir);
   start(studio);
   await page.goto(`${studio.url}#thread=${macThread}`);
   await page.reload();
-  await expect(page.locator('section.ib-pane .ib-subject')).toHaveText(subject, { timeout: 30_000 });
+  const wait = page.locator('[data-thread-wait="failed"]');
+  await expect(wait).toBeVisible({ timeout: 20_000 });
+  await expect(wait.locator('[data-thread-wait-unlisted]')).toHaveText('Waiting for MacBook: this thread may be there.');
+  // Read again on its schedule (a 404 each time), and never "may have been deleted".
+  for (let i = 0; i < 6; i++) {
+    await expect(page.locator('[data-thread-wait="missing"]')).toHaveCount(0);
+    await page.waitForTimeout(500);
+  }
+  await expect(wait).toBeVisible();
+  // MacBook is back: its list names the thread, and it opens.
+  start(macbook);
+  await expect(page.locator('section.ib-pane .ib-subject')).toHaveText(subject, { timeout: 45_000 });
+  await expect(page.locator('section.ib-pane [data-thread-machine]')).toHaveText('On MacBook');
   await expect(page.locator('[data-thread-wait="missing"]')).toHaveCount(0);
+  await expect.poll(() => stateOf(studio, macbook), { timeout: 45_000 }).toBe('online');
 });
 
 test("3. answering MacBook's thread from Studio wakes MacBook's agent", async () => {

@@ -246,6 +246,19 @@ describe("thread ids: a linked machine never takes over this machine's", () => {
     expect(asked).toEqual([`/api/inbox/messages/${MESSAGE}/send-now`]);
   });
 
+  test("a kept compose draft naming another machine's project leaves that project on its machine", async () => {
+    await withFetch(() => json({ ...listOf([ROW(REMOTE, MAC)]), projects: [{ id: REMOTE_PROJECT, name: 'billing-svc', machine: MAC }] }), () => inboxApi.list());
+    expect(machineOf(REMOTE_PROJECT)).toBe(MAC);
+    // This Inbox's drafts answer echoes the project the draft was written for: not a record of this Inbox.
+    await withFetch(
+      () => json({ serverSession: 'srv', drafts: [{ id: 'drf_1', project: { id: REMOTE_PROJECT, name: 'billing-svc' }, body: 'hi' }] }),
+      () => inboxApi.drafts(),
+    );
+    expect(machineOf(REMOTE_PROJECT)).toBe(MAC);
+    const asked = await withFetch(() => json({ read: [] }), () => inboxApi.markProjectRead(REMOTE_PROJECT, 'b1'));
+    expect(asked).toEqual([`/api/inbox/m/${MAC}/projects/${REMOTE_PROJECT}/read`]);
+  });
+
   test('the server says an id is this machine\'s (id_is_local): the window stops forwarding it and asks this Inbox', async () => {
     const UNSEEN = 'msg_01KUNSEENLOCAL000000000001';
     rememberMachine([UNSEEN], MAC);
