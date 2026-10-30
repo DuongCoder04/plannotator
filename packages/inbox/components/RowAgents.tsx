@@ -4,10 +4,12 @@ import { agentName } from '../tags';
 import { Tip } from './Tip';
 
 /**
- * The agents in a list row, beside its project (approval "list-rows-mail-icons", 2026-10-30): one bare 16 px mark
- * per agent host, in the order they joined the thread. A host with two or more sessions is one mark and "×N". Past
- * three hosts, two marks and "+N", N counting the sessions not drawn. The marks are plain (no tiles) and carry no
- * words; the run is one image whose name lists every agent, the hidden ones too.
+ * The agents in a list row. A wide row draws them after its project (`RowAgents`, approval "list-rows-mail-icons",
+ * 2026-10-30): one bare 16 px mark per agent host, in the order they joined the thread. A host with two or more
+ * sessions is one mark and "×N". Past three hosts, two marks and "+N", N counting the sessions not drawn. A
+ * three-line or phone row draws them before its project (`RowAgentTiles`, approval "inbox-list-row-v2",
+ * 2026-10-30): the thread header's overlapping tiles, one per session. Either run is one image whose name lists
+ * every agent, the hidden ones too.
  */
 
 /** A row draws up to three hosts' marks; past that two and "+N". */
@@ -75,4 +77,42 @@ export function RowAgents({ participants, agent, tip = true }: { participants: r
     </span>
   );
   return tip ? <Tip content={words}>{marks}</Tip> : marks;
+}
+
+/** A three-line or phone row draws at most two tiles; past that, a "+N" tile for the rest. */
+export const ROW_AGENT_TILES = 2;
+
+/**
+ * The hosts drawn as tiles, one per session in the order they joined, and how many sessions the "+N" tile stands
+ * for (0: none). The run is bounded, so many agents never push the project off its line.
+ */
+export function rowAgentTiles(participants: readonly InboxParticipant[] | undefined, agent: { kind: string; host?: string | null }): { shown: (string | null)[]; more: number; total: number } {
+  const hosts = participants && participants.length > 0 ? participants.map((p) => p.host) : [agent.kind === 'agent' ? (agent.host ?? null) : null];
+  const shown = hosts.slice(0, ROW_AGENT_TILES);
+  return { shown, more: hosts.length - shown.length, total: hosts.length };
+}
+
+/**
+ * The three-line and phone rows' agents, before the project (approval "inbox-list-row-v2", 2026-10-30): the thread
+ * header's overlapping tiles, at most two, then a "+N" tile; one image named by every agent. `tip`: the words in a
+ * tooltip too (not on a phone, where a hover is a first tap).
+ */
+export function RowAgentTiles({ participants, agent, tip = true }: { participants: readonly InboxParticipant[] | undefined; agent: { kind: string; host?: string | null }; tip?: boolean }) {
+  const words = rowAgentWords(rowAgentGroups(participants, agent));
+  const { shown, more, total } = rowAgentTiles(participants, agent);
+  const tiles = (
+    <span className="ib-atiles" role="img" aria-label={words} data-row-agents={total}>
+      {shown.map((host, i) => (
+        <span className="ib-atile" key={i} aria-hidden="true" data-agent-host={host ?? ''}>
+          <HostMark host={host} />
+        </span>
+      ))}
+      {more > 0 && (
+        <span className="ib-atile ib-atmore" aria-hidden="true">
+          +{more}
+        </span>
+      )}
+    </span>
+  );
+  return tip ? <Tip content={words}>{tiles}</Tip> : tiles;
 }
