@@ -692,9 +692,10 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   // A phone's swipe over the file (fileSwipe.ts): documents, text, code, PDFs, the download card and images follow the finger.
   // It is heard on the body around the file (`bodyRef`), which never moves, so a finger that comes back while the last
   // step is still sliding is heard; what moves is the file area, or for an image only the picture (`swipeMoves`).
-  const docAreaRef = useRef<HTMLDivElement>(null);
-  // The body's width decides whether full screen has room for the Contents rail (contents.ts).
-  const [bodyRef, bodyNarrow] = useNarrowerThan<HTMLDivElement>(CONTENTS_RAIL_BELOW, false);
+  // The file area's width (the rail and the page, never the comments drawer beside them) decides whether full
+  // screen has room for the Contents rail (contents.ts).
+  const [docAreaRef, docAreaNarrow] = useNarrowerThan<HTMLDivElement>(CONTENTS_RAIL_BELOW, false);
+  const bodyRef = useRef<HTMLDivElement>(null);
   /** The controls a drag down fades (the dock, the caption, the size bar, the comment box), found once when it starts. */
   const dismissFades = useRef<HTMLElement[]>([]);
   const swipeMode = fileSwipeMode(kind, tooLarge);
@@ -1302,7 +1303,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     view === null || kind !== 'markdown' || !showsContents(documentBlocks)
       ? null
       : full
-        ? phone || bodyNarrow
+        ? phone || docAreaNarrow
           ? 'sheet'
           : 'rail'
         : folded
@@ -1853,6 +1854,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               scrollViewport={scrollViewport}
               shown={contentsShown}
               onShownChange={setContentsShown}
+              phone={phone}
             />
           )}
           {isImage && (

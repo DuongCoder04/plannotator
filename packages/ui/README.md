@@ -518,7 +518,7 @@ For a custom row, use the atoms (`DiffFileTreeFolderRow`, `DiffFileTreeFileRowCo
 
 ### Document contents (`components/DocumentContents`; unreleased)
 
-Plan review's Contents list for a host that has no plan-editor sidebar: `TableOfContents` bound to one scroll element, with `useActiveSection` marking the heading being read. It draws no chrome; the host titles and places it, and keys it by the document.
+Plan review's Contents list for a host that has no plan-editor sidebar: `TableOfContents` bound to one scroll element, with `useActiveSection` marking the heading being read. It draws no chrome; the host titles and places it, and keys it by the document. Mounted mid-document (a sheet that opens), it marks the last heading already scrolled past until the observer reports one, and it keeps the marked entry in view inside the list's own scroll box.
 
 ```tsx
 import { DocumentContents } from "@plannotator/ui/components/DocumentContents";

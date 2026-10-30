@@ -20,8 +20,9 @@ export function showsContents(blocks: readonly Block[]): boolean {
 export const CONTENTS_COOKIE = 'plannotator-inbox-contents';
 
 /**
- * Below this width of the file's body (`.ib-vbody`) full screen draws the list
- * as a button and a sheet, not a 240 px rail: the rail and a 760 px page need it.
+ * Below this width of the file area (`.ib-docarea`: the rail and the page, not
+ * the comments drawer beside them) full screen draws the list as a button and a
+ * sheet, not a 240 px rail: the rail and a 760 px page need it.
  */
 export const CONTENTS_RAIL_BELOW = 1000;
 

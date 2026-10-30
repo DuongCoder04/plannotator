@@ -1646,6 +1646,13 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .pn-inbox .ib-view.ib-fullview.ib-phone:has([data-full-view-changed]) .ib-contents-open { top: calc(56px + env(safe-area-inset-top)); }
 .ib-contents-scrim { position: fixed; inset: 0; z-index: 59; border: 0; padding: 0; background: color-mix(in oklab, var(--foreground) 16%, transparent); }
 .ib-contents-sheet { position: fixed; z-index: 60; top: 0; bottom: 0; left: 0; width: min(300px, 84vw); padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); border-right: 1px solid var(--border); box-shadow: var(--card-shadow); }
+.ib-contents-sheet:focus { outline: none; }
+/* A phone's sheet (portaled out of .ib-phone, so it carries its own class): readable rows and 44 px targets, as the
+   phone surface draws the same list (surface.css). */
+.pn-inbox .ib-contents-phone .ib-contents-h { height: 52px; padding: 0 4px 0 16px; font-size: var(--ib-fs-15, 15px); font-weight: 600; }
+.pn-inbox .ib-contents-phone .ib-contents-h .ib-iconbtn { width: 44px; height: 44px; }
+.ib-contents-phone .ib-contents-list { padding: 0 6px 16px; }
+.ib-contents-phone nav button { min-height: 44px; font-size: var(--ib-fs-15, 15px); padding-top: 10px; padding-bottom: 10px; }
 .ib-htmlframe { position: absolute; inset: 0; }
 /* A page the attached page links to, not attached: read-only over the attached page, which stays mounted under it (htmlLinks.ts). */
 .ib-htmlframe.ib-covered { visibility: hidden; }

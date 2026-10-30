@@ -3,9 +3,11 @@
  * review shows): beside the thread at the top of the comments column, the
  * page keeping its width; in full screen as a rail on the left, the
  * Select / Markup toolstrip over the page and clear of the rail. A click on a
- * heading scrolls the document to it.
+ * heading scrolls the document to it. On a phone a button opens the list as a
+ * sheet: opened mid-document it marks the section being read, its rows are
+ * 44 px touch targets, and Escape closes it back to the button.
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Browser, type Locator, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -32,38 +34,57 @@ const plan = [
   ...Array.from({ length: 30 }, (_, i) => `Risk paragraph ${i + 1}: Stripe rate limits and a slow dead-letter queue.`),
 ].join('\n\n');
 
-async function contentsEntries(list: ReturnType<Page['locator']>): Promise<string[]> {
+async function contentsEntries(list: Locator): Promise<string[]> {
   return list.locator('nav[aria-label="Table of contents"] button').allTextContents();
+}
+
+/** A scratch Inbox with the plan sent in a thread, open in `view` in a `viewport` window; `run` gets its page and pane. */
+async function withPlan(
+  browser: Browser,
+  viewport: { width: number; height: number },
+  view: 'side' | 'full',
+  run: (page: Page, pane: Locator) => Promise<void>,
+): Promise<void> {
+  const root = inboxScratch('plannotator-contents-');
+  const home = join(root, 'home');
+  mkdirSync(home);
+  const env = {
+    PATH: process.env.PATH ?? '', HOME: home, PLANNOTATOR_DATA_DIR: join(root, 'data'),
+    PLANNOTATOR_RELAY_URL: 'http://127.0.0.1:9', PLANNOTATOR_BROWSER: NO_BROWSER, NO_BROWSER,
+    PLANNOTATOR_INBOX_CONNECT: '0', PLANNOTATOR_INBOX_TAILSCALE: '0', PLANNOTATOR_INBOX_PHONES: '0',
+    PLANNOTATOR_UPDATE_CHECK: '0', PLANNOTATOR_INBOX_NOTES: '0',
+  };
+  const context = await browser.newContext({ viewport, reducedMotion: 'reduce' });
+  let agent: SimAgent | undefined;
+  try {
+    const started = spawnSync(binary, ['inbox', '--background'], { env, encoding: 'utf8', timeout: 60_000 });
+    expect(started.status, started.stderr).toBe(0);
+    const url = started.stdout.trim();
+    const project = scratchProject(join(root, 'src'), 'billing');
+    writeFileSync(join(project, 'refund-plan.md'), plan);
+    agent = await SimAgent.connect({ binary, env, name: 'Claude', host: 'claude-code' });
+    const sent = await agent.send({ project_path: project, subject: 'Refund worker plan', body: 'The plan is attached.', attachments: ['refund-plan.md'] });
+    const model = await (await fetch(new URL(`/api/inbox/threads/${sent.thread_id}/attachments`, url))).json() as { attachments: { id: string }[] };
+    const page = await context.newPage();
+    await page.goto(`${url}#thread=${sent.thread_id}&file=${model.attachments[0]!.id}&view=${view}`);
+    const pane = page.locator('[data-attachment-pane]');
+    await expect(pane.locator('#rollout')).toHaveCount(1);
+    await run(page, pane);
+    await forgetFileViewChoice(page);
+  } finally {
+    try {
+      await agent?.close();
+      await context.close();
+    } finally {
+      await removeInboxScratch(root);
+    }
+  }
 }
 
 for (const layout of ['side', 'full'] as const) {
   test(`${layout}: a plan attachment shows its Contents list, and a heading click scrolls to it`, async ({ browser }) => {
-    const root = inboxScratch('plannotator-contents-');
-    const home = join(root, 'home');
-    mkdirSync(home);
-    const env = {
-      PATH: process.env.PATH ?? '', HOME: home, PLANNOTATOR_DATA_DIR: join(root, 'data'),
-      PLANNOTATOR_RELAY_URL: 'http://127.0.0.1:9', PLANNOTATOR_BROWSER: NO_BROWSER, NO_BROWSER,
-      PLANNOTATOR_INBOX_CONNECT: '0', PLANNOTATOR_INBOX_TAILSCALE: '0', PLANNOTATOR_INBOX_PHONES: '0',
-      PLANNOTATOR_UPDATE_CHECK: '0', PLANNOTATOR_INBOX_NOTES: '0',
-    };
-    const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
-    let agent: SimAgent | undefined;
-    try {
-      const started = spawnSync(binary, ['inbox', '--background'], { env, encoding: 'utf8', timeout: 60_000 });
-      expect(started.status, started.stderr).toBe(0);
-      const url = started.stdout.trim();
-      const project = scratchProject(join(root, 'src'), 'billing');
-      writeFileSync(join(project, 'refund-plan.md'), plan);
-      agent = await SimAgent.connect({ binary, env, name: 'Claude', host: 'claude-code' });
-      const sent = await agent.send({ project_path: project, subject: 'Refund worker plan', body: 'The plan is attached.', attachments: ['refund-plan.md'] });
-      const model = await (await fetch(new URL(`/api/inbox/threads/${sent.thread_id}/attachments`, url))).json() as { attachments: { id: string }[] };
-      const page = await context.newPage();
-      await page.goto(`${url}#thread=${sent.thread_id}&file=${model.attachments[0]!.id}&view=${layout}`);
-      const pane = page.locator('[data-attachment-pane]');
+    await withPlan(browser, { width: 1440, height: 900 }, layout, async (_page, pane) => {
       const scroller = pane.locator('.ib-docscroll');
-      await expect(pane.locator('#rollout')).toHaveCount(1);
-
       const list = pane.locator(layout === 'side' ? '.ib-apanel [data-contents="column"]' : '.ib-docarea > [data-contents="rail"]');
       await expect(list).toBeVisible();
       expect(await contentsEntries(list)).toEqual(HEADINGS);
@@ -90,14 +111,33 @@ for (const layout of ['side', 'full'] as const) {
       }).toBe(true);
       // The heading read now is the one marked in the list, as in plan review.
       await expect(list.locator('button[aria-current="location"]')).toHaveText('Rollout');
-      await forgetFileViewChoice(page);
-    } finally {
-      try {
-        await agent?.close();
-        await context.close();
-      } finally {
-        await removeInboxScratch(root);
-      }
-    }
+    });
   });
 }
+
+test('phone: the sheet opened mid-document marks the section being read; 44 px rows; Escape closes it to the button', async ({ browser }) => {
+  await withPlan(browser, { width: 390, height: 844 }, 'full', async (page, pane) => {
+    const scroller = pane.locator('.ib-docscroll');
+    // Halfway into Design: its heading has gone above the top, the next one is far below.
+    await scroller.evaluate((el) => {
+      const design = el.querySelector<HTMLElement>('#design')!;
+      el.scrollTop += design.getBoundingClientRect().top - el.getBoundingClientRect().top + 300;
+    });
+    const open = pane.locator('[data-contents-open]');
+    await open.click();
+    const sheet = page.locator('[data-contents="sheet"][role="dialog"]');
+    await expect(sheet).toBeVisible();
+    await expect(sheet.locator('nav button[aria-current="location"]')).toHaveText('Design');
+
+    for (const row of await sheet.locator('nav button').all()) {
+      expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    }
+    expect(await sheet.locator('nav button').first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(15);
+
+    await page.keyboard.press('Escape');
+    await expect(sheet).toHaveCount(0);
+    await expect(open).toBeFocused();
+    // Escape closed the sheet only: full screen is still open.
+    await expect(pane).toHaveClass(/\bib-fullview\b/);
+  });
+});

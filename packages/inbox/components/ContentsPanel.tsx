@@ -23,6 +23,8 @@ interface Props {
   /** The docked list (rail, column) is shown; the sheet ignores it. */
   shown: boolean;
   onShownChange: (shown: boolean) => void;
+  /** The window is phone-sized: the sheet's rows are 44 px touch targets in readable type. */
+  phone?: boolean;
 }
 
 /** One document's Contents list in the Inbox window, in Inbox chrome around ui's DocumentContents. */
@@ -64,16 +66,51 @@ export function ContentsPanel(props: Props) {
   );
 }
 
-/** A button over the file opens the list as a sheet over the window; a pick scrolls there and closes it. */
+/** What can take focus inside the sheet, in order: Tab wraps among these while it is open. */
+const SHEET_FOCUSABLE = 'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
+
+/**
+ * A button over the file opens the list as a sheet over the window; a pick scrolls there and closes it.
+ * The sheet is modal while open: Tab wraps inside it, and Escape closes it first wherever focus is (before
+ * full screen's Escape ladder sees the key). Focus goes back to the Contents button.
+ */
 function ContentsSheet(props: Props) {
   const [open, setOpen] = useState(false);
   const openRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const sheetRef = useRef<HTMLDivElement>(null);
   const wasOpen = useRef(false);
   useEffect(() => {
     if (open) closeRef.current?.focus({ preventScroll: true });
     else if (wasOpen.current) openRef.current?.focus({ preventScroll: true });
     wasOpen.current = open;
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    // The window's capture phase runs before the pane's ladder and the shortcut scopes (AnnotationsChip's way).
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (event.defaultPrevented) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setOpen(false);
+        return;
+      }
+      const sheet = sheetRef.current;
+      if (event.key !== 'Tab' || !sheet) return;
+      const items = [...sheet.querySelectorAll<HTMLElement>(SHEET_FOCUSABLE)];
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (!first || !last) return;
+      const active = document.activeElement;
+      const inside = active instanceof Node && sheet.contains(active) && active !== sheet;
+      if (event.shiftKey ? !inside || active === first : !inside || active === last) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus({ preventScroll: true });
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, [open]);
   const host = open ? peekSheetHost(openRef.current) : null;
   return (
@@ -96,17 +133,14 @@ function ContentsSheet(props: Props) {
           <>
             <button type="button" className="ib-contents-scrim" aria-label="Close contents" tabIndex={-1} onClick={() => setOpen(false)} />
             <div
-              className="ib-contents ib-contents-sheet"
+              ref={sheetRef}
+              className={`ib-contents ib-contents-sheet${props.phone ? ' ib-contents-phone' : ''}`}
               data-contents="sheet"
               role="dialog"
+              aria-modal="true"
               aria-label="Contents"
-              onKeyDown={(event) => {
-                if (event.key === 'Escape' && !event.defaultPrevented) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setOpen(false);
-                }
-              }}
+              // A click on the sheet's blank space keeps focus in the sheet, not on the page behind it.
+              tabIndex={-1}
             >
               <div className="ib-contents-h">
                 <span className="ib-contents-t">Contents</span>
