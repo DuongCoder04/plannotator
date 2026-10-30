@@ -180,14 +180,14 @@ test('Pin thread leads the row menu; the thread appears under Pinned, above Proj
   await expect(rowButton(page, threads.board)).toBeVisible();
   // Nothing pinned: no section at all.
   await expect(page.locator('[data-pinned-section]')).toHaveCount(0);
-  await expect(page.locator('.ib-side-label')).toHaveText(['Projects']);
+  await expect(page.locator('.ib-side-sec-l')).toHaveText(['Projects']);
 
   await rowButton(page, threads.board).click({ button: 'right' });
   const menu = page.locator('[data-row-menu]');
   await expect(menu.getByRole('menuitem').first()).toHaveText('Pin thread');
   await page.locator('[data-row-action="pin"]').click();
   await expect(pinned(page, threads.board)).toBeVisible();
-  await expect(page.locator('.ib-side-label')).toHaveText(['Pinned', 'Projects']);
+  await expect(page.locator('.ib-side-sec-l')).toHaveText(['Pinned', 'Projects']);
   await expect(rowButton(page, threads.board).locator('[data-pin-mark]')).toBeVisible();
   await expect(rowButton(page, threads.board)).toHaveAccessibleName(/, pinned$/);
   // Pin shows no toast; the live region says it.
