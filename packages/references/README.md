@@ -258,8 +258,13 @@ bun test             # in this folder; the root `bun test` runs the same files
 ```
 
 Tests fake providers at the port's `fetch` only, with low-entropy fixture
-values. One test is a tripwire: no source file may read env, mint a JWT, or
-import anything but relative modules and `@plannotator/core/diff-paths`.
+values. One test is a tripwire: no source file may read env (`process.env`,
+`Bun.env`, `import.meta.env`, `Deno.env`), mint a JWT, name an auth-flow
+step (`refresh_token`, `client_secret`, `grant_type`, `/login/oauth`,
+`oauth`), call `require(` or a computed or package `import(`, call the
+global `fetch(` (only `src/fetch.ts` calls a fetcher), or import anything
+but relative modules and `@plannotator/core/diff-paths` (side-effect
+imports included).
 
 The only runtime dependency is `@plannotator/core`, for the git path quoting
 in `diff-paths` that the pull request diff uses.

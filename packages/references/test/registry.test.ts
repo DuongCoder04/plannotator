@@ -115,7 +115,7 @@ describe("the cut stays cut", () => {
 	};
 	walk(src);
 
-	it("no source file reads env, mints a JWT, or reaches Workspaces runtime code", () => {
+	it("no source file reads env, mints a JWT, runs an auth flow, or reaches Workspaces runtime code", () => {
 		expect(files.length).toBeGreaterThan(10);
 		for (const file of files) {
 			// Code only: the provenance comments name what was cut.
@@ -124,6 +124,10 @@ describe("the cut stays cut", () => {
 				.replace(/^\s*\/\/.*$/gm, "");
 			for (const banned of [
 				"process.env",
+				"Bun.env",
+				"import.meta.env",
+				"Deno.env",
+				"require(",
 				"env.vars",
 				"appOrigin",
 				"jose",
@@ -141,9 +145,28 @@ describe("the cut stays cut", () => {
 			]) {
 				expect(text.includes(banned), `${file} contains ${banned}`).toBe(false);
 			}
-			const imports = [...text.matchAll(/from "([^"]+)"/g)].map((m) => m[1] ?? "");
+			// Auth-flow words, any case. The one exception is the literal "oauth"
+			// in the Linear grammar's reserved workspace slugs (a URL it refuses).
+			const code = text.replace(/RESERVED_WORKSPACES = new Set\(\["oauth", /u, "RESERVED_WORKSPACES = new Set([");
+			for (const word of ["refresh_token", "client_secret", "grant_type", "/login/oauth", "oauth"]) {
+				expect(code.toLowerCase().includes(word), `${file} contains ${word}`).toBe(false);
+			}
+			// Static imports in both quote styles, and side-effect imports.
+			const imports = [...text.matchAll(/\bfrom\s+["']([^"']+)["']|^\s*import\s+["']([^"']+)["']/gm)].map(
+				(m) => m[1] ?? m[2] ?? "",
+			);
 			for (const spec of imports) {
 				expect(spec.startsWith(".") || spec === "@plannotator/core/diff-paths", `${file} imports ${spec}`).toBe(true);
+			}
+			// import(...) only as a relative literal (contract.ts names types
+			// with it); never a computed or package specifier.
+			for (const m of text.matchAll(/\bimport\s*\(\s*([^)]*)\)/g)) {
+				expect(/^["']\.\.?\/[^"']+["']$/u.test((m[1] ?? "").trim()), `${file}: ${m[0]}`).toBe(true);
+			}
+			// The global fetch would skip the port's host gate and the redirect
+			// policy. Only fetch.ts calls a fetcher; `.fetch(` and `fetcher(` pass.
+			if (!file.endsWith(`${join("src", "fetch.ts")}`)) {
+				expect(/(?<![.\w$])fetch\s*\(/u.test(text), `${file} calls the global fetch`).toBe(false);
 			}
 		}
 	});
