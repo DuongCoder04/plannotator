@@ -177,3 +177,12 @@ Notes for that work:
   change with them.
 - Workspaces' GitHub and GitLab adapters read REST; a GraphQL `list` is new
   code there, not a drop-in.
+
+## Since placement in Plannotator
+
+The sections above record the extract as it was cut. Changes made in this
+repo after placement, in commit order:
+
+- Difference 12 is resolved: `ReferenceCredentialKind` gains
+  `linear-api-key`, which Linear accepts beside `bearer` and sends as the
+  bare `Authorization: <key>`. Both kinds still need `account`.

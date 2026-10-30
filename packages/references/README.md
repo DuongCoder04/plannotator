@@ -57,7 +57,7 @@ interface ReferencePort {
 }
 
 type ReferenceCredentialAnswer =
-  | { kind: "installation" | "bearer" | "private-token"; token: string; host: string; account?: string }
+  | { kind: "installation" | "bearer" | "private-token" | "linear-api-key"; token: string; host: string; account?: string }
   | { kind: "unavailable"; credentialDead: boolean }
   | null;
 ```
@@ -69,7 +69,7 @@ canonical URL it is resolving (`"github.com"`, `"gitlab.com"`, `"linear.app"`).
 | --- | --- | --- | --- |
 | GitHub | `installation`, `bearer` | `Authorization: Bearer` | resolve reads `api.github.com` anonymously; search, scopes and pull reads answer `not_linked` |
 | GitLab | `private-token`, `bearer` | `PRIVATE-TOKEN`, or `Authorization: Bearer` | resolve reads `gitlab.com` anonymously |
-| Linear | `bearer` (with `account`) | `Authorization: Bearer` | `not_linked`, with no fetch |
+| Linear | `bearer` or `linear-api-key` (each with `account`) | `Authorization: Bearer`, or the bare `Authorization: <key>` | `not_linked`, with no fetch |
 
 Rules the adapters apply to every answer (`credentialFor` in `port.ts`):
 
@@ -112,7 +112,7 @@ leaves the origin it was sent to.
   answered as `bearer`.
 - GitLab: glab's stored token for a host glab is signed in to, answered as
   `private-token` or `bearer` according to how glab stored it.
-- Linear: none in v1. A later typed key needs `account` set (see below).
+- Linear: none in v1. A later typed personal key is answered as `linear-api-key`, with `account` set to its workspace urlKey (see below).
 - The host gate is the port's job: hand out a credential only for a host
   the CLI is signed in to, and bind the port's `fetch` to that host. A
   planted `origin` must not be able to send a token anywhere else. The
@@ -120,8 +120,9 @@ leaves the origin it was sent to.
   the CLI is signed in to.
 
 Linear personal API keys are sent without the `Bearer` prefix (Linear's
-OAuth tokens take it). The `bearer` kind always adds it. An Inbox that backs
-Linear with a personal key needs a new credential kind first.
+OAuth tokens take it), so they have their own kind: `linear-api-key` sends
+the bare `Authorization: <key>`, and `bearer` always adds the prefix. Both
+need `account`. GitHub and GitLab never send a `linear-api-key`.
 
 ## What is deliberately not in it
 

@@ -15,7 +15,8 @@
 // Verified against the Linear docs (2026-07-23):
 //   GraphQL: https://linear.app/developers/graphql
 //     (POST api.linear.app/graphql, `Authorization: Bearer` for OAuth
-//     tokens; issue(id:) accepts the human identifier "ENG-123"; workflow
+//     tokens, a bare `Authorization: <key>` for personal API keys (the
+//     `linear-api-key` kind); issue(id:) accepts the human identifier "ENG-123"; workflow
 //     state types: triage backlog unstarted started completed canceled)
 //
 // NO PUBLIC RUNG: nothing on linear.app reads unauthenticated. No
@@ -30,7 +31,12 @@ import type {
 } from "../contract.ts";
 import { providerFetch } from "../fetch.ts";
 import { matchLinearUrl, parseLinearCanonical } from "../grammars/linear.ts";
-import { credentialFor, type FetchLike, type ReferencePort } from "../port.ts";
+import {
+	credentialFor,
+	type FetchLike,
+	type ReferenceCredential,
+	type ReferencePort,
+} from "../port.ts";
 
 const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
 
@@ -62,12 +68,18 @@ interface GraphqlAnswer {
 	data?: Record<string, unknown> | null;
 }
 
+/** The Authorization header value for a Linear credential: an OAuth access
+ * token takes `Bearer`, a personal API key is sent bare. */
+function linearAuthorization(credential: ReferenceCredential): string {
+	return credential.kind === "linear-api-key" ? credential.token : `Bearer ${credential.token}`;
+}
+
 /** POST one GraphQL query; null data node = the entity is not readable
  * here (wrong workspace, private team, gone): the not_linked answer. */
 async function graphql(
 	query: string,
 	variables: Record<string, string>,
-	accessToken: string,
+	authorization: string,
 	fetcher: FetchLike,
 ): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; result: ResolveResult }> {
 	let response: Response;
@@ -76,7 +88,7 @@ async function graphql(
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
-				authorization: `Bearer ${accessToken}`,
+				authorization,
 			},
 			body: JSON.stringify({ query, variables }),
 		});
@@ -134,6 +146,7 @@ async function resolveLinear(ref: ExternalRef, port: ReferencePort): Promise<Res
 
 	const credential = await credentialFor(port, "linear", new URL(ref.url).hostname.toLowerCase(), [
 		"bearer",
+		"linear-api-key",
 	]);
 	// No public rung: without a credential nothing resolves.
 	if (credential === null) return { ok: false, reason: "not_linked" };
@@ -147,16 +160,17 @@ async function resolveLinear(ref: ExternalRef, port: ReferencePort): Promise<Res
 	// (nearly every workspace has an ENG-1) would render the credential's
 	// workspace's same-named issue under a link pointing at someone else's.
 	// The credential's account IS its workspace urlKey; a URL on any other
-	// workspace is simply not linked here, with ZERO provider fetches.
+	// workspace is simply not linked here, with ZERO provider fetches. This
+	// holds for both kinds: a personal API key is also bound to one workspace.
 	const installed = credential.account?.toLowerCase() ?? null;
 	if (installed === null || installed !== parsed.workspace) {
 		return { ok: false, reason: "not_linked" };
 	}
-	const token = credential.token;
+	const authorization = linearAuthorization(credential);
 	const fetcher = providerFetch(port);
 
 	if (item.form === "issue") {
-		const answer = await graphql(ISSUE_QUERY, { id: item.identifier }, token, fetcher);
+		const answer = await graphql(ISSUE_QUERY, { id: item.identifier }, authorization, fetcher);
 		if (!answer.ok) return answer.result;
 		const issue = node(answer.data["issue"]);
 		const title = str(issue?.["title"]);
@@ -179,7 +193,7 @@ async function resolveLinear(ref: ExternalRef, port: ReferencePort): Promise<Res
 	}
 
 	if (item.form === "project") {
-		const answer = await graphql(PROJECT_QUERY, { id: item.slugId }, token, fetcher);
+		const answer = await graphql(PROJECT_QUERY, { id: item.slugId }, authorization, fetcher);
 		if (!answer.ok) return answer.result;
 		const project = node(answer.data["project"]);
 		const title = str(project?.["name"]);
@@ -201,7 +215,7 @@ async function resolveLinear(ref: ExternalRef, port: ReferencePort): Promise<Res
 		return { ok: true, facts };
 	}
 
-	const answer = await graphql(DOCUMENT_QUERY, { slugId: item.slugId }, token, fetcher);
+	const answer = await graphql(DOCUMENT_QUERY, { slugId: item.slugId }, authorization, fetcher);
 	if (!answer.ok) return answer.result;
 	const documents = node(answer.data["documents"]);
 	const nodes = Array.isArray(documents?.["nodes"]) ? (documents["nodes"] as unknown[]) : [];

@@ -22,8 +22,11 @@ export type FetchLike = (input: string | URL | Request, init?: RequestInit) => P
  *    (a GitHub user token from gh, a GitLab OAuth token from glab, a Linear
  *    OAuth access token).
  *  - `private-token`: a GitLab personal, group or project access token sent
- *    as `PRIVATE-TOKEN`. */
-export type ReferenceCredentialKind = "bearer" | "private-token" | "installation";
+ *    as `PRIVATE-TOKEN`.
+ *  - `linear-api-key`: a Linear personal API key, sent as the bare
+ *    `Authorization: <key>` with no `Bearer` prefix (Linear refuses a
+ *    prefixed personal key). Like `bearer` on Linear, it needs `account`. */
+export type ReferenceCredentialKind = "bearer" | "private-token" | "installation" | "linear-api-key";
 
 export interface ReferenceCredential {
 	readonly kind: ReferenceCredentialKind;

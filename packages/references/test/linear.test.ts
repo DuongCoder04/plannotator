@@ -7,6 +7,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, type Mock, spyOn } from "bun:test";
 
+import { githubAdapter } from "../src/adapters/github.ts";
+import { gitlabAdapter } from "../src/adapters/gitlab.ts";
 import { linearAdapter } from "../src/adapters/linear.ts";
 import type { ExternalRefState } from "../src/contract.ts";
 import type { ReferenceCredential } from "../src/port.ts";
@@ -235,5 +237,71 @@ describe("linear resolve", () => {
 			});
 		}
 		expect(lin.calls).toHaveLength(0);
+	});
+});
+
+describe("linear personal API keys (the linear-api-key kind)", () => {
+	const apiKey: ReferenceCredential = { kind: "linear-api-key", token: "key-lin", host: "linear.app", account: "acme" };
+
+	/** Linear's own rule: a personal key is the bare header value, and a
+	 * `Bearer`-prefixed key is refused with 401 (read as credentialDead). */
+	function armPersonalKey(lin: ReturnType<typeof fakeProvider>): void {
+		lin.on(GRAPHQL, ({ headers }) =>
+			headers.get("authorization") === "key-lin"
+				? json(200, {
+						data: {
+							issue: {
+								identifier: "ENG-7",
+								title: "Import the backlog",
+								state: { name: "Todo", type: "unstarted" },
+								creator: { name: "Josie" },
+							},
+						},
+					})
+				: json(401, { errors: [{ message: "Authentication required" }] }),
+		);
+	}
+
+	it("resolves a canned issue, and the request carries the key with no Bearer prefix", async () => {
+		const lin = fakeProvider();
+		armPersonalKey(lin);
+		const port = makePort(lin.fetch, { "linear linear.app": apiKey });
+		const result = await linearAdapter.resolve(refOf("https://linear.app/acme/issue/ENG-7"), port);
+		expect(result).toMatchObject({
+			ok: true,
+			facts: { kind: "issue", shortId: "ENG-7", title: "Import the backlog", state: { label: "Todo", tone: "open" } },
+		});
+		expect(lin.calls.map((c) => c.headers.get("authorization"))).toEqual(["key-lin"]);
+	});
+
+	it("needs the workspace account like bearer: no account, or a foreign workspace, reads nothing with zero fetches", async () => {
+		const lin = fakeProvider();
+		armPersonalKey(lin);
+		const unbound = makePort(lin.fetch, {
+			"linear linear.app": { kind: "linear-api-key", token: "key-lin", host: "linear.app" },
+		});
+		expect(await linearAdapter.resolve(refOf("https://linear.app/acme/issue/ENG-7"), unbound)).toEqual({
+			ok: false,
+			reason: "not_linked",
+		});
+		const port = makePort(lin.fetch, { "linear linear.app": apiKey });
+		expect(await linearAdapter.resolve(refOf("https://linear.app/zebra/issue/ENG-7"), port)).toEqual({
+			ok: false,
+			reason: "not_linked",
+		});
+		expect(lin.calls).toHaveLength(0);
+	});
+
+	it("GitHub and GitLab never send a Linear key", async () => {
+		const forge = fakeProvider();
+		forge.on("GET https://api.github.com/repos/a/b/issues/1", () => json(200, { title: "t", state: "open" }));
+		forge.on("GET https://gitlab.com/api/v4/projects/a%2Fb/issues/1", () => json(200, { title: "t", state: "opened" }));
+		const port = makePort(forge.fetch, async (_provider, host) => ({ kind: "linear-api-key", token: "key-lin", host, account: "acme" }));
+		expect((await githubAdapter.resolve(refOf("https://github.com/a/b/issues/1"), port)).ok).toBe(true);
+		expect((await gitlabAdapter.resolve(refOf("https://gitlab.com/a/b/-/issues/1"), port)).ok).toBe(true);
+		expect(forge.calls.map((c) => [c.headers.get("authorization"), c.headers.get("PRIVATE-TOKEN")])).toEqual([
+			[null, null],
+			[null, null],
+		]);
 	});
 });
