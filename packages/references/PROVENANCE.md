@@ -215,3 +215,24 @@ repo after placement, in commit order:
   label on all three. Linear's `author` stays the assignee, else the
   creator, as in resolve; `assignees` carries the assignee's display name.
   The shared helpers are in the new `src/list-query.ts`.
+- Widened unions, in one place: `ReferenceCredentialKind` gains
+  `"linear-api-key"`, and the failure's `field` in `ResolveResult` (and so
+  in `ExternalRefFailure` and `SearchResult`) gains `"filter"`. A Workspaces switch
+  over either union that has no default branch needs the new member.
+- Review fixes (#2387). `list`: a quoted GitHub search value keeps its
+  colons (only `"`, `\` and line breaks are removed); free-text words are
+  quoted and parentheses removed, so no operator or qualifier widens the
+  search; logins may hold `_` (Enterprise Managed Users); two or more
+  labels or a milestone go through GitHub search (labels AND, exact
+  milestone title; the `milestones(query:)` lookup is gone); GitHub and
+  GitLab rows are re-checked for host, repository, state, labels and
+  milestone, so a page may hold fewer than 100 items, even none, and still
+  carry a cursor. `apiOrigin(provider, host)` names the one origin each
+  host's calls use. `providerFetch` calls `port.log` as a method and
+  swallows a rejected async log. `resolve` reads only a ref whose URL is
+  the canonical its grammar mints. `createReferenceAdapters` throws on a
+  host named for both forges or owned by another provider.
+- Unchanged from the extract, recorded so it is not mistaken for new: a
+  canonical on a host the adapter does not serve answers `not_resolvable`
+  before the port is asked for a credential, and no fetch runs (Workspaces
+  served one host per forge, so it never met this case).
