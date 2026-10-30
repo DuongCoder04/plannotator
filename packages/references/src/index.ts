@@ -21,13 +21,15 @@ export type {
 export {
 	credentialFor,
 	type FetchLike,
+	type ProviderCallFields,
+	type ProviderCallLog,
 	type ReferenceCredential,
 	type ReferenceCredentialAnswer,
 	type ReferenceCredentialKind,
 	type ReferenceCredentialUnavailable,
 	type ReferencePort,
 } from "./port.ts";
-export { externalRefsFetch, providerFetch } from "./fetch.ts";
+export { DEFAULT_USER_AGENT, externalRefsFetch, providerFetch, providerUserAgent } from "./fetch.ts";
 export { parseBranchTail } from "./grammars/git-branch.ts";
 export { matchGithubCodeLink, matchGithubUrl, parseGithubCanonical } from "./grammars/github.ts";
 export { matchGitlabCodeLink, matchGitlabUrl, parseGitlabCanonical } from "./grammars/gitlab.ts";

@@ -21,7 +21,7 @@
 // /rest/apps/installations (2022-11-28), read 2026-09-24.
 
 import type { ExternalRefFacts, ExternalRefFailure, ScopesResult, SearchResult } from "../contract.ts";
-import { providerFetch } from "../fetch.ts";
+import { providerFetch, providerUserAgent } from "../fetch.ts";
 import { credentialFor, type FetchLike, type ReferencePort } from "../port.ts";
 
 export const GITHUB_API_BASE = "https://api.github.com";
@@ -29,11 +29,24 @@ export const GITHUB_API_BASE = "https://api.github.com";
 /** The item host GitHub credentials are asked for. */
 export const GITHUB_HOST = "github.com";
 
+/** One GitHub REST API as the reads call it: its base URL, the port's
+ * wrapped fetch, and the port's user agent. */
+export interface GithubApi {
+	readonly base: string;
+	readonly fetch: FetchLike;
+	readonly userAgent: string;
+}
+
+/** The GitHub API for a port. */
+export function githubApi(port: ReferencePort): GithubApi {
+	return { base: GITHUB_API_BASE, fetch: providerFetch(port), userAgent: providerUserAgent(port) };
+}
+
 /** GitHub REST headers. */
-export function githubHeaders(authorization?: string): Record<string, string> {
+export function githubHeaders(userAgent: string, authorization?: string): Record<string, string> {
 	const headers: Record<string, string> = {
 		accept: "application/vnd.github+json",
-		"user-agent": "plannotator-workspaces",
+		"user-agent": userAgent,
 		"x-github-api-version": "2022-11-28",
 	};
 	if (authorization !== undefined) headers.authorization = authorization;
@@ -74,15 +87,15 @@ export function failure(status: number): ExternalRefFailure {
 }
 
 export async function get(
+	api: GithubApi,
 	path: string,
 	authorization: string,
-	fetcher: FetchLike,
 	accept?: string,
 ): Promise<{ ok: true; response: Response } | { ok: false; status: number | null }> {
-	const headers = githubHeaders(authorization);
+	const headers = githubHeaders(api.userAgent, authorization);
 	if (accept !== undefined) headers.accept = accept;
 	try {
-		const response = await fetcher(`${GITHUB_API_BASE}${path}`, { headers });
+		const response = await api.fetch(`${api.base}${path}`, { headers });
 		return response.status === 200
 			? { ok: true, response }
 			: { ok: false, status: response.status };
@@ -116,14 +129,14 @@ export async function githubScopes(port: ReferencePort): Promise<ScopesResult> {
 	if (!auth.ok) return auth;
 	// GET /installation/repositories answers only an installation token.
 	if (auth.kind !== "installation") return { ok: false, reason: "not_linked" };
-	const fetcher = providerFetch(port);
+	const api = githubApi(port);
 	const items: { id: string; label: string }[] = [];
 	let page: string | undefined = "1";
 	while (page !== undefined) {
 		const answer = await get(
+			api,
 			`/installation/repositories?per_page=${PER_PAGE}&page=${page}`,
 			auth.authorization,
-			fetcher,
 		);
 		if (!answer.ok)
 			return answer.status === null
@@ -219,11 +232,11 @@ export async function githubSearch(
 	if (!auth.ok) return auth;
 	const withIssues = args.include === "issues";
 	const answer = await get(
+		githubApi(port),
 		withIssues
 			? `/repos/${args.scope}/issues?state=open&sort=updated&direction=desc&per_page=${PER_PAGE}&page=${args.cursor ?? "1"}`
 			: `/repos/${args.scope}/pulls?state=open&sort=created&direction=desc&per_page=${PER_PAGE}&page=${args.cursor ?? "1"}`,
 		auth.authorization,
-		providerFetch(port),
 	);
 	if (!answer.ok)
 		return answer.status === null

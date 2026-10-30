@@ -29,11 +29,10 @@ import type {
 	RefReadAdapter,
 	ResolveResult,
 } from "../contract.ts";
-import { providerFetch } from "../fetch.ts";
 import { matchGithubCodeLink, matchGithubUrl, parseGithubCanonical } from "../grammars/github.ts";
 import { credentialFor, type ReferencePort } from "../port.ts";
 import { fetchPullDiff, listPullFiles, readPullSummary } from "./github-pull-diff.ts";
-import { GITHUB_API_BASE, githubHeaders, githubScopes, githubSearch } from "./github-pulls.ts";
+import { githubApi, githubHeaders, githubScopes, githubSearch } from "./github-pulls.ts";
 
 // ── state mapping (the provider's own words, three tones) ───────────────────
 
@@ -107,13 +106,14 @@ async function resolveGithub(ref: ExternalRef, port: ReferencePort): Promise<Res
 	}
 	const authorization = credential === null ? undefined : `Bearer ${credential.token}`;
 
-	const repoBase = `${GITHUB_API_BASE}/repos/${parsed.owner}/${parsed.repo}`;
+	const api = githubApi(port);
+	const repoBase = `${api.base}/repos/${parsed.owner}/${parsed.repo}`;
 	const endpoint =
 		parsed.form === "pull" ? `${repoBase}/pulls/${parsed.n}` : `${repoBase}/issues/${parsed.n}`;
 
 	let response: Response;
 	try {
-		response = await providerFetch(port)(endpoint, { headers: githubHeaders(authorization) });
+		response = await api.fetch(endpoint, { headers: githubHeaders(api.userAgent, authorization) });
 	} catch {
 		return { ok: false, reason: "not_resolvable" };
 	}

@@ -22,7 +22,7 @@ import type {
 	RefReadAdapter,
 	ResolveResult,
 } from "../contract.ts";
-import { providerFetch } from "../fetch.ts";
+import { providerFetch, providerUserAgent } from "../fetch.ts";
 import { matchGitlabCodeLink, matchGitlabUrl, parseGitlabCanonical } from "../grammars/gitlab.ts";
 import { credentialFor, type ReferenceCredential, type ReferencePort } from "../port.ts";
 
@@ -31,10 +31,10 @@ const DEFAULT_BASE_URL = "https://gitlab.com";
 /** PRIVATE-TOKEN is the documented header for personal, group and project
  * access tokens (any `read_api` token). A `bearer` credential (an OAuth
  * token, such as glab's) rides `Authorization: Bearer`. */
-function gitlabHeaders(credential?: ReferenceCredential): Record<string, string> {
+function gitlabHeaders(userAgent: string, credential?: ReferenceCredential): Record<string, string> {
 	const headers: Record<string, string> = {
 		accept: "application/json",
-		"user-agent": "plannotator-workspaces",
+		"user-agent": userAgent,
 	};
 	if (credential?.kind === "private-token") headers["PRIVATE-TOKEN"] = credential.token;
 	if (credential?.kind === "bearer") headers.authorization = `Bearer ${credential.token}`;
@@ -91,7 +91,9 @@ async function resolveGitlab(ref: ExternalRef, port: ReferencePort): Promise<Res
 
 	let response: Response;
 	try {
-		response = await providerFetch(port)(endpoint, { headers: gitlabHeaders(token) });
+		response = await providerFetch(port)(endpoint, {
+			headers: gitlabHeaders(providerUserAgent(port), token),
+		});
 	} catch {
 		return { ok: false, reason: "not_resolvable" };
 	}

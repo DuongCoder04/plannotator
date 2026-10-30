@@ -32,9 +32,8 @@
 import { formatDiffMetadataPathToken, formatPatchPathToken } from "@plannotator/core/diff-paths";
 
 import type { ExternalRefFailure } from "../contract.ts";
-import { providerFetch } from "../fetch.ts";
-import type { FetchLike, ReferencePort } from "../port.ts";
-import { failure, get, githubAuth, REPO, str } from "./github-pulls.ts";
+import type { ReferencePort } from "../port.ts";
+import { failure, get, type GithubApi, githubApi, githubAuth, REPO, str } from "./github-pulls.ts";
 
 /** The most changed files a guide reads. It was GitHub's own cap on the
  * diff media type (406 `too_large` past it); the files list goes to 3,000,
@@ -71,9 +70,9 @@ async function read(
 	repo: string,
 	number: number,
 	authorization: string,
-	fetcher: FetchLike,
+	api: GithubApi,
 ): Promise<PullSummaryResult> {
-	const answer = await get(path, authorization, fetcher);
+	const answer = await get(api, path, authorization);
 	if (!answer.ok) {
 		return answer.status === null
 			? { ok: false, reason: "not_resolvable" }
@@ -138,13 +137,13 @@ export async function readPullSummary(
 	if (!valid(pull)) return { ok: false, reason: "not_linked" };
 	const auth = await githubAuth(port);
 	if (!auth.ok) return auth;
-	const fetcher = providerFetch(port);
+	const api = githubApi(port);
 	return read(
 		`/repos/${pull.repo}/pulls/${pull.number}`,
 		pull.repo,
 		pull.number,
 		auth.authorization,
-		fetcher,
+		api,
 	);
 }
 
@@ -156,17 +155,17 @@ export async function fetchPullDiff(
 	if (!valid(pull)) return { ok: false, reason: "not_linked" };
 	const auth = await githubAuth(port);
 	if (!auth.ok) return auth;
-	const fetcher = providerFetch(port);
+	const api = githubApi(port);
 	const path = `/repos/${pull.repo}/pulls/${pull.number}`;
 	for (let attempt = 0; attempt < 2; attempt += 1) {
-		const before = await read(path, pull.repo, pull.number, auth.authorization, fetcher);
+		const before = await read(path, pull.repo, pull.number, auth.authorization, api);
 		if (!before.ok) return before;
 		if (before.changedFiles > GITHUB_DIFF_FILE_CEILING)
 			return { ok: false, reason: "too_large" };
-		const files = await readFilePages(path, auth.authorization, fetcher);
+		const files = await readFilePages(path, auth.authorization, api);
 		if (!files.ok) return files;
 		const diff = files.items.map(fileDiff).join("");
-		const after = await read(path, pull.repo, pull.number, auth.authorization, fetcher);
+		const after = await read(path, pull.repo, pull.number, auth.authorization, api);
 		if (!after.ok) return after;
 		if (after.headSha === before.headSha && after.baseSha === before.baseSha) {
 			return { ...after, diff };
@@ -244,11 +243,11 @@ const FILE_LIST_PAGES = 30;
 async function readFilePages(
 	path: string,
 	authorization: string,
-	fetcher: FetchLike,
+	api: GithubApi,
 ): Promise<{ readonly ok: true; readonly items: readonly PullFileItem[] } | ExternalRefFailure> {
 	const items: PullFileItem[] = [];
 	for (let page = 1; page <= FILE_LIST_PAGES; page += 1) {
-		const answer = await get(`${path}/files?per_page=100&page=${page}`, authorization, fetcher);
+		const answer = await get(api, `${path}/files?per_page=100&page=${page}`, authorization);
 		if (!answer.ok) {
 			return answer.status === null
 				? { ok: false, reason: "not_resolvable" }
@@ -278,11 +277,11 @@ export async function listPullFiles(
 	if (!valid(pull)) return { ok: false, reason: "not_linked" };
 	const auth = await githubAuth(port);
 	if (!auth.ok) return auth;
-	const fetcher = providerFetch(port);
+	const api = githubApi(port);
 	const path = `/repos/${pull.repo}/pulls/${pull.number}`;
-	const summary = await read(path, pull.repo, pull.number, auth.authorization, fetcher);
+	const summary = await read(path, pull.repo, pull.number, auth.authorization, api);
 	if (!summary.ok) return summary;
-	const listed = await readFilePages(path, auth.authorization, fetcher);
+	const listed = await readFilePages(path, auth.authorization, api);
 	if (!listed.ok) return listed;
 	const files: string[] = [];
 	for (const item of listed.items) {

@@ -8,8 +8,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, type Mock, spyOn } from "bun:test";
 
+import { githubAdapter } from "../src/adapters/github.ts";
+import { readPullSummary } from "../src/adapters/github-pull-diff.ts";
+import { githubSearch } from "../src/adapters/github-pulls.ts";
+import { gitlabAdapter } from "../src/adapters/gitlab.ts";
 import { externalRefsFetch, providerFetch } from "../src/fetch.ts";
-import type { FetchLike } from "../src/port.ts";
+import type { FetchLike, ProviderCallFields, ReferencePort } from "../src/port.ts";
+import { matchExternalRef } from "../src/registry.ts";
+import { fakeProvider, json, makePort } from "./helpers.ts";
 
 const SOURCE = "https://redirect-source.example";
 const TARGET = "https://redirect-target.example";
@@ -182,4 +188,80 @@ describe("external reference fetch", () => {
 			),
 		).rejects.toMatchObject({ name: "TimeoutError" });
 	}, 15_000);
+});
+
+describe("the port's user agent and log", () => {
+	const refOf = (url: string) => {
+		const found = matchExternalRef(new URL(url));
+		if (found === null) throw new Error(`no match: ${url}`);
+		return found.ref;
+	};
+
+	/** A fake GitHub and GitLab answering one issue each, one PR list, and one PR. */
+	function forges() {
+		const fake = fakeProvider();
+		fake.on("GET https://api.github.com/repos/a/b/issues/1", () => json(200, { title: "t", state: "open" }));
+		fake.on("GET https://api.github.com/repos/a/b/pulls?state=open&sort=created&direction=desc&per_page=100&page=1", () =>
+			json(200, []),
+		);
+		fake.on("GET https://api.github.com/repos/a/b/pulls/2", () =>
+			json(200, {
+				title: "t",
+				state: "open",
+				base: { ref: "main", sha: "c".repeat(40) },
+				head: { ref: "f", sha: "a".repeat(40) },
+				additions: 1,
+				deletions: 0,
+				changed_files: 1,
+			}),
+		);
+		fake.on("GET https://gitlab.com/api/v4/projects/a%2Fb/issues/1", () => json(200, { title: "t", state: "opened" }));
+		return fake;
+	}
+
+	async function readAll(port: ReferencePort): Promise<void> {
+		expect((await githubAdapter.resolve(refOf("https://github.com/a/b/issues/1"), port)).ok).toBe(true);
+		expect((await githubSearch({ query: "", scope: "a/b" }, port)).ok).toBe(true);
+		expect((await readPullSummary({ repo: "a/b", number: 2 }, port)).ok).toBe(true);
+		expect((await gitlabAdapter.resolve(refOf("https://gitlab.com/a/b/-/issues/1"), port)).ok).toBe(true);
+	}
+
+	const token = { "github github.com": { kind: "bearer", token: "token-user", host: "github.com" } } as const;
+
+	it("defaults: plannotator-workspaces on every GitHub and GitLab call, and the line goes to console.info", async () => {
+		const fake = forges();
+		await readAll(makePort(fake.fetch, token));
+		expect(fake.calls.map((c) => c.headers.get("user-agent"))).toEqual(Array(4).fill("plannotator-workspaces"));
+		expect(info).toHaveBeenCalledTimes(4);
+		expect(info.mock.calls.map((c) => c[0])).toEqual(Array(4).fill("external_ref_provider_call"));
+	});
+
+	it("a port's userAgent rides every GitHub and GitLab call, and its log takes the line instead of console.info", async () => {
+		const fake = forges();
+		const lines: Array<[string, ProviderCallFields]> = [];
+		await readAll({
+			...makePort(fake.fetch, token),
+			userAgent: "plannotator-inbox/0.1.0",
+			log: (event, fields) => lines.push([event, fields]),
+		});
+		expect(fake.calls.map((c) => c.headers.get("user-agent"))).toEqual(Array(4).fill("plannotator-inbox/0.1.0"));
+		expect(lines.map(([event, fields]) => [event, fields.host, fields.status])).toEqual([
+			["external_ref_provider_call", "api.github.com", 200],
+			["external_ref_provider_call", "api.github.com", 200],
+			["external_ref_provider_call", "api.github.com", 200],
+			["external_ref_provider_call", "gitlab.com", 200],
+		]);
+		expect(info).not.toHaveBeenCalled();
+	});
+
+	it("a log that throws never turns an answer into a throw", async () => {
+		const fake = forges();
+		const port = {
+			...makePort(fake.fetch),
+			log: () => {
+				throw new Error("log sink down");
+			},
+		};
+		expect((await githubAdapter.resolve(refOf("https://github.com/a/b/issues/1"), port)).ok).toBe(true);
+	});
 });

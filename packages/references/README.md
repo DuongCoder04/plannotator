@@ -54,6 +54,10 @@ Adapters answer and never throw. A failure is `{ ok: false, reason }`, with
 interface ReferencePort {
   fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   credential(provider: ProviderId, host: string): Promise<ReferenceCredentialAnswer>;
+  /** user-agent on GitHub and GitLab calls; default "plannotator-workspaces". */
+  userAgent?: string;
+  /** the one line per provider call; default console.info. */
+  log?: (event: "external_ref_provider_call", fields: { host: string; status: number | undefined; duration_ms: number }) => void;
 }
 
 type ReferenceCredentialAnswer =
@@ -82,7 +86,10 @@ Rules the adapters apply to every answer (`credentialFor` in `port.ts`):
 
 The port's `fetch` is wrapped by `fetch.ts` on every call. Redirects to
 another origin are returned, not followed, so a credential header never
-leaves the origin it was sent to.
+leaves the origin it was sent to. Each call writes one line to the port's
+`log` (host, status and duration only); a `log` that throws is ignored.
+Each product names itself with `userAgent`; the adapters hold no product
+names.
 
 ## How each product backs the port
 

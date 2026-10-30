@@ -186,3 +186,9 @@ repo after placement, in commit order:
 - Difference 12 is resolved: `ReferenceCredentialKind` gains
   `linear-api-key`, which Linear accepts beside `bearer` and sends as the
   bare `Authorization: <key>`. Both kinds still need `account`.
+- Difference 11 moves to the port: `ReferencePort` gains an optional
+  `userAgent` (default `plannotator-workspaces`, sent on GitHub and GitLab
+  calls as before) and an optional `log` (default `console.info` with the
+  same `external_ref_provider_call` event and fields). A `log` that throws
+  is ignored. The GitHub reads share a small `GithubApi` value (base,
+  wrapped fetch, user agent) in place of a bare fetcher.

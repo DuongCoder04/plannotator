@@ -9,15 +9,30 @@
 // credential header or a POST body never crosses to another origin), and
 // writes one log line naming host, status and duration only.
 
-import type { FetchLike, ReferencePort } from "./port.ts";
+import type { FetchLike, ProviderCallLog, ReferencePort } from "./port.ts";
 
 const MAX_SAME_ORIGIN_REDIRECTS = 20;
 
-/** One provider call through `fetcher`, under the policy above. */
+/** The `user-agent` GitHub and GitLab calls carry when the port names none. */
+export const DEFAULT_USER_AGENT = "plannotator-workspaces";
+
+/** The port's user agent, or the default. */
+export function providerUserAgent(port: Pick<ReferencePort, "userAgent">): string {
+	return port.userAgent ?? DEFAULT_USER_AGENT;
+}
+
+/** The default log line: `console.info`, as Workspaces wrote it. */
+const consoleLog: ProviderCallLog = (event, fields) => {
+	console.info(event, fields);
+};
+
+/** One provider call through `fetcher`, under the policy above. `log`
+ * receives the one line per call (default `console.info`). */
 export async function externalRefsFetch(
 	fetcher: FetchLike,
 	input: string | URL | Request,
 	init?: RequestInit,
+	log: ProviderCallLog = consoleLog,
 ): Promise<Response> {
 	const callerSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
 	const deadline = AbortSignal.timeout(10_000);
@@ -83,15 +98,21 @@ export async function externalRefsFetch(
 		}
 	} finally {
 		// No path, query, headers, request body or credentials in the measurement.
-		console.info("external_ref_provider_call", {
-			host,
-			status,
-			duration_ms: Date.now() - started,
-		});
+		// A throwing log never turns an answer into a throw.
+		try {
+			log("external_ref_provider_call", {
+				host,
+				status,
+				duration_ms: Date.now() - started,
+			});
+		} catch {
+			// The log line is best effort.
+		}
 	}
 }
 
-/** The fetch an adapter uses: the port's fetch behind the policy above. */
-export function providerFetch(port: Pick<ReferencePort, "fetch">): FetchLike {
-	return (input, init) => externalRefsFetch(port.fetch, input, init);
+/** The fetch an adapter uses: the port's fetch behind the policy above,
+ * logging to the port's `log` when it has one. */
+export function providerFetch(port: Pick<ReferencePort, "fetch" | "log">): FetchLike {
+	return (input, init) => externalRefsFetch(port.fetch, input, init, port.log);
 }

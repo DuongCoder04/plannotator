@@ -56,11 +56,29 @@ export interface ReferenceCredentialUnavailable {
  * their public rung unauthenticated, Linear answers not_linked. */
 export type ReferenceCredentialAnswer = ReferenceCredential | ReferenceCredentialUnavailable | null;
 
+/** The fields of the one log line per provider call: host, status and
+ * duration only, never a path, query, header, body or credential. `status`
+ * is undefined when the call threw before a response. */
+export interface ProviderCallFields {
+	readonly host: string;
+	readonly status: number | undefined;
+	readonly duration_ms: number;
+}
+
+/** Where the per-call log line goes. The event is always
+ * `"external_ref_provider_call"`. */
+export type ProviderCallLog = (event: "external_ref_provider_call", fields: ProviderCallFields) => void;
+
 export interface ReferencePort {
 	/** The outbound fetch. Adapters wrap it (fetch.ts): ten-second deadline,
 	 * same-origin redirects only, one host-only log line. */
 	readonly fetch: FetchLike;
 	credential(provider: ProviderId, host: string): Promise<ReferenceCredentialAnswer>;
+	/** The `user-agent` sent on GitHub and GitLab calls. Default
+	 * `"plannotator-workspaces"` (DEFAULT_USER_AGENT in fetch.ts). */
+	readonly userAgent?: string;
+	/** Receives the one log line per provider call. Default `console.info`. */
+	readonly log?: ProviderCallLog;
 }
 
 /** The port's answer, narrowed for one adapter call. A credential for
