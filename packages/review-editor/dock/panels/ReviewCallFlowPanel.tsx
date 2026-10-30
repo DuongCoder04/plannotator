@@ -191,7 +191,7 @@ export function CallFlowInstallFunnel({
           <strong>{status.error}</strong>
           <p>
             {isNodeInstallError(status.reason)
-              ? 'Install Node.js 22 or newer, make sure it is on PATH, then retry.'
+              ? 'Install Node.js 22.18 or newer, make sure it is on PATH, then retry.'
               : 'Nothing was changed. You can retry the install at any time.'}
           </p>
           <div className="call-flow-install-action">
@@ -223,7 +223,7 @@ export function CallFlowInstallFunnel({
           <p className="call-flow-install-disclosure">
             Installing <strong>{advert.installPlan.labels.join(', ')}</strong>,{' '}
             <strong>{formatCallFlowInstallSize(advert.installPlan.installSizeBytes)}</strong> on disk.
-            {' '}Requires Node.js 22 or newer. Other languages install automatically, only
+            {' '}Requires Node.js 22.18 or newer. Other languages install automatically, only
             when a review needs them.
           </p>
         )}
