@@ -2652,6 +2652,16 @@ diffs-container {
   }
 }
 
+/* A narrow panel (COMPACT_ROWS_WIDTH): headings, folders and files drop their
+   numbers so names keep the room; All changes keeps its totals, the
+   heading's spoken name keeps its numbers, and the progress line wraps
+   between its parts. */
+.review-sidebar[data-compact-rows] :is(.file-tree-item, .review-folder-row) > .review-count-columns,
+.review-sidebar[data-compact-rows] .panel-section-heading [data-kind-counts],
+.review-sidebar[data-compact-rows] [data-progress-dot] {
+  display: none;
+}
+
 /* Groups: 12 px between them. */
 .review-panel-group + .review-panel-group {
   margin-top: 12px;

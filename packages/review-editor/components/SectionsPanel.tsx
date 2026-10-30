@@ -11,6 +11,7 @@ import {
   AnnotationBadge,
   CountColumns,
   countColumnVars,
+  compactRowsProps,
   CommittedDot,
   TruncatedPath,
   PanelSectionHeader,
@@ -519,6 +520,7 @@ export const SectionsPanel: React.FC<SectionsPanelProps> = ({
     <aside
       ref={asideRef}
       data-review-sidebar=""
+      {...compactRowsProps(panelWidth)}
       className="review-sidebar border-r flex flex-col flex-shrink-0 overflow-hidden"
       style={{ width: panelWidth }}
     >

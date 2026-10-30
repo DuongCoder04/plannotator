@@ -28,7 +28,7 @@ import type { OverlayScrollAreaHandle } from '@plannotator/ui/components/Overlay
 
 import { SidebarActionRow, SemanticDiffRow, CallFlowRow, AllChangesRow } from './PanelNavRows';
 import { PanelControlsRow, PanelSearchField } from './PanelChrome';
-import { PanelSectionHeader, CountColumns, countColumnVars } from './FileRowBits';
+import { PanelSectionHeader, CountColumns, countColumnVars, compactRowsProps } from './FileRowBits';
 
 interface FileTreeProps {
   /** The top of the panel (views, the comparison sentence, Changes | All
@@ -481,6 +481,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
   return (
     <aside
       data-review-sidebar=""
+      {...compactRowsProps(panelWidth)}
       className="review-sidebar border-r flex flex-col flex-shrink-0 overflow-hidden"
       style={{ width: panelWidth }}
     >

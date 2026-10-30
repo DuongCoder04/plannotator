@@ -154,20 +154,23 @@ function ProgressRow({
   const allViewed = showViewedControls && totalCount > 0 && viewedCount >= totalCount;
   return (
     <div
-      className="flex items-center h-6 pl-2 pr-1 gap-1.5 text-[12px] text-muted-foreground tabular-nums"
+      className="flex items-center min-h-6 pl-2 pr-1 gap-1.5 text-[12px] text-muted-foreground tabular-nums"
       data-review-progress-caption=""
     >
-      {showViewedControls && (
-        <span data-panel-viewed-controls="" className={allViewed ? "text-success" : undefined}>
-          {allViewed ? `All ${totalCount} viewed` : `${viewedCount} of ${totalCount} viewed`}
-        </span>
-      )}
-      {showViewedControls && showStaged && <span aria-hidden="true">·</span>}
-      {showStaged && (
-        <span data-panel-staged-count="" title="Files staged with git add">
-          {stagedCount} staged
-        </span>
-      )}
+      {/* Wraps between its parts, never inside one, in a narrow panel. */}
+      <span className="min-w-0 flex flex-wrap items-center gap-x-1.5">
+        {showViewedControls && (
+          <span data-panel-viewed-controls="" className={`whitespace-nowrap${allViewed ? " text-success" : ""}`}>
+            {allViewed ? `All ${totalCount} viewed` : `${viewedCount} of ${totalCount} viewed`}
+          </span>
+        )}
+        {showViewedControls && showStaged && <span aria-hidden="true" data-progress-dot="">·</span>}
+        {showStaged && (
+          <span data-panel-staged-count="" className="whitespace-nowrap" title="Files staged with git add">
+            {stagedCount} staged
+          </span>
+        )}
+      </span>
       {showViewedControls && onToggleHideViewed && (
         <span className="ml-auto flex">
           <ToolButton label="Hide viewed files" onClick={onToggleHideViewed} pressed={hideViewedFiles}>

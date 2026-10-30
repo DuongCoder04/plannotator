@@ -178,6 +178,13 @@ export function countColumnVars(additions: number, deletions: number): React.CSS
   return { '--count-add-w': width(additions), '--count-del-w': width(deletions) } as React.CSSProperties;
 }
 
+/** Below this panel width, group headings, folders and files drop their
+ *  number columns (and a heading its viewed count), so names keep the room;
+ *  All changes keeps its totals. Styles: `[data-compact-rows]` in index.css. */
+export const COMPACT_ROWS_WIDTH = 220;
+export const compactRowsProps = (width: number): { 'data-compact-rows'?: '' } =>
+  width < COMPACT_ROWS_WIDTH ? { 'data-compact-rows': '' } : {};
+
 /**
  * A foldable group heading in the left panel lists: the tree's kind blocks
  * (Code / Tests / Generated) and the Git status view's Committed / Changes /
