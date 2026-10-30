@@ -26,7 +26,7 @@
 //   fallback), `panelAction` (one control in the open panel's title row).
 // - Escape also closes a panel opened by pointer while focus stays outside
 //   the rail (a tick press never takes focus), unless focus is in an editable
-//   control or a dialog. It is preventDefault-ed, not stopped: a host's own
+//   control, a dialog, a menu or a listbox. It is preventDefault-ed, not stopped: a host's own
 //   Escape sees it was used.
 // - The rules are the package's own stylesheet, contents-rail.css (import it
 //   outside any CSS layer), not part of theme.css.
@@ -241,11 +241,11 @@ function condensedSlotForItem(itemIndex: number, itemCount: number, slotCount: n
   return Math.min(slotCount - 1, Math.floor((boundedIndex * slotCount) / itemCount));
 }
 
-/** Focus in an editable control or a dialog: its Escape is its own. */
+/** Focus in an editable control, a dialog, a menu or a listbox: its Escape is its own. */
 function ownsEscape(element: HTMLElement): boolean {
   return (
     element.isContentEditable ||
-    element.closest('input, textarea, select, [role="dialog"], dialog') !== null
+    element.closest('input, textarea, select, [role="dialog"], dialog, [role="menu"], [role="listbox"]') !== null
   );
 }
 
@@ -514,7 +514,7 @@ export function MarkdownContentsRail({
     };
     // Escape closes a panel opened by pointer, where focus stayed outside the
     // rail (a tick press never takes focus). Not while focus is in an editable
-    // control or a dialog: that Escape is theirs. preventDefault, never
+    // control, a dialog, a menu or a listbox: that Escape is theirs. preventDefault, never
     // stopPropagation, so a host's own Escape (a full-screen view's) sees it was used.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;

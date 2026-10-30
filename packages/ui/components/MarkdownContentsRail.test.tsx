@@ -467,7 +467,7 @@ describe.if(hasDom)('Markdown Contents rail', () => {
     act(() => fixture.root.unmount());
   });
 
-  test('Escape closes a pointer-opened panel, used but not stopped; a textarea’s or a dialog’s Escape is theirs', async () => {
+  test('Escape closes a pointer-opened panel, used but not stopped; a textarea’s, a dialog’s or a listbox’s Escape is theirs', async () => {
     const fixture = mountRail();
     await settleRail();
     const hostEscapes: string[] = [];
@@ -480,7 +480,10 @@ describe.if(hasDom)('Markdown Contents rail', () => {
     dialog.setAttribute('role', 'dialog');
     const dialogButton = document.createElement('button');
     dialog.append(dialogButton);
-    document.body.append(textarea, dialog);
+    const listbox = document.createElement('div');
+    listbox.setAttribute('role', 'listbox');
+    listbox.tabIndex = 0;
+    document.body.append(textarea, dialog, listbox);
     try {
       act(() => contentMarkers()[0]?.click());
       expect(railElement()?.dataset.revealed).toBe('');
@@ -492,8 +495,8 @@ describe.if(hasDom)('Markdown Contents rail', () => {
       key(document.body, { key: 'Escape' });
       expect(hostEscapes).toEqual(['used', 'host']);
 
-      // Focus in a textarea, or in a dialog: the panel stays and the Escape is theirs.
-      for (const target of [textarea, dialogButton]) {
+      // Focus in a textarea, a dialog or a listbox: the panel stays and the Escape is theirs.
+      for (const target of [textarea, dialogButton, listbox]) {
         hostEscapes.length = 0;
         act(() => contentMarkers()[0]?.click());
         act(() => target.focus());
