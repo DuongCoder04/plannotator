@@ -10,6 +10,7 @@
  * Decisions page (`#decisions=…`) opens the list.
  */
 
+import { inboxUrl } from './inboxUrl';
 import type { ActionMark } from './components/ActionChecklist';
 import { isMootNoteRefusal } from './actionSaves';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
@@ -150,7 +151,7 @@ configurePlannotatorUI({
   richCopy: true,
   // Hover cards for issue, PR and MR links: the server fetches with this computer's gh or glab (ref-cards.ts).
   refCardTransport: async (href, _ref, signal) => {
-    const res = await fetch(`/api/inbox/ref?url=${encodeURIComponent(href)}`, { signal, headers: { accept: 'application/json' } });
+    const res = await fetch(inboxUrl(`/ref?url=${encodeURIComponent(href)}`), { signal, headers: { accept: 'application/json' } });
     if (!res.ok) return null;
     return (await res.json()) as ForgeRefCardResult;
   },
@@ -442,7 +443,7 @@ function listCovered(): boolean {
   return isPhone() || covering.thread;
 }
 
-/** A row of the list on screen, by its thread (one element per row: the wide, two-line or phone row). */
+/** A row of the list on screen, by its thread (one element per row: the wide, three-line or phone row). */
 function rowElement(body: ParentNode, threadId: string): HTMLElement | null {
   // The one on screen: a list draws some rows twice (one hidden), and a row in folded Quiet is not drawn at all.
   return [...body.querySelectorAll<HTMLElement>(`[data-thread-id="${CSS.escape(threadId)}"]`)].find((el) => el.getClientRects().length > 0) ?? null;
@@ -1409,7 +1410,7 @@ function Inbox() {
       const active = document.activeElement;
       if (!body || lastInput() !== 'keyboard' || (active && active !== document.body && active.isConnected && active.getClientRects().length > 0)) return;
       if (routeRef.current.thread || routeRef.current.page !== 'inbox') return;
-      // The list draws some rows twice (the wide and the two-line row), one hidden: the one on screen.
+      // The list draws some rows twice (the wide and the three-line row), one hidden: the one on screen.
       const shown = (selector: string) => [...body.querySelectorAll<HTMLElement>(selector)].find((el) => el.getClientRects().length > 0);
       const target = shown(`[data-thread-id="${CSS.escape(closed)}"]`) ?? shown('[data-section-id="quiet"] button.ib-band') ?? shown('[data-thread-id]');
       target?.focus({ preventScroll: true });
