@@ -313,6 +313,7 @@ export function ReviewCallFlowPanel() {
         <header className="call-flow-header">
           <div>
             <h2>{data.summary.changedNodes === 0 ? 'No changed call paths' : 'Call paths'}</h2>
+            {/* The items are spaced by CSS gap; the hidden ", " keeps them apart when read aloud. */}
             <p className="call-flow-summary">
               {data.summary.added > 0 && (
                 <span className="call-flow-summary-item call-flow-summary-changed">
@@ -322,14 +323,17 @@ export function ReviewCallFlowPanel() {
               )}
               {data.summary.removed > 0 && (
                 <span className="call-flow-summary-item call-flow-summary-changed">
+                  {data.summary.added > 0 && <span className="sr-only">, </span>}
                   <span className="call-flow-marker call-flow-marker-removed" aria-hidden="true" />
                   {data.summary.removed.toLocaleString()} removed
                 </span>
               )}
               <span className="call-flow-summary-item">
+                {(data.summary.added > 0 || data.summary.removed > 0) && <span className="sr-only">, </span>}
                 {data.summary.impactedFiles.toLocaleString()} {data.summary.impactedFiles === 1 ? 'file' : 'files'}
               </span>
               <span className="call-flow-summary-item">
+                <span className="sr-only">, </span>
                 {data.summary.entries.toLocaleString()} {data.summary.entries === 1 ? 'entry' : 'entries'}
               </span>
             </p>

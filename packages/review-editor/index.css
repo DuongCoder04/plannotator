@@ -619,7 +619,9 @@ diffs-container {
 
 /* Call paths as cards. Row geometry lives in these variables so the tree
    lines always meet the markers: a row at depth d puts its marker centre at
-   d * indent + base + toggle + marker / 2. */
+   d * indent + base + toggle + marker / 2. Every mode must keep
+   indent >= toggle + marker / 2, or a child's toggle cell starts left of its
+   caller's line and the elbow collapses (CallFlowTreeView.geometry.test.ts). */
 .call-flow-trees {
   --call-flow-indent: 22px;
   --call-flow-base: 8px;
@@ -877,6 +879,7 @@ diffs-container {
   display: grid;
   min-height: var(--call-flow-row-height);
   place-items: center;
+  pointer-events: none;
 }
 /* A changed step's dot carries a soft halo. */
 .call-flow-row .call-flow-marker-added { box-shadow: 0 0 0 3px oklch(from var(--success) l c h / 0.16); }
@@ -901,8 +904,12 @@ diffs-container {
 .call-flow-node-label {
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+.call-flow-node-branch-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .call-flow-node-kind {
   padding: 0.0625rem 0.3125rem;
@@ -1470,8 +1477,10 @@ diffs-container {
 }
 
 .call-flow-trees-compact {
-  --call-flow-indent: 16px;
+  --call-flow-indent: 19px;
   --call-flow-base: 4px;
+  --call-flow-toggle: 12px;
+  --call-flow-marker-cell: 12px;
   --call-flow-row-height: 26px;
   gap: 0.5rem;
   padding: 0 0.375rem 0.375rem;
@@ -1687,9 +1696,16 @@ diffs-container {
     min-height: 2.75rem;
   }
   .call-flow-trees,
-  .call-flow-trees-compact {
-    --call-flow-toggle: 2.75rem;
-    --call-flow-row-height: 2.75rem;
+  .call-flow-trees-compact { --call-flow-row-height: 2.75rem; }
+  /* The toggle cell keeps its width so the tree lines hold; the button's
+     touch area grows over the indent and the (decorative) marker cell. */
+  button.call-flow-expand::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: calc(-1 * var(--call-flow-marker-cell));
+    bottom: 0;
+    width: 2.75rem;
   }
   .call-flow-file-badge,
   .call-flow-open-dock,
@@ -1707,7 +1723,6 @@ diffs-container {
   .call-flow-header { align-items: stretch; flex-direction: column; }
   .call-flow-header-actions { align-self: stretch; justify-content: space-between; margin-left: 0; }
   .call-flow-legend-hint { width: 100%; margin-left: 0; }
-  .call-flow-trees { --call-flow-indent: 18px; }
   .call-flow-node-kind { display: none; }
   .call-flow-node-location { max-width: 9rem; padding-inline: 0.375rem; }
 }
