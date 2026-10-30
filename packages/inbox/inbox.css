@@ -863,16 +863,18 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 /* The three-line row beside a thread (approval "list-rows-mail-icons", 2026-10-30). Line 1 sits 2px further from
    the title than the lines below part, so the hover action (no taller than line 1, below) never reaches the title. */
 .ib-nrow { padding: 10px 12px; border-bottom: 1px solid var(--ib-hair); display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; }
-.ib-nrow .ib-l1 { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; font-size: var(--ib-fs-14, 14px); }
-/* Line 1: the project, the agents' marks after it, the time at the right. The project and the marks are one run of
-   text, so a long project wraps and the marks follow its last word: neither is cut, the marks never drop. */
+.ib-nrow .ib-l1 { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; font-size: var(--ib-fs-14, 14px); }
+/* Line 1 (approval "inbox-list-row-v2", 2026-10-30): the agents' tiles, the project hugging them (`.ib-lead`), the
+   time at the right. One 17px line (13px x 1.3) that never wraps: the project ends in "…". Unread, it is dark. */
 .ib-nrow .ib-l1 .ib-from { flex: 1 1 auto; min-width: 0; }
-.ib-nrow .ib-l1 .ib-p { font-size: var(--ib-fs-13, 13px); font-weight: 500; line-height: 1.3; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.ib-nrow .ib-l1 .ib-p { font-size: var(--ib-fs-13, 13px); font-weight: 500; line-height: 17px; color: var(--muted-foreground); }
+.ib-nrow.ib-u:not(.ib-sent) .ib-l1 .ib-p { color: var(--foreground); font-weight: 550; }
 .ib-nrow .ib-l3 .ib-c, .ib-nrow .ib-l1 .ib-t { color: var(--muted-foreground); font-size: var(--ib-fs-12-5, 12.5px); white-space: nowrap; }
-.ib-nrow .ib-l1 .ib-t { flex: none; margin-left: auto; }
-/* Line 2: the title, never cut: a long one wraps, a word longer than the line breaks. Unread is main's weight. */
+.ib-nrow .ib-l1 .ib-t { flex: none; margin-left: auto; line-height: 17px; }
+/* Line 2: the title, never cut: a long one wraps, a word longer than the line breaks. It is at the row's text size
+   and weight, darker than the preview; unread is main's weight. */
 .ib-nrow .ib-l2 { min-width: 0; }
-.ib-nrow .ib-title { display: block; font-size: var(--ib-fs-15, 15px); line-height: 1.3; letter-spacing: -0.006em; color: var(--foreground); overflow-wrap: anywhere; }
+.ib-nrow .ib-title { display: block; font-size: var(--ib-fs-13-5, 13.5px); line-height: 1.35; letter-spacing: 0; font-weight: 400; color: var(--foreground); overflow-wrap: anywhere; }
 .ib-nrow.ib-u .ib-title { font-weight: 600; }
 /* Line 3: the grey preview, cut first, all the way if it must, then the pin and the guided review mark after it,
    and at the right end the badge (when there is one) and the count (when there is one). The badge and the count
@@ -909,14 +911,28 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
    outlined, and so is this one. */
 .ib-badge.ib-bicon.ib-b-act { padding: 0 7px 0 6px; background: var(--ib-badge-act-bg); color: var(--foreground); }
 .pn-inbox .ib-b-act svg.ib-ic { stroke-width: 2; }
-/* The agents' marks after the project (approval "list-rows-mail-icons", `RowAgents`): one bare 16 px mark per host
-   (the scale's row size, no tile), 5px apart; a host's "×N" right after its mark; past three hosts two marks and a
-   "+N" pill. The marks take the line's quiet colour (OpenCode's mark is `currentColor`). On a three-line or phone row
-   they sit in the line of text, nudged onto the project's baseline, and a negative block margin keeps them from
-   making the 17px line taller. */
+/* A wide row's agents' marks after the project (approval "list-rows-mail-icons", `RowAgents`): one bare 16 px mark
+   per host (the scale's row size, no tile), 5px apart; a host's "×N" right after its mark; past three hosts two
+   marks and a "+N" pill. The marks take the line's quiet colour (OpenCode's mark is `currentColor`). */
 .ib-ags { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 16px; white-space: nowrap; color: var(--muted-foreground); }
-:is(.ib-nrow, .ib-mrow) .ib-ags { margin: -3px 0; vertical-align: -3px; }
-:is(.ib-nrow, .ib-mrow) .ib-p + .ib-ags { margin-left: 7px; }
+/* A three-line or phone row's line 1 (approval "inbox-list-row-v2", 2026-10-30, `RowAgentTiles`): the agents, then
+   the project, like a sidebar row. The tiles' run is bounded (at most two tiles, one per agent, and a "+N" tile for
+   the other agents) and never shrinks; the project takes the rest of the line on one line, cut with "…". The
+   project comes first in the DOM, so a screen reader reads it before the agents, as on a wide row; `order` draws
+   the tiles first. The tiles are the thread head's overlapping
+   tiles (`.ib-tg-stack`: the scale's 20, its 13px glyph, 5px under each other). A tile's fill already pads its
+   glyph, so the project sits 6px from the tile's edge. In place of the head's ring, each tile under another is cut
+   1.5px short of it (a mask), so the cut shows the row's own ground on hover, selection and dark alike. A negative
+   block margin keeps the 20px tiles from making the 17px line taller. */
+.ib-from.ib-lead { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
+.ib-lead > .ib-p { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ib-atiles { display: inline-flex; align-items: center; flex: none; height: 20px; margin: -1.5px 0; }
+.ib-lead > .ib-atiles { order: -1; }
+.ib-atile { display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--ib-mark-20); height: var(--ib-mark-20); border-radius: var(--ib-mark-20-r); background: var(--muted); position: relative; }
+.ib-atile:has(+ .ib-atile) { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 6.5px), transparent calc(100% - 6.5px)); mask-image: linear-gradient(to right, #000 calc(100% - 6.5px), transparent calc(100% - 6.5px)); }
+.ib-atile + .ib-atile { margin-left: -5px; }
+.ib-atile > .ib-mk, .ib-atile > .ib-mk > svg, .ib-atile > .ib-mk > img { width: var(--ib-mark-20-g); height: var(--ib-mark-20-g); }
+.ib-atile.ib-atmore { font-size: var(--ib-fs-10-5, 10.5px); font-weight: 650; color: var(--muted-foreground); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; min-width: var(--ib-mark-20); width: auto; padding: 0 3px; }
 .ib-ag { display: inline-flex; align-items: center; gap: 2px; }
 .ib-agx { position: relative; top: 2px; font-size: var(--ib-fs-12, 12px); font-weight: 600; line-height: 1; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .ib-row .ib-agx { top: 1px; }
@@ -2648,16 +2664,16 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-mrow { display: flex; flex-direction: column; gap: 3px; width: 100%; min-height: 64px; padding: 11px 16px 12px; border-bottom: 1px solid var(--ib-hair); text-align: left; }
   .ib-mrow:active { background: color-mix(in oklch, var(--muted) 50%, transparent); }
   .ib-mrow { gap: 2px; }
-  .ib-m1 { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: var(--ib-fs-13-5, 13.5px); color: var(--muted-foreground); }
-  /* Three lines (approval "list-rows-mail-icons", 2026-10-30), as beside a thread. Line 1: the project and the
-     agents' marks after it, one run of text that wraps (neither is cut, the marks never drop), then the pin and the
-     time at the right. */
+  .ib-m1 { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--ib-fs-13-5, 13.5px); color: var(--muted-foreground); }
+  /* Three lines (approval "inbox-list-row-v2", 2026-10-30), as beside a thread. Line 1: the agents' tiles and the
+     project hugging them, one 17px line that never wraps (the project ends in "…"), then the pin and the time at
+     the right. */
   .ib-m1 .ib-from { flex: 1 1 auto; min-width: 0; }
-  .ib-m1 .ib-p { font-size: var(--ib-fs-13, 13px); font-weight: 500; line-height: 1.3; overflow-wrap: anywhere; }
-  .ib-m1 .ib-t { flex: none; margin-left: auto; font-size: var(--ib-fs-13, 13px); font-variant-numeric: tabular-nums; }
-  /* Line 2: the title, never cut. Line 3: the preview, cut first, then the guided review book, the badge and the
-     count at the right end, never cut; a row with none of these has no line 3. */
-  .ib-m2 { display: block; min-width: 0; font-size: var(--ib-fs-16, 16px); line-height: 1.3; letter-spacing: -0.006em; color: var(--foreground); overflow-wrap: anywhere; }
+  .ib-m1 .ib-p { font-size: var(--ib-fs-13, 13px); font-weight: 500; line-height: 17px; }
+  .ib-m1 .ib-t { flex: none; margin-left: auto; font-size: var(--ib-fs-13, 13px); line-height: 17px; font-variant-numeric: tabular-nums; }
+  /* Line 2: the title, never cut, at the row's text size and weight. Line 3: the preview, cut first, then the guided
+     review book, the badge and the count at the right end, never cut; a row with none of these has no line 3. */
+  .ib-m2 { display: block; min-width: 0; font-size: var(--ib-fs-14, 14px); line-height: 1.35; letter-spacing: 0; font-weight: 400; color: var(--foreground); overflow-wrap: anywhere; }
   .ib-m3 { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; min-height: 22px; }
   .ib-m3:empty { display: none; }
   .ib-m3 > .ib-pv { flex: 0 1 auto; min-width: 0; margin-right: auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--ib-fs-14, 14px); line-height: 1.35; color: var(--muted-foreground); }
