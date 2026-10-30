@@ -20,6 +20,7 @@ import { configurePlannotatorUI } from '@plannotator/ui/configure';
 import type { ForgeRefCardResult } from '@plannotator/core/forge-ref-card';
 import { selectionToolbarShowing } from './selectionToolbar';
 import { storage } from '@plannotator/ui/utils/storage';
+import { setSidebarSectionOpen } from './sidebarSections';
 import type { SkillCatalogEntry } from '@plannotator/ui/utils/skillReferences';
 import type { InboxCardWire, InboxDecision, InboxHealth, InboxListRow, InboxListSection, InboxQuestion, InboxReplyDraftRow, InboxThread } from '@plannotator/core/inbox-types';
 import { DecisionMode } from './decisions/DecisionMode';
@@ -2197,6 +2198,8 @@ function Inbox() {
       showError(cause);
       return;
     }
+    // A new pin is seen: pinning while Pinned is closed opens it (owner's call, direction C).
+    if (pinned) setSidebarSectionOpen('pinned', true);
     await refreshList(false);
     const subject = row.subject ?? '(no subject)';
     if (pinned) {
@@ -2224,6 +2227,7 @@ function Inbox() {
       showError(cause);
       return;
     }
+    setSidebarSectionOpen('pinned', true);
     await refreshList(false);
     dismissToast();
     say(`Pinned “${subject}” again.`);
