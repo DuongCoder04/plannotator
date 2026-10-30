@@ -79,7 +79,7 @@ export const SurfaceDocument = forwardRef<SurfaceDocumentHandle, Props>(function
   );
   const annotations = useMemo(() => fileRecords.map(annotationOf), [fileRecords]);
   const blocks = useMemo(() => attachmentBlocks(attachment.kind, open.text, attachment.name), [attachment.kind, attachment.name, open.text]);
-  // A Markdown file with 3 or more headings: a Contents button opens the list (contents.ts), as in the window on a phone.
+  // A Markdown file with Contents (contents.ts: 4 or more headings): a Contents button opens the list, as in the window on a phone.
   const hasContents = kind === 'markdown' && showsContents(blocks);
   const [scrollViewport, setScrollViewport] = useState<HTMLDivElement | null>(null);
   const [contentsOpen, setContentsOpen] = useState(false);

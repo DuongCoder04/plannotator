@@ -1,14 +1,14 @@
 /**
- * An open Markdown document shows its Contents (contents.ts, ContentsPanel.tsx):
- * the list of its headings that plan review shows (ui's DocumentContents over
- * TableOfContents). Beside the thread it is the top of the comments column, in
- * full screen a rail on the left, on a phone a button and a sheet. A click on
- * a heading scrolls the document to it. Fewer than 3 headings, no list. Hide
- * is remembered. A list mounted mid-document (a sheet that opens, a column
- * shown again) marks the section being read; the capped column keeps the mark
- * in view. Full screen with under 1000 px of file area falls back to the
- * sheet, which holds focus and takes Escape first. The phone surface has the
- * same button and sheet.
+ * An open Markdown document shows its Contents (contents.ts, ContentsPanel.tsx).
+ * On a desktop, Side by side and Full screen alike: ui's contents rail (the
+ * ticks in the page's right gutter, the panel opening left over the page),
+ * never in the comments column and never moving the page. Where the rail
+ * yields (its gutter rule) and on a phone: a Contents button over the file
+ * opens plan review's list as a sheet. Fewer than 4 headings: neither. The
+ * rail's Hide is remembered and leaves a button that shows it again. The sheet
+ * mounted mid-document marks the section being read, holds focus and takes
+ * Escape first; an open rail panel takes Escape before full screen does. The
+ * phone surface has the same button and sheet.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
@@ -17,25 +17,34 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InboxAttachmentState } from '@plannotator/core/inbox-types';
 import { CONTENTS_COOKIE } from './contents';
+import { installBandIntersectionObserver } from '../ui/test-setup/bandIntersectionObserver';
 
 const hasDom = typeof document !== 'undefined';
 // The pane pulls in the Viewer, which reads `window` at module-eval time.
 const { AttachmentPane } = (hasDom ? await import('./components/AttachmentPane') : {}) as typeof import('./components/AttachmentPane');
 const { storage } = (hasDom ? await import('@plannotator/ui/utils/storage') : {}) as typeof import('@plannotator/ui/utils/storage');
+// Loaded here so the pane's lazy rail resolves at once.
+if (hasDom) await import('@plannotator/ui/components/MarkdownContentsRail');
 
 let root: Root | null = null;
 let host: HTMLElement | null = null;
 const realFetch = globalThis.fetch;
 const realObserver = hasDom ? globalThis.IntersectionObserver : undefined;
-const realRect = hasDom ? HTMLElement.prototype.getBoundingClientRect : undefined;
 
 beforeAll(() => {
   // A page on localhost, as the Inbox is served: about:blank keeps no readable cookies (the hide choice is one).
   if (hasDom) (window as unknown as { happyDOM: { setURL: (url: string) => void } }).happyDOM.setURL('http://localhost:4000/');
 });
 
+const cleanups: (() => void)[] = [];
+/** Run `cleanup` after this test (afterEach). */
+function afterThis(cleanup: () => void) {
+  cleanups.push(cleanup);
+}
+
 afterEach(() => {
   act(() => root?.unmount());
+  for (const cleanup of cleanups.splice(0)) cleanup();
   host?.remove();
   root = null;
   host = null;
@@ -43,7 +52,6 @@ afterEach(() => {
   if (hasDom) {
     storage.removeItem(CONTENTS_COOKIE);
     globalThis.IntersectionObserver = realObserver!;
-    HTMLElement.prototype.getBoundingClientRect = realRect!;
   }
 });
 
@@ -90,14 +98,30 @@ function layOut(tops: Record<string, number>, within: ParentNode = host!) {
 
 /** Halfway into "Design": every heading above it is read past, none sits in the band. */
 const MID_DESIGN = { 'Refund worker': -900, Context: -520, Design: -140, 'Idempotency keys': 420, Rollout: 940 };
+/** The top of the document: the title in the scroll-spy's band (80 to 160 px of an 800 px page). */
+const AT_TOP = { 'Refund worker': 90, Context: 340, Design: 640, 'Idempotency keys': 940, Rollout: 1240 };
 
-/** The file area (`.ib-docarea`) measures `width` px; the body around it (with the comments drawer) is wider. */
-function fileAreaWidth(width: number) {
-  HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
-    if (this.classList.contains('ib-docarea')) return new DOMRect(0, 0, width, 800);
-    if (this.classList.contains('ib-vbody')) return new DOMRect(0, 0, width + 320, 800);
-    return realRect!.call(this);
-  };
+/**
+ * Lay the file's page out (happy-dom lays nothing out): the document scroll `width` px wide from x 0, the page's
+ * reading column (the Viewer's article) ending at `contentRight`; then let the rail measure again.
+ */
+async function layOutPage(width: number, contentRight: number) {
+  const scroll = host!.querySelector<HTMLElement>('.ib-docscroll')!;
+  scroll.getBoundingClientRect = () => new DOMRect(0, 0, width, 800);
+  const article = scroll.querySelector<HTMLElement>('[data-doc-text-root]')!;
+  article.getBoundingClientRect = () => new DOMRect(contentRight - 640, 0, 640, 2000);
+  layOut(AT_TOP);
+  // A scroll: the observer (installBandIntersectionObserver, where a test installs it) reads the band.
+  act(() => void scroll.dispatchEvent(new Event('scroll')));
+  await settle();
+}
+
+/** Let the deferred rail load and measure (a resize asks it to measure again). */
+async function settle() {
+  await act(async () => {
+    window.dispatchEvent(new Event('resize'));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  });
 }
 
 function marked(list: Element | null): string[] {
@@ -130,6 +154,8 @@ const PLAN = [
   'A shadow week first.',
   '',
 ].join('\n');
+
+const HEADINGS = ['Refund worker', 'Context', 'Design', 'Idempotency keys', 'Rollout'];
 
 const attachment: InboxAttachmentState = {
   id: 'att_01K7ZZZZZZZZZZZZZZZZZZZZZZ',
@@ -198,6 +224,14 @@ function entries(list: Element | null): string[] {
   return [...(list?.querySelectorAll('nav[aria-label="Table of contents"] button') ?? [])].map((b) => b.textContent ?? '');
 }
 
+function railOf(): HTMLElement | null {
+  return host!.querySelector<HTMLElement>('nav[aria-label="Document contents"]');
+}
+
+function ticks(): HTMLButtonElement[] {
+  return [...(railOf()?.querySelectorAll<HTMLButtonElement>('[data-contents-index]') ?? [])];
+}
+
 /** Records the document scroll's scrollTo calls; the heading named `text` reads at `top` px below the scroll's top. */
 function watchScroll(text: string, top: number): ScrollToOptions[] {
   const scroll = host!.querySelector<HTMLElement>('.ib-docscroll')!;
@@ -213,52 +247,106 @@ function click(el: Element | null | undefined) {
   act(() => (el as HTMLElement).click());
 }
 
-test.skipIf(!hasDom)('beside the thread, the comments column lists the headings, and a click scrolls the document to one', async () => {
+for (const full of [false, true]) {
+  test.skipIf(!hasDom)(`${full ? 'full screen' : 'side by side'}: the rail sits in the page's right gutter; a tick opens the panel; a pick scrolls the document`, async () => {
+    globalThis.IntersectionObserver = realObserver!;
+    const restore = installBandIntersectionObserver();
+    afterThis(restore);
+    await renderPane(PLAN, { full });
+    // A 1000 px page with its 640 px column centred: a 180 px gutter.
+    await layOutPage(1000, 820);
+    const nav = railOf();
+    expect(nav).not.toBeNull();
+    // In the file area, never in the comments column; no Contents button while the rail shows.
+    expect(nav!.closest('.ib-docarea')).not.toBeNull();
+    expect(host!.querySelector('.ib-apanel [data-contents], .ib-apanel nav[aria-label="Document contents"]')).toBeNull();
+    expect(host!.querySelector('[data-contents-open], [data-contents-show]')).toBeNull();
+    // The dock 24 px right of the column: the nav box is [panel 256][gap 6][dock 36].
+    expect(nav!.style.left).toBe(`${820 + 24 - 6 - 256}px`);
+    // Every heading of levels 1 to 4, each named by its breadcrumb.
+    expect(ticks().map((t) => t.getAttribute('aria-label'))).toEqual([
+      'Open document contents at Refund worker',
+      'Open document contents at Refund worker / Context',
+      'Open document contents at Refund worker / Design',
+      'Open document contents at Refund worker / Design / Idempotency keys',
+      'Open document contents at Refund worker / Rollout',
+    ]);
+    expect(ticks()[0]!.getAttribute('aria-current')).toBe('location');
+
+    click(ticks()[4]);
+    expect(nav!.dataset.revealed).toBe('');
+    expect([...nav!.querySelectorAll('.pn-contents-rail-label')].map((l) => l.textContent)).toEqual(HEADINGS);
+    const calls = watchScroll('Rollout', 900);
+    key(ticks()[4]!, { key: 'Enter' });
+    // The scroll-spy band's top (TableOfContents' offset too): the heading's top less 80 px.
+    expect(calls).toEqual([{ top: 820, behavior: 'smooth' }]);
+  });
+}
+
+test.skipIf(!hasDom)('where the gutter is short the rail yields and the Contents button opens the sheet', async () => {
   await renderPane(PLAN);
-  const column = host!.querySelector('.ib-apanel [data-contents="column"]');
-  expect(entries(column)).toEqual(['Refund worker', 'Context', 'Design', 'Idempotency keys', 'Rollout']);
-  // Above the Annotations list, in the same column: the page keeps its width.
-  expect(column!.nextElementSibling?.matches('[data-annotation-panel]')).toBe(true);
+  // A 676 px page, its column ending 24 px from the edge: under the rail's 68 px.
+  await layOutPage(676, 652);
+  expect(railOf()).toBeNull();
+  click(host!.querySelector('[data-contents-open]'));
+  const sheet = document.querySelector('[data-contents="sheet"][role="dialog"]');
+  expect(entries(sheet)).toEqual(HEADINGS);
 
-  const calls = watchScroll('Rollout', 900);
-  click([...column!.querySelectorAll('nav button')].find((b) => b.textContent === 'Rollout'));
-  // TableOfContents' offset: the heading's top less 80 px for the toolstrip.
-  expect(calls).toEqual([{ top: 820, behavior: 'smooth' }]);
-});
-
-test.skipIf(!hasDom)('a document with fewer than 3 headings has no Contents', async () => {
-  await renderPane('# Refund worker\n\nShort.\n\n## Context\n\nStill short.\n');
-  expect(host!.querySelector('[data-contents]')).toBeNull();
+  // The window grows: the rail measures again, shows, and the button goes.
+  click(sheet!.querySelector('[aria-label="Close contents"]'));
+  await layOutPage(1000, 820);
+  expect(railOf()).not.toBeNull();
   expect(host!.querySelector('[data-contents-open]')).toBeNull();
 });
 
-test.skipIf(!hasDom)('full screen docks a rail on the left; hiding it is remembered for the next file', async () => {
-  await renderPane(PLAN, { full: true });
-  const rail = host!.querySelector('.ib-docarea > [data-contents="rail"]');
-  expect(entries(rail)).toContain('Idempotency keys');
-  // The page and the toolstrip move right of the rail (inbox.css keys on this).
-  expect(host!.querySelector('.ib-docarea')!.hasAttribute('data-contents-rail')).toBe(true);
+test.skipIf(!hasDom)('a document with fewer than 4 headings has no Contents', async () => {
+  await renderPane('# Refund worker\n\nShort.\n\n## Context\n\nStill short.\n\n## Design\n\nA worker.\n');
+  await layOutPage(1000, 820);
+  expect(railOf()).toBeNull();
+  expect(host!.querySelector('[data-contents-open], [data-contents-show], [data-contents]')).toBeNull();
+});
 
-  click(host!.querySelector('[data-contents-hide]'));
-  expect(host!.querySelector('[data-contents="rail"]')).toBeNull();
-  expect(host!.querySelector('.ib-docarea')!.hasAttribute('data-contents-rail')).toBe(false);
+test.skipIf(!hasDom)('Hide in the open panel is remembered for the next file; the Contents button shows the rail again', async () => {
+  await renderPane(PLAN, { full: true });
+  await layOutPage(1000, 820);
+  click(ticks()[0]);
+  click(railOf()!.querySelector('[data-contents-hide]'));
+  expect(railOf()).toBeNull();
+  expect(storage.getItem(CONTENTS_COOKIE)).toBe('hidden');
+  // Plan review's own setting is not this one.
+  expect(storage.getItem('plannotator-toc-enabled')).toBeNull();
   expect(host!.querySelector('[data-contents-show]')).not.toBeNull();
 
   act(() => root?.unmount());
   host!.remove();
   await renderPane(PLAN, { full: true });
-  expect(storage.getItem(CONTENTS_COOKIE)).toBe('hidden');
-  expect(host!.querySelector('[data-contents="rail"]')).toBeNull();
+  await layOutPage(1000, 820);
+  expect(railOf()).toBeNull();
   click(host!.querySelector('[data-contents-show]'));
-  expect(host!.querySelector('[data-contents="rail"]')).not.toBeNull();
+  expect(railOf()).not.toBeNull();
+  expect(storage.getItem(CONTENTS_COOKIE)).toBe('shown');
+});
+
+test.skipIf(!hasDom)('full screen: Escape closes the open rail panel, not full screen', async () => {
+  let left = 0;
+  await renderPane(PLAN, { full: true }, { toggleFull: () => left++, close: () => left++ });
+  await layOutPage(1000, 820);
+  click(ticks()[1]);
+  expect(railOf()!.dataset.revealed).toBe('');
+  key(document.body, { key: 'Escape' });
+  expect(railOf()!.dataset.revealed).toBeUndefined();
+  expect(left).toBe(0);
+  key(document.body, { key: 'Escape' });
+  expect(left).toBe(1);
 });
 
 test.skipIf(!hasDom)('on a phone a Contents button opens the list as a sheet; a pick scrolls there and closes it', async () => {
   await renderPane(PLAN, { phone: true });
-  expect(host!.querySelector('.ib-apanel [data-contents]')).toBeNull();
+  await layOutPage(390, 380);
+  expect(railOf()).toBeNull();
   click(host!.querySelector('[data-contents-open]'));
   const sheet = document.querySelector('[data-contents="sheet"][role="dialog"]');
-  expect(entries(sheet)).toEqual(['Refund worker', 'Context', 'Design', 'Idempotency keys', 'Rollout']);
+  expect(entries(sheet)).toEqual(HEADINGS);
 
   const calls = watchScroll('Design', 500);
   click([...sheet!.querySelectorAll('nav button')].find((b) => b.textContent === 'Design'));
@@ -289,20 +377,12 @@ test.skipIf(!hasDom)('a sheet opened mid-document marks the section being read, 
   expect(marked(document.querySelector('[data-contents="sheet"]'))).toEqual(['Idempotency keys']);
 });
 
-test.skipIf(!hasDom)('the column hidden and shown again mid-document marks the section being read', async () => {
-  stubObserver();
-  await renderPane(PLAN);
-  click(host!.querySelector('[data-contents-toggle]'));
-  layOut(MID_DESIGN);
-  click(host!.querySelector('[data-contents-toggle]'));
-  expect(marked(host!.querySelector('[data-contents="column"]'))).toEqual(['Design']);
-});
-
-test.skipIf(!hasDom)('the capped column scrolls its own list to the marked heading, at once', async () => {
+test.skipIf(!hasDom)('the sheet scrolls its own list to the marked heading, at once', async () => {
   const observer = stubObserver();
-  await renderPane(PLAN);
-  const list = host!.querySelector<HTMLElement>('[data-contents="column"] .ib-contents-list')!;
-  // inbox.css caps it and lets it scroll; happy-dom lays nothing out, so the sizes are given here:
+  await renderPane(PLAN, { phone: true });
+  click(host!.querySelector('[data-contents-open]'));
+  const list = document.querySelector<HTMLElement>('[data-contents="sheet"] .ib-contents-list')!;
+  // inbox.css lets it scroll; happy-dom lays nothing out, so the sizes are given here:
   // a 100 px list of 300 px of entries, "Idempotency keys" drawn 130 px down.
   list.style.overflowY = 'auto';
   Object.defineProperty(list, 'clientHeight', { configurable: true, value: 100 });
@@ -319,19 +399,11 @@ test.skipIf(!hasDom)('the capped column scrolls its own list to the marked headi
   expect(host!.querySelector<HTMLElement>('.ib-docscroll')!.scrollTop).toBe(pageScroll);
 });
 
-test.skipIf(!hasDom)('full screen whose file area is under 1000 px (the comments drawer open beside it) opens Contents as a sheet, not a rail', async () => {
-  fileAreaWidth(880);
-  await renderPane(PLAN, { full: true });
-  expect(host!.querySelector('[data-contents="rail"]')).toBeNull();
-  expect(host!.querySelector('.ib-docarea')!.hasAttribute('data-contents-rail')).toBe(false);
-  click(host!.querySelector('[data-contents-open]'));
-  expect(entries(document.querySelector('[data-contents="sheet"]'))).toContain('Rollout');
-});
-
 test.skipIf(!hasDom)('the sheet holds focus: Tab wraps inside it, Escape closes it before full screen sees the key, focus goes back', async () => {
-  fileAreaWidth(880);
   let left = 0;
   await renderPane(PLAN, { full: true }, { toggleFull: () => left++, close: () => left++ });
+  // Full screen with no room for the rail: the button and the sheet.
+  await layOutPage(676, 652);
   const opener = host!.querySelector<HTMLElement>('[data-contents-open]')!;
   click(opener);
   const sheet = document.querySelector<HTMLElement>('[data-contents="sheet"]')!;
@@ -354,7 +426,6 @@ test.skipIf(!hasDom)('the sheet holds focus: Tab wraps inside it, Escape closes 
   expect(document.activeElement).toBe(opener);
   expect(left).toBe(0);
   // The next Escape is full screen's again (its ladder's last rung leaves it).
-  // (Without the sheet's own Escape the first one would have gone here.)
   key(document.body, { key: 'Escape' });
   expect(left).toBe(1);
 });
@@ -379,7 +450,7 @@ test.skipIf(!hasDom)('the phone surface: a Contents button opens the sheet at th
   layOut(MID_DESIGN, scroll);
   click(host.querySelector('[data-contents-open]'));
   const sheet = host.querySelector('[data-contents="sheet"][role="dialog"]');
-  expect(entries(sheet)).toEqual(['Refund worker', 'Context', 'Design', 'Idempotency keys', 'Rollout']);
+  expect(entries(sheet)).toEqual(HEADINGS);
   expect(marked(sheet)).toEqual(['Design']);
 
   const calls: ScrollToOptions[] = [];

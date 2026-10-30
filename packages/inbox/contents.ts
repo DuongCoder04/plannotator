@@ -1,32 +1,28 @@
 import { useState } from 'react';
 import type { Block } from '@plannotator/ui/types';
-import { tocHeadings } from '@plannotator/ui/utils/annotationHelpers';
+import { hasContentsRailHeadings } from '@plannotator/ui/utils/annotationHelpers';
 import { storage } from '@plannotator/ui/utils/storage';
 
 /**
- * An open document's Contents list (components/ContentsPanel.tsx): plan
- * review's list of headings, drawn by `@plannotator/ui`'s DocumentContents.
- * A Markdown file shows it when it has this many headings of levels 1 to 3
- * (`tocHeadings`, what the list shows); a shorter file reads whole without it.
+ * An open document's Contents (AttachmentPane.tsx, ContentsPanel.tsx). On a
+ * desktop: ui's contents rail (`MarkdownContentsRail`, the ticks in the
+ * page's right gutter). Where the rail yields (a gutter under 68 px, a pane
+ * under 480 px) and on a phone: a Contents button and a sheet with plan
+ * review's list (ui's `DocumentContents`). A Markdown file has Contents when
+ * the rail would: 4 or more headings of levels 1 to 4 (`hasContentsRailHeadings`,
+ * over ui's `tocHeadings`), so the button never offers what the rail would not.
  */
-export const CONTENTS_MIN_HEADINGS = 3;
-
-/** Whether a document's blocks give it a Contents list. */
 export function showsContents(blocks: readonly Block[]): boolean {
-  return tocHeadings(blocks).length >= CONTENTS_MIN_HEADINGS;
+  return hasContentsRailHeadings(blocks);
 }
 
-/** Whether the docked list is shown or hidden, remembered across files and windows (the comments drawer's way). */
+/** Whether the rail is shown or hidden, remembered across files and windows (the comments drawer's way). */
 export const CONTENTS_COOKIE = 'plannotator-inbox-contents';
 
 /**
- * Below this width of the file area (`.ib-docarea`: the rail and the page, not
- * the comments drawer beside them) full screen draws the list as a button and a
- * sheet, not a 240 px rail: the rail and a 760 px page need it.
+ * The rail: shown until hidden (its Hide, in the open Contents panel). Hidden, a Contents button over the file
+ * shows it again. Its own cookie: plan review's "Auto-open sidebar" (`plannotator-toc-enabled`) is untouched.
  */
-export const CONTENTS_RAIL_BELOW = 1000;
-
-/** The docked list (the rail in full screen, the top of the comments column beside the thread): shown until hidden. */
 export function useContentsShown(): [boolean, (shown: boolean) => void] {
   const [shown, setShownState] = useState(() => storage.getItem(CONTENTS_COOKIE) !== 'hidden');
   const setShown = (next: boolean) => {

@@ -55,8 +55,9 @@ import { FIRST_NOTE, LAST_NOTE, stepAnnouncement, stepIndexOf, stepKeyIntent, ty
 import { Icon } from '../icons';
 import { FileName } from './FileName';
 import { useNarrowerThan } from '../narrower';
-import { CONTENTS_RAIL_BELOW, showsContents, useContentsShown } from '../contents';
-import { ContentsPanel, type ContentsPlacement } from './ContentsPanel';
+import { showsContents, useContentsShown } from '../contents';
+import { ContentsHide, ContentsPanel, type ContentsButtonMode } from './ContentsPanel';
+import { DeferredMarkdownContentsRail } from '@plannotator/ui/components/DeferredMarkdownContentsRail';
 import { FullViewBar, type FullViewBarHandle, type ToolbarState } from './FullViewBar';
 import { FullScreenComposer, FullScreenComposerContext, type FullScreenComposerValue } from './FullScreenComposer';
 import { pickComposerMode, setComposerMinimized } from '../fullScreenComposer';
@@ -692,9 +693,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   // A phone's swipe over the file (fileSwipe.ts): documents, text, code, PDFs, the download card and images follow the finger.
   // It is heard on the body around the file (`bodyRef`), which never moves, so a finger that comes back while the last
   // step is still sliding is heard; what moves is the file area, or for an image only the picture (`swipeMoves`).
-  // The file area's width (the rail and the page, never the comments drawer beside them) decides whether full
-  // screen has room for the Contents rail (contents.ts).
-  const [docAreaRef, docAreaNarrow] = useNarrowerThan<HTMLDivElement>(CONTENTS_RAIL_BELOW, false);
+  const docAreaRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   /** The controls a drag down fades (the dock, the caption, the size bar, the comment box), found once when it starts. */
   const dismissFades = useRef<HTMLElement[]>([]);
@@ -1296,19 +1295,22 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const documentBlocks = useMemo(() => (view && !isCode ? attachmentBlocks(kind, view.text, attachment.name) : []), [view, kind, isCode, attachment.name]);
   const commentBlocks = useMemo(() => (isCode ? codeCommentBlocks(annotations) : []), [isCode, annotations]);
   const blocks = isCode ? commentBlocks : documentBlocks;
-  // A Markdown file with 3 or more headings shows its Contents (contents.ts, ContentsPanel.tsx): a rail
-  // on the left in full screen, the top of the comments column beside the thread, else a button and a sheet.
+  // A Markdown file with 4 or more headings has Contents (contents.ts). On a desktop, Side by side and Full screen
+  // alike: ui's contents rail in the page's right gutter. Where the rail yields (its own rule: a gutter under 68 px,
+  // a pane under 480 px), when it is hidden, and on a phone: a Contents button over the file (ContentsPanel.tsx).
   const [contentsShown, setContentsShown] = useContentsShown();
-  const contents: ContentsPlacement | null =
-    view === null || kind !== 'markdown' || !showsContents(documentBlocks)
-      ? null
-      : full
-        ? phone || docAreaNarrow
-          ? 'sheet'
-          : 'rail'
-        : folded
-          ? 'sheet'
-          : 'column';
+  const hasContents = view !== null && kind === 'markdown' && showsContents(documentBlocks);
+  const docKey = `${attachment.id}:${view?.version ?? ''}:${view?.attachment.current?.sha256 ?? ''}`;
+  // What the rail last said about this document (null: not measured yet, so no button flashes before it does).
+  const [railFit, setRailFit] = useState<{ key: string; fits: boolean } | null>(null);
+  const railFits = railFit?.key === docKey ? railFit.fits : null;
+  const contentsButton: ContentsButtonMode | null = !hasContents
+    ? null
+    : phone || railFits === false
+      ? 'sheet'
+      : railFits === true && !contentsShown
+        ? 'show'
+        : null;
   const refRepo = useRefRepo(props.repo);
   const wrapCode = useMemo(() => view !== null && isCode && hasLineLongerThan(view.text, CODE_WRAP_LINE_CHARS), [view, isCode]);
   // Code comments drawn under their lines; one whose lines no longer read as they did is unanchored, and so is a text
@@ -1736,8 +1738,6 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
         <div
           ref={docAreaRef}
           className={`ib-docarea${isHtml ? ' ib-html' : ''}`}
-          // The rail takes the page's left 240 px; the toolstrip moves over the page with it (inbox.css).
-          data-contents-rail={contents === 'rail' && contentsShown ? '' : undefined}
           data-file-swipe={full && phone && multi ? swipeMode : undefined}
           data-image-peek={swipeOn && isImage && multi ? '' : undefined}
         >
@@ -1845,15 +1845,14 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               />
             </div>
           )}
-          {view && (contents === 'rail' || contents === 'sheet') && (
+          {view && contentsButton && (
             <ContentsPanel
-              key={`${attachment.id}:${view.version}:${view.attachment.current?.sha256 ?? ''}`}
-              placement={contents}
+              key={`contents:${docKey}`}
+              mode={contentsButton}
               blocks={blocks}
               annotations={annotations}
               scrollViewport={scrollViewport}
-              shown={contentsShown}
-              onShownChange={setContentsShown}
+              onShow={() => setContentsShown(true)}
               phone={phone}
             />
           )}
@@ -2005,6 +2004,20 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               </ScrollViewportProvider>
             </div>
           )}
+          {view && hasContents && !phone && (
+            // ui's contents rail (Workspaces' rail, approved 2026-10-03): ticks in the page's right gutter, the panel
+            // opening left over the page. Loaded once the page is interactive; it measures itself and yields where the
+            // gutter is short, then says so and the Contents button takes over. Hidden by choice, it still measures.
+            <DeferredMarkdownContentsRail
+              key={`rail:${docKey}`}
+              blocks={documentBlocks}
+              scrollViewport={scrollViewport}
+              contentSelector="[data-doc-text-root]"
+              hidden={!contentsShown}
+              onAvailableChange={(fits) => setRailFit({ key: docKey, fits })}
+              panelAction={<ContentsHide onHide={() => setContentsShown(false)} />}
+            />
+          )}
         </div>
         <div
           className="ib-apanel"
@@ -2031,17 +2044,6 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 <Icon name="x" />
               </button>
             </div>
-          )}
-          {view && contents === 'column' && (
-            <ContentsPanel
-              key={`${attachment.id}:${view.version}:${view.attachment.current?.sha256 ?? ''}`}
-              placement="column"
-              blocks={blocks}
-              annotations={annotations}
-              scrollViewport={scrollViewport}
-              shown={contentsShown}
-              onShownChange={setContentsShown}
-            />
           )}
           <AnnotationPanel
             // The sheet and the drawer draw the timeline under their own title and close (and a phone's window-wide overlay below 768 px would have no close here).
