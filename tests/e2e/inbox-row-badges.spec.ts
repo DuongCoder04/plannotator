@@ -374,9 +374,9 @@ test('beside an open thread: the agents\' tiles, the project and the time on lin
   for (const r of rows) {
     expectLineThree(r.l3, r.id);
     expect(r.top.line1, `row ${r.id}`).toEqual(['ib-from', 'ib-t']);
-    expect(r.top.from, `row ${r.id}`).toEqual(['ib-atiles', 'ib-p']);
+    expect(r.top.from, `row ${r.id}`).toEqual(['ib-p', 'ib-atiles']);
     expect(r.top.marksBefore, `row ${r.id}: the tiles come before the project`).toBe(true);
-    expect(r.top.projectLines, `row ${r.id}: the project wraps`).toBe(1);
+    expect(r.top.projectLines, `row ${r.id}: the project wrapped`).toBe(1);
     expect(r.top.marksInside, `row ${r.id}: the marks leave the row`).toBe(true);
     expect(r.top.timeWhole && r.top.timeEnd <= 0.5, `row ${r.id}: the time ends line 1 whole`).toBe(true);
     expect(r.top.titleCut, `row ${r.id}: the title is cut`).toBe(false);
@@ -450,9 +450,9 @@ test('an iPhone (WebKit): icons only, no card; three lines, the agents\' tiles a
       for (const r of rows) {
         expect(r.lines, `row ${r.id}`).toEqual(['ib-m1', 'ib-m2', 'ib-m3']);
         expect(r.top.line1, `row ${r.id}`).toEqual(['ib-from', 'ib-t']);
-        expect(r.top.from, `row ${r.id}`).toEqual(['ib-atiles', 'ib-p']);
+        expect(r.top.from, `row ${r.id}`).toEqual(['ib-p', 'ib-atiles']);
         expect(r.top.marksBefore && r.top.marksInside, `row ${r.id}: the tiles come before the project, inside the row`).toBe(true);
-        expect(r.top.projectLines, `row ${r.id}: the project wraps`).toBe(1);
+        expect(r.top.projectLines, `row ${r.id}: the project wrapped`).toBe(1);
         expect(r.top.titleCut || !r.top.titleInside, `row ${r.id}: the title is cut`).toBe(false);
         expectLineThree(r.l3, r.id);
       }

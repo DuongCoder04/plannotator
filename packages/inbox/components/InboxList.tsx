@@ -116,7 +116,8 @@ export function rowAgent(row: InboxListRow): InboxListRow['author'] {
 
 /**
  * The badge card's footer mark: the agent's, or, when several agents are in the thread, their marks overlapping
- * (Lines). The row itself draws its agents beside the project (`RowAgents`).
+ * (Lines). The row itself draws its agents beside the project: after it on a wide row (`RowAgents`), before it on
+ * a three-line or phone row (`RowAgentTiles`).
  */
 function RowMark({ row }: { row: InboxListRow }) {
   if ((row.participants?.length ?? 0) > 1) return <TagStack participants={row.participants!} />;
@@ -224,11 +225,13 @@ function FromLine({ row, project, filtered }: { row: InboxListRow; project: stri
  * the project hugging them, as a sidebar row's icon hugs its name. The tiles are a bounded run, so the project always
  * keeps the rest of the line: it never wraps, it ends in "…" (its tooltip shows it whole; not on a phone, where a
  * hover is a first tap). The project is left out in one project's list, which leaves the tiles alone.
+ *
+ * The project comes first in the DOM and the tiles after it, so a screen reader reads where, then who, as on a wide
+ * row (`FromLine`), not every agent's name first; CSS (`.ib-lead > .ib-atiles`, `order: -1`) draws the tiles first.
  */
 function LeadLine({ row, project, filtered, tip = true }: { row: InboxListRow; project: string; filtered: boolean; tip?: boolean }) {
   return (
     <span className="ib-from ib-lead">
-      <RowAgentTiles participants={row.participants} agent={rowAgent(row)} tip={tip} />
       {!filtered &&
         (tip ? (
           <ClipText className="ib-p" text={project} />
@@ -237,6 +240,7 @@ function LeadLine({ row, project, filtered, tip = true }: { row: InboxListRow; p
             {project}
           </span>
         ))}
+      <RowAgentTiles participants={row.participants} agent={rowAgent(row)} tip={tip} />
     </span>
   );
 }

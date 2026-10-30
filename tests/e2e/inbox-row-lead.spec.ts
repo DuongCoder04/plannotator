@@ -105,11 +105,11 @@ async function measure(page: Page, rowClass: string, id: string): Promise<Return
 
 function expectLead(crowded: ReturnType<typeof lineOne>, short: ReturnType<typeof lineOne>, at: string) {
   for (const l of [crowded, short]) {
-    expect(l.from, at).toEqual(['ib-atiles', 'ib-p']);
+    expect(l.from, at).toEqual(['ib-p', 'ib-atiles']);
     expect(l.gap, `${at}: the tiles hug the project`).toBeGreaterThanOrEqual(5.5);
     expect(l.gap, `${at}: the tiles hug the project`).toBeLessThanOrEqual(6.5);
     expect(l.centred, `${at}: the tiles sit on the project's line`).toBeLessThanOrEqual(1);
-    expect(l.projectLines, `${at}: the project wraps`).toBe(1);
+    expect(l.projectLines, `${at}: the project wrapped`).toBe(1);
     expect(l.inside, `${at}: line 1 spills`).toBe(true);
   }
   // Five agents on a very long project: one line, the project cut with "…", no taller than a short project's line.

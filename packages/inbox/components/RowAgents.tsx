@@ -8,8 +8,8 @@ import { Tip } from './Tip';
  * 2026-10-30): one bare 16 px mark per agent host, in the order they joined the thread. A host with two or more
  * sessions is one mark and "×N". Past three hosts, two marks and "+N", N counting the sessions not drawn. A
  * three-line or phone row draws them before its project (`RowAgentTiles`, approval "inbox-list-row-v2",
- * 2026-10-30): the thread header's overlapping tiles, one per session. Either run is one image whose name lists
- * every agent, the hidden ones too.
+ * 2026-10-30): the thread header's overlapping tiles, one per agent, at most two and a "+N" tile counting the other
+ * agents. Either run is one image whose name lists every agent, the hidden ones too.
  */
 
 /** A row draws up to three hosts' marks; past that two and "+N". */
@@ -83,28 +83,29 @@ export function RowAgents({ participants, agent, tip = true }: { participants: r
 export const ROW_AGENT_TILES = 2;
 
 /**
- * The hosts drawn as tiles, one per session in the order they joined, and how many sessions the "+N" tile stands
- * for (0: none). The run is bounded, so many agents never push the project off its line.
+ * The agents drawn as tiles, one per agent (`rowAgentGroups`: two sessions of one host, or two spellings of it,
+ * are one tile), first to join first, and how many other agents the "+N" tile stands for (0: none). The run is
+ * bounded, so many agents never push the project off its line, and a repeated host never hides a different one.
  */
-export function rowAgentTiles(participants: readonly InboxParticipant[] | undefined, agent: { kind: string; host?: string | null }): { shown: (string | null)[]; more: number; total: number } {
-  const hosts = participants && participants.length > 0 ? participants.map((p) => p.host) : [agent.kind === 'agent' ? (agent.host ?? null) : null];
-  const shown = hosts.slice(0, ROW_AGENT_TILES);
-  return { shown, more: hosts.length - shown.length, total: hosts.length };
+export function rowAgentTiles(groups: readonly RowAgentGroup[]): { shown: readonly RowAgentGroup[]; more: number } {
+  const shown = groups.slice(0, ROW_AGENT_TILES);
+  return { shown, more: groups.length - shown.length };
 }
 
 /**
- * The three-line and phone rows' agents, before the project (approval "inbox-list-row-v2", 2026-10-30): the thread
- * header's overlapping tiles, at most two, then a "+N" tile; one image named by every agent. `tip`: the words in a
- * tooltip too (not on a phone, where a hover is a first tap).
+ * The three-line and phone rows' agents, drawn before the project (approval "inbox-list-row-v2", 2026-10-30): the
+ * thread header's overlapping tiles, at most two, then a "+N" tile; one image named by every agent. `tip`: the words
+ * in a tooltip too (not on a phone, where a hover is a first tap).
  */
 export function RowAgentTiles({ participants, agent, tip = true }: { participants: readonly InboxParticipant[] | undefined; agent: { kind: string; host?: string | null }; tip?: boolean }) {
-  const words = rowAgentWords(rowAgentGroups(participants, agent));
-  const { shown, more, total } = rowAgentTiles(participants, agent);
+  const groups = rowAgentGroups(participants, agent);
+  const words = rowAgentWords(groups);
+  const { shown, more } = rowAgentTiles(groups);
   const tiles = (
-    <span className="ib-atiles" role="img" aria-label={words} data-row-agents={total}>
-      {shown.map((host, i) => (
-        <span className="ib-atile" key={i} aria-hidden="true" data-agent-host={host ?? ''}>
-          <HostMark host={host} />
+    <span className="ib-atiles" role="img" aria-label={words} data-row-agents={groups.reduce((n, g) => n + g.sessions, 0)}>
+      {shown.map((g) => (
+        <span className="ib-atile" key={g.name} aria-hidden="true" data-agent-host={g.host ?? ''}>
+          <HostMark host={g.host} />
         </span>
       ))}
       {more > 0 && (

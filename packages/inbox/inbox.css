@@ -916,8 +916,10 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
    marks and a "+N" pill. The marks take the line's quiet colour (OpenCode's mark is `currentColor`). */
 .ib-ags { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 16px; white-space: nowrap; color: var(--muted-foreground); }
 /* A three-line or phone row's line 1 (approval "inbox-list-row-v2", 2026-10-30, `RowAgentTiles`): the agents, then
-   the project, like a sidebar row. The tiles' run is bounded (at most two tiles and a "+N" tile) and never shrinks;
-   the project takes the rest of the line on one line, cut with "…". The tiles are the thread head's overlapping
+   the project, like a sidebar row. The tiles' run is bounded (at most two tiles, one per agent, and a "+N" tile for
+   the other agents) and never shrinks; the project takes the rest of the line on one line, cut with "…". The
+   project comes first in the DOM, so a screen reader reads it before the agents, as on a wide row; `order` draws
+   the tiles first. The tiles are the thread head's overlapping
    tiles (`.ib-tg-stack`: the scale's 20, its 13px glyph, 5px under each other). A tile's fill already pads its
    glyph, so the project sits 6px from the tile's edge. In place of the head's ring, each tile under another is cut
    1.5px short of it (a mask), so the cut shows the row's own ground on hover, selection and dark alike. A negative
@@ -925,6 +927,7 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-from.ib-lead { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
 .ib-lead > .ib-p { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-atiles { display: inline-flex; align-items: center; flex: none; height: 20px; margin: -1.5px 0; }
+.ib-lead > .ib-atiles { order: -1; }
 .ib-atile { display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--ib-mark-20); height: var(--ib-mark-20); border-radius: var(--ib-mark-20-r); background: var(--muted); position: relative; }
 .ib-atile:has(+ .ib-atile) { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 6.5px), transparent calc(100% - 6.5px)); mask-image: linear-gradient(to right, #000 calc(100% - 6.5px), transparent calc(100% - 6.5px)); }
 .ib-atile + .ib-atile { margin-left: -5px; }

@@ -4,14 +4,16 @@
  * first; a host with two or more sessions is one mark and "×N"; past three
  * hosts, two marks and "+N" counting the sessions not drawn. A three-line or
  * phone row (approval "inbox-list-row-v2", 2026-10-30): the agents' tiles
- * before the project, one per session, at most two, then a "+N" tile; the
- * project on one line that never wraps, cut with "…". Every row: one
- * accessible name that lists every agent, the hidden ones too, and no agent
- * name drawn as words. The failures this catches: a repeated logo for two
- * sessions of one host in a wide row, a cap that drops an agent from the row's
- * name, more than two tiles pushing the project off its line, a project that
- * wraps, an agent name in visible text, and a narrow row's title cut instead
- * of wrapped. Pixels (1440 beside a thread, a phone, a long project with five
+ * drawn before the project, one per agent, at most two, then a "+N" tile
+ * counting the other agents; the project on one line that never wraps, cut
+ * with "…". Every row: one accessible name that lists every agent, the hidden
+ * ones too, read after the project, and no agent name drawn as words. The
+ * failures this catches: a repeated logo for two sessions of one host (in a
+ * wide row, or a tile that hides a different agent behind "+N"), a cap that
+ * drops an agent from the row's name, more than two tiles pushing the project
+ * off its line, a project that wraps, a screen reader hearing every agent
+ * before the project, an agent name in visible text, and a narrow row's title
+ * cut instead of wrapped. Pixels (1440 beside a thread, a phone, a long project with five
  * agents) are proved in tests/e2e/inbox-row-lead.spec.ts.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
@@ -77,7 +79,9 @@ const NAMED = row('msg_named', undefined, { thread_name: LONG_NAME });
 /** Five hosts, one session each, on a very long project: two tiles, then "+3". */
 const LONG_PROJECT = 'acme-global-payments-ledger-reconciliation-and-settlement-platform-monorepo';
 const FIVE = row('msg_five', [session('claude-code', 1), session('codex', 1), session('opencode', 1), session('pi', 1), session('cursor', 1)], { project_id: 'prj_2', project: { id: 'prj_2', name: LONG_PROJECT } });
-const SECTIONS: InboxListSection[] = [{ id: 'waiting', label: 'Waiting on you', threads: [ONE, TWICE, THREE, FOUR, ALIAS, ADDRESSED, NAMED, FIVE] }];
+/** Claude Code twice, then Codex: two agents, so one Claude tile and a Codex tile, never two Claude tiles and "+1". */
+const REPEAT = row('msg_repeat', [session('claude-code', 1), session('claude-code', 2), session('codex', 1)]);
+const SECTIONS: InboxListSection[] = [{ id: 'waiting', label: 'Waiting on you', threads: [ONE, TWICE, THREE, FOUR, ALIAS, ADDRESSED, NAMED, FIVE, REPEAT] }];
 
 type Shape = 'wide' | 'narrow' | 'phone';
 const LEAD_SHAPES: Shape[] = ['narrow', 'phone'];
@@ -206,28 +210,50 @@ describe.if(hasDom)("a wide row's agents", () => {
 
 describe.if(hasDom)("a three-line or phone row's agents", () => {
   for (const shape of LEAD_SHAPES) {
-    test(`${shape}: one tile per session, at most two, then a "+N" tile counting the sessions not drawn`, () => {
+    test(`${shape}: one tile per agent, at most two, then a "+N" tile counting the other agents`, () => {
       const el = render(shape);
       expect(tiles(el, ONE.thread_id)).toEqual({ drawn: ['codex'], more: null, name: 'Codex', role: 'img' });
       expect(tiles(el, ADDRESSED.thread_id)).toEqual({ drawn: ['pi'], more: null, name: 'Pi', role: 'img' });
-      // Two sessions of one host are two tiles, and no "×N".
-      expect(tiles(el, TWICE.thread_id)).toEqual({ drawn: ['claude-code', 'claude-code'], more: null, name: '2 Claude Code sessions', role: 'img' });
+      // Two sessions of one host are one tile, and no "×N"; two spellings of one host are one tile too.
+      expect(tiles(el, TWICE.thread_id)).toEqual({ drawn: ['claude-code'], more: null, name: '2 Claude Code sessions', role: 'img' });
+      expect(tiles(el, ALIAS.thread_id).drawn).toEqual(['claude']);
       expect(tiles(el, THREE.thread_id)).toEqual({ drawn: ['claude-code', 'opencode'], more: '+1', name: 'Claude Code, OpenCode and Codex', role: 'img' });
-      expect(tiles(el, FOUR.thread_id)).toEqual({ drawn: ['claude-code', 'codex'], more: '+3', name: 'Claude Code, 2 Codex sessions, OpenCode and Pi', role: 'img' });
+      // Codex's second session is no tile and no "+N": "+2" is OpenCode and Pi.
+      expect(tiles(el, FOUR.thread_id)).toEqual({ drawn: ['claude-code', 'codex'], more: '+2', name: 'Claude Code, 2 Codex sessions, OpenCode and Pi', role: 'img' });
       expect(tiles(el, FIVE.thread_id)).toEqual({ drawn: ['claude-code', 'codex'], more: '+3', name: 'Claude Code, Codex, OpenCode, Pi and Cursor', role: 'img' });
       for (const r of el.querySelectorAll('[data-thread-id]')) expect(r.querySelectorAll('.ib-atile:not(.ib-atmore)').length).toBeLessThanOrEqual(2);
+    });
+
+    test(`${shape}: a repeated host is one tile and never hides a different agent: Claude Code twice, then Codex, draws Claude and Codex, no "+N"`, () => {
+      const el = render(shape);
+      expect(tiles(el, REPEAT.thread_id)).toEqual({ drawn: ['claude-code', 'codex'], more: null, name: '2 Claude Code sessions and Codex', role: 'img' });
+    });
+
+    test(`${shape}: the row reads the project first, then its agents, as a wide row does; the tiles are drawn first`, () => {
+      const el = render(shape);
+      for (const [r, agents] of [
+        [FIVE, 'Claude Code, Codex, OpenCode, Pi and Cursor'],
+        [REPEAT, '2 Claude Code sessions and Codex'],
+        [ONE, 'Codex'],
+      ] as const) {
+        const node = el.querySelector<HTMLElement>(`[data-thread-id="${r.thread_id}"]`)!;
+        expect(accessibleName(node).startsWith(`${r.project.name} ${agents} `)).toBe(true);
+      }
+      // The project is first in the DOM; the tiles are drawn before it (the pixels: tests/e2e/inbox-row-lead.spec.ts).
+      const tilesRun = el.querySelector<HTMLElement>(`[data-thread-id="${FIVE.thread_id}"] .ib-from > .ib-atiles`)!;
+      expect(loadCascade(CSS).resolved(tilesRun, 'order')).toBe('-1');
     });
 
     test(`${shape}: the tiles come before the project; one name lists every agent, the hidden ones too, and no agent name is drawn as words`, () => {
       const el = render(shape);
       const r = el.querySelector<HTMLElement>(`[data-thread-id="${FIVE.thread_id}"]`)!;
       const from = r.querySelector<HTMLElement>('.ib-from')!;
-      expect([...from.children].map((c) => c.className.split(' ')[0])).toEqual(['ib-atiles', 'ib-p']);
+      expect([...from.children].map((c) => c.className.split(' ')[0])).toEqual(['ib-p', 'ib-atiles']);
       expect(from.querySelector('.ib-p')!.textContent).toBe(LONG_PROJECT);
       // The tiles and the "+N" are for the eye: the one name stands for them.
       for (const part of r.querySelector('.ib-atiles')!.children) expect(part.getAttribute('aria-hidden')).toBe('true');
       expect(r.querySelectorAll('[role="img"][aria-label*="Cursor"]').length).toBe(1);
-      expect(accessibleName(r)).toMatch(new RegExp(`^Claude Code, Codex, OpenCode, Pi and Cursor ${LONG_PROJECT} (Oct 10 )?Subject msg_five`));
+      expect(accessibleName(r)).toMatch(new RegExp(`^${LONG_PROJECT} Claude Code, Codex, OpenCode, Pi and Cursor (Oct 10 )?Subject msg_five`));
       for (const id of [FIVE.thread_id, FOUR.thread_id, TWICE.thread_id]) {
         const text = visibleText(el.querySelector(`[data-thread-id="${id}"]`)!);
         for (const name of ['Claude Code', 'Codex', 'OpenCode', 'Pi', 'Cursor']) expect(text).not.toContain(name);

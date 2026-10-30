@@ -89,8 +89,9 @@ function render(filtered: boolean, narrow = false): HTMLElement {
 }
 
 /**
- * A phone row's three lines (approval "inbox-list-row-v2"): line 1 (the agents' tiles by
- * their name as `agents:<name>`, the project's text, the time as `time`), the title, and line 3 (the preview by its text, the open count
+ * A phone row's three lines (approval "inbox-list-row-v2"): line 1 in reading order (the project's text, the
+ * agents' tiles by their name as `agents:<name>`, which CSS draws before the project, the time as `time`), the
+ * title, and line 3 (the preview by its text, the open count
  * as `?N`, anything else by its text), or `null` when the row has no line 3.
  */
 function lines(el: HTMLElement, id: string): { l1: string[]; title: string; l3: string[] | null } {
@@ -123,20 +124,20 @@ describe.if(hasDom)('the list on a phone', () => {
     const el = render(false);
     // An unnamed thread: its subject is the title, and line 3 holds the badge and ?N alone.
     expect(lines(el, 'msg_stop')).toEqual({
-      l1: ['agents:Claude Code', 'payments-reconciliation-service-v2', 'time'],
+      l1: ['payments-reconciliation-service-v2', 'agents:Claude Code', 'time'],
       title: 'Subject msg_stop',
       l3: ['Stopped', '?2'],
     });
     // A named thread: the name is the title, whole however long; the subject is the preview, then the guided review book.
     expect(lines(el, 'msg_wait')).toEqual({
-      l1: ['agents:Claude Code', 'payments-reconciliation-service-v2', 'time'],
+      l1: ['payments-reconciliation-service-v2', 'agents:Claude Code', 'time'],
       title: 'refund-webhooks-and-the-long-running-reconciliation-job',
       l3: ['Subject msg_wait', '', '?2'],
     });
     expect(el.querySelector('.ib-mrow[data-thread-id="msg_wait"] .ib-m3 > [data-guide-mark]')!.getAttribute('aria-label')).toBe('Guided review');
     // A Sent row says where the reply is, as its title; nothing else waits, so no line 3.
     expect(lines(el, 'msg_sent')).toEqual({
-      l1: ['agents:Pi', 'payments-reconciliation-service-v2', 'time'],
+      l1: ['payments-reconciliation-service-v2', 'agents:Pi', 'time'],
       title: 'Saved for Pi. It sees it when it next reads this thread.',
       l3: null,
     });
