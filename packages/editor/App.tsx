@@ -200,7 +200,7 @@ import {
   type GoalSetupSurfaceHandle,
 } from '@plannotator/ui/components/goal-setup/GoalSetupSurface';
 import type { GoalSetupBundle } from '@plannotator/shared/goal-setup';
-import type { AIContext } from '@plannotator/ai';
+import type { AIContext } from '@plannotator/core/ai-context';
 import type { CommentAskAIContext } from '@plannotator/ui/components/CommentPopover';
 import {
   hasSourceSaveConflictSnapshot,
