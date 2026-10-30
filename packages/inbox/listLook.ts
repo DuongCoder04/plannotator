@@ -1,0 +1,68 @@
+/**
+ * The thread list's look options (approval "inbox-list-options", 2026-10-30): three checkboxes in the list's ⋮
+ * menu, under Tidy and Refresh. All are off by default, so the list is today's until someone turns one on.
+ *
+ * - Highlight thread subject: the row's title sits in the thread chip's grey pill (`.ib-key`), cut to one line.
+ * - Compact rows: two lines instead of three (agents, project, title and time; then the preview).
+ * - Hide agent icons: no agents' marks on any row (a screen reader still hears who).
+ *
+ * Each choice is remembered per browser in a cookie, like the Inbox's other window-only layout choices (the
+ * sidebar, the list width, the file view): a cookie ignores the port, so it holds when the Inbox comes back on
+ * another one. Nothing is synced to the server.
+ */
+import { useCallback, useState } from 'react';
+import { storage } from '@plannotator/ui/utils/storage';
+import type { IconName } from './icons';
+
+export interface ListLook {
+  highlight: boolean;
+  compact: boolean;
+  hideAgents: boolean;
+}
+
+export type ListLookKey = keyof ListLook;
+
+export const LIST_LOOK_OFF: ListLook = { highlight: false, compact: false, hideAgents: false };
+
+export const LIST_LOOK_COOKIES: Readonly<Record<ListLookKey, string>> = {
+  highlight: 'plannotator-inbox-list-highlight',
+  compact: 'plannotator-inbox-list-compact',
+  hideAgents: 'plannotator-inbox-list-hide-agents',
+};
+
+/** The ⋮ menu's items, in order: the key, the label and the item's icon. */
+export const LIST_LOOK_OPTIONS: ReadonlyArray<{ key: ListLookKey; label: string; icon: IconName }> = [
+  { key: 'highlight', label: 'Highlight thread subject', icon: 'pen' },
+  { key: 'compact', label: 'Compact rows', icon: 'contents' },
+  { key: 'hideAgents', label: 'Hide agent icons', icon: 'eyeOff' },
+];
+
+/** The remembered look; anything but "1" (or no cookie) is off. */
+export function readListLook(): ListLook {
+  return {
+    highlight: storage.getItem(LIST_LOOK_COOKIES.highlight) === '1',
+    compact: storage.getItem(LIST_LOOK_COOKIES.compact) === '1',
+    hideAgents: storage.getItem(LIST_LOOK_COOKIES.hideAgents) === '1',
+  };
+}
+
+/** Remember one option; off removes its cookie, so an untouched browser carries none. */
+export function writeListLookOption(key: ListLookKey, on: boolean): void {
+  if (on) storage.setItem(LIST_LOOK_COOKIES[key], '1');
+  else storage.removeItem(LIST_LOOK_COOKIES[key]);
+}
+
+/** The list column's classes for the look: none when every option is off. */
+export function listLookClasses(look: ListLook): string {
+  return `${look.highlight ? ' ib-lk-pill' : ''}${look.compact ? ' ib-lk-compact' : ''}${look.hideAgents ? ' ib-lk-noagents' : ''}`;
+}
+
+/** The list's look, read once from the cookies, and a setter that remembers each change. */
+export function useListLook(): [ListLook, (key: ListLookKey, on: boolean) => void] {
+  const [look, setLook] = useState<ListLook>(readListLook);
+  const set = useCallback((key: ListLookKey, on: boolean) => {
+    writeListLookOption(key, on);
+    setLook((current) => (current[key] === on ? current : { ...current, [key]: on }));
+  }, []);
+  return [look, set];
+}
