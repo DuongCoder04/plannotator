@@ -37,6 +37,11 @@ export interface InboxListProps {
   /** One project is shown: its rows drop the project label. */
   filtered: boolean;
   /**
+   * The window's name for each project (`windowProjectNames`): its folder, the parent added only when two
+   * projects on screen share it. Absent, or a project not in it: the server's name.
+   */
+  projectNames?: ReadonlyMap<string, string>;
+  /**
    * A thread is open beside the list: a column of its own width (380px, or
    * wider where the person dragged its edge), two-line rows until it is
    * wide enough for the wide ones.
@@ -319,13 +324,18 @@ function ClipText({ className, text }: { className: string; text: string }) {
   );
 }
 
-/** The thread's name as a soft pill, cut with "…" (its tooltip shows it whole), or nothing. */
-function ThreadChip({ row }: { row: InboxListRow }) {
-  const chip = chipName(row);
-  if (!chip) return null;
+/**
+ * The thread's name as a soft pill, cut with "…" (its tooltip shows it whole), or nothing.
+ * `name` is what `threadChipName` gave. The open thread (Thread.tsx) draws the same pill
+ * first in its meta line, with `lead` (for a screen reader only) saying what the word is;
+ * a row needs none, its name already holds the whole text.
+ */
+export function ThreadChip({ name, lead }: { name: string | null; lead?: string }) {
+  if (!name) return null;
   return (
     <span className="ib-key">
-      <ClipText className="ib-keyt" text={chip} />
+      {lead && <span className="ib-sr">{lead}</span>}
+      <ClipText className="ib-keyt" text={name} />
     </span>
   );
 }
@@ -351,7 +361,7 @@ function GuideMark({ row }: { row: InboxListRow }) {
 function SubjectLine({ row, pinned = false }: { row: InboxListRow; pinned?: boolean }) {
   return (
     <>
-      <ThreadChip row={row} />
+      <ThreadChip name={chipName(row)} />
       <span className="ib-s">
         <ClipText className="ib-st" text={subjectOf(row)} />
       </span>
@@ -403,7 +413,7 @@ export const FULL_WORDS_MIN_LIST_WIDTH = 1150;
  * column is not rendered at all, so a row starts at the list's left edge
  * instead of after an empty block.
  */
-function WideRow({ row, selected, filtered, lit, pinned, keys, full, onOpen }: { row: InboxListRow; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; full: boolean; onOpen: () => void }) {
+function WideRow({ row, project, selected, filtered, lit, pinned, keys, full, onOpen }: { row: InboxListRow; project: string; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; full: boolean; onOpen: () => void }) {
   const [kbd, focus] = useKeyboardFocus(rowHasBadge(row));
   const wordsId = useId();
   const badgeEl = badgeOf(row, kbd, full);
@@ -423,7 +433,7 @@ function WideRow({ row, selected, filtered, lit, pinned, keys, full, onOpen }: {
       aria-describedby={rowHasBadge(row) ? wordsId : undefined}
       {...focus}
     >
-      {!filtered && <ClipText className="ib-p" text={row.project.name} />}
+      {!filtered && <ClipText className="ib-p" text={project} />}
       <span className="ib-subj">
         <SubjectLine row={row} pinned={pinned} />
       </span>
@@ -533,7 +543,7 @@ function RowWithAction({
   );
 }
 
-function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row: InboxListRow; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
+function NarrowRow({ row, project, selected, filtered, lit, pinned, keys, onOpen }: { row: InboxListRow; project: string; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
   const [kbd, focus] = useKeyboardFocus(rowHasBadge(row));
   const wordsId = useId();
   const badge = badgeOf(row, kbd);
@@ -556,9 +566,9 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
           at the right. Short of room the project gives way, down to a floor, before the thread's name. */}
       <div className="ib-l1">
         <span className="ib-pw">
-          <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
+          <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : project} />
         </span>
-        <ThreadChip row={row} />
+        <ThreadChip name={chipName(row)} />
         <span className="ib-t">
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
         </span>
@@ -588,7 +598,7 @@ function NarrowRow({ row, selected, filtered, lit, pinned, keys, onOpen }: { row
  * time), then the subject with the agents' marks, the badge and the count at
  * the right end of line 2.
  */
-function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: InboxListRow; filtered: boolean; lit: boolean; menu: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
+function PhoneRow({ row, project, filtered, lit, menu, pinned, keys, onOpen }: { row: InboxListRow; project: string; filtered: boolean; lit: boolean; menu: boolean; pinned: boolean; keys?: string; onOpen: () => void }) {
   const wordsId = useId();
   // A phone: the icons only, no card (the thread shows the details).
   const badge = rowHasBadge(row) ? <RowBadge row={row} /> : null;
@@ -610,7 +620,7 @@ function PhoneRow({ row, filtered, lit, menu, pinned, keys, onOpen }: { row: Inb
     >
       <span className="ib-m1">
         <span className="ib-pw">
-          <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : row.project.name} />
+          <ClipText className="ib-p" text={filtered ? agentName(rowAgent(row)) : project} />
         </span>
         {chip && (
           <span className="ib-key">
@@ -873,6 +883,7 @@ export function InboxList(props: InboxListProps) {
                     <ListRow
                       key={row.thread_id}
                       row={row}
+                      project={props.projectNames?.get(row.project.id) ?? row.project.name}
                       drawn={section.id}
                       // A phone's row has no hover action (a hover on a touch screen is a first tap): Mark read is in the thread's header there.
                       shape={props.phone ? 'phone' : twoLine ? 'narrow' : 'wide'}
@@ -900,6 +911,8 @@ export function InboxList(props: InboxListProps) {
 
 interface ListRowProps {
   row: InboxListRow;
+  /** The row's project as the window names it (`windowProjectNames`). */
+  project: string;
   /** The group the row sits in on screen. */
   drawn: InboxSectionId;
   shape: 'wide' | 'narrow' | 'phone';
@@ -927,21 +940,22 @@ interface ListRowProps {
  * list update renders only the rows that changed.
  */
 const ListRow = memo(
-  function ListRow({ row, drawn, shape, full, filtered, selected, lit, onOpen, onMarkRead, onSendNow, menu, pinned, keys }: ListRowProps) {
+  function ListRow({ row, project, drawn, shape, full, filtered, selected, lit, onOpen, onMarkRead, onSendNow, menu, pinned, keys }: ListRowProps) {
     const open = () => onOpen(row);
-    if (shape === 'phone') return <PhoneRow row={row} filtered={filtered} lit={lit} menu={menu} pinned={pinned} keys={keys} onOpen={open} />;
+    if (shape === 'phone') return <PhoneRow row={row} project={project} filtered={filtered} lit={lit} menu={menu} pinned={pinned} keys={keys} onOpen={open} />;
     return (
       <RowWithAction row={row} drawn={drawn} menu={menu} onMarkRead={onMarkRead} onSendNow={onSendNow}>
         {shape === 'narrow' ? (
-          <NarrowRow row={row} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} onOpen={open} />
+          <NarrowRow row={row} project={project} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} onOpen={open} />
         ) : (
-          <WideRow row={row} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} full={full} onOpen={open} />
+          <WideRow row={row} project={project} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} full={full} onOpen={open} />
         )}
       </RowWithAction>
     );
   },
   (a, b) =>
     a.shape === b.shape &&
+    a.project === b.project &&
     a.full === b.full &&
     a.drawn === b.drawn &&
     a.filtered === b.filtered &&
