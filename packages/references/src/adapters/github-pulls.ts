@@ -36,7 +36,7 @@ import type {
 } from "../contract.ts";
 import { providerFetch, providerUserAgent } from "../fetch.ts";
 import { type GithubGrammar, githubGrammar, parseGithubCanonical } from "../grammars/github.ts";
-import { readHost } from "../hosts.ts";
+import { apiOrigin, readHost } from "../hosts.ts";
 import {
 	asObject,
 	checkListQuery,
@@ -56,21 +56,26 @@ export const GITHUB_API_BASE = "https://api.github.com";
 /** The item host GitHub credentials are asked for by default. */
 export const GITHUB_HOST = "github.com";
 
-/** The REST API base for an item host: api.github.com for github.com,
- * api.{host} for GitHub Enterprise Cloud with data residency (*.ghe.com),
- * and https://{host}/api/v3 for GitHub Enterprise Server. A port that binds
- * its fetch to the API origin reads the origin from here. */
-export function githubApiBase(host: string): string {
-	if (host === GITHUB_HOST) return GITHUB_API_BASE;
-	if (host.endsWith(".ghe.com")) return `https://api.${host}`;
-	return `https://${host}/api/v3`;
+/** True when `host` is GitHub Enterprise Server: its API sits under
+ * paths on the host itself, not on an api. host. */
+function isEnterpriseServer(host: string): boolean {
+	return apiOrigin("github", host) === `https://${host.toLowerCase()}`;
 }
 
-/** The GraphQL endpoint for an item host (same three cases). */
+/** The REST API base for an item host: api.github.com for github.com,
+ * api.{host} for GitHub Enterprise Cloud with data residency (*.ghe.com),
+ * and https://{host}/api/v3 for GitHub Enterprise Server. This is a base
+ * URL, not an origin: a port binds its fetch to `apiOrigin("github", host)`. */
+export function githubApiBase(host: string): string {
+	const origin = apiOrigin("github", host);
+	return isEnterpriseServer(host) ? `${origin}/api/v3` : origin;
+}
+
+/** The GraphQL endpoint for an item host (same three cases), on the same
+ * `apiOrigin("github", host)`. */
 export function githubGraphqlUrl(host: string): string {
-	if (host === GITHUB_HOST) return `${GITHUB_API_BASE}/graphql`;
-	if (host.endsWith(".ghe.com")) return `https://api.${host}/graphql`;
-	return `https://${host}/api/graphql`;
+	const origin = apiOrigin("github", host);
+	return isEnterpriseServer(host) ? `${origin}/api/graphql` : `${origin}/graphql`;
 }
 
 /** One GitHub REST API as the reads call it: the item host, its API base,

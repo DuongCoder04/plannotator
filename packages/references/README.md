@@ -15,7 +15,7 @@ the Workspaces originals so Workspaces can adopt the package by re-import.
 | --- | --- |
 | `contract.ts` | `ExternalRef`, `ExternalRefFacts`, `ExternalRefState`, `ResolveResult`, `SearchResult`, `ScopesResult`, the code-link types, and `RefReadAdapter` (the read half of the adapter interface). |
 | `port.ts` | `ReferencePort`, `ReferenceCredential` and `credentialFor`. |
-| `hosts.ts` | The served-hosts rule the forge grammars and adapters share (the `hosts` option). |
+| `hosts.ts` | The served-hosts rule the forge grammars and adapters share (the `hosts` option), and `apiOrigin(provider, host)`. |
 | `fetch.ts` | The outbound fetch policy: ten-second deadline, same-origin redirects only (at most 20), one log line with host, status and duration. |
 | `grammars/` | `github.ts`, `gitlab.ts`, `linear.ts`: URL recognition and canonical URLs (`githubGrammar({ hosts })`, `gitlabGrammar({ hosts })`). `git-branch.ts`: the branch-tail rules for code links. Pure functions, no fetch. |
 | `adapters/` | `github.ts` (resolve), `github-pulls.ts` (search, scopes, list), `github-pull-diff.ts` (pull summary, pinned diff, file list), `gitlab.ts` (resolve, list), `linear.ts` (resolve, list). |
@@ -47,10 +47,20 @@ const registry = createReferenceRegistry(
   key starts with `host:` (`github.acme.corp:acme/web#12`), so the same
   path on two hosts never shares a key.
 - Each item is read from its own host's API, with a credential asked for
-  that host: `api.github.com`; `https://{host}/api/v3` (GitHub Enterprise
-  Server); `https://api.{host}` (`*.ghe.com`); `https://{host}/api/v4`
-  (GitLab). `githubApiBase(host)` and `gitlabApiBase(host)` return the
-  origin, so a port can bind its fetch to it.
+  that host. `apiOrigin(provider, host)` returns the one origin every call
+  for that host goes to, so a port can bind its fetch (and the host's
+  token) to it:
+
+  | Provider and host | `apiOrigin` | Calls |
+  | --- | --- | --- |
+  | GitHub `github.com` | `https://api.github.com` | REST `/…`, GraphQL `/graphql` |
+  | GitHub `{x}.ghe.com` | `https://api.{x}.ghe.com` | REST `/…`, GraphQL `/graphql` |
+  | GitHub Enterprise Server `{host}` | `https://{host}` | REST `/api/v3/…`, GraphQL `/api/graphql` |
+  | GitLab `{host}` (gitlab.com too) | `https://{host}` | REST `/api/v4/…`, GraphQL `/api/graphql` |
+  | Linear `linear.app` | `https://api.linear.app` | GraphQL `/graphql` |
+
+  `githubApiBase(host)` is the REST base URL (with `/api/v3` on GitHub
+  Enterprise Server), not an origin; bind to `apiOrigin` instead.
 - `search`, `scopes` and the pull reads take an optional `host` (default the
   public host). For a host the adapter does not serve, the answer is a
   scope error (or `not_linked` for a pull). No credential is asked and no
@@ -158,8 +168,8 @@ canonical URL it is resolving (`"github.com"`, `"gitlab.com"`, `"linear.app"`, o
 
 | Provider | Kinds it sends | Header | No credential (`null`) |
 | --- | --- | --- | --- |
-| GitHub | `installation`, `bearer` | `Authorization: Bearer` | resolve reads `api.github.com` anonymously; search, scopes and pull reads answer `not_linked` |
-| GitLab | `private-token`, `bearer` | `PRIVATE-TOKEN`, or `Authorization: Bearer` | resolve reads `gitlab.com` anonymously |
+| GitHub | `installation`, `bearer` | `Authorization: Bearer` | resolve reads the item host's API (`apiOrigin("github", host)`) anonymously; search, scopes, list and pull reads answer `not_linked` |
+| GitLab | `private-token`, `bearer` | `PRIVATE-TOKEN`, or `Authorization: Bearer` | resolve and list read the item host's API (`apiOrigin("gitlab", host)`) anonymously |
 | Linear | `bearer` or `linear-api-key` (each with `account`) | `Authorization: Bearer`, or the bare `Authorization: <key>` | `not_linked`, with no fetch |
 
 Rules the adapters apply to every answer (`credentialFor` in `port.ts`):
@@ -208,8 +218,11 @@ names.
   `private-token` or `bearer` according to how glab stored it.
 - Linear: none in v1. A later typed personal key is answered as `linear-api-key`, with `account` set to its workspace urlKey (see below).
 - The host gate is the port's job: hand out a credential only for a host
-  the CLI is signed in to, and bind the port's `fetch` to that host. A
-  planted `origin` must not be able to send a token anywhere else. The
+  the CLI is signed in to, and bind the port's `fetch` to that host's API
+  origin, `apiOrigin(provider, host)` (for `github.com` that is
+  `https://api.github.com`, for `x.ghe.com` it is `https://api.x.ghe.com`;
+  `githubApiBase` gives the REST base, not the bind target). A planted `origin` must not be able to send a token anywhere
+  else. The
   adapters check the host they asked for, but they cannot know which hosts
   the CLI is signed in to.
 

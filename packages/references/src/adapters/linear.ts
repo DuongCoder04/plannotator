@@ -33,6 +33,7 @@ import type {
 } from "../contract.ts";
 import { providerFetch } from "../fetch.ts";
 import { matchLinearUrl, parseLinearCanonical } from "../grammars/linear.ts";
+import { apiOrigin } from "../hosts.ts";
 import {
 	checkListQuery,
 	connectionNames,
@@ -49,7 +50,7 @@ import {
 	type ReferencePort,
 } from "../port.ts";
 
-const LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql";
+const LINEAR_GRAPHQL_URL = `${apiOrigin("linear", "linear.app")}/graphql`;
 
 // ── GraphQL: one query per entity type ──────────────────────────────────────
 

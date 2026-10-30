@@ -33,7 +33,7 @@ export {
 } from "./port.ts";
 export { DEFAULT_USER_AGENT, externalRefsFetch, providerFetch, providerUserAgent } from "./fetch.ts";
 export { parseBranchTail } from "./grammars/git-branch.ts";
-export { type ServedHosts } from "./hosts.ts";
+export { type ApiOriginProvider, apiOrigin, type ServedHosts } from "./hosts.ts";
 export { LIST_PAGE_SIZE } from "./list-query.ts";
 export {
 	GITHUB_PUBLIC_HOST,

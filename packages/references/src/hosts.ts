@@ -55,3 +55,28 @@ export function readHost(served: ServedHosts, host: string | undefined): string 
 export function hostKey(served: ServedHosts, host: string, key: string): string {
 	return host === served.publicHost ? key : `${host}:${key}`;
 }
+
+/** The providers `apiOrigin` answers for. */
+export type ApiOriginProvider = "github" | "gitlab" | "linear";
+
+/** The one origin every provider call for an item on `host` goes to, and
+ * so the only origin that may receive that host's credential:
+ *
+ *   github  github.com      https://api.github.com
+ *           {x}.ghe.com     https://api.{x}.ghe.com
+ *           any other host  https://{host}  (GitHub Enterprise Server:
+ *                           REST under /api/v3, GraphQL at /api/graphql)
+ *   gitlab  any host        https://{host}  (REST under /api/v4, GraphQL
+ *                           at /api/graphql)
+ *   linear  linear.app      https://api.linear.app
+ *
+ * A port that binds its fetch to a host binds it to this origin. */
+export function apiOrigin(provider: ApiOriginProvider, host: string): string {
+	const lower = host.toLowerCase();
+	if (provider === "linear") return "https://api.linear.app";
+	if (provider === "github") {
+		if (lower === "github.com") return "https://api.github.com";
+		if (lower.endsWith(".ghe.com")) return `https://api.${lower}`;
+	}
+	return `https://${lower}`;
+}

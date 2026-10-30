@@ -32,7 +32,7 @@ import {
 	type GitlabHostsOptions,
 	parseGitlabCanonical,
 } from "../grammars/gitlab.ts";
-import { readHost, servedHost, type ServedHosts } from "../hosts.ts";
+import { apiOrigin, readHost, servedHost, type ServedHosts } from "../hosts.ts";
 import {
 	checkListQuery,
 	connectionNames,
@@ -47,10 +47,10 @@ import {
 import { credentialFor, type ReferenceCredential, type ReferencePort } from "../port.ts";
 
 /** The origin a GitLab item host serves its API from: the host itself
- * (`/api/v4` and `/api/graphql` live under it). A port that binds its
- * fetch to the API origin reads the origin from here. */
+ * (`/api/v4` and `/api/graphql` live under it). The same as
+ * `apiOrigin("gitlab", host)`, which a port binds its fetch to. */
 export function gitlabApiBase(host: string): string {
-	return `https://${host}`;
+	return apiOrigin("gitlab", host);
 }
 
 /** PRIVATE-TOKEN is the documented header for personal, group and project
