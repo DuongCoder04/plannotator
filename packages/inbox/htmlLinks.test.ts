@@ -85,3 +85,12 @@ describe('resolveInboxHtmlLink', () => {
     expect(folderOf('C:\\a\\c.html')).toBe('c:/a');
   });
 });
+
+
+test('Markdown links resolve from the current document and retain fragments without widening HTML links', () => {
+  const ctx = context({ markdown: true, assetRoute: null });
+  expect(resolveInboxHtmlLink('peer%20notes.md?view=1#target', ctx)).toMatchObject({ kind: 'page', relative: 'peer notes.md', hash: 'target' });
+  expect(resolveInboxHtmlLink('../peer.md', { ...ctx, baseDir: `${FOLDER}/sub` })).toMatchObject({ kind: 'page', relative: 'peer.md' });
+  for (const href of ['../escape.md', '.hidden/secret.md', 'not-attached.html']) expect(resolveInboxHtmlLink(href, ctx).kind).toBe('refused');
+  expect(resolveInboxHtmlLink('peer.md', context()).kind).toBe('refused');
+});
