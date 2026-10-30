@@ -2168,14 +2168,14 @@ const App: React.FC = () => {
       , undefined, openOptions);
     } else if (fileBrowser.activeFile && fileBrowser.activeDirPath) {
       // When viewing a file browser doc, resolve links relative to current file's directory
-      const baseDir = linkedDocHook.filepath?.replace(/\/[^/]+$/, '') || fileBrowser.activeDirPath;
+      const baseDir = (linkedDocHook.filepath && dirnameBrowserPath(linkedDocHook.filepath)) || fileBrowser.activeDirPath;
       linkedDocHook.open(docPath, (path) =>
         `/api/doc?path=${encodeURIComponent(path)}&base=${encodeURIComponent(baseDir)}${convertHtml ? '&convert=1' : ''}`
       , undefined, openOptions);
     } else {
       // Pass the current file's directory as base for relative path resolution
       const baseDir = linkedDocHook.filepath
-        ? linkedDocHook.filepath.replace(/\/[^/]+$/, '')
+        ? dirnameBrowserPath(linkedDocHook.filepath)
         : imageBaseDir?.includes('/') ? imageBaseDir : planDir;
       if (baseDir) {
         linkedDocHook.open(docPath, (path) =>
@@ -4052,7 +4052,16 @@ const App: React.FC = () => {
         setFeedbackTemplates(data.feedbackTemplates ?? null);
         setSourceConverted(!!data.sourceConverted);
         if (data.filePath) {
-          setImageBaseDir(folderLike ? data.filePath : data.filePath.replace(/\/[^/]+$/, ''));
+          // A local path's base uses forward slashes on every platform: the
+          // `includes('/')` checks on imageBaseDir tell a real path from
+          // annotate-last's `last-message`, and a Windows `C:\docs\a.md` has
+          // none. A URL keeps its own slashes.
+          const isUrlTarget = /^https?:\/\//i.test(data.filePath);
+          setImageBaseDir(
+            folderLike ? normalizeBrowserPath(data.filePath)
+              : isUrlTarget ? data.filePath.replace(/\/[^/]+$/, '')
+              : dirnameBrowserPath(data.filePath),
+          );
           if (data.mode === 'annotate') {
             setSourceFilePath(data.filePath);
           }
