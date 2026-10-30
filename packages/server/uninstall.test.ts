@@ -380,7 +380,7 @@ describe("default uninstall", () => {
       join(dataDir, "vendor", "agent-terminal", "webtui-0.0.9", "server.js"),
     );
     writeText(
-      join(dataDir, "vendor", "call-flow", "calldiff-0.4.1", "package.json"),
+      join(dataDir, "vendor", "call-flow", "calldiff-0.6.0", "package.json"),
     );
     writeText(join(dataDir, "vendor", "other-tool", "keep.txt"));
     writeText(join(dataDir, "install-prefs"), "full\n");

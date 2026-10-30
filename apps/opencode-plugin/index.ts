@@ -23,6 +23,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadConfig, resolveInboxReminder, resolveInboxReminderText, resolveSharingEnabled } from "@plannotator/shared/config";
 import { readImprovementHook } from "@plannotator/shared/improvement-hooks";
 import { composeImproveContext } from "@plannotator/shared/pfm-reminder";
+import { isAskAiChild } from "@plannotator/shared/child-env";
 import {
   composeSystemPrompt,
   stripConflictingPlanModeRules,
@@ -245,6 +246,9 @@ async function runPlanReview(input: {
 }
 
 const PlannotatorPlugin: Plugin = async (ctx, rawOptions?: PlannotatorOpenCodeOptions) => {
+  // An `opencode serve` Plannotator's Ask AI started (PLANNOTATOR_ASK_AI_CHILD=1):
+  // no submit_plan, planning prompts, Inbox or agent tool in it.
+  if (isAskAiChild(process.env)) return {};
   const workflowOptions = normalizeWorkflowOptions(rawOptions);
 
   // Preload HTML in background: populates the sync cache before first use.

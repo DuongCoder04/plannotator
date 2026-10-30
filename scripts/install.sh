@@ -121,7 +121,7 @@ Options:
   --skip-attestation     Force-skip provenance verification even if enabled
                          via env var or ~/.plannotator/config.json.
   --with-call-flow       Also install the optional pruned CallDiff core
-                         (about 5 MB on macOS arm64, needs Node.js 22+).
+                         (about 5 MB on macOS arm64, needs Node.js 22.18+).
                          By default it is NOT installed; the review UI offers
                          a one-click install when Call flow is enabled. Also
                          enabled by PLANNOTATOR_INSTALL_CALLDIFF=1 or
@@ -831,7 +831,8 @@ checksum_url="${binary_url}.sha256"
 mkdir -p "$INSTALL_DIR"
 
 tmp_file=$(mktemp)
-curl -fsSL -o "$tmp_file" "$binary_url"
+# A stalled download gives up after a minute (an update holds its lock while it runs).
+curl -fsSL -o "$tmp_file" --speed-limit 1 --speed-time 60 "$binary_url"
 
 # Safe updates (step 1): `plannotator update`, Update now and auto-update run
 # this script after the running Plannotator downloaded it, and the .sha256 of

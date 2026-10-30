@@ -44,6 +44,7 @@ import {
   resolveWindowsCommandShim,
 } from "./command-path.ts";
 import { guardChildStreams, writeChildLine } from "./child-io.ts";
+import { askAiChildEnv, codexAskAiConfigArgs, readCodexConfigTexts } from "./ask-ai-env.ts";
 import { CODEX_FALLBACK_MODELS, cliVersionFrom, effortList, type CatalogModel } from "@plannotator/core/model-catalog";
 
 const PROVIDER_NAME = "codex-sdk";
@@ -66,6 +67,10 @@ const FILE_APPROVAL_METHOD = "item/fileChange/requestApproval";
 // Permission-profile escalation (extra network/filesystem access). Distinct
 // response shape from the two above ({permissions} grant, not {decision}).
 const PERMISSIONS_APPROVAL_METHOD = "item/permissions/requestApproval";
+
+// The `-c` override that turns the Inbox MCP server off lives in
+// ask-ai-env.ts, so the review server's `codex exec` jobs use it too.
+export { codexAskAiConfigArgs, codexInboxEntryHasUrl, readCodexConfigTexts } from "./ask-ai-env.ts";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for testing)
@@ -291,7 +296,7 @@ export function mapApprovalRequest(
 // JSON-RPC over stdio (bidirectional: responses, notifications, server requests)
 // ---------------------------------------------------------------------------
 
-type NotificationListener = (notification: { method: string; params: RpcMessage }) => void;
+type NotificationListener =(notification: { method: string; params: RpcMessage }) => void;
 type RequestHandler = (method: string, id: string | number, params: RpcMessage) => void;
 
 class CodexAppServerProcess {
@@ -326,18 +331,21 @@ class CodexAppServerProcess {
 
   private async doStart(codexPath: string, cwd: string, initTimeoutMs?: number): Promise<void> {
     const commandPath = resolveWindowsCommandShim(codexPath);
+    const appServerArgs = [...codexAskAiConfigArgs(readCodexConfigTexts(cwd)), "app-server"];
     const command =
-      buildWindowsCommandScriptSpawnCommand(commandPath, ["app-server"]) ?? [
+      buildWindowsCommandScriptSpawnCommand(commandPath, appServerArgs) ?? [
         commandPath,
-        "app-server",
+        ...appServerArgs,
       ];
 
     let proc: ChildProcess;
     try {
       const [file, ...args] = command;
       // stderr is "ignore", not "pipe": we never read it, and an un-drained
-      // stderr pipe deadlocks the child once its buffer fills.
-      proc = spawn(file, args, { cwd, stdio: ["pipe", "pipe", "ignore"] });
+      // stderr pipe deadlocks the child once its buffer fills. The env turns
+      // Plannotator's integration off in this Codex (ask-ai-env.ts): its hooks
+      // read the marker; the Inbox MCP server is off by the `-c` overrides.
+      proc = spawn(file, args, { cwd, env: askAiChildEnv(), stdio: ["pipe", "pipe", "ignore"] });
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       this.handleProcessEnd(error);

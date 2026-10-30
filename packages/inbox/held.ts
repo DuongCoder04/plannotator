@@ -92,6 +92,8 @@ export function heldNotice(
   latest: readonly InboxListSection[],
   openedHere?: ReadonlySet<string>,
   open?: OpenThread | null,
+  /** The window's project names by id (`windowProjectNames`); a project not in it reads its server name. */
+  names?: ReadonlyMap<string, string>,
 ): HeldNotice {
   const before = rowsById(shown);
   // By id: two projects can share a name ("api" at work and at home), and two
@@ -104,7 +106,7 @@ export function heldNotice(
     if (isOpenRow(row, open)) continue;
     if (!hasNewAgentActivity(before.get(row.thread_id), row, openedHere)) continue;
     count += 1;
-    projects.set(row.project.id, row.project.name);
+    projects.set(row.project.id, names?.get(row.project.id) ?? row.project.name);
   }
   if (count === 0) return { count, text: null };
   return { count, text: projects.size === 1 ? `${count} new in ${[...projects.values()][0]}` : `${count} new` };

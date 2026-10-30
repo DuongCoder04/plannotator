@@ -462,6 +462,8 @@ async function resolveAllowed($: Engine, e: { isInteractive?: unknown }): Promis
   // A person at the prompt is what makes a later plugin turn mean anything;
   // `-p` and SDK runs keep the classic, blocking flows.
   if (!e.isInteractive) return null
+  // A `claude` Plannotator's Ask AI started (`isAskAiChild` in packages/shared/child-env.ts).
+  if ((await $.env.get('PLANNOTATOR_ASK_AI_CHILD')) === '1') return null
   if (!(await $.fs.exists('/bin/sh'))) return null
   const home = await $.env.get('HOME')
   const dataDir = dataDirOf({

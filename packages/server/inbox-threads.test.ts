@@ -191,6 +191,44 @@ describe("send_message routing: a row is a thread", () => {
   });
 });
 
+describe("read_thread's list over a folder with no project of its own", () => {
+  test("names the repo projects inside it, and not a sibling that shares the prefix", async () => {
+    const root = tempRoot();
+    const saved = { HOME: process.env.HOME, CONNECT: process.env.PLANNOTATOR_INBOX_CONNECT };
+    process.env.HOME = join(root, "home");
+    process.env.PLANNOTATOR_INBOX_CONNECT = "0";
+    try {
+      const parent = join(root, "work", "herdr");
+      const repo = gitProject(parent, "herdr");
+      const sibling = gitProject(join(root, "work"), "herdr-other");
+      mkdirSync(join(root, "work", "herd"), { recursive: true });
+      const server = await start(join(root, "data"));
+      const client = await mcpClient(server);
+      for (const dir of [repo, sibling]) {
+        await client.callTool({ name: "send_message", arguments: { body: "hello", project_path: dir, agent_session: "ses_A" } });
+      }
+
+      const outer = await client.callTool({ name: "read_thread", arguments: { project_path: parent } });
+      const found = structured<{ total: number; projects_inside?: { root: string; threads: number }[] }>(outer);
+      expect(found.total).toBe(0);
+      expect(found.projects_inside?.map((p) => [p.root, p.threads])).toEqual([[repo, 1]]);
+      expect(JSON.stringify(outer)).toContain(repo);
+      expect(JSON.stringify(outer)).not.toContain(sibling);
+      const projects = server.store.listProjects().length;
+
+      // /work/herd is a string prefix of /work/herdr but holds no project: nothing is named, nothing is made.
+      const prefixOnly = structured<{ projects_inside?: unknown }>(await client.callTool({ name: "read_thread", arguments: { project_path: join(root, "work", "herd") } }));
+      expect(prefixOnly.projects_inside).toBeUndefined();
+      expect(server.store.listProjects().length).toBe(projects); // a list never makes a project (not even for the folder asked), and the hint makes none
+    } finally {
+      for (const [key, value] of [["HOME", saved.HOME], ["PLANNOTATOR_INBOX_CONNECT", saved.CONNECT]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+});
+
 const STOPPED = [":::question", "Ship the worker with retries?", "", "Stopped: the worker cannot ship without this.", "", "- [ ] Yes", "- [ ] No", ":::"].join("\n");
 const HOLDS = [":::question", "Which queue for the exports?", "", "Holds up: the export job; the nightly report", "", "- [ ] Main", "- [ ] Bulk", ":::"].join("\n");
 const PLAIN_Q = (prompt: string) => [":::question", prompt, "", "- [ ] Yes", "- [ ] No", ":::"].join("\n");

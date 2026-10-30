@@ -36,6 +36,7 @@ import { closeSync, existsSync, mkdirSync, openSync, rmSync, statSync, utimesSyn
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
+import { isAskAiChild } from "@plannotator/shared/child-env";
 import { isNewerStableVersion } from "@plannotator/shared/update-check";
 import { inboxDir } from "@plannotator/shared/inbox/schema";
 import {
@@ -100,10 +101,28 @@ function spawnDetachedInbox(dataDir: string, tailscale: boolean): void {
     cwd: dir,
     windowsHide: true,
     stdio: ["ignore", log, log],
-    env: { ...process.env, PLANNOTATOR_DATA_DIR: dataDir, [LOCK_HELD_ENV]: "1", [DETACHED_ENV]: "1" },
+    env: detachedInboxEnv(process.env, dataDir),
   });
   child.unref();
   closeSync(log);
+}
+
+/**
+ * The detached Inbox's env. Started from inside an agent Ask AI started
+ * (`isAskAiChild`: a shell that agent ran), it drops that agent's switches:
+ * the marker and the `PLANNOTATOR_INBOX_TOOL=0` / `PLANNOTATOR_AGENT_TOOL=0`
+ * that came with it. The Inbox outlives the agent, and its restarts, "Open
+ * in" terminals and Codex wakes would otherwise hand them to the person's
+ * real sessions. Without the marker, both switches pass through as before.
+ */
+export function detachedInboxEnv(env: Readonly<Record<string, string | undefined>>, dataDir: string): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = { ...env, PLANNOTATOR_DATA_DIR: dataDir, [LOCK_HELD_ENV]: "1", [DETACHED_ENV]: "1" };
+  if (isAskAiChild(env)) {
+    delete out.PLANNOTATOR_ASK_AI_CHILD;
+    delete out.PLANNOTATOR_INBOX_TOOL;
+    delete out.PLANNOTATOR_AGENT_TOOL;
+  }
+  return out;
 }
 
 /** Wait for the Inbox to answer as running; null on timeout. */
@@ -603,6 +622,7 @@ export async function runInboxCommand(args: readonly string[], assets: InboxComm
       ensureRunning: () => ensureInboxRunning(dataDir),
       hostSession: inboxHostSessionFromEnv(process.env),
       qwen: inboxQwenShimContext(process.env, homedir(), process.cwd(), process.ppid),
+      askAiChild: isAskAiChild(process.env),
     });
     process.exit(0);
   }

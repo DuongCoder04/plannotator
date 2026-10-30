@@ -39,6 +39,15 @@ describe('heldNotice', () => {
     expect(heldNotice(shown, sections(work('a', '2026-10-07T10:00:00Z'), work('b', '2026-10-07T10:05:00Z')))).toEqual({ count: 1, text: '1 new in api' });
   });
 
+  // The notice sits above rows that read the window's short name (projectLabels.ts): it names the project the same way.
+  test('the notice names its project as the window does, the server name only for a project the window has no name for', () => {
+    const repo = (id: string, at: string) => ({ ...row(id, 'x', at, 'agent'), project: { id: 'prj_repo', name: 'plannotator · plannotator' } }) as InboxListRow;
+    const shown = sections(repo('a', '2026-10-07T10:00:00Z'));
+    const latest = sections(repo('a', '2026-10-07T10:00:00Z'), repo('b', '2026-10-07T10:05:00Z'));
+    expect(heldNotice(shown, latest, undefined, null, new Map([['prj_repo', 'plannotator']])).text).toBe('1 new in plannotator');
+    expect(heldNotice(shown, latest, undefined, null, new Map()).text).toBe('1 new in plannotator · plannotator');
+  });
+
   // The failure this guards: the Inbox's set-aside note is a person-authored
   // line, so an agent message followed by the note before the list read again
   // made the row's last message the person's, and the agent's message slipped

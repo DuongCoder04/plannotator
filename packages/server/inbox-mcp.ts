@@ -60,14 +60,18 @@ export const INBOX_SERVED_TOOLS: readonly (typeof INBOX_MCP_TOOLS)[number][] = I
 export const INBOX_DEFAULT_SERVED_TOOLS: readonly (typeof INBOX_MCP_TOOLS)[number][] = INBOX_SERVED_TOOLS.filter((name) => name !== "card");
 
 
-/** Under Claude Code's 2,048-character cap on server instructions. */
+/**
+ * Under Claude Code's 2,048-character cap on server instructions. Room for
+ * INBOX_THREAD_RULE (in INBOX_AGENT_RULES) came from the attachments line's
+ * examples, which the field's own description gives.
+ */
 export const INBOX_MCP_INSTRUCTIONS = [
   "Plannotator Inbox: a local window where the person reads what you send and answers later, without blocking your session.",
   "",
   INBOX_AGENT_RULES,
   "",
   "- send_message posts markdown. Messages join your session's thread until the person resolves it; pass `thread` (a short name) to keep separate work apart, or reply_to (an id from the Inbox, never from memory) to answer a message. Question syntax: send_message's description.",
-  "- attachments: files to show the person (a plan, a screenshot, an HTML mock); link one from the body (`[the mock](mock.html)`) to open it beside the thread.",
+  "- attachments: files to show the person; link one from the body (`[the mock](mock.html)`) to open it beside the thread.",
   "- wait_for_reply (thread_id) returns the reply when it lands, or { status: \"waiting\", cursor } after about 50 s: call it again with that cursor. Call it only after the work that does not need the answer.",
   "- read_thread reads one thread (thread_id); without an id it lists yours (asked_by \"anyone\": all). search finds older messages by words. resolve_message archives the thread, only when nothing in it is left for the person to read or answer.",
   "- A guided review of a code change: get_guide_brief, write the guide, then submit_guide with the exact patch.",
@@ -623,6 +627,25 @@ export async function threadReadScope(context: InboxMcpContext, path: string): P
   return { project, projectIds };
 }
 
+/** Most projects read_thread's list names under an empty folder. */
+const PROJECTS_INSIDE_MAX = 3;
+
+/**
+ * The known projects whose root lies strictly inside `path` (whole path
+ * segments), with threads, most threads first. Reads only: no project is
+ * made and none of their threads are merged into the list.
+ */
+async function projectsInside(context: InboxMcpContext, path: string, own: InboxProject | null, includeResolved: boolean): Promise<{ name: string; root: string; threads: number }[]> {
+  const folder = (await context.projectRootOf?.(path).catch(() => null))?.folder ?? path;
+  const found: { name: string; root: string; threads: number }[] = [];
+  for (const candidate of context.store.listProjects()) {
+    if (candidate.id === own?.id || candidate.root === folder || !isInsideFolder(candidate.root, folder)) continue;
+    const rows = context.store.listRows({ projectId: candidate.id }).filter((row) => includeResolved || row.resolved_at === null || row.agent_after_archive === true);
+    if (rows.length > 0) found.push({ name: candidate.name, root: candidate.root, threads: rows.length });
+  }
+  return found.sort((a, b) => b.threads - a.threads || a.root.localeCompare(b.root)).slice(0, PROJECTS_INSIDE_MAX);
+}
+
 /** The list rows of `projectIds` (every project when null), of one session's threads when given. */
 function listScopedRows(store: InboxStore, projectIds: ReadonlySet<string> | null, session: string | null) {
   if (projectIds === null) return store.listRows({ session });
@@ -667,7 +690,7 @@ const IMAGE_NOT_SHOWN_REASONS: Record<string, string> = {
   image_read_failed: "could not be read",
   not_an_image: "not an image (png, jpg, gif, webp, svg, avif, bmp, ico)",
   image_too_large: "over 10 MB or 50 megapixels",
-  image_hidden: "in a hidden folder, or a hidden or .env file",
+  image_hidden: "a .env file, or in a hidden folder of the home folder such as ~/.ssh",
   validation_error: "not a file path",
 };
 const IMAGE_NOT_YET_REASON = "does not exist yet; it will show if it is written there later";
@@ -709,7 +732,7 @@ export function imagesNotShownText(list: readonly ImageNotShown[]): string {
   const later = list.filter((image) => image.not_yet);
   let text = "";
   if (never.length > 0) {
-    text += ` The message was sent, but ${never.length === 1 ? "this image will not show" : `${never.length} images will not show`}: ${namedImages(never, IMAGES_NOT_SHOWN_MAX)}. Save the image as a local file outside hidden folders and link that path, or attach it with attachments.`;
+    text += ` The message was sent, but ${never.length === 1 ? "this image will not show" : `${never.length} images will not show`}: ${namedImages(never, IMAGES_NOT_SHOWN_MAX)}. Copy the image to a plain folder and link that path, or attach it with attachments.`;
   }
   if (later.length > 0) {
     text += ` ${later.length === 1 ? "This image does not exist yet" : `${later.length} images do not exist yet`}: ${namedImages(later, IMAGES_NOT_SHOWN_MAX)}; ${later.length === 1 ? "it shows" : "they show"} once written there.`;
@@ -1194,10 +1217,17 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
         // The session saw these subjects (the check INBOX_REPLY_TO_CHECK asks for), unless a connection read them for it.
         if (!peek) for (const row of rows) noteSessionRead(store, session, row.thread_id, clock());
         const head = `${total} thread${total === 1 ? "" : "s"}${project ? ` in ${project.name}` : ""}${total > limit ? `, showing ${limit}` : ""}.`;
-        return okComplete(rows.length > 0 ? `${head}\n${rows.map(threadRowText).join("\n")}` : head, {
+        // A folder that holds projects (a plain folder over a repo) lists nothing itself: name the projects below it, so the agent can ask for them.
+        const inside = total === 0 ? await projectsInside(context, input.project_path, project, input.include_resolved === true) : [];
+        const insideLine =
+          inside.length > 0
+            ? `Projects inside this folder: ${inside.map((p) => `${p.name} (${p.root}), ${p.threads} thread${p.threads === 1 ? "" : "s"}`).join("; ")}. Pass its project_path to list ${inside.length === 1 ? "them" : "one"}.`
+            : "";
+        return okComplete(rows.length > 0 ? `${head}\n${rows.map(threadRowText).join("\n")}` : insideLine ? `${head}\n${insideLine}` : head, {
           project: project ? { id: project.id, name: project.name, root: project.root } : null,
           threads: rows,
           total,
+          ...(inside.length > 0 ? { projects_inside: inside } : {}),
         });
       }),
   );

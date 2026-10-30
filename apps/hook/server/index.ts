@@ -83,7 +83,7 @@
  *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
  */
 
-import { childEnv } from "@plannotator/shared/child-env";
+import { childEnv, isAskAiChild } from "@plannotator/shared/child-env";
 import {
   startPlannotatorServer as startPlannotatorServerUnguarded,
   handleServerReady,
@@ -2979,6 +2979,14 @@ if (args[0] === "sessions") {
   // Read hook event from stdin
   const eventJson = await Bun.stdin.text();
   if (!eventJson.trim()) {
+    process.exit(0);
+  }
+
+  // An agent Plannotator's Ask AI started (PLANNOTATOR_ASK_AI_CHILD=1): no one
+  // is there to review a plan. Every plan hook (Claude Code's ExitPlanMode,
+  // the Codex Stop hook, Qwen Code, Gemini, Mistral Vibe) passes through with
+  // no answer: no server, no browser, no Inbox.
+  if (isAskAiChild(process.env)) {
     process.exit(0);
   }
 

@@ -16,9 +16,14 @@
  * Every definition names the code it mirrors (file:line on main, 35f9ad90d).
  * spec/README.md maps the state to the code and explains each property.
  *
- * Three switches:
+ * Four switches:
  *   NOTES_FIX   PR #2337: an empty "What's New" answer for a release under
  *               2 days old is asked again after 15 minutes, not 24 hours.
+ *   WHATS_NEW_FIX  F2-F4: a claim nobody answered is asked again after 15
+ *               minutes; a failure that may have been the network is asked
+ *               again 15 minutes after it once a release check answers; a
+ *               start on the version whose link was not yet offered with
+ *               readable notes (whatsNewPending) shows it again.
  *   DRAFT_FLOW  PR #2337's release.yml: the release is created as a draft,
  *               its notes written, then published, so GitHub's generated body
  *               is never public.
@@ -29,6 +34,7 @@ module updateLifecycle {
   const NOTES_FIX: bool
   const DRAFT_FLOW: bool
   const WINDOWS: bool
+  const WHATS_NEW_FIX: bool
 
   pure val VERSIONS = 1.to(3)
   pure val IDS = 1.to(3)
@@ -46,6 +52,7 @@ module updateLifecycle {
   // packages/server/auto-update.ts:106, 126
   pure val AUTO_WINDOW = 1440        // AUTO_UPDATE_INTERVAL_MS
   pure val LOCK_STALE = 60           // AUTO_UPDATE_LOCK_STALE_MS
+  pure val LOCK_LIVE_MAX = 1440      // AUTO_UPDATE_LOCK_LIVE_MAX_MS (PR #2342)
 
   // The bounds of the "eventually" properties (checked as invariants).
   pure val WHATS_NEW_BOUND = 30      // a tick this long after the real notes exist shows the link
@@ -55,7 +62,9 @@ module updateLifecycle {
 
   // update-notes/<v>.json: none, saved without a "What's New" part, or readable.
   // notesFetch[v] (update-state.json): at = -1 when there is none.
-  type NotesFetch = { at: int, failed: bool, pub: int }
+  // inFlight: the claim, not yet answered. quick: retryOnline (on a claim, what
+  // a failure of it records).
+  type NotesFetch = { at: int, failed: bool, pub: int, inFlight: bool, quick: bool }
 
   // One install: the detached wrapper's process group and the install script in it.
   // phase: unused | spawned | locked | downloaded | aside | replaced | done | dead
@@ -77,6 +86,7 @@ module updateLifecycle {
     notes: int -> str,                      // update-notes/<v>.json: none | empty | content
     nf: int -> NotesFetch,                  // notesFetch
     inboxVer: int,                          // inboxVersion
+    wnPending: int,                         // whatsNewPending (0: none)
     pendingV: int, pendingPerson: bool,     // pending.version, pending.by == "person"
     resultV: int, resultCode: int,          // update-result.json (resultV 0: none)
     lockHeld: bool, lockKind: str, lockAt: int, lockOwner: int,  // update.lock: exists, form, mtime, whose
@@ -128,18 +138,24 @@ module updateLifecycle {
   pure def lockExpired(st: Sys): bool =
     st.now - st.lockAt >= LOCK_STALE or st.lockAt - st.now >= LOCK_STALE
 
-  // auto-update.ts:384 lockHolderGone: only the POSIX wrapper's own line
-  // (pid= group= host= ...) can be judged; a bare pid or Windows keeps the hour.
+  // auto-update.ts lockHolderGone: only a holder line (pid= group= host= ...)
+  // can be judged; a bare pid keeps the hour. launchInstaller writes the line at
+  // the spawn on every platform (Windows judges the wrapper's pid).
   pure def holderGone(st: Sys): bool =
-    not(WINDOWS) and st.lockKind == "wrapper" and not(running(st.inst.get(st.lockOwner)))
+    st.lockKind == "wrapper" and not(running(st.inst.get(st.lockOwner)))
 
-  // auto-update.ts:481 isUpdateLockHeld
+  // auto-update.ts lockHeld: a lock whose installer still runs holds past the
+  // hour, up to a day (POSIX; Windows keeps the hour, it reuses a pid too soon).
+  pure def liveLock(st: Sys): bool =
+    not(WINDOWS) and st.lockKind == "wrapper" and running(st.inst.get(st.lockOwner))
+      and iabs(st.now - st.lockAt) < LOCK_LIVE_MAX
+
+  // auto-update.ts lockHeld (isUpdateLockHeld)
   pure def lockHeldView(st: Sys): bool =
-    st.lockHeld and not(lockExpired(st)) and not(holderGone(st))
+    st.lockHeld and not(holderGone(st)) and (not(lockExpired(st)) or liveLock(st))
 
-  // auto-update.ts:460 acquireUpdateLock: free, expired, or its holder gone.
-  pure def canAcquire(st: Sys): bool =
-    not(st.lockHeld) or lockExpired(st) or holderGone(st)
+  // auto-update.ts acquireUpdateLock: free, or a lock that no longer holds.
+  pure def canAcquire(st: Sys): bool = not(lockHeldView(st))
 
   // ---------------------------------------------------------------------------
   // The sidebar's update button: inbox-updates.ts:230 deriveInboxUpdate
@@ -189,7 +205,10 @@ module updateLifecycle {
     val r = st.nf.get(v)
     if (r.at < 0 or r.at > st.now) true
     else st.now - r.at >= (
-      if (r.failed) NOTES_FAIL_RETRY
+      // WHATS_NEW_FIX: a failure that may have been the network, once a release check answered after it.
+      if (r.failed) (if (WHATS_NEW_FIX and r.quick and st.latestAt > r.at) NOTES_PENDING_RETRY else NOTES_FAIL_RETRY)
+      // WHATS_NEW_FIX: a claim nobody answered (its process quit).
+      else if (WHATS_NEW_FIX and r.inFlight) NOTES_PENDING_RETRY
       else if (NOTES_FIX and young(r, st.now)) NOTES_PENDING_RETRY
       else NOTES_INTERVAL)
 
@@ -204,7 +223,10 @@ module updateLifecycle {
       val prev = st.nf.get(v)
       // #2337 keeps a young release's date on the claim (pendingBefore).
       val keep = NOTES_FIX and prev.at >= 0 and not(prev.failed) and young(prev, st.now)
-      st.with("nf", st.nf.set(v, { at: st.now, failed: false, pub: if (keep) prev.pub else -1 }))
+      // WHATS_NEW_FIX: marked in flight; a failure of it may retry quickly unless a
+      // release check answered since the failure before it.
+      val quick = WHATS_NEW_FIX and not(prev.at >= 0 and prev.failed and st.latestAt > prev.at)
+      st.with("nf", st.nf.set(v, { at: st.now, failed: false, pub: if (keep) prev.pub else -1, inFlight: WHATS_NEW_FIX, quick: quick }))
         .with("ibInflight", st.ibInflight.set(v, true))
         .with("minNotesGap", if (st.lastNotesReq.get(v) < 0) st.minNotesGap else imin(st.minNotesGap, st.now - st.lastNotesReq.get(v)))
         .with("lastNotesReq", st.lastNotesReq.set(v, st.now))
@@ -212,18 +234,21 @@ module updateLifecycle {
 
   // GitHub answers releases/tags/v<v> as it is NOW (the body may have changed).
   pure def notesAnswered(st: Sys, v: int): Sys =
-    val claim = st.nf.get(v).at
+    val rec = st.nf.get(v)
+    val claim = rec.at
     val done = st.with("ibInflight", st.ibInflight.set(v, false))
     if (not(st.netUp) or v > st.published)
-      // update-check.ts:1113: a failure waits 6 h (a draft or missing tag answers 404).
-      done.with("nf", st.nf.set(v, { at: claim, failed: true, pub: -1 }))
+      // update-check.ts:1113: a failure waits 6 h (a draft or missing tag answers 404);
+      // WHATS_NEW_FIX: 15 min once a release check answered, when the claim allowed it.
+      done.with("nf", st.nf.set(v, { at: claim, failed: true, pub: -1, inFlight: false, quick: rec.quick }))
     else if (st.body.get(v) == "ours")
       done.with("notes", st.notes.set(v, "content"))
+        .with("nf", st.nf.set(v, rec.with("inFlight", false)))
     else
       // update-check.ts:1121 saves the empty notes; the claim stays as written
       // (main: 24 h). #2337 records the release's date: 15 min while young.
       done.with("notes", st.notes.set(v, if (st.notes.get(v) == "content") "content" else "empty"))
-        .with("nf", if (NOTES_FIX) st.nf.set(v, { at: claim, failed: false, pub: st.pubAt.get(v) }) else st.nf)
+        .with("nf", st.nf.set(v, if (NOTES_FIX) { at: claim, failed: false, pub: st.pubAt.get(v), inFlight: false, quick: false } else rec.with("inFlight", false)))
 
   // inbox-updates.ts:385 computeUpdatedLink
   pure def link(st: Sys): int =
@@ -238,18 +263,21 @@ module updateLifecycle {
   // The Inbox: inbox-updates.ts:296 start, :418 compute (reap), :488 tick
   // ---------------------------------------------------------------------------
 
-  // auto-update.ts:443 reapDeadUpdateLock
+  // auto-update.ts reapDeadUpdateLock: a lock that no longer holds (its holder
+  // gone, or past its hour) is released and its install recorded as failed.
   pure def reap(st: Sys): Sys =
-    if (st.lockHeld and holderGone(st))
+    if (st.lockHeld and not(lockHeldView(st)))
       val record = st.pendingV > 0 and st.resultV != st.pendingV
       st.with("lockHeld", false)
         .with("resultV", if (record) st.pendingV else st.resultV)
         .with("resultCode", if (record) -1 else st.resultCode)
     else st
 
+  // The link offered with readable notes; WHATS_NEW_FIX clears whatsNewPending then.
   pure def markSeen(st: Sys): Sys =
     if (st.ibUpdated > 0 and link(st) == st.ibUpdated and st.notes.get(st.ibUpdated) == "content")
       st.with("whatsNewSeen", st.whatsNewSeen.set(st.ibUpdated, true))
+        .with("wnPending", if (st.wnPending == st.ibUpdated) 0 else st.wnPending)
     else st
 
   pure def tick(st: Sys, fresh: int): Sys =
@@ -270,8 +298,11 @@ module updateLifecycle {
   pure def startInbox(st: Sys): Sys =
     val runs = st.binV
     val newer = st.inboxVer > 0 and runs > st.inboxVer                         // :300
+    // WHATS_NEW_FIX: a start on the version still owed its link (whatsNewPending).
+    val owed = newer or (WHATS_NEW_FIX and st.inboxVer == runs and st.wnPending == runs)
     tick(st.with("ibAlive", true).with("ibRuns", runs)
-      .with("ibUpdated", if (newer) runs else 0)
+      .with("ibUpdated", if (owed) runs else 0)
+      .with("wnPending", if (WHATS_NEW_FIX and newer) runs else st.wnPending)
       .with("ibOnDisk", runs).with("ibStartedAt", st.now)
       .with("ibInflight", VERSIONS.mapBy(v => false))
       .with("inboxVer", runs)                                                 // :303
@@ -293,13 +324,13 @@ module updateLifecycle {
     else if (st.inst.get(3).phase == "unused") 3
     else 0
 
-  // Take update.lock (the taker's bare pid), forget the old result, record
-  // pending, spawn the detached wrapper.
+  // Take update.lock, forget the old result, record pending, spawn the
+  // detached wrapper; launchInstaller names the wrapper in the lock at once.
   pure def launch(st: Sys, v: int, person: bool): Sys =
     val id = freeSlot(st)
     if (not(canAcquire(st)) or id == 0) st
     else
-      st.with("lockHeld", true).with("lockKind", "bare").with("lockAt", st.now).with("lockOwner", id)
+      st.with("lockHeld", true).with("lockKind", "wrapper").with("lockAt", st.now).with("lockOwner", id)
         .with("resultV", 0).with("resultCode", 0)
         .with("pendingV", v).with("pendingPerson", person)
         .with("inst", st.inst.set(id, { phase: "spawned", v: v, person: person, startedAt: st.now }))
@@ -322,16 +353,19 @@ module updateLifecycle {
 
   pure def personEnded(st: Sys, i: int, failed: bool): Sys =
     val ins = st.inst.get(i)
-    if (ins.person and ins.v == st.personV and st.personOutcome == "running")
+    // (ghost) the person's last install ends: none of theirs still runs beside it
+    if (ins.person and ins.v == st.personV and st.personOutcome == "running"
+        and not(IDS.exists(j => j != i and running(st.inst.get(j)) and st.inst.get(j).person)))
       st.with("personOutcome", if (failed) "failed" else "ok").with("tickAfterPersonEnd", false)
     else st
 
-  // The wrapper's end: record the code (update-result.json), then `rm -f` the
-  // lock (auto-update.ts:853-854), whoever holds it now.
+  // The wrapper's end: record the code (update-result.json), then release the
+  // lock only while it is still its own (release_lock; the PowerShell wrapper's
+  // own check).
   pure def finish(st: Sys, i: int, code: int): Sys =
     val ins = st.inst.get(i)
     personEnded(
-      st.with("resultV", ins.v).with("resultCode", code).with("lockHeld", false)
+      st.with("resultV", ins.v).with("resultCode", code).with("lockHeld", st.lockHeld and st.lockOwner != i)
         .with("inst", st.inst.set(i, ins.with("phase", "done"))),
       i, code != 0)
 
@@ -341,7 +375,7 @@ module updateLifecycle {
 
   // The wrapper's first line (auto-update.ts:792-795) replaces the lock's
   // content with its own holder line: `>` creates or truncates, whoever held it.
-  // The Windows wrapper writes none.
+  // The Windows wrapper writes none: the lock keeps the line launchInstaller wrote.
   pure def wrapperLock(st: Sys, i: int): Sys =
     val ins = st.inst.get(i)
     val s1 = st.with("inst", st.inst.set(i, ins.with("phase", "locked")))
@@ -370,6 +404,9 @@ module updateLifecycle {
 
   action doAdvance(d: int): bool = all {
     VERSIONS.forall(v => not(s.ibInflight.get(v))),   // a request answers or times out in seconds
+    // A wrapper writes its lock line within moments of its spawn (it is the
+    // first thing it runs), or is killed first.
+    IDS.forall(i => s.inst.get(i).phase != "spawned"),
     val later = s.with("now", s.now + d)
     s' = (if (later.ibAlive) tick(later, CHECK_INTERVAL) else later).with("act", "Advance"),
   }
@@ -488,8 +525,9 @@ module updateLifecycle {
       netUp: true,
       latest: 0, latestAt: -1, rcAt: -1, rcFailed: false,
       notes: VERSIONS.mapBy(v => "none"),
-      nf: VERSIONS.mapBy(v => { at: -1, failed: false, pub: -1 }),
+      nf: VERSIONS.mapBy(v => { at: -1, failed: false, pub: -1, inFlight: false, quick: false }),
       inboxVer: 1,
+      wnPending: 0,
       pendingV: 0, pendingPerson: false, resultV: 0, resultCode: 0,
       lockHeld: false, lockKind: "none", lockAt: -1000, lockOwner: 1,
       autoLast: -1, checksOn: true, autoOn: auto,
@@ -547,8 +585,13 @@ module updateLifecycle {
   // Safety
   // ---------------------------------------------------------------------------
 
-  /// Never two installers at once.
-  val NoTwoInstallers = IDS.filter(i => running(s.inst.get(i))).size() <= 1
+  /// Never two installers at once, unless the first has run past the lock's
+  /// limit (a day on POSIX; Windows keeps the hour): a hung install never
+  /// holds the lock for good.
+  val NoTwoInstallers = IDS.forall(i => IDS.forall(j =>
+    (i != j and running(s.inst.get(i)) and running(s.inst.get(j))
+      and s.inst.get(i).startedAt <= s.inst.get(j).startedAt)
+    implies s.now - s.inst.get(i).startedAt >= (if (WINDOWS) LOCK_STALE else LOCK_LIVE_MAX)))
 
   /// A crash never leaves a missing or partial binary at the install path.
   val BinaryAlwaysThere = s.binOk
@@ -629,9 +672,12 @@ module updateLifecycle {
     implies uiState(s) != "none"
 
   /// A failed install the person started is shown (Failed, with the log and Try again).
+  /// Excluded: update-result.json names another version. Only an older install
+  /// that ran past the lock's day beside the person's, and ended after it, writes that.
   val FailedUpdateShown =
     (s.ibAlive and s.personOutcome == "failed" and s.tickAfterPersonEnd
       and s.pendingPerson and s.pendingV == s.personV and s.personV > s.ibRuns
+      and (s.resultV == 0 or s.resultV == s.personV)
       and s.binOk and s.binV == s.ibRuns and not(anyRunning(s)))
     implies uiState(s) == "failed"
 
@@ -644,7 +690,7 @@ module updateLifecycle {
 // -----------------------------------------------------------------------------
 
 module onMain {
-  import updateLifecycle(NOTES_FIX = false, DRAFT_FLOW = false, WINDOWS = false).*
+  import updateLifecycle(NOTES_FIX = false, DRAFT_FLOW = false, WINDOWS = false, WHATS_NEW_FIX = false).*
 
   // The 0.28.37 report: the Inbox starts on the new version while the release
   // still carries GitHub's generated body; the written notes land minutes later.
@@ -684,7 +730,7 @@ module onMain {
 }
 
 module onFix {
-  import updateLifecycle(NOTES_FIX = true, DRAFT_FLOW = false, WINDOWS = false).*
+  import updateLifecycle(NOTES_FIX = true, DRAFT_FLOW = false, WINDOWS = false, WHATS_NEW_FIX = false).*
 
   run knownBugFixedTest =
     init
@@ -741,8 +787,97 @@ module onFix {
       .expect(link(s) == 0 and not(WhatsNewAfterBlip))
 }
 
+// F2-F4 fixed (on top of #2337): the three traces that stay open on onFix.
+module onWhatsNewFix {
+  import updateLifecycle(NOTES_FIX = true, DRAFT_FLOW = false, WINDOWS = false, WHATS_NEW_FIX = true).*
+
+  // F2: the Inbox quits while its request for the notes is in flight.
+  run abandonedRequestRetriedTest =
+    init
+      .then(doPublish)
+      .then(doWriteNotes(2))
+      .then(doCliSession(true))
+      .then(doCliUpdateNow)
+      .then(doInstallerStep(1, true))
+      .then(doInstallerStep(1, true))
+      .then(doInstallerStep(1, true))
+      .then(doInstallerStep(1, true))
+      .then(doInboxStart)                         // claims 2's notes
+      .then(doInboxCrash)                         // before GitHub answered
+      .then(doInboxStart)                         // whatsNewPending: still owed
+      .then(doAdvance(15))                        // the claim in flight is asked again
+      .then(doNotesAnswer(2))
+      .then(doAdvance(15))
+      .expect(link(s) == 2 and WhatsNewAfterAbandonedRequest and WhatsNewAfterUpdate)
+
+  // F3: a network blip during the first fetch.
+  run blipRetriedTest =
+    init
+      .then(doPublish)
+      .then(doWriteNotes(2))
+      .then(doCliSession(true))
+      .then(doCliUpdateNow)
+      .then(doInstallerStep(1, true))
+      .then(doInstallerStep(1, true))
+      .then(doInstallerStep(1, true))
+      .then(doInstallerStep(1, true))
+      .then(doNetToggle)                          // offline
+      .then(doInboxStart)
+      .then(doNotesAnswer(2))                     // failed, may have been the network
+      .then(doNetToggle)                          // back online
+      .then(doAdvance(30))                        // the release check answers; asked again
+      .then(doNotesAnswer(2))
+      .then(doAdvance(30))
+      .expect(link(s) == 2 and WhatsNewAfterBlip)
+
+  // The known limit of F3: the network drops again before the quick retry, so
+  // the retry fails too, and that failure waits 6 h (today's back-off).
+  run flappingNetworkWaitsTest =
+    init
+      .then(doPublish)
+      .then(doWriteNotes(2))
+      .then(doCliSession(true))
+      .then(doCliUpdateNow)
+      .then(doInstallerStep(1, true))
+      .then(doInstallerStep(1, true))
+      .then(doInstallerStep(1, true))
+      .then(doInstallerStep(1, true))
+      .then(doNetToggle)                          // offline
+      .then(doInboxStart)
+      .then(doNotesAnswer(2))                     // failed
+      .then(doNetToggle)                          // online
+      .then(doAdvance(10))                        // the release check answers
+      .then(doNetToggle)                          // offline again
+      .then(doAdvance(10))                        // the quick retry claims
+      .then(doNotesAnswer(2))                     // and fails: a check answered since the failure before
+      .then(doNetToggle)                          // online
+      .then(doAdvance(15))                        // the release check answers; not asked (6 h)
+      .then(doAdvance(30))
+      .expect(link(s) == 0 and not(WhatsNewAfterBlip))
+
+  // F4: the run that started on 2 ends before the notes are readable.
+  run restartKeepsWhatsNewTest =
+    init
+      .then(doPublish)
+      .then(doCliSession(true))
+      .then(doCliUpdateNow)
+      .then(doInstallerStep(1, true))
+      .then(doInstallerStep(1, true))
+      .then(doInstallerStep(1, true))
+      .then(doInstallerStep(1, true))
+      .then(doInboxStart)
+      .then(doNotesAnswer(2))                     // generated: empty
+      .then(doInboxCrash)
+      .then(doInboxStart)                         // inboxVersion is 2, whatsNewPending is 2
+      .then(doWriteNotes(2))
+      .then(doAdvance(30))
+      .then(doNotesAnswer(2))
+      .then(doAdvance(30))
+      .expect(s.ibUpdated == 2 and link(s) == 2 and s.wnPending == 0 and WhatsNewAfterUpdate)
+}
+
 module onFixDraft {
-  import updateLifecycle(NOTES_FIX = true, DRAFT_FLOW = true, WINDOWS = false).*
+  import updateLifecycle(NOTES_FIX = true, DRAFT_FLOW = true, WINDOWS = false, WHATS_NEW_FIX = false).*
 
   run draftNeverGeneratedTest =
     init
@@ -752,7 +887,7 @@ module onFixDraft {
 }
 
 module onWindows {
-  import updateLifecycle(NOTES_FIX = false, DRAFT_FLOW = false, WINDOWS = true).*
+  import updateLifecycle(NOTES_FIX = false, DRAFT_FLOW = false, WINDOWS = true, WHATS_NEW_FIX = false).*
 
   // A kill between install.ps1's two moves leaves no plannotator.exe.
   run windowsKillBetweenMovesTest =
@@ -765,14 +900,27 @@ module onWindows {
       .then(doInstallerStep(1, true))             // moved aside
       .then(doKill(1))
       .expect(not(BinaryAlwaysThere))
+
+  // F6 on Windows (PR #2342): the lock names the wrapper's pid from the spawn,
+  // so a killed install shows Failed at the next tick.
+  run windowsKilledInstallShowsFailedTest =
+    init
+      .then(doInboxStart)
+      .then(doPublish)
+      .then(doAdvance(10))
+      .then(doNotesAnswer(2))
+      .then(doUpdateNow)
+      .then(doKill(1))
+      .then(doAdvance(1))
+      .expect(uiState(s) == "failed" and PersonCanUpdate and FailedUpdateShown)
 }
 
-module onMainLocks {
-  import updateLifecycle(NOTES_FIX = false, DRAFT_FLOW = false, WINDOWS = false).*
+module onLocks {
+  import updateLifecycle(NOTES_FIX = false, DRAFT_FLOW = false, WINDOWS = false, WHATS_NEW_FIX = false).*
 
-  // An install that stalls over an hour (install.sh's binary curl has no
-  // timeout): the lock expires, a second install starts beside it.
-  run expiredLockSecondInstallerTest =
+  // F5 (PR #2342): an install that stalls past the hour keeps its lock while it
+  // runs; a second install starts beside it only after a day.
+  run slowInstallKeepsLockTest =
     init
       .then(doPublish)
       .then(doCliSession(true))
@@ -780,12 +928,15 @@ module onMainLocks {
       .then(doInstallerStep(1, true))             // the wrapper's lock line
       .then(doInstallerStep(1, true))             // downloading... stalls
       .then(doAdvance(60))
-      .then(doCliUpdateNow)                       // the lock is past its hour
-      .expect(not(NoTwoInstallers))
+      .then(doCliUpdateNow)                       // refused: the install still runs
+      .expect(s.inst.get(2).phase == "unused" and NoTwoInstallers)
+      .then(doAdvance(1440))
+      .then(doCliUpdateNow)                       // a day on: the lock no longer holds
+      .expect(s.inst.get(2).phase == "spawned" and NoTwoInstallers)
 
-  // The wrapper dies before its lock line: "Updating…" for an hour, then the
-  // failure is never shown.
-  run bareLockDeathTest =
+  // F6 (PR #2342): the install dies before the wrapper's first line; the lock
+  // already names it, so the next tick shows Failed.
+  run killedInstallShowsFailedTest =
     init
       .then(doInboxStart)
       .then(doPublish)
@@ -794,7 +945,6 @@ module onMainLocks {
       .then(doUpdateNow)
       .then(doKill(1))                            // before the wrapper wrote its line
       .then(doAdvance(1))
-      .expect(uiState(s) == "updating" and not(PersonCanUpdate))
-      .then(doAdvance(60))
-      .expect(uiState(s) == "available" and not(FailedUpdateShown))
+      .expect(uiState(s) == "failed" and PersonCanUpdate and FailedUpdateShown)
 }
+

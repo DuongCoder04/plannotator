@@ -18,6 +18,7 @@ import { NOT_ATTACHED_TITLE, attachmentDeepLink, attachmentDisplayPath, attachme
 import { InboxApiError, inboxApi, type AttachmentsModel, type TagMode } from '../api';
 import type { HtmlEmbedHost } from '@plannotator/ui/components/html-embed/HtmlEmbedBlock';
 import { annotationOf, attachmentFeedback, isFileComment } from '../attachments';
+import { linkReplyFeedback, resolveReplyLink } from '../replyFileLinks';
 import { AttachmentTiles, AttachmentsCount, changedCount } from './AttachmentTiles';
 import { AttachmentPane, type AttachmentPaneHandle } from './AttachmentPane';
 import type { OpenInSurface } from './OpenIn';
@@ -70,6 +71,7 @@ import { TidyNote } from './Tidy';
 import { reaskedIn, reaskNoteAgent, reaskOffered, reaskTargets, reaskTooltip } from '../reask';
 import { ChangedNotice, ReplacedQuestionCard, ReplacesLine, StaleGuard, replacedBy, replacementOf, type JumpTarget } from './ReplacedQuestion';
 import { InboxComposerField } from './ComposerField';
+import type { FullScreenComposerValue } from './FullScreenComposer';
 import { ReplyAnswers, SentAnswers, draftAnswerWords, ReplyActions, type ActionRow, type DraftAnswer } from './ReplyAnswers';
 import { actionSavesSettled } from '../actionSaves';
 import { sentAnswersOf, sentReplyParts, type SentAnswerGroup } from '../sentReply';
@@ -100,8 +102,12 @@ import { ActionChecklist, type ActionMark } from './ActionChecklist';
 import { actionForBlock } from '../actions';
 import { splitInboxSkillsBlock } from '@plannotator/core/skill-reference-block';
 import { Tip } from './Tip';
+import { ThreadChip } from './InboxList';
+import { threadChipName } from '../threadChip';
 import { OpenQuestionsButton, type OpenQuestionsDecide } from './OpenQuestions';
 import { fitWholeFootRow, footRowOpenQuestionsForm, footRowTokens, laidOutChildren, pillHitsButtons, type OpenQuestionsLabelForm } from '../footFit';
+import { clearPhoneHead, fitPhoneHead } from '../headFit';
+import { useInboxTextSize } from '../textSize';
 import { openQuestionsShown, placeOf, reaskItemLabel, skipToggledAnswer, threadOpenQuestions, type OpenQuestion, type OpenQuestionPlace } from '../openQuestions';
 import { ShortcutHint, useShortcutAria, useShortcutHintShown } from '../shortcuts/hint';
 import { lastInput, traversedJustNow } from '../lastInput';
@@ -302,6 +308,7 @@ export function MessageBody({
   onImage,
   pictureBadge,
   inlineRefOf,
+  replyFiles,
 }: {
   /**
    * The action items this person's message carried (approval
@@ -388,6 +395,19 @@ export function MessageBody({
    * tour passes its own, for images drawn from its assets.
    */
   inlineRefOf?: (src: string) => string | null;
+  /**
+   * The person's own reply (replyFileLinks.ts): the files its feedback text
+   * names (each "## <file>" heading of "Feedback on the attached files") are
+   * drawn as links that open the file beside the thread, at the version the
+   * comments were on, and a drawing's name shows the drawing. A heading that
+   * names no file the thread still has stays text. Display only. Absent: the
+   * text is drawn as written.
+   */
+  replyFiles?: {
+    files: readonly InboxAttachmentState[];
+    personMessageIds: ReadonlySet<string>;
+    onOpen: (attachment: InboxAttachmentState, version: 'current' | 'sent') => void;
+  };
 }) {
   // A person's message ends with the skills block the window pasted when it
   // was sent: folded behind one quiet line (SkillsLine). An agent's message
@@ -399,8 +419,20 @@ export function MessageBody({
     return actionsSent ? withoutInboxActionsSection(raw) : raw;
   }, [skills, message.body, actionsSent]);
   const replyParts = useMemo(() => sentReplyParts(message, sent, sentAnswers ?? []), [message, sent, sentAnswers]);
-  const shown = replyParts ? replyParts.words : sent;
-  const restShown = replyParts ? replyParts.rest : '';
+  // The files the reply's feedback names, as links (display only; replyFileLinks.ts).
+  // Only the person's own message: an agent's text is drawn as it wrote it, whatever its headings say.
+  const ownReply = message.author.kind === 'person';
+  const replyFileList = ownReply ? replyFiles?.files : undefined;
+  const replyPeople = ownReply ? replyFiles?.personMessageIds : undefined;
+  const linkFiles = useCallback(
+    (text: string) =>
+      replyFileList && replyPeople
+        ? linkReplyFeedback(text, { files: replyFileList, projectRoot, personMessageIds: replyPeople, replyAt: message.created_at })
+        : text,
+    [replyFileList, replyPeople, projectRoot, message.created_at],
+  );
+  const shown = useMemo(() => linkFiles(replyParts ? replyParts.words : sent), [linkFiles, replyParts, sent]);
+  const restShown = useMemo(() => (replyParts ? linkFiles(replyParts.rest) : ''), [linkFiles, replyParts]);
   const blocks = useMemo(() => parseMarkdownToBlocks(shown, { frontmatter: false }), [shown]);
   const restBlocks = useMemo(() => (restShown ? parseMarkdownToBlocks(restShown, { frontmatter: false }) : []), [restShown]);
   const refRepo = useRefRepo(repo);
@@ -560,8 +592,26 @@ export function MessageBody({
   // so raw-HTML blocks do not redraw their links on every pick.
   const openRef = useRef(onOpenAttachment);
   openRef.current = onOpenAttachment;
+  const openReplyFileRef = useRef(replyFiles?.onOpen);
+  openReplyFileRef.current = replyFiles?.onOpen;
   const resolveLocalLink = useCallback<LocalLinkResolver>(
     (href) => {
+      // A file the person's reply commented on (its feedback heading), or a drawing it carried.
+      const replyLink = replyFileList ? resolveReplyLink(href, replyFileList) : null;
+      if (replyLink?.kind === 'file') {
+        const { attachment: file, version } = replyLink;
+        const path = attachmentDisplayPath(file, projectRoot);
+        return {
+          kind: 'open',
+          title: version === 'sent' ? `Open the sent version of ${path} beside the thread` : openAttachmentTitle(path),
+          href: attachmentDeepLink(message.thread_id, file.id, version),
+          open: () => openReplyFileRef.current?.(file, version),
+        };
+      }
+      if (replyLink?.kind === 'markup') {
+        const src = replyLink.src;
+        return { kind: 'open', title: 'Show the drawing', href: src, open: () => setFallback({ src, alt: 'Your drawing' }) };
+      }
       const attachment = attachmentForLink(href, { attachments: message.attachments ?? [], root: projectRoot, base: message.base_path ?? null });
       if (!attachment) return { kind: 'unavailable', title: NOT_ATTACHED_TITLE };
       return {
@@ -571,7 +621,7 @@ export function MessageBody({
         open: () => openRef.current(attachment),
       };
     },
-    [message.attachments, message.base_path, message.thread_id, projectRoot],
+    [message.attachments, message.base_path, message.thread_id, projectRoot, replyFileList],
   );
   const renderFooter = useCallback(
     (question: IndexedQuestion) => {
@@ -1233,6 +1283,13 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const [skipArmed, setSkipArmed] = useState<ReadonlySet<string> | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** When a Send from full screen's composer last went: the card says "Sent to …" for a moment. */
+  const [composerSentAt, setComposerSentAt] = useState<number | null>(null);
+  /**
+   * A Send from full screen's composer is on its way or just went: focus stays in the card (the box-close
+   * effect and the Send leave it be), never in the thread under the file.
+   */
+  const sendingFromComposer = useRef(false);
   const sendKeys = useRef<Map<string, string> | null>(null);
   /**
    * What the last Send that did not finish carried (words, pasted files,
@@ -1284,6 +1341,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   // look (the window's `lookSeq`, else the first thread this pane was given),
   // so the "New" marks last until the person leaves the thread.
   const one = thread.messages.length < 2;
+  // The thread's name as the list shows it: nothing when unnamed or when the subject already starts with it.
+  const nameChip = threadChipName(thread.thread_name, thread.subject ?? '(no subject)');
   // The agent sessions this thread involves (approval "inbox-tag-agents"): overlapping marks in the head.
   const participants = useMemo(() => threadParticipants(thread), [thread]);
   const lookRef = useRef<{ threadId: string; seq: number | null } | null>(null);
@@ -1567,6 +1626,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   /** Every file the viewer opens: the attached files and the images in the text. */
   const allFiles: InboxAttachmentState[] = useMemo(() => [...attachments, ...inlineImages], [attachments, inlineImages]);
   const records = files?.annotations ?? [];
+  /** The person's own messages: their images are named "image in my … message" in the feedback (replyFileLinks.ts). */
+  const personMessageIds = useMemo(() => new Set(thread.messages.filter((m) => m.author.kind === 'person').map((m) => m.id)), [thread.messages]);
 
   // The session that asked, and whether it is still there (only hosts whose
   // sessions poll the Inbox can be known to have ended). It is the session
@@ -1834,16 +1895,19 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   /** A tile, or a link in a message: the file as it is now, focus in its pane (a typed comment in the open file asks first). */
   /** `opening`: called only when the file does open (not after "Keep writing" on a typed comment). */
   /** `set`: a question's picture choices the viewer then steps through (optionSets.ts); absent: every file of the thread. */
-  const openFromMessage = (attachment: Pick<InboxAttachmentState, 'id' | 'kind' | 'ref'> & { name?: string }, view: FileView | null = null, opening?: () => void, set: string | null = null) => {
+  /** `version`: the version the agent sent (a file the person's reply names, commented at that version, or moved since). */
+  const openFromMessage = (attachment: Pick<InboxAttachmentState, 'id' | 'kind' | 'ref'> & { name?: string }, view: FileView | null = null, opening?: () => void, set: string | null = null, version: 'current' | 'sent' = 'current') => {
     const go = () => {
       opening?.();
-      openFile(attachment, 'current', null, view, set);
+      openFile(attachment, version, null, view, set);
       setPaneFocus((n) => n + 1);
     };
     const pane = paneRef.current;
     if (pane && file && file.id !== attachment.id) pane.leave(attachment.name ?? allFiles.find((a) => a.id === attachment.id)?.name ?? 'that file', go);
     else go();
   };
+  /** A file the person's sent reply names (its feedback heading): beside the thread, at the version the comments were on. */
+  const openFromReply = (attachment: InboxAttachmentState, version: 'current' | 'sent') => openFromMessage(attachment, null, undefined, null, version);
   const openRecord = (record: InboxAnnotationRecord) => {
     // A comment on a guided review's diff: open that guide.
     if (record.guide) {
@@ -1932,7 +1996,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       }
     }
     return attachmentFeedback(pending, allFiles, texts, thread.project.root, {
-      personMessageIds: new Set(thread.messages.filter((m) => m.author.kind === 'person').map((m) => m.id)),
+      personMessageIds,
       // A comment that tags agents is marked in the export (approval "inbox-tag-agents").
       tagNames: (ids) => ids.map((id) => tagOpts.find((o) => o.id === id)?.label ?? 'an agent'),
     });
@@ -2377,11 +2441,9 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   };
   /** The Reply button's path, from a key: from a file in full screen, back beside the thread first (the strip's Write a reply). */
   const replyByKey = () => {
-    if (box.open) {
-      textRef.current?.focus();
-      return;
-    }
+    // From a file in full screen, back beside the thread first, even with the box open (the composer opens it behind the file).
     if (file && full) writeReplyFromFile();
+    else if (box.open) textRef.current?.focus();
     else openBox();
   };
   /** The file O opens: its tile shows the O keycap. */
@@ -2506,12 +2568,12 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     if (box.open) textRef.current?.focus();
     // The box closed (Escape, Cancel, a Send that did not go) and took focus with it: the foot's Reply (or Edit
     // draft) has it next. A Send that went gives focus to the reply in the thread instead (send, `focusSent`).
-    else if (!focusSent.current) {
+    else if (!focusSent.current && !sendingFromComposer.current) {
       const active = document.activeElement;
       if (!active || active === document.body || !active.isConnected) {
         requestAnimationFrame(() => {
           const now = document.activeElement;
-          if (focusSent.current || (now && now !== document.body && now.isConnected)) return;
+          if (focusSent.current || sendingFromComposer.current || (now && now !== document.body && now.isConnected)) return;
           sectionRef.current?.querySelector<HTMLElement>('[data-reply-button]')?.focus({ preventScroll: true });
         });
       }
@@ -2716,7 +2778,72 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   const focusSent = useRef(false);
   const writeReplyFromFile = () => {
     setFull(false);
+    // The box open already (the full-screen composer opens it): its words stay as they are, and focus goes
+    // back to it where the caret was (as R did with the box open before the composer).
+    // openBox's other resets still apply (a New message, the route choice and an error go).
+    if (boxRef.current.open) {
+      setNewMessage(null);
+      setRoute((current) => ({ ...current, open: false, error: null }));
+      setError(null);
+      requestAnimationFrame(() => textRef.current?.focus());
+    } else openBox();
+  };
+  const focusReplyEnd = () =>
+    requestAnimationFrame(() => {
+      const text = textRef.current;
+      if (!text) return;
+      text.focus();
+      text.setSelectionRange(text.value.length, text.value.length);
+    });
+  /**
+   * From full screen to the thread, on the device's own route: beside the thread where there is room (as
+   * Write the reply goes), else the file closes (a phone's or a stacked window's Back to the thread). A
+   * comment not saved yet in the file is asked about first.
+   */
+  const fileToThread = (then: () => void = () => {}) => {
+    const go = () => {
+      if (phone || fileStacked) onOpenFile(null);
+      else setFull(false);
+      then();
+    };
+    if (paneRef.current) paneRef.current.leave(null, go);
+    else go();
+  };
+  /** The composer's Open in thread: the thread's reply box, with the same words. */
+  const replyInThread = () =>
+    fileToThread(() => {
+      if (boxRef.current.open) focusReplyEnd();
+      else openBox();
+    });
+  /**
+   * The reply's words changed, in the thread's box or in full screen's composer (`behind`: the box opens
+   * behind full screen without taking focus). One draft: the box holds the words and the draft saves them.
+   */
+  const changeReply = (text: string, behind = false) => {
+    // Read-only while a Send is on its way: the words it carries are the words in the box.
+    if (sending) return;
+    // The words changed (or emptied): a Send waiting to be confirmed no longer matches them.
+    const earlier = unconfirmed.get(thread.thread_id);
+    if (earlier && text.trim() !== earlier.words) forgetUnconfirmed(earlier, text.trim() === '' ? 'emptied' : 'edited');
+    if (behind && !boxRef.current.open) restoringRef.current = true;
+    setBox({ open: true, text });
+    replyDraft.save(text);
+  };
+
+  /** The reply box opens behind full screen, without taking focus (full screen's composer writes into it). */
+  const openBehind = () => {
+    if (boxRef.current.open) return;
+    restoringRef.current = true;
     openBox();
+  };
+  /**
+   * Files from full screen's composer (its paperclip, or a drop on the card) are the reply box's files, as
+   * the box's own paperclip and drop take them: the box opens behind full screen and the Send carries them.
+   */
+  const attachFromComposer = (list: FileList, picked: boolean) => {
+    openBehind();
+    (picked && phone ? replyFiles.attach : replyFiles.add)(list);
+    setError(null);
   };
 
   /** Back from the choice to the reply: the draft and its choice kept, focus at the end of the text. */
@@ -2840,11 +2967,17 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     setTagMode('ask');
   };
 
-  const send = async (options: { despiteReplaced?: boolean; routed?: boolean } = {}) => {
+  /**
+   * `stayFull`: the Send is full screen's composer's. It stays in full screen and the card says it went. What
+   * the person must read in the thread first (a replaced pick's guard, where an ended session's reply goes)
+   * takes them there, on the device's route.
+   */
+  const send = async (options: { despiteReplaced?: boolean; routed?: boolean; stayFull?: boolean } = {}) => {
     if (sending) return;
     // A pick was replaced while the person was answering: nothing goes until they have read that.
     if (staleQuestions.length > 0 && !options.despiteReplaced) {
       setGuard(true);
+      if (options.stayFull) fileToThread();
       return;
     }
     // Pasted files still uploading: nothing goes until they are in.
@@ -2862,6 +2995,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       }
       setError(null);
       setRoute((current) => mergeRouteRows({ ...current, open: true, error: null, focus: current.focus + 1 }, asking, live));
+      if (options.stayFull) fileToThread();
       return;
     }
     // The choice's answer: another live session takes the reply (never the
@@ -2871,6 +3005,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         ? (route.rows.find((row) => row.live.session === route.selected && !row.ended)?.live ?? null)
         : null;
     const to = chosen ? { host: chosen.host, session: chosen.session } : undefined;
+    sendingFromComposer.current = options.stayFull === true;
     setSending(true);
     setError(null);
     /** Replies of this Send that went (or were already there, a retry's replays). */
@@ -3030,7 +3165,12 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       }
       done = true;
       // Focus goes to the reply once it is in the thread (not to Reply: the box-close effect leaves it be).
-      focusSent.current = true;
+      // From full screen's composer it stays in the card, which says the reply went.
+      focusSent.current = !options.stayFull;
+      if (options.stayFull) {
+        setComposerSentAt(Date.now());
+        announce(`Sent to ${replyName ?? asker}.`);
+      }
       finishSent(sentUploads, words !== '');
       if (handedReply) {
         const reply = handedReply;
@@ -3044,7 +3184,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           onUndo: () => void undoHandoff(reply.id),
         });
       }
-      setFull(false);
+      if (!options.stayFull) setFull(false);
       await onChanged();
       await reloadFiles();
       // The reply and where it is now sit at the foot of the thread.
@@ -3117,6 +3257,15 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         }
       }
       setSending(false);
+      if (sendingFromComposer.current) {
+        // Back in the card's field once it is drawn (a Send button that went disabled let focus go).
+        requestAnimationFrame(() => {
+          sendingFromComposer.current = false;
+          const active = document.activeElement;
+          if (active && active !== document.body && active.isConnected && !active.closest('[data-fcomp]')) return;
+          document.querySelector<HTMLElement>('[data-fcomp] .ib-fcomp-row > :not([hidden]) textarea, [data-fcomp-pill]')?.focus({ preventScroll: true });
+        });
+      }
     }
   };
 
@@ -3442,6 +3591,44 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   // The error after a failed Send (or Re-ask) sits ABOVE the button row it belongs to (approval
   // "thread-foot-status-right"), in the two states that have one: the reply box and the closed foot.
   const errorAbove = !resolved && !(guard && staleQuestions.length > 0) && newMessage?.kind !== 'compose' && !(route.open && asking);
+  /**
+   * Full screen's composer (approval "inbox-fullscreen-composer"): the thread's reply as the card shows and
+   * sends it. The card has no words of its own: it shows the box's (or, the box closed, the kept draft's) and
+   * writes through `changeReply`, so typing in either is the one draft; Send is this thread's Send.
+   */
+  const composer: FullScreenComposerValue | null =
+    file && shownFull && !resolved
+      ? {
+          threadId: thread.thread_id,
+          phone,
+          reply: {
+            to: replyName ?? asker,
+            value: box.open ? box.text : (replyDraft.conflict ?? replyDraft.draft?.body ?? ''),
+            onChange: (text) => changeReply(text, true),
+            onSend: () => void send({ stayFull: true }),
+            sending,
+            canSend: boxWords !== '' || picksCount > 0 || records.length > 0 || draftActions.length > 0 || (box.open && replyUploads.length > 0),
+            picks: picksCount,
+            annotations: records.length,
+            files: box.open ? replyFiles.files : [],
+            onFiles: (list) => attachFromComposer(list, true),
+            onDropFiles: (list) => attachFromComposer(list, false),
+            onPaste: (event) => {
+              if (!replyFiles.paste(event)) return;
+              openBehind();
+              setError(null);
+            },
+            onRemoveFile: (key) => replyFiles.remove(key),
+            actions: draftActions.length,
+            openQuestions: unanswered.length,
+            conflict: replyDraft.conflict !== null,
+            error,
+            sentAt: composerSentAt,
+            onOpenThread: replyInThread,
+            tags: composerTags,
+          },
+        }
+      : null;
   const errorLine = (
     <div className="ib-error" role="alert" data-foot-error={errorAbove ? 'above' : undefined}>
       {error}
@@ -3589,9 +3776,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       </button>
     </Tip>
   );
-  // Pin to the sidebar (approval "inbox-pinned-threads"): an icon toggle, the phone's way to pin.
-  // One fixed name ("Pin to the sidebar") with `aria-pressed`, so a screen reader hears the state
-  // change rather than a new control; only the tooltip's words follow the state.
+  // Pin to the sidebar (approval "inbox-pinned-threads"): the header ⋯ menu's first item (Pin thread /
+  // Unpin thread), the phone's way to pin.
   // A click shows its state at once and its request waits for the one before it, so a quick
   // pin-then-unpin sends both, in order, and ends where the person left it.
   const [pinWant, setPinWant] = useState<{ thread: string; pinned: boolean } | null>(null);
@@ -3619,20 +3805,6 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
         }
       });
   };
-  const pinButton = onPin ? (
-    <Tip content={pinShown ? 'Unpin from the sidebar' : 'Pin to the sidebar'}>
-      <button
-        type="button"
-        className="ib-iconbtn ib-pinbtn"
-        onClick={togglePin}
-        aria-pressed={pinShown}
-        aria-label="Pin to the sidebar"
-        data-pin-toggle=""
-      >
-        <Icon name="pin" size={16} />
-      </button>
-    </Tip>
-  ) : null;
   const markReadButton = markReadOffered ? (
     <Tip
       content={
@@ -3650,6 +3822,33 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
       </button>
     </Tip>
   ) : null;
+
+  // A phone's header gives way one step at a time so it stays on one line (headFit.ts): the Artifacts count,
+  // then Mark read's words, then the way back's label; the scrolled-away subject shows only with room to read.
+  const headRef = useRef<HTMLDivElement>(null);
+  const textSize = useInboxTextSize();
+  const headSig = [phone, artifactsOn, artifactsButton, artifactList.length, one, markReadOffered, readAt !== null, backLabel, textSize].join('|');
+  const headFittedFor = useRef('');
+  const fitHeadRef = useRef<(force?: boolean) => void>(() => {});
+  fitHeadRef.current = (force = false) => {
+    const head = headRef.current;
+    if (!head) return;
+    const key = `${head.getBoundingClientRect().width}|${headSig}`;
+    if (!force && key === headFittedFor.current) return;
+    headFittedFor.current = key;
+    if (phone) fitPhoneHead(head);
+    else clearPhoneHead(head);
+  };
+  useLayoutEffect(() => fitHeadRef.current());
+  useEffect(() => {
+    const head = headRef.current;
+    if (!head || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => fitHeadRef.current());
+    observer.observe(head);
+    // Words measured in a fallback font fit differently once the real one loads.
+    void document.fonts?.ready.then(() => fitHeadRef.current(true));
+    return () => observer.disconnect();
+  }, []);
 
   // The copy menus (CopyMenus.tsx): the header's ⋯ and each open message's.
   const copyHost: CopyMenuHost = {
@@ -3679,7 +3878,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           </span>
         </div>
       )}
-      <div className="ib-phead" data-artifacts-on={artifactsOn ? '' : undefined}>
+      <div className="ib-phead" ref={headRef} data-artifacts-on={artifactsOn ? '' : undefined}>
         {/* A phone leads with the way back to the list; Archive sits at the right, where the close was. */}
         {phone && artifactsOn ? (
           // On a phone Artifacts is a screen of its own: its way back is to the thread (the browser's Back, so the swipe agrees).
@@ -3744,7 +3943,6 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 {thread.subject ?? '(no subject)'}
               </span>
             )}
-            {pinButton}
             {artifactsButton && (
               <Tip content={artifactsOn ? 'Back to the thread' : 'Artifacts: every file, image and guided review in this thread'}>
                 <button
@@ -3777,7 +3975,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
               </Tip>
             )}
             {archiveButton}
-            <ThreadMore {...copyHost} />
+            <ThreadMore {...copyHost} pin={onPin ? { pinned: pinShown, onToggle: togglePin } : undefined} />
             {phone || stacked || backBesideFile ? null : (
               <>
                 <span className="ib-vsep" aria-hidden="true" />
@@ -3841,25 +4039,32 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             )}
           </div>
         )}
-        {!one && (
+        {/* The thread's name first (the list's own pill and rule), then the count and time; a one-message thread has only the name. */}
+        {(!one || nameChip) && (
           <div className="ib-tmeta" data-thread-meta="">
-            {participants.length > 1 && (
-              <>
-                <span className="ib-tg-hwho" data-thread-participants="">
-                  <TagStack participants={participants} />
-                  <span>{participantsWords(participants)}</span>
-                </span>
+            <ThreadChip name={nameChip} lead="Thread name: " />
+            {/* The rest of the line moves as one beside the name: a name that leaves too little room sends it all to the next line, never one dot. */}
+            {!one && (
+              <span className="ib-tmeta-rest" data-thread-meta-rest="">
+                {participants.length > 1 && (
+                  <>
+                    <span className="ib-tg-hwho" data-thread-participants="">
+                      <TagStack participants={participants} />
+                      <span>{participantsWords(participants)}</span>
+                    </span>
+                    <span className="ib-tdot" aria-hidden="true" />
+                  </>
+                )}
+                <span>{plural(thread.messages.length, 'message')}</span>
                 <span className="ib-tdot" aria-hidden="true" />
-              </>
-            )}
-            <span>{plural(thread.messages.length, 'message')}</span>
-            <span className="ib-tdot" aria-hidden="true" />
-            <span>{spanWords(root.created_at, thread.messages[thread.messages.length - 1]!.created_at)}</span>
-            {showNew && (
-              <>
-                <span className="ib-tdot" aria-hidden="true" />
-                <b>{fresh.size} new since you looked</b>
-              </>
+                <span>{spanWords(root.created_at, thread.messages[thread.messages.length - 1]!.created_at)}</span>
+                {showNew && (
+                  <>
+                    <span className="ib-tdot" aria-hidden="true" />
+                    <b>{fresh.size} new since you looked</b>
+                  </>
+                )}
+              </span>
             )}
           </div>
         )}
@@ -4161,6 +4366,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                   message={message}
                   sentAnswers={message.author.kind === 'person' ? (sentAnswersByReply.get(message.id) ?? NO_SENT_ANSWERS) : undefined}
                   sentActions={message.author.kind === 'person' ? sentActionsByReply.get(message.id) : undefined}
+                  replyFiles={message.author.kind === 'person' ? { files: allFiles, personMessageIds, onOpen: openFromReply } : undefined}
                   onJumpQuestion={jumpTo}
                   projectRoot={thread.project.root}
                   repo={thread.project.repo ?? null}
@@ -4457,15 +4663,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                 destination="your reply"
                 tags={composerTags}
                 value={box.text}
-                onChange={(text) => {
-                  // Read-only while a Send is on its way: the words it carries are the words in the box.
-                  if (sending) return;
-                  // The words changed (or emptied): a Send waiting to be confirmed no longer matches them.
-                  const earlier = unconfirmed.get(thread.thread_id);
-                  if (earlier && text.trim() !== earlier.words) forgetUnconfirmed(earlier, text.trim() === '' ? 'emptied' : 'edited');
-                  setBox({ open: true, text });
-                  replyDraft.save(text);
-                }}
+                onChange={(text) => changeReply(text)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
                     event.preventDefault();
@@ -4734,6 +4932,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
           annotations: records.length,
           onWriteReply: writeReplyFromFile,
         }}
+        composer={composer}
       />
     )}
     </>

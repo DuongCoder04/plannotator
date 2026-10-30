@@ -256,7 +256,10 @@ export function isDirty(now: ComposeSnapshot, saved: ComposeSnapshot, savedExist
   );
 }
 
-/** The status line beside Send. */
+/**
+ * The status line beside Send: why nothing can be sent yet. With an agent chosen it is empty (the
+ * thread's own delivery line says Queued / Sending / Delivered once it is sent).
+ */
 export function statusLine(input: {
   target: ComposeTarget | null;
   anyLive: boolean;
@@ -266,10 +269,7 @@ export function statusLine(input: {
   loading?: boolean;
 }): string {
   if (input.loading) return 'Looking for live agents…';
-  if (input.target) {
-    const name = hostLabel(input.target.host);
-    return input.target.busy ? `${name} is working; it takes this when its turn ends.` : `${name} takes it as its next turn.`;
-  }
+  if (input.target) return '';
   if (input.ended) return 'That session has ended.';
   if (input.anyLive) return 'Choose an agent to send it.';
   return input.projectName ? `No agent is running in ${input.projectName}.` : 'No agent is running.';

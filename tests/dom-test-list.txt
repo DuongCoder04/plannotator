@@ -62,6 +62,7 @@ packages/inbox/codeAttachment.test.tsx
 packages/inbox/copyFile.test.tsx
 packages/inbox/fileViewClean.test.tsx
 packages/inbox/links.test.tsx
+packages/inbox/replyFileLinks.test.tsx
 packages/inbox/issueRefs.test.tsx
 packages/inbox/attachmentKinds.test.tsx
 packages/inbox/updates.test.tsx
@@ -74,11 +75,13 @@ packages/inbox/openQuestions.test.tsx
 packages/inbox/decisionMode.test.tsx
 packages/inbox/decisionCardContract.test.tsx
 packages/inbox/threadFolding.test.tsx
+packages/inbox/threadNameMeta.test.tsx
 packages/inbox/choiceLabels.test.tsx
 packages/inbox/pasteTarget.test.ts
 packages/inbox/seenOnSight.test.tsx
 packages/inbox/projectList.test.tsx
 packages/inbox/rowBadges.test.tsx
+packages/inbox/rowAgents.test.tsx
 packages/inbox/softQuietRows.test.tsx
 packages/inbox/sidebarQuiet.test.tsx
 packages/inbox/leakedSubject.test.tsx
@@ -97,6 +100,7 @@ packages/inbox/fullView.test.tsx
 packages/inbox/phoneStepping.test.tsx
 packages/inbox/imageSwipe.test.tsx
 packages/inbox/fullScreenThread.test.tsx
+packages/inbox/fullScreenComposer.test.tsx
 packages/inbox/sideBySide.test.tsx
 packages/inbox/attachmentSteppingSave.test.tsx
 packages/inbox/listColumn.test.tsx
@@ -130,6 +134,7 @@ packages/inbox/projectMenu.test.tsx
 packages/inbox/rowMenu.test.tsx
 packages/inbox/copyMessage.test.tsx
 packages/inbox/pinnedThreads.test.tsx
+packages/inbox/pinnedRowLabel.test.tsx
 packages/inbox/fileBack.test.tsx
 packages/inbox/archived.test.tsx
 packages/inbox/openStaysPut.test.tsx
@@ -138,7 +143,10 @@ packages/inbox/pullToRefresh.test.tsx
 packages/inbox/threadReadRetry.test.tsx
 packages/inbox/tabCountWindow.test.tsx
 packages/inbox/phoneList.test.tsx
+packages/inbox/listHeaderPath.test.tsx
 packages/inbox/listLabels.test.tsx
+packages/inbox/projectLabelRows.test.tsx
+packages/inbox/projectLabelHeld.test.tsx
 packages/inbox/listRowMemo.test.tsx
 packages/inbox/rowTicks.test.tsx
 packages/inbox/guideDiffStyle.test.tsx
@@ -149,6 +157,7 @@ packages/inbox/threadArtifacts.test.tsx
 packages/inbox/sentQuestionLocked.test.tsx
 packages/inbox/themeToggle.test.tsx
 packages/inbox/sidebarUpdateDot.test.tsx
+packages/inbox/sidebarSections.test.tsx
 packages/inbox/updateStuck.test.tsx
 packages/inbox/palettePicker.test.tsx
 packages/inbox/textSize.test.tsx

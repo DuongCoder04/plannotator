@@ -3240,7 +3240,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       if (taggable) return taggable;
 
       // #1813: an image a message's body shows, read from wherever it is on this
-      // computer outside hidden folders (packages/server/inbox-message-images.ts).
+      // computer outside the home folder's hidden folders (packages/server/inbox-message-images.ts).
       const image = await inboxMessageImageRoute(req, url, store);
       if (image) return image;
 
