@@ -141,7 +141,7 @@ Code review's **Analysis** tab controls two independent, optional layers:
 - **Semantic changes** identifies changed named code entities. It is enabled by default for compatibility and can be turned off without affecting the ordinary diff.
 - **Call flow** uses CallDiff to compare inferred call trees between the review's two exact Git snapshots. It is experimental and off by default.
 
-The first code-review session shows both choices side by side in a one-time welcome; change them later in **Settings → Analysis**. Call flow's toggle is the install consent and names the current review's language support, estimated total size, and Node.js 22+ requirement.
+The first code-review session shows both choices side by side in a one-time welcome; change them later in **Settings → Analysis**. Call flow's toggle is the install consent and names the current review's language support, estimated total size, and Node.js 22.18+ requirement.
 
 When Call Flow is enabled and supported, **Call flow** appears beside All changes in the left panel. Its Dock switches between an interactive **Paths** tree and CallDiff's exact, copyable **Raw** output. The compact **flow** badge in a file header opens every complete inferred entry tree containing a changed call in that file rather than a pruned step list. Both structured surfaces navigate to source locations in the ordinary diff, and all Dock/Lens views share one snapshot-bound analysis result.
 

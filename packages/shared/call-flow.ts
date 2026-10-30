@@ -758,9 +758,9 @@ function compareVersionTriples(a: readonly number[], b: readonly number[]): numb
 
 /**
  * Managed core folders under this data dir that no current or newer
- * Plannotator uses: cores of an older CallDiff pin and interrupted-swap
- * backups. A newer pin's folder is kept, so downgrading and upgrading again
- * finds it still installed.
+ * Plannotator uses: cores of an older CallDiff pin, and interrupted-swap
+ * backups of an older or the current pin. A newer pin's folder and backups
+ * are kept, so downgrading and upgrading again finds it still installed.
  */
 export function listStaleCallFlowRuntimeDirs(dataDir = getPlannotatorDataDir()): string[] {
   const currentDir = getCallFlowManagedRuntimeDir(dataDir);
@@ -780,18 +780,49 @@ export function listStaleCallFlowRuntimeDirs(dataDir = getPlannotatorDataDir()):
     if (!match) continue;
     const isBackup = match[4] !== undefined;
     const version = [Number(match[1]), Number(match[2]), Number(match[3])];
-    if (isBackup || compareVersionTriples(version, current) < 0) stale.push(join(parent, entry.name));
+    const order = compareVersionTriples(version, current);
+    if (order < 0 || (isBackup && order === 0)) stale.push(join(parent, entry.name));
   }
   return stale.sort();
 }
 
 /**
+ * A stale core is renamed to this dot-prefixed name before it is deleted. No
+ * Plannotator version resolves a dot-prefixed folder, so a delete cut short
+ * (a killed process, a busy file on Windows) never leaves a half-deleted
+ * `calldiff-<x.y.z>` that an older Plannotator would take as installed.
+ */
+const STALE_TOMBSTONE_PATTERN = /^\.calldiff-stale-\d+-\d+-\d+$/;
+
+/**
  * Remove stale managed cores once the current pin is published. Runs only
  * under the install lease and only after a successful install, so a failed
- * upgrade keeps the previous folder for a downgrade.
+ * upgrade keeps the previous folder for a downgrade. Each folder is first
+ * renamed to a tombstone (atomic); one that cannot be renamed (in use on
+ * Windows) stays whole and is retried by the next install. Tombstones,
+ * including any an earlier interrupted delete left, are then removed.
  */
 export function removeStaleCallFlowRuntimeDirs(dataDir = getPlannotatorDataDir()): void {
-  for (const path of listStaleCallFlowRuntimeDirs(dataDir)) removeDirectoryBestEffort(path);
+  const parent = dirname(getCallFlowManagedRuntimeDir(dataDir));
+  const stamp = `${process.pid}-${Date.now()}`;
+  listStaleCallFlowRuntimeDirs(dataDir).forEach((path, index) => {
+    try {
+      renameSync(path, join(parent, `.calldiff-stale-${stamp}-${index}`));
+    } catch {
+      // Left whole under its own name; the next install tries again.
+    }
+  });
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(parent, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory() && STALE_TOMBSTONE_PATTERN.test(entry.name)) {
+      removeDirectoryBestEffort(join(parent, entry.name));
+    }
+  }
 }
 
 /** Recursively measure installed bytes for size regression tests and release evidence. */

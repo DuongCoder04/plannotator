@@ -121,7 +121,7 @@ Options:
   --skip-attestation     Force-skip provenance verification even if enabled
                          via env var or ~/.plannotator/config.json.
   --with-call-flow       Also install the optional pruned CallDiff core
-                         (about 5 MB on macOS arm64, needs Node.js 22+).
+                         (about 5 MB on macOS arm64, needs Node.js 22.18+).
                          By default it is NOT installed; the review UI offers
                          a one-click install when Call flow is enabled. Also
                          enabled by PLANNOTATOR_INSTALL_CALLDIFF=1 or

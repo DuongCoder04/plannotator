@@ -9,6 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  CALLDIFF_COMMIT,
   CALLDIFF_VERSION,
   callFlowNodeVersionSupported,
   getCallFlowManagedRuntimeDir,
@@ -48,8 +49,11 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** Put a `node` that reports `version` and an `npm` that must not run first on PATH; block downloads. */
-async function withFakeNode<T>(version: string, body: () => Promise<T>): Promise<T> {
+/**
+ * Put a `node` that reports `version` and an `npm` that must not run first on
+ * PATH. Downloads are blocked unless the test supplies a fake `fetch`.
+ */
+async function withFakeNode<T>(version: string, body: () => Promise<T>, fakeFetch?: typeof fetch): Promise<T> {
   const bin = join(root, "bin");
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, "node"), `#!/bin/sh\necho ${version}\n`);
@@ -59,7 +63,7 @@ async function withFakeNode<T>(version: string, body: () => Promise<T>): Promise
   const previousPath = process.env.PATH;
   const previousFetch = globalThis.fetch;
   process.env.PATH = `${bin}:${previousPath ?? ""}`;
-  globalThis.fetch = (() => Promise.reject(new Error("Call flow must not download here."))) as unknown as typeof fetch;
+  globalThis.fetch = fakeFetch ?? ((() => Promise.reject(new Error("Call flow must not download here."))) as unknown as typeof fetch);
   try {
     return await body();
   } finally {
@@ -101,7 +105,7 @@ describe("the Node floor", () => {
     for (const version of ["v22.18.0", "v22.18.1", "v22.20.0", "v23.0.0", "v24.15.0", "v100.0.0"]) {
       expect(callFlowNodeVersionSupported(version)).toBe(true);
     }
-    for (const version of ["v22.17.1", "v22.0.0", "v21.99.0", "v20.19.0", "v18.20.8", "", "node", "v22"]) {
+    for (const version of ["v22.17.1", "v22.9.0", "v22.0.0", "v21.99.0", "v20.19.0", "v18.20.8", "", "node", "v22"]) {
       expect(callFlowNodeVersionSupported(version)).toBe(false);
     }
   });
@@ -138,12 +142,16 @@ describe("moving between CallDiff pins", () => {
     const keepNames = [
       `calldiff-${CALLDIFF_VERSION}`,
       "calldiff-99.0.0", // a newer Plannotator's pin survives a downgrade
+      "calldiff-99.0.0.previous-5-6", // and so does its backup
       "calldiff-notes",
       ".calldiff-install-abc123",
+      ".calldiff-stale-notes",
     ];
     for (const name of [...keepNames, `calldiff-${OLDER_PIN.version}`, `calldiff-${CALLDIFF_VERSION}.previous-12-34`]) {
       mkdirSync(join(store, name, "node_modules"), { recursive: true });
     }
+    // A tombstone an earlier, interrupted cleanup left behind.
+    mkdirSync(join(store, ".calldiff-stale-1-2-0", "node_modules"), { recursive: true });
     writeFileSync(join(store, ".install.lock"), "token");
     writeFileSync(join(store, "calldiff-0.3.0"), "a file, not a core");
     const outside = join(root, "elsewhere");
@@ -193,5 +201,46 @@ describe("moving between CallDiff pins", () => {
     expect(existsSync(join(cache, "node_modules", "tree-sitter-go"))).toBe(false);
     expect(existsSync(join(cache, "node_modules", "tree-sitter-ruby"))).toBe(false);
     expect(existsSync(join(cache, ".plannotator-locks", "ruby.json"))).toBe(false);
+  });
+
+  posixOnly("a delete cut short never leaves a half-deleted older core under its own name", () => {
+    const olderCore = join(store, `calldiff-${OLDER_PIN.version}`);
+    writeManagedCore(olderCore, OLDER_PIN);
+    // A read-only folder inside the core makes the recursive delete fail midway.
+    chmodSync(join(olderCore, "node_modules", "tree-sitter"), 0o500);
+    try {
+      removeStaleCallFlowRuntimeDirs(dataDir);
+      expect(existsSync(olderCore)).toBe(false);
+      const tombstones = readdirSync(store).filter((name) => name.startsWith(".calldiff-stale-"));
+      expect(tombstones).toHaveLength(1);
+      // The next install sweeps the tombstone once it can be deleted.
+      chmodSync(join(store, tombstones[0], "node_modules", "tree-sitter"), 0o755);
+      removeStaleCallFlowRuntimeDirs(dataDir);
+      expect(readdirSync(store)).toEqual([]);
+    } finally {
+      for (const name of existsSync(store) ? readdirSync(store) : []) {
+        const path = join(store, name, "node_modules", "tree-sitter");
+        if (existsSync(path)) chmodSync(path, 0o755);
+      }
+    }
+  });
+
+  posixOnly("a failure after the Node check (a wrong archive hash) keeps the older pin's folder", async () => {
+    const olderCore = join(store, `calldiff-${OLDER_PIN.version}`);
+    writeManagedCore(olderCore, OLDER_PIN);
+    const wrongArchive = (async () => new Response("not the pinned CallDiff archive")) as unknown as typeof fetch;
+    const result = await withFakeNode("v24.15.0", () => installCallFlowRuntime(), wrongArchive);
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    if (!result.ok) expect(result.message).toContain("SHA-512");
+    expect(readdirSync(store).filter((name) => name !== ".install.lock")).toEqual([`calldiff-${OLDER_PIN.version}`]);
+    expect(readFileSync(join(olderCore, ".calldiff-revision"), "utf8").trim()).toBe(OLDER_PIN.commit);
+  });
+
+  posixOnly("an already-installed current core still removes the older pin's folder", async () => {
+    writeManagedCore(join(store, `calldiff-${OLDER_PIN.version}`), OLDER_PIN);
+    writeManagedCore(getCallFlowManagedRuntimeDir(), { version: CALLDIFF_VERSION, commit: CALLDIFF_COMMIT });
+    const result = await withFakeNode("v24.15.0", () => installCallFlowRuntime());
+    expect(result).toMatchObject({ ok: true, status: "already-installed" });
+    expect(readdirSync(store).filter((name) => name !== ".install.lock")).toEqual([`calldiff-${CALLDIFF_VERSION}`]);
   });
 });
