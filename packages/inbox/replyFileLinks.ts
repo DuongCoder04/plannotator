@@ -10,7 +10,8 @@
  * the agent gets and it is kept as it is. When the window draws the reply,
  * each heading that names a file of the thread becomes a link that opens
  * that file beside the thread (the version the comments were on), and each
- * drawing's name a link that shows the drawing. Display only.
+ * drawing's name a link that shows the drawing, in place of its data-dir
+ * path (a path that names no drawing the Inbox kept stays). Display only.
  *
  * The heading is matched against the thread's files by the label the export
  * wrote for them (`exportFileLabel`), so nothing is guessed from a bare name.
@@ -140,7 +141,8 @@ export function linkReplyFeedback(markdown: string, context: ReplyFileContext): 
     if (markup) {
       const name = inboxMarkupName(markup[3]!.slice(1, -1));
       if (!name) continue;
-      lines[index] = `${markup[1]}[${markup[2]}](${TOKEN_PREFIX}markup/${name}) ${markup[3]}`;
+      // The link shows the drawing, so its long data-dir path (the agent's, kept in the stored text) is not drawn too.
+      lines[index] = `${markup[1]}[${markup[2]}](${TOKEN_PREFIX}markup/${name})`;
       changed = true;
     }
   }

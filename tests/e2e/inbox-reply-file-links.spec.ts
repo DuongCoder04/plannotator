@@ -130,6 +130,9 @@ test('each file the sent reply commented on opens from its heading; a drawing sh
     // The drawing on the image: its name shows it.
     const drawn = sentReply.getByRole('link', { name: 'checkout markup' });
     await expect(drawn).toHaveAttribute('href', `/api/inbox/markups/${markup.name}`);
+    // The drawing's data-dir path is the agent's: in its text, not drawn in the window once the name links.
+    expect(body).toContain(markup.path);
+    await expect(sentReply).not.toContainText(markup.path);
     await drawn.click();
     await expect(page.locator(`img[src="/api/inbox/markups/${markup.name}"]`).last()).toBeVisible();
     await page.keyboard.press('Escape');

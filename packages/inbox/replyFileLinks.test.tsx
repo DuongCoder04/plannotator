@@ -110,14 +110,15 @@ test('every file heading the export wrote links to that file of the thread, at t
   });
   expect(mine.endsWith('(the version I sent)')).toBe(true);
   // Nothing else of the text changes: the words, the comments, the drawing's path.
-  const plain = linkReplyFeedback(`Notes below.\n\n${text}`, context()).replace(/^## \[(.+)\]\(\.inbox-reply\/[^)]+\)$/gm, '## $1').replace(/\[(checkout markup)\]\(\.inbox-reply\/markup\/[^)]+\)/, '[$1]');
+  const plain = linkReplyFeedback(`Notes below.\n\n${text}`, context()).replace(/^## \[(.+)\]\(\.inbox-reply\/[^)]+\)$/gm, '## $1').replace(/\[(checkout markup)\]\(\.inbox-reply\/markup\/[^)]+\)/, `[$1] \`${MARKUP}\``);
   expect(plain).toBe(`Notes below.\n\n${text}`);
 });
 
 test('a drawing on an image links to the drawing; the resolver opens files and drawings only', () => {
   const linked = linkReplyFeedback(feedback(), context());
   const line = linked.split('\n').find((l) => l.includes('checkout markup'))!;
-  expect(line).toBe(`- [checkout markup](.inbox-reply/markup/${'b'.repeat(64)}.png) \`${MARKUP}\``);
+  // The link shows the drawing: its data-dir path is not drawn after it (the stored text keeps it).
+  expect(line).toBe(`- [checkout markup](.inbox-reply/markup/${'b'.repeat(64)}.png)`);
   expect(resolveReplyLink(`.inbox-reply/markup/${'b'.repeat(64)}.png`, FILES)).toEqual({ kind: 'markup', src: `/api/inbox/markups/${'b'.repeat(64)}.png` });
   // A path that is not a drawing the Inbox kept stays as written.
   const other = '**Attached images:**\n- [shot] `/tmp/shot.png`';
@@ -243,6 +244,31 @@ test.skipIf(!hasDom)("in the person's sent reply, a file heading opens the file 
   expect(drawing.getAttribute('href')).toBe(`/api/inbox/markups/${'b'.repeat(64)}.png`);
   await act(async () => drawing.click());
   expect(document.querySelector<HTMLImageElement>(`img[src="/api/inbox/markups/${'b'.repeat(64)}.png"]`)).not.toBeNull();
+  // With the link there, the drawing's data-dir path is not shown.
+  expect(host!.textContent).not.toContain(MARKUP);
+});
+
+test.skipIf(!hasDom)("a drawing path the Inbox did not keep stays shown, with no link", async () => {
+  const other = '/tmp/elsewhere/shot.png';
+  host = document.createElement('div');
+  document.body.appendChild(host);
+  await act(async () => {
+    root = createRoot(host!);
+    root.render(
+      <MessageBody
+        message={reply(`Notes.\n\n# Feedback on the attached files\n\n## design/checkout.png\n\n**Attached images:**\n- [shot] \`${other}\`\n\n---`)}
+        projectRoot={ROOT}
+        onOpenAttachment={() => {}}
+        readOnly
+        answers={new Map()}
+        onPick={() => {}}
+        footerFor={() => null}
+        replyFiles={{ files: FILES, personMessageIds: PEOPLE, onOpen: () => {} }}
+      />,
+    );
+  });
+  expect(host!.querySelector('code')?.textContent).toBe(other);
+  expect([...host!.querySelectorAll('a')].some((a) => a.textContent === 'shot')).toBe(false);
 });
 
 test.skipIf(!hasDom)("an agent's message draws a heading of its own as text", async () => {
