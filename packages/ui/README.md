@@ -516,9 +516,32 @@ import { DiffFileTree } from "@plannotator/ui/components/DiffFileTree";
 
 For a custom row, use the atoms (`DiffFileTreeFolderRow`, `DiffFileTreeFileRowContent`, `ChangeTypeLetter`, `DiffCounts`, `diffFileTreeIndent`) with `buildDiffFileTree` and `useDiffFileTreeExpansion`. Plannotator's review shares the tree builder, the expansion hook and `ChangeTypeLetter`, but since its aligned sidebar it draws its own folder and file rows, so it is no longer an example of these atoms. See HANDOFF.md § "Diff file tree".
 
+### Document contents rail (`components/MarkdownContentsRail`; unreleased)
+
+Workspaces' contents rail, moved here (approved 2026-10-03 in Workspaces; the move approved 2026-10-30) so Workspaces and the Plannotator Inbox draw the same one. Plan review does not use it.
+
+```tsx
+import { DeferredMarkdownContentsRail } from "@plannotator/ui/components/DeferredMarkdownContentsRail";
+
+// In the document pane, beside the scroll element; it positions itself (fixed) from that element.
+<DeferredMarkdownContentsRail markdown={markdown} scrollViewport={scrollEl} />
+```
+
+- **Shape.** A 36 px dock of tick marks 24 px right of the reading column, vertically centred on the scroll element; it never changes the document's width. At most 10 ticks: a longer document is condensed into 10 spans, each shown by its shallowest heading nearest the span's middle. The current tick has `aria-current="location"`. A tick (or ↑ ↓ ← → Home End, Enter, while a tick has focus) opens a 256 px Contents panel to the LEFT of the dock, over the prose: every heading of levels 1 to 4, its breadcrumb its accessible name (`buildMarkdownContentsModel` also gives each heading a one-line excerpt, the first text after it cut at 180 characters). A pick smooth-scrolls there (instantly under reduced motion) and flashes the heading. Escape closes the open panel wherever focus is (window capture, `preventDefault`, so a host's own Escape sees it used); an outside press closes it too. No hover reveal, no left/right setting.
+- **When it shows.** At least 4 headings of levels 1 to 4 (`hasContentsRailHeadings` in `utils/annotationHelpers`, over `tocHeadings(blocks, 4)`; a host can ask without loading the rail), a scroll element at least 480 px wide, and 68 px free between the reading column's right edge and the scroll element's right edge (its scrollbar excluded): `canShowContentsRail`, `resolveContentsRailGeometry`. A docked column outside the scroll element (comments) therefore makes it yield, never overlap.
+- **Contract with the page.** Positions come from the rendered headings (`[data-block-type="heading"][data-block-id]`, `BlockRenderer`'s); the reading column is `[data-document-read-content]` inside the scroll element unless `contentSelector` names another (the Inbox passes the Viewer's `[data-doc-text-root]`).
+- **Loading.** `DeferredMarkdownContentsRail` mounts it after the page is interactive (`requestIdleCallback`, 2 s cap; a zero-delay timer where that is missing) from a lazy chunk.
+- **Styles.** `pn-contents-rail-*` rules in `theme.css` (so in `styles.css`), on the host's tokens with fallbacks: `--popover`, `--popover-foreground`, `--shadow-menu`, `--geometry-floating-radius`, `--geometry-structure-radius`, `--surface-hover`, `--motion-duration-fast|basic|relaxed`, `--ease-enter|exit`, `--primary`, `--foreground`, `--muted-foreground`. The labels inherit the font size.
+- **Optional host props** (defaults reproduce Workspaces' rail): `blocks` (the host's parsed blocks instead of `markdown`; otherwise one cached parse per body, `utils/blockParse` `parseBlocksShared`), `contentSelector`, `hidden` (a host's own hide choice: draws nothing, still measures), `onAvailableChange(fits)` (whether it can show, after each measure, so a host can offer another way to Contents where it yields), `panelAction` (one control at the right of the open panel's title; the Inbox's Hide).
+- Also moved: `hooks/usePrefersReducedMotion`.
+
+### One scroll-spy (`hooks/useActiveSection`)
+
+Plan review's `useActiveSection` is the package's only scroll-spy: the heading being read is the topmost one in a band from `ACTIVE_SECTION_BAND_TOP` (80 px) below the scroll element's top to 20% of its height, and it stays marked while no heading is in the band. Plan review (App feeding `TableOfContents`), `DocumentContents` and the contents rail all read it, so they never disagree, and `TableOfContents` and the rail both scroll a pick to the band's top. `useDocumentActiveSection(scrollViewport, headingCount)` is it for a list that mounts mid-document: it reads the band once on mount (the topmost heading in it, else the last one above it) until the observer reports. `useActiveSection` itself is unchanged; `useActiveSection.positions.test.tsx` pins its answers at fixed scroll positions.
+
 ### Document contents (`components/DocumentContents`; unreleased)
 
-Plan review's Contents list for a host that has no plan-editor sidebar: `TableOfContents` bound to one scroll element, with `useActiveSection` marking the heading being read. It draws no chrome; the host titles and places it, and keys it by the document. Mounted mid-document (a sheet that opens), it marks the last heading already scrolled past until the observer reports one, and it keeps the marked entry in view inside the list's own scroll box.
+Plan review's Contents list for a host that has no plan-editor sidebar: `TableOfContents` bound to one scroll element, with `useDocumentActiveSection` marking the heading being read. It draws no chrome; the host titles and places it, and keys it by the document. It keeps the marked entry in view inside the list's own scroll box.
 
 ```tsx
 import { DocumentContents } from "@plannotator/ui/components/DocumentContents";
@@ -526,9 +549,9 @@ import { DocumentContents } from "@plannotator/ui/components/DocumentContents";
 <DocumentContents blocks={blocks} annotations={annotations} scrollViewport={scrollEl} onNavigate={closeSheet} />
 ```
 
-- The headings come from `tocHeadings(blocks)` (`utils/annotationHelpers`, levels 1 to 3 in document order), the same function `buildTocHierarchy` and plan review's "has entries" check use.
+- The headings come from `tocHeadings(blocks)` (`utils/annotationHelpers`, levels 1 to 3 in document order by default), the same function `buildTocHierarchy`, plan review's "has entries" check and (with 4) the contents rail use.
 - `TableOfContents` takes an optional `scrollViewport` (seam): the element a click scrolls. Default: the `ScrollViewportProvider` context, as before, so plan review passes nothing and is unchanged.
-- Used by the Inbox's attachment pane and phone surface; plan review keeps `SidebarContainer`.
+- Used by the Inbox's sheet (a phone, or where the rail yields) and the phone surface; plan review keeps `SidebarContainer`.
 
 ## Consuming it (e.g. from Workspaces)
 
