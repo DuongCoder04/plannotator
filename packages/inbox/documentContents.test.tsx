@@ -3,12 +3,13 @@
  * On a desktop, Side by side and Full screen alike: ui's contents rail (the
  * ticks in the page's right gutter, the panel opening left over the page),
  * never in the comments column and never moving the page. Where the rail
- * yields (its gutter rule) and on a phone: a Contents button over the file
- * opens plan review's list as a sheet. Fewer than 4 headings: neither. The
- * rail's Hide is remembered and leaves a button that shows it again. The sheet
- * mounted mid-document marks the section being read, holds focus and takes
- * Escape first; an open rail panel takes Escape before full screen does. The
- * phone surface has the same button and sheet.
+ * yields (its gutter rule), until it has drawn, and on a phone: a Contents
+ * button over the file opens the rail's headings (levels 1 to 4) as a sheet.
+ * Fewer than 4 headings: neither. The rail's Hide is remembered and leaves a
+ * button that shows it again; focus moves to what replaces each. The sheet
+ * mounted mid-document marks the section being read (the rail's scroll math),
+ * holds focus and takes Escape first; an open rail panel takes Escape before
+ * full screen does. The phone surface has the same button and sheet.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
@@ -17,7 +18,6 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InboxAttachmentState } from '@plannotator/core/inbox-types';
 import { CONTENTS_COOKIE } from './contents';
-import { installBandIntersectionObserver } from '../ui/test-setup/bandIntersectionObserver';
 
 const hasDom = typeof document !== 'undefined';
 // The pane pulls in the Viewer, which reads `window` at module-eval time.
@@ -29,7 +29,6 @@ if (hasDom) await import('@plannotator/ui/components/MarkdownContentsRail');
 let root: Root | null = null;
 let host: HTMLElement | null = null;
 const realFetch = globalThis.fetch;
-const realObserver = hasDom ? globalThis.IntersectionObserver : undefined;
 
 beforeAll(() => {
   // A page on localhost, as the Inbox is served: about:blank keeps no readable cookies (the hide choice is one).
@@ -49,56 +48,41 @@ afterEach(() => {
   root = null;
   host = null;
   globalThis.fetch = realFetch;
-  if (hasDom) {
-    storage.removeItem(CONTENTS_COOKIE);
-    globalThis.IntersectionObserver = realObserver!;
-  }
+  if (hasDom) storage.removeItem(CONTENTS_COOKIE);
 });
 
-/**
- * An IntersectionObserver that reports nothing until told: as a real one does when no heading sits in
- * useActiveSection's band (80 px down to 20% of the scroll's height), which is most of a long document.
- * `report` makes the open observers say a heading entered the band, as a scroll would.
- */
-function stubObserver(): { report: (target: Element) => void } {
-  const open: { callback: IntersectionObserverCallback; targets: Element[]; self: IntersectionObserver }[] = [];
-  globalThis.IntersectionObserver = class {
-    private entry: (typeof open)[number];
-    constructor(callback: IntersectionObserverCallback) {
-      this.entry = { callback, targets: [], self: this as unknown as IntersectionObserver };
-      open.push(this.entry);
-    }
-    observe(el: Element) {
-      this.entry.targets.push(el);
-    }
-    unobserve() {}
-    disconnect() {
-      open.splice(open.indexOf(this.entry), 1);
-    }
-    takeRecords() {
-      return [];
-    }
-  } as unknown as typeof IntersectionObserver;
-  return {
-    report: (target) => {
-      for (const o of open.filter((o) => o.targets.includes(target))) {
-        act(() => o.callback([{ target, isIntersecting: true } as unknown as IntersectionObserverEntry], o.self));
-      }
-    },
-  };
+const DOC_SCROLL = '.ib-docscroll, .sf-docscroll';
+function docScroll(within: ParentNode = host!): HTMLElement {
+  if (within instanceof HTMLElement && within.matches(DOC_SCROLL)) return within;
+  return within.querySelector<HTMLElement>(DOC_SCROLL)!;
 }
 
-/** Lay the document's headings out as if scrolled: `tops` gives each heading's top, px below the scroll's top. */
+/**
+ * Lay the document's headings out: `tops` gives each heading's top, px below the scroll's top, at the scroll
+ * position now; a later scroll (`scrollBy`) moves them up by as much.
+ */
 function layOut(tops: Record<string, number>, within: ParentNode = host!) {
+  const scroll = docScroll(within);
+  const at = scroll.scrollTop;
   for (const heading of within.querySelectorAll<HTMLElement>('[data-block-type="heading"]')) {
     const top = tops[heading.textContent ?? ''];
-    if (top !== undefined) heading.getBoundingClientRect = () => new DOMRect(0, top, 600, 30);
+    if (top !== undefined) heading.getBoundingClientRect = () => new DOMRect(0, top - (scroll.scrollTop - at), 600, 30);
   }
 }
 
-/** Halfway into "Design": every heading above it is read past, none sits in the band. */
+/** Scroll the document `dy` px down, then let the scroll-spy's frame run. */
+async function scrollBy(dy: number, within: ParentNode = host!) {
+  const scroll = docScroll(within);
+  await act(async () => {
+    scroll.scrollTop += dy;
+    scroll.dispatchEvent(new Event('scroll'));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  });
+}
+
+/** Halfway into "Design": every heading above it is read past; "Design" is above the 80 px activation line. */
 const MID_DESIGN = { 'Refund worker': -900, Context: -520, Design: -140, 'Idempotency keys': 420, Rollout: 940 };
-/** The top of the document: the title in the scroll-spy's band (80 to 160 px of an 800 px page). */
+/** The top of the document: the title just below the 80 px activation line (the first heading is current). */
 const AT_TOP = { 'Refund worker': 90, Context: 340, Design: 640, 'Idempotency keys': 940, Rollout: 1240 };
 
 /**
@@ -111,8 +95,6 @@ async function layOutPage(width: number, contentRight: number) {
   const article = scroll.querySelector<HTMLElement>('[data-doc-text-root]')!;
   article.getBoundingClientRect = () => new DOMRect(contentRight - 640, 0, 640, 2000);
   layOut(AT_TOP);
-  // A scroll: the observer (installBandIntersectionObserver, where a test installs it) reads the band.
-  act(() => void scroll.dispatchEvent(new Event('scroll')));
   await settle();
 }
 
@@ -249,9 +231,6 @@ function click(el: Element | null | undefined) {
 
 for (const full of [false, true]) {
   test.skipIf(!hasDom)(`${full ? 'full screen' : 'side by side'}: the rail sits in the page's right gutter; a tick opens the panel; a pick scrolls the document`, async () => {
-    globalThis.IntersectionObserver = realObserver!;
-    const restore = installBandIntersectionObserver();
-    afterThis(restore);
     await renderPane(PLAN, { full });
     // A 1000 px page with its 640 px column centred: a 180 px gutter.
     await layOutPage(1000, 820);
@@ -278,8 +257,10 @@ for (const full of [false, true]) {
     expect([...nav!.querySelectorAll('.pn-contents-rail-label')].map((l) => l.textContent)).toEqual(HEADINGS);
     const calls = watchScroll('Rollout', 900);
     key(ticks()[4]!, { key: 'Enter' });
-    // The scroll-spy band's top (TableOfContents' offset too): the heading's top less 80 px.
+    // The 80 px activation line (TableOfContents' offset too): the heading's top less 80 px.
     expect(calls).toEqual([{ top: 820, behavior: 'smooth' }]);
+    // Marked at once, while the smooth scroll is in flight.
+    expect(nav!.querySelector('[aria-current="location"] .pn-contents-rail-label')?.textContent).toBe('Rollout');
   });
 }
 
@@ -354,21 +335,19 @@ test.skipIf(!hasDom)('on a phone a Contents button opens the list as a sheet; a 
   expect(document.querySelector('[data-contents="sheet"]')).toBeNull();
 });
 
-function heading(text: string): Element {
-  return [...host!.querySelectorAll('[data-block-type="heading"]')].find((h) => h.textContent === text)!;
-}
-
-test.skipIf(!hasDom)('a sheet opened mid-document marks the section being read, and the observer takes over as it scrolls', async () => {
-  const observer = stubObserver();
+test.skipIf(!hasDom)('a sheet opened mid-document marks the section being read, and follows the scroll', async () => {
   await renderPane(PLAN, { phone: true });
   layOut(MID_DESIGN);
   click(host!.querySelector('[data-contents-open]'));
   const sheet = document.querySelector('[data-contents="sheet"]');
   expect(marked(sheet)).toEqual(['Design']);
 
-  // A scroll brings "Rollout" into the band: the mark follows it.
-  observer.report(heading('Rollout'));
+  // A scroll brings "Rollout" (940 px down) past the line: the mark follows it.
+  await scrollBy(900);
   expect(marked(sheet)).toEqual(['Rollout']);
+  // Back up, in one jump: no heading crosses the line on the way, and the mark still follows.
+  await scrollBy(-900);
+  expect(marked(sheet)).toEqual(['Design']);
 
   // Closed, scrolled on, and opened again: it marks where the reader is now.
   click(sheet!.querySelector('[aria-label="Close contents"]'));
@@ -378,8 +357,8 @@ test.skipIf(!hasDom)('a sheet opened mid-document marks the section being read, 
 });
 
 test.skipIf(!hasDom)('the sheet scrolls its own list to the marked heading, at once', async () => {
-  const observer = stubObserver();
   await renderPane(PLAN, { phone: true });
+  layOut(AT_TOP);
   click(host!.querySelector('[data-contents-open]'));
   const list = document.querySelector<HTMLElement>('[data-contents="sheet"] .ib-contents-list')!;
   // inbox.css lets it scroll; happy-dom lays nothing out, so the sizes are given here:
@@ -390,13 +369,13 @@ test.skipIf(!hasDom)('the sheet scrolls its own list to the marked heading, at o
   list.getBoundingClientRect = () => new DOMRect(0, 0, 300, 100);
   const keys = [...list.querySelectorAll<HTMLElement>('nav button')].find((b) => b.textContent === 'Idempotency keys')!;
   keys.getBoundingClientRect = () => new DOMRect(0, 130 - list.scrollTop, 300, 30);
-  const pageScroll = host!.querySelector<HTMLElement>('.ib-docscroll')!.scrollTop;
-
-  observer.report(heading('Idempotency keys'));
+  // "Idempotency keys" (940 px down) past the line.
+  await scrollBy(900);
+  const pageScroll = docScroll().scrollTop;
   expect(marked(list)).toEqual(['Idempotency keys']);
   // Just enough to show it (its bottom at the list's bottom); the document does not move.
   expect(list.scrollTop).toBe(60);
-  expect(host!.querySelector<HTMLElement>('.ib-docscroll')!.scrollTop).toBe(pageScroll);
+  expect(docScroll().scrollTop).toBe(pageScroll);
 });
 
 test.skipIf(!hasDom)('the sheet holds focus: Tab wraps inside it, Escape closes it before full screen sees the key, focus goes back', async () => {
@@ -431,7 +410,6 @@ test.skipIf(!hasDom)('the sheet holds focus: Tab wraps inside it, Escape closes 
 });
 
 test.skipIf(!hasDom)('the phone surface: a Contents button opens the sheet at the section being read; a pick scrolls there and closes it', async () => {
-  stubObserver();
   const { SurfaceDocument } = await import('./surface/SurfaceDocument');
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -459,4 +437,44 @@ test.skipIf(!hasDom)('the phone surface: a Contents button opens the sheet at th
   // "Rollout" reads 940 px down: TableOfContents' offset leaves 80 px above it.
   expect(calls).toEqual([{ top: 860, behavior: 'smooth' }]);
   expect(host.querySelector('[data-contents="sheet"]')).toBeNull();
+});
+
+test.skipIf(!hasDom)('a file whose sections are level 4 lists them in the sheet too (the rail\'s levels)', async () => {
+  await renderPane('# Refund worker\n\nIntro.\n\n#### Context\n\nA.\n\n#### Design\n\nB.\n\n#### Rollout\n\nC.\n');
+  await layOutPage(676, 652);
+  click(host!.querySelector('[data-contents-open]'));
+  expect(entries(document.querySelector('[data-contents="sheet"]'))).toEqual(['Refund worker', 'Context', 'Design', 'Rollout']);
+});
+
+test.skipIf(!hasDom)('a rail that never draws leaves the Contents button and sheet', async () => {
+  // The deferred rail waits for an idle moment that never comes.
+  const idle = window as unknown as Record<'requestIdleCallback' | 'cancelIdleCallback', unknown>;
+  const real = { request: idle.requestIdleCallback, cancel: idle.cancelIdleCallback };
+  idle.requestIdleCallback = () => 0;
+  idle.cancelIdleCallback = () => {};
+  // Restored after the pane unmounts (afterEach unmounts first): the rail's cleanup cancels its idle wait.
+  afterThis(() => {
+    idle.requestIdleCallback = real.request;
+    idle.cancelIdleCallback = real.cancel;
+  });
+  await renderPane(PLAN);
+  await layOutPage(1000, 820);
+  expect(railOf()).toBeNull();
+  click(host!.querySelector('[data-contents-open]'));
+  expect(entries(document.querySelector('[data-contents="sheet"]'))).toEqual(HEADINGS);
+});
+
+test.skipIf(!hasDom)('Hide and Show move focus to the control that takes their place', async () => {
+  await renderPane(PLAN, { full: true });
+  await layOutPage(1000, 820);
+  click(ticks()[0]);
+  const hide = railOf()!.querySelector<HTMLElement>('[data-contents-hide]')!;
+  act(() => hide.focus());
+  click(hide);
+  expect(railOf()).toBeNull();
+  expect(document.activeElement).toBe(host!.querySelector('[data-contents-show]'));
+  click(host!.querySelector('[data-contents-show]'));
+  // The rail's current tick (its one tab stop).
+  expect(document.activeElement).toBe(ticks()[0]!);
+  expect(ticks()[0]!.getAttribute('aria-current')).toBe('location');
 });

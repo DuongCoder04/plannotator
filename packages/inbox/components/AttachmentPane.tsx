@@ -56,6 +56,7 @@ import { Icon } from '../icons';
 import { FileName } from './FileName';
 import { useNarrowerThan } from '../narrower';
 import { showsContents, useContentsShown } from '../contents';
+import { CONTENTS_RAIL_MIN_PANE_WIDTH as RAIL_MIN_PAGE_WIDTH } from '@plannotator/ui/utils/annotationHelpers';
 import { ContentsHide, ContentsPanel, type ContentsButtonMode } from './ContentsPanel';
 import { DeferredMarkdownContentsRail } from '@plannotator/ui/components/DeferredMarkdownContentsRail';
 import { FullViewBar, type FullViewBarHandle, type ToolbarState } from './FullViewBar';
@@ -1301,16 +1302,53 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   const [contentsShown, setContentsShown] = useContentsShown();
   const hasContents = view !== null && kind === 'markdown' && showsContents(documentBlocks);
   const docKey = `${attachment.id}:${view?.version ?? ''}:${view?.attachment.current?.sha256 ?? ''}`;
-  // What the rail last said about this document (null: not measured yet, so no button flashes before it does).
+  // What the rail last said about this document (null: not measured yet). Until it says it fits, the Contents
+  // button and sheet stand in for it, so a rail that never loads still leaves a way to Contents.
   const [railFit, setRailFit] = useState<{ key: string; fits: boolean } | null>(null);
   const railFits = railFit?.key === docKey ? railFit.fits : null;
   const contentsButton: ContentsButtonMode | null = !hasContents
     ? null
-    : phone || railFits === false
+    : phone || railFits !== true
       ? 'sheet'
-      : railFits === true && !contentsShown
+      : !contentsShown
         ? 'show'
         : null;
+  // Side by side on a laptop (owner's pick, 2026-10-30): the page's column keeps its left edge and gives up just
+  // enough on its right for the rail's 68 px gutter (inbox.css `data-contents-gutter`), so the rail shows beside
+  // it. Only for a file with a rail that is not hidden, and only where the rail can show at all (a page at least
+  // 480 px wide, its own rule); elsewhere the column is today's and the Contents button stands in.
+  const [docWidth, setDocWidth] = useState(0);
+  useLayoutEffect(() => {
+    if (!scrollViewport) return;
+    const measure = () => setDocWidth(scrollViewport.clientWidth);
+    measure();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(scrollViewport);
+    return () => observer?.disconnect();
+  }, [scrollViewport]);
+  const railGutter = hasContents && !full && !phone && contentsShown && docWidth >= RAIL_MIN_PAGE_WIDTH;
+  // Hide and Show remove the control that has focus: focus moves to the one that takes its place (the Show
+  // button; the rail's current tick).
+  const contentsFocusRef = useRef<'show' | 'rail' | null>(null);
+  const hideContents = useCallback(() => {
+    contentsFocusRef.current = 'show';
+    setContentsShown(false);
+  }, [setContentsShown]);
+  const showContents = useCallback(() => {
+    contentsFocusRef.current = 'rail';
+    setContentsShown(true);
+  }, [setContentsShown]);
+  useEffect(() => {
+    const want = contentsFocusRef.current;
+    if (want === null) return;
+    contentsFocusRef.current = null;
+    const area = docAreaRef.current;
+    const target =
+      want === 'show'
+        ? area?.querySelector<HTMLElement>('[data-contents-show]')
+        : area?.querySelector<HTMLElement>('.pn-contents-rail [data-contents-index][tabindex="0"]');
+    target?.focus({ preventScroll: true });
+  }, [contentsShown]);
   const refRepo = useRefRepo(props.repo);
   const wrapCode = useMemo(() => view !== null && isCode && hasLineLongerThan(view.text, CODE_WRAP_LINE_CHARS), [view, isCode]);
   // Code comments drawn under their lines; one whose lines no longer read as they did is unanchored, and so is a text
@@ -1852,7 +1890,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               blocks={blocks}
               annotations={annotations}
               scrollViewport={scrollViewport}
-              onShow={() => setContentsShown(true)}
+              onShow={showContents}
               phone={phone}
             />
           )}
@@ -1971,7 +2009,12 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
             </div>
           )}
           {view && !isHtml && !isCode && (
-            <div className="ib-docscroll bg-card" data-look="clean" ref={setScrollViewport}>
+            <div
+              className="ib-docscroll bg-card"
+              data-look="clean"
+              data-contents-gutter={railGutter ? '' : undefined}
+              ref={setScrollViewport}
+            >
               <ScrollViewportProvider viewport={scrollViewport}>
               <ImageResolverContext.Provider value={resolveImage}>
               <Viewer
@@ -1990,7 +2033,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 inputMethod={isText ? inputMethod : 'drag'}
                 taterMode={false}
                 gridEnabled={false}
-                maxWidth={full ? 760 : 640}
+                // With the rail's gutter, inbox.css sizes the column (640 px at most, as here).
+                maxWidth={railGutter ? null : full ? 760 : 640}
                 stickyActions={false}
                 disableCodePathValidation
                 copyLabel="Copy file"
@@ -2015,7 +2059,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               contentSelector="[data-doc-text-root]"
               hidden={!contentsShown}
               onAvailableChange={(fits) => setRailFit({ key: docKey, fits })}
-              panelAction={<ContentsHide onHide={() => setContentsShown(false)} />}
+              panelAction={<ContentsHide onHide={hideContents} />}
             />
           )}
         </div>

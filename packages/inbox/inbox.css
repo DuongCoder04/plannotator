@@ -1633,11 +1633,28 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
    toolstrip and the bar like a dialog should. */
 .ib-docscroll, .ib-codeview { isolation: isolate; }
 .ib-docscroll:has([data-popout]) { z-index: 7; }
+/* The file area is a stacking context of its own in Side by side too (fold, full screen and phones set their
+   own below), so the contents rail (z 20 inside it) stays under the pane's stepping bar and its list. While a
+   popout is open the area rises with it, above the bar, and the rail is hidden: the popout is modal. */
+.ib-view .ib-docarea { isolation: isolate; z-index: 0; }
+.ib-view .ib-docarea:has([data-popout]) { z-index: 7; }
+.ib-docarea:has([data-popout]) .pn-contents-rail { visibility: hidden; }
+/* Side by side with the contents rail (the owner's pick, 2026-10-30; AttachmentPane sets `data-contents-gutter`):
+   the column (the Viewer's root, 640 px at most) keeps the left edge it has today, centred or at the page's
+   24 px padding, and stops 68 px short of the page's right edge (24 px padding + 44 px; one more for rounding),
+   so the rail's dock fits beside it. A page wide enough to centre 640 px with that gutter is unchanged. 100% is
+   the page's content box (its padding and scrollbar excluded). */
+.ib-docscroll[data-contents-gutter] > :has(> [data-doc-text-root]) {
+  align-self: flex-start;
+  margin-left: max(0px, (100% - 640px) / 2);
+  max-width: min(640px, 100% - max(0px, (100% - 640px) / 2) - 45px);
+}
 .ib-toolstrip { position: absolute; top: 14px; left: 16px; z-index: 3; padding: 3px; border-radius: 9px; background: var(--card); box-shadow: var(--card-shadow); }
 /* An open document's Contents. On a desktop: ui's contents rail (MarkdownContentsRail, its rules in ui's
-   theme.css), the ticks in the page's right gutter; its floating panel takes the Inbox's float shadow. Where the
-   rail yields or is hidden, and on a phone: a Contents button over the file (ContentsPanel.tsx), which shows the
-   rail again or opens plan review's list (ui's DocumentContents) as a sheet. */
+   contents-rail.css, imported by apps/inbox/index.css), the ticks in the page's right gutter; its floating panel
+   takes the Inbox's float shadow. Where the rail yields, until it has measured, when it is hidden, and on a
+   phone: a Contents button over the file (ContentsPanel.tsx), which shows the rail again or opens the rail's
+   headings (ui's DocumentContents) as a sheet. */
 /* The labels inherit their size, 14 px in Workspaces (its body text). */
 .pn-inbox .pn-contents-rail { --shadow-menu: var(--ib-float-shadow); font-size: var(--ib-fs-14, 14px); }
 .pn-inbox .pn-contents-rail .ib-contents-hide { width: 24px; height: 24px; }

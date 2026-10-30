@@ -9,8 +9,8 @@ import { Tip } from './Tip';
 /**
  * The Contents button over an open document, when ui's contents rail is not on screen (contents.ts):
  * - `show`: the rail fits but was hidden; the button shows it again;
- * - `sheet`: the rail does not fit (a gutter under 68 px, a pane under 480 px) or the window is a phone; the
- *   button opens plan review's list (ui's DocumentContents) as a sheet over the window.
+ * - `sheet`: the rail does not fit (a gutter under 68 px, a pane under 480 px), has not measured yet, or the
+ *   window is a phone; the button opens the rail's headings (ui's DocumentContents) as a sheet over the window.
  */
 export type ContentsButtonMode = 'show' | 'sheet';
 
