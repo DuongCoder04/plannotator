@@ -30,6 +30,14 @@
  * The Wi-Fi. "Reach from this Wi-Fi" opens a TLS listener on every interface
  * that serves the same door-only handler, with a pinned self-signed
  * certificate and a Bonjour record (inbox-lan.ts, contract section 3).
+ *
+ * Machines (inbox-machines.ts). Another Plannotator Inbox links through the
+ * same door as a device with platform `machine`, redeemed from a machine
+ * offer. That works with Phones off: then the door answers only a machine's
+ * token (anything else is the unknown-route 404, as before), pairing takes
+ * only a machine offer, and the tailnet door publishes at start only while a
+ * machine is linked. A machine may never ask for the merged view
+ * (`machines=1`), so two Inboxes linked both ways cannot echo each other.
  */
 
 import { childEnv } from "@plannotator/shared/child-env";
@@ -182,6 +190,17 @@ const ALLOWLIST: readonly DoorRoute[] = [
   { method: "POST", route: /^markups$/, window: () => "/api/inbox/markups", raw: { max: INBOX_DEVICE_MARKUP_MAX_BYTES, code: "markup_too_large", what: "a drawing" } },
 ];
 
+/** The door's routes in words (`GET threads`, `POST messages/:id/(picks|reply|…)`), for `health`: what this Inbox can serve another. */
+export function doorRouteNames(): string[] {
+  const words = (route: RegExp) => route.source.replace(/^\^|\$$/g, "").replaceAll("([^/]+)", ":id").replaceAll("\\/", "/");
+  return [...ALLOWLIST.map((entry) => `${entry.method} ${words(entry.route)}`), "POST link-back", "POST unlink"];
+}
+
+/** The door's POST routes, as the window's route each reaches (tests classify each one: rule 8). */
+export function doorWriteRoutes(): { route: string; raw: boolean }[] {
+  return ALLOWLIST.filter((entry) => entry.method === "POST").map((entry) => ({ route: entry.route.source, raw: entry.raw !== undefined }));
+}
+
 /** Where a pairing attempt reached the door: the Wi-Fi's listener, the tailnet's, or this computer's own port (the simulator). */
 export type PairingVia = "wifi" | "tailnet" | "local";
 
@@ -264,7 +283,26 @@ export interface InboxDevicesContext {
     paired: (device: InboxDevice) => Promise<{ url: string; mailbox_id: string } | null>;
     revoked: (device: InboxDevice) => void;
   };
+  /** Phones on (PLANNOTATOR_INBOX_PHONES): the whole phone surface. Off: the door serves linked machines only. Default true. */
+  phones?: boolean;
+  /** Linked machines (inbox-machines.ts): the two door routes only a machine calls. Bound after both exist. */
+  machines?: () => InboxDoorMachines | null;
 }
+
+/** What the door hands to inbox-machines.ts. */
+export interface InboxDoorMachines {
+  /** The other machine handed this Inbox a code for its own door: link back (both ways). */
+  linkBack: (deviceId: string, body: Record<string, unknown>) => Promise<Response>;
+  /** The other machine unlinked this one: forget it here too. */
+  unlinkedBy: (deviceId: string) => Response;
+  /** A machine is linked: publish the tailnet door at start even with Phones off. */
+  hasLinks: () => boolean;
+}
+
+/** The platform a linked Inbox pairs as. */
+export const MACHINE_PLATFORM = "machine";
+/** Machine offers kept, open or redeemed (a CLI offer and a link-back can be open at once). */
+const MACHINE_OFFERS_KEPT = 8;
 
 /** The computer's name as the phone shows it: macOS's ComputerName, else the host name's first label. */
 function computerName(): string {
@@ -416,6 +454,9 @@ export function createInboxDevices(context: InboxDevicesContext) {
   let offer: Offer | null = null;
   /** The last offer made, kept after it closes so the window can say what reached the door while it showed. */
   let lastOffer: Offer | null = null;
+  const phonesOn = context.phones !== false;
+  /** Machine offers (inbox-machines.ts), newest last, with the device each was redeemed for. */
+  const machineOffers: (Offer & { deviceId: string | null })[] = [];
   let name: string | null = null;
   const tailnet: TailnetState = { on: false, address: null, error: null };
 
@@ -434,7 +475,7 @@ export function createInboxDevices(context: InboxDevicesContext) {
     const revoked = devices.revoke(device.id, now().toISOString()) ?? device;
     for (const stream of streams.get(device.id) ?? []) stream.abort();
     streams.delete(device.id);
-    context.relay?.revoked(revoked);
+    if (device.platform !== MACHINE_PLATFORM) context.relay?.revoked(revoked);
     return revoked;
   };
 
@@ -459,6 +500,45 @@ export function createInboxDevices(context: InboxDevicesContext) {
       // A phone can use the code only through an address it carries; the window never shows a code without one.
       reachable: reach.tailnet !== null || (reach.lan !== null && reach.fingerprint !== null),
     };
+  };
+
+  /** A one-time offer another Inbox redeems as a machine (Phones on or off). */
+  const openMachineOffer = () => {
+    const made = {
+      secret: randomBytes(32).toString("base64url"),
+      code: String(randomInt(0, 1_000_000)).padStart(6, "0"),
+      expiresAt: now().getTime() + PAIRING_OFFER_MS,
+      wrong: 0,
+      redeemed: false,
+      attempts: [],
+      deviceId: null,
+    };
+    machineOffers.push(made);
+    if (machineOffers.length > MACHINE_OFFERS_KEPT) machineOffers.splice(0, machineOffers.length - MACHINE_OFFERS_KEPT);
+    return { secret: made.secret, code: made.code, expires_at: new Date(made.expiresAt).toISOString() };
+  };
+  const openMachineOffers = () => machineOffers.filter((o) => !o.redeemed && o.wrong < PAIRING_CODE_TRIES && o.expiresAt > now().getTime());
+  const offerDevice = (secret: string) => machineOffers.find((o) => sameSecret(o.secret, secret))?.deviceId ?? null;
+
+  /** A machine redeems a machine offer: the same limits as a phone's (10 minutes, 5 wrong codes), its own slots. */
+  const redeemMachine = (name: string, secret: string | null, code: string | null): Response => {
+    const open = openMachineOffers();
+    const match = open.find((o) => (secret ? sameSecret(secret, o.secret) : code === o.code));
+    if (!match) {
+      if (!secret) for (const o of open) o.wrong += 1;
+      if (secret || open.length === 0) return refuse(410, "offer_expired", "This link code is no longer open. Make a new one on the other machine.");
+      return refuse(401, "pairing_code_wrong", "That code is not the one on the other machine.", {
+        tries_left: Math.max(PAIRING_CODE_TRIES - Math.max(...open.map((o) => o.wrong)), 0),
+      });
+    }
+    match.redeemed = true;
+    const token = `tok_${randomBytes(32).toString("base64url")}`;
+    const at = now().toISOString();
+    const device = devices.add({ id: inboxId("dev"), name, platform: MACHINE_PLATFORM, token, secret: match.secret, at });
+    // A machine is never a phone: no relay carriage, no pushes.
+    devices.setCarriage(device.id, false, at);
+    match.deviceId = device.id;
+    return json({ device: publicDevice(devices.get(device.id) ?? device), token, computer: computer() }, 201);
   };
 
   const attempt = (target: Offer | null, entry: Omit<PairingAttempt, "at">) => {
@@ -503,6 +583,10 @@ export function createInboxDevices(context: InboxDevicesContext) {
     if (!platform.ok) throw new InboxError("validation_error", `platform: ${platform.message}`, { field: "platform" });
     const secret = typeof body.secret === "string" && body.secret ? body.secret : null;
     const code = typeof body.code === "string" && body.code ? body.code : null;
+    if (platform.name === MACHINE_PLATFORM) {
+      if (!secret && !code) throw new InboxError("validation_error", "secret or code: one is required.", { field: "secret" });
+      return redeemMachine(byName.name, secret, code);
+    }
     if (secretOnly && !secret && code) {
       attempt(openOffer() ?? lastOffer, { via, result: "code_over_wifi" });
       return refuse(400, "code_not_accepted_here", "Over the Wi-Fi, pair by scanning the QR code on your computer's screen.");
@@ -684,6 +768,13 @@ export function createInboxDevices(context: InboxDevicesContext) {
   const serve = async (req: Request, url: URL, route: string, device: InboxDevice): Promise<Response> => {
     devices.touch(device.id, now().toISOString());
     if (route === "revoke" && req.method === "POST") return json({ device: publicDevice(revoke(device)) });
+    if (device.platform === MACHINE_PLATFORM) {
+      // A machine reads this Inbox's own threads only (PLAN rule 3): never the merged view, so links both ways cannot echo.
+      if (url.searchParams.has("machines")) return refuse(403, "machines_view_refused", "A linked machine reads this Inbox's own threads only.");
+      const machines = context.machines?.() ?? null;
+      if (machines && req.method === "POST" && route === "link-back") return machines.linkBack(device.id, await context.readBody(req));
+      if (machines && req.method === "POST" && route === "unlink") return machines.unlinkedBy(device.id);
+    }
     for (const entry of ALLOWLIST) {
       if (entry.method !== req.method) continue;
       const match = entry.route.exec(route);
@@ -704,14 +795,18 @@ export function createInboxDevices(context: InboxDevicesContext) {
   };
 
   /** `via`: the listener the request reached (the window's own port when the caller says nothing). */
-  const door = async (req: Request, url: URL, via: PairingVia = "local"): Promise<Response> => {
+  /** Null: Phones are off and this is no machine's request (the caller answers its unknown-route 404). */
+  const door = async (req: Request, url: URL, via: PairingVia = "local"): Promise<Response | null> => {
     try {
       if (req.headers.get("origin") !== null) return refuse(403, "origin_not_allowed", "Browser requests are not accepted here.");
       const route = url.pathname.startsWith(DOOR_PREFIX) ? url.pathname.slice(DOOR_PREFIX.length) : "";
+      // Phones off: the door is there for linked machines only, and to anything else it is the unknown route it always was.
+      if (!phonesOn && route === "pair" && req.method === "POST" && openMachineOffers().length === 0) return null;
       if (route === "pair" && req.method === "POST") return await redeem(req, via);
       const token = bearer(req);
+      const device = token ? devices.byToken(token) : null;
+      if (!phonesOn && device?.platform !== MACHINE_PLATFORM) return null;
       if (!token) return refuse(401, "device_token_missing", "This request needs the phone's token.");
-      const device = devices.byToken(token);
       if (!device) return refuse(401, "device_token_invalid", "This token does not belong to a paired phone.");
       if (device.revoked_at !== null) return refuse(401, "device_revoked", "This phone was removed from the Inbox. Pair it again.");
       return await serve(req, url, route, device);
@@ -787,7 +882,7 @@ export function createInboxDevices(context: InboxDevicesContext) {
         return refuse(404, "device_route_not_found", "Not a phone route.");
       }
       if (url.pathname !== "/api/inbox/device" && !url.pathname.startsWith(DOOR_PREFIX)) return refuse(404, "device_route_not_found", "Not a phone route.");
-      return door(req, url, via);
+      return door(req, url, via).then((answer) => answer ?? refuse(404, "device_route_not_found", "Not a phone route."));
     };
 
   // ── The Wi-Fi (contract section 3): the same door-only handler, over TLS on every interface. ──
@@ -853,7 +948,12 @@ export function createInboxDevices(context: InboxDevicesContext) {
       };
     }
     const detail = error instanceof Error ? error.message.replace(/^--tailscale:\s*/, "") : String(error);
-    return { code: "tailnet_unavailable", message: `Tailscale could not publish the Inbox. ${detail}` };
+    // Linux: `tailscale serve` needs root unless the person made their user the operator once.
+    const linux =
+      process.platform === "linux" && /access denied|permission|operator|not permitted/i.test(detail)
+        ? ' On Linux, run "sudo tailscale set --operator=$USER" once, then try again.'
+        : "";
+    return { code: "tailnet_unavailable", message: `Tailscale could not publish the Inbox. ${detail}${linux}` };
   };
 
   /** Open the door listener and point the tailnet mapping at it; on failure both are closed and the error kept for the window. */
@@ -909,6 +1009,8 @@ export function createInboxDevices(context: InboxDevicesContext) {
    */
   const startTailnet = () => {
     if (!context.registry().tailnet) return;
+    // Phones off: the door is published only for linked machines.
+    if (!phonesOn && !context.machines?.()?.hasLinks()) return;
     tailnet.on = true;
     if (publish().ok) saveSwitch(true);
     else takeDownOwnMapping(tailscale, ownTargets());
@@ -1000,6 +1102,7 @@ export function createInboxDevices(context: InboxDevicesContext) {
   };
 
   const windowRoute = async (req: Request, url: URL): Promise<Response | null> => {
+    if (!phonesOn) return null;
     const path = url.pathname;
     if (path === "/api/inbox/pairing") {
       // The last offer's state and what reached the door while it showed; never its secret or code.
@@ -1056,5 +1159,25 @@ export function createInboxDevices(context: InboxDevicesContext) {
     return null;
   };
 
-  return { door, asDevice, windowRoute, startTailnet, stopTailnet, startLan: lan.start, stopLan: lan.stop, devices };
+  /** Linked machines (inbox-machines.ts): the door's side of linking. */
+  const machineDoor = {
+    openMachineOffer,
+    offerDevice,
+    revokeDevice: (id: string) => {
+      const device = devices.get(id);
+      if (device && device.revoked_at === null) revoke(device);
+    },
+    tailnetAddress: () => tailnet.address,
+    publishTailnet: (): { ok: true; address: string } | { ok: false; message: string } => {
+      if (tailnet.address) return { ok: true, address: tailnet.address };
+      const result = publish();
+      if (!result.ok) return { ok: false, message: result.message };
+      tailnet.on = true;
+      saveSwitch(true);
+      return { ok: true, address: tailnet.address! };
+    },
+    computerName: () => computer().name,
+  };
+
+  return { door, asDevice, windowRoute, startTailnet, stopTailnet, startLan: lan.start, stopLan: lan.stop, devices, machineDoor };
 }

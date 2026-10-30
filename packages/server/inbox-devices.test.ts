@@ -288,7 +288,7 @@ describe("the device door, on the binary", () => {
     const health = await door("health");
     expect(health.status).toBe(200);
     const h = (await health.json()) as Json;
-    expect(Object.keys(h).sort()).toEqual(["app", "event_streams", "notify_reach", "ok", "peek", "pid", "serverSession", "update", "version"]);
+    expect(Object.keys(h).sort()).toEqual(["app", "event_streams", "inbox_id", "machine_links", "notify_reach", "ok", "peek", "pid", "routes", "serverSession", "update", "version"]);
     expect(h).toMatchObject({ ok: true, app: "plannotator-inbox", serverSession });
     expect(await (await door("health", { token: null })).json()).toEqual({ error: "This request needs the phone's token.", code: "device_token_missing" });
   });
@@ -1201,7 +1201,7 @@ describe("the door's parity routes, in process (7.39 to 7.49)", () => {
     await poll("ses-b", "pi");
 
     const sessions = (await (await door("sessions?session=ses-a")).json()) as Json;
-    expect(Object.keys(sessions).sort()).toEqual(["home", "projects", "serverSession", "session"]);
+    expect(Object.keys(sessions).sort()).toEqual(["home", "machine", "projects", "serverSession", "session"]);
     expect(sessions.session).toEqual({ session: "ses-a", live: true });
     expect(sessions.projects.map((group: Json) => group.project.root)).toEqual([ledger]);
     expect(sessions.projects[0].sessions.map((s: Json) => s.session).sort()).toEqual(["ses-a", "ses-b"]);
