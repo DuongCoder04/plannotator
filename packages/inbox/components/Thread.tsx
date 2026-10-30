@@ -106,7 +106,7 @@ import { Tip } from './Tip';
 import { ThreadChip } from './InboxList';
 import { threadChipName } from '../threadChip';
 import { OpenQuestionsButton, type OpenQuestionsDecide } from './OpenQuestions';
-import { fitWholeFootRow, footRowOpenQuestionsForm, footRowTokens, laidOutChildren, pillHitsButtons, type OpenQuestionsLabelForm } from '../footFit';
+import { fitWholeFootRowForms, footRowOpenQuestionsForm, footRowTokens, laidOutChildren, pillHitsButtons, type OpenQuestionsLabelForm } from '../footFit';
 import { clearPhoneHead, fitPhoneHead } from '../headFit';
 import { useInboxTextSize } from '../textSize';
 import { openQuestionsShown, placeOf, reaskItemLabel, skipToggledAnswer, threadOpenActions, threadOpenQuestions, type OpenQuestion, type OpenQuestionPlace } from '../openQuestions';
@@ -3637,6 +3637,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             },
             onRemoveFile: (key) => replyFiles.remove(key),
             actions: draftActions.length,
+            // Questions with no pick (the foot's button also counts picked ones not sent yet), and the open action items.
             openQuestions: unanswered.length,
             openActions: openActions.length,
             conflict: replyDraft.conflict !== null,
@@ -3680,14 +3681,14 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
    * `fitWholeFootRow`: the skip chip, Edit, the open questions count, the draft's words, tighter spacing).
    * Null: no status, no layout, or even the shortest form does not fit (the status wraps above).
    */
-  const [rowLevel, setRowLevel] = useState<number | null>(null);
+  const [rowFit, setRowFit] = useState<{ level: number; max: OpenQuestionsLabelForm } | null>(null);
+  const rowLevel = rowFit?.level ?? null;
   const footStatusShown = waiting || draftKept;
   const footRowShown = !resolved && !(guard && staleQuestions.length > 0) && newMessage?.kind !== 'compose' && !box.open && !(route.open && asking);
-  const rowMax: OpenQuestionsLabelForm = phone ? 'short' : 'full';
   // What the row shows; a change re-fits it (with its width).
   // The Reply keycap (Show keys on buttons) takes room too: turning it on or off re-fits the row.
   const replyKeyShown = useShortcutHintShown({ scope: inboxThreadShortcuts, action: 'reply' });
-  const footSig = [footStatusShown, draftKept, picksCount, records.length, unanswered.length, keepOpen, skipIds.size, openQShown, openQ.questions.length, openActions.length, rowMax, phone, replyKeyShown].join('|');
+  const footSig = [footStatusShown, draftKept, picksCount, records.length, unanswered.length, keepOpen, skipIds.size, openQShown, openQ.questions.length, openActions.length, phone, replyKeyShown].join('|');
   const rowFittedFor = useRef('');
   const fitRowRef = useRef<(force?: boolean) => void>(() => {});
   fitRowRef.current = (force = false) => {
@@ -3696,8 +3697,9 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
     const key = `${row.getBoundingClientRect().width}|${footSig}`;
     if (!force && key === rowFittedFor.current) return;
     rowFittedFor.current = key;
-    const level = footStatusShown ? fitWholeFootRow(row, rowMax, phone) : null;
-    setRowLevel((current) => (current === level ? current : level));
+    // The long form first, on a phone too; there, "N open" before the count (fitWholeFootRowForms).
+    const fit = footStatusShown ? fitWholeFootRowForms(row, phone) : null;
+    setRowFit((current) => (current?.level === fit?.level && current?.max === fit?.max ? current : fit));
   };
   // Every render (after the open questions button drew itself), and whenever the row's width changes.
   useLayoutEffect(() => fitRowRef.current());
@@ -4837,7 +4839,7 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
                   onPick={(q) => jumpTo({ kind: 'question', messageId: q.messageId, key: q.key })}
                   onPickAction={(a) => jumpTo({ kind: 'action', messageId: a.messageId, key: a.key })}
                   onSetSkipped={setSkippedFromList}
-                  rowForm={rowLevel !== null && footStatusShown ? footRowOpenQuestionsForm(rowLevel, rowMax) : null}
+                  rowForm={rowFit && footStatusShown ? footRowOpenQuestionsForm(rowFit.level, rowFit.max) : null}
                 />
               )}
               {/* 👍 Looks good beside Reply: sent to the agent after the Undo window; hidden while a question waits. */}

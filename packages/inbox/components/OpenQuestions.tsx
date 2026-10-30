@@ -101,7 +101,7 @@ export interface OpenQuestionsButtonProps {
  *
  * The label takes the longest form that keeps the foot's buttons on one line
  * ("5 open questions", "5 open", "5"; footFit.ts), trying each on the row's
- * usual spacing and then a tighter one; a phone never takes the long form.
+ * usual spacing and then a tighter one; a phone tries the long form first too.
  * The name always holds the whole count.
  */
 export function OpenQuestionsButton({ questions, actions = [], reask = null, decide = null, triggerRef, phone, measure, onPick, onPickAction, onSetSkipped, rowForm = null }: OpenQuestionsButtonProps) {
@@ -129,7 +129,8 @@ export function OpenQuestionsButton({ questions, actions = [], reask = null, dec
   const a = actions.length;
   const reaskTipId = useId();
   const skipTipId = useId();
-  const max: OpenQuestionsLabelForm = phone ? 'short' : 'full';
+  // The long form first on a phone too (owner, 2026-10-30: "it should say both"); "5 open" and "5" when it does not fit.
+  const max: OpenQuestionsLabelForm = 'full';
   const [fitted, setFitted] = useState<FootFit>({ form: max, tight: false });
   const words = useRef<HTMLSpanElement>(null);
   /** What the last fit was made for: the row's width, the other buttons' words, the count. */

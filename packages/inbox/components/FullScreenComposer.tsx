@@ -64,7 +64,11 @@ export interface FullScreenReply {
   onRemoveFile: (key: string) => void;
   /** Questions in the thread still open (no pick). */
   openQuestions: number;
-  /** Action items in the thread still open (not marked): counted with the questions, as the thread's foot counts them. */
+  /**
+   * Action items in the thread still open (not marked). Named with the questions in the thread foot's words
+   * (`openItemsLabel`); the counts differ from the foot's in one way: the questions here are those with no pick,
+   * where the foot also counts picked questions not sent yet.
+   */
   openActions: number;
   /** Another window changed the draft while this one held words (the thread's box offers Keep mine / Discard). */
   conflict: boolean;
@@ -126,7 +130,8 @@ function Rides({ reply }: { reply: FullScreenReply }) {
           {plural(reply.annotations, 'comment')}
         </span>
       )}
-      {/* The thread foot's words (openItemsLabel): "2 open questions", "1 open action item", "2 questions, 1 action item". */}
+      {/* The thread foot's words (openItemsLabel): "2 open questions", "1 open action item", "2 questions, 1 action item".
+          Its question count leaves out picked questions, which the foot counts until they are sent. */}
       {reply.openQuestions + reply.openActions > 0 && (
         <button type="button" className="ib-fcomp-q" onClick={reply.onOpenThread} data-fcomp-questions="">
           <Icon name="question" size={12} />

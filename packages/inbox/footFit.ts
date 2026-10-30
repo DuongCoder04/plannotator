@@ -4,7 +4,8 @@
  * The "N open questions" button takes the longest label that keeps every
  * button of the row on one line: "6 open questions" (or "6 questions, 2
  * action items" when both wait), then "6 open", then "6" (the question icon
- * and the count; with both kinds, their sum). A phone never takes the long form.
+ * and the count; with both kinds, their sum). A phone tries the long form
+ * first too (owner, 2026-10-30: "it should say both"), then "6 open", then "6".
  * Before a form gives way to a shorter one, the row tries it tightened: the
  * buttons' side padding and the gaps get smaller and the button drops its
  * chevron (`data-fit-tight`, inbox.css), as a phone with Send and Edit draft
@@ -176,6 +177,20 @@ export function drawOpenQuestionsForm(button: HTMLElement, fit: FootFit): void {
   const label = button.getAttribute('data-oq-label');
   if (fit.form === 'full' || !label) button.removeAttribute('aria-label');
   else button.setAttribute('aria-label', label);
+}
+
+/**
+ * The whole row's fit with the forms a window may take: the long form first;
+ * on a phone, where the long form only fits at the count (or not at all), the
+ * ladder again with "6 open" (`fitWholeFootRow` keeps the long form until its
+ * `oq` step, then shows the count, so "6 open" needs its own pass). The page
+ * is left drawn as the result says. Null as `fitWholeFootRow`.
+ */
+export function fitWholeFootRowForms(row: HTMLElement, phone = false): { level: number; max: OpenQuestionsLabelForm } | null {
+  const level = fitWholeFootRow(row, 'full', phone);
+  if (!phone || (level !== null && footRowOpenQuestionsForm(level, 'full') !== 'count')) return level === null ? null : { level, max: 'full' };
+  const short = fitWholeFootRow(row, 'short', phone);
+  return short === null ? null : { level: short, max: 'short' };
 }
 
 /**

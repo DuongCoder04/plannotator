@@ -13,7 +13,8 @@
  *    entry scrolling to that row, focusing and ringing it;
  *  - a thread with both: the same with the action item's entry;
  *  - a thread with 12 questions and 10 action items, the longest label: one row
- *    of buttons at 1440, 810, 390 and 320, the short form on a phone.
+ *    of buttons at 1440, 810, 390 and 320; on a phone the long form first, as
+ *    on a desktop, and which form shows at 390 and 320 (PHONE_CASES).
  *
  * Build the binary first (see inbox.spec.ts). Full-window PNGs land in
  * PLANNOTATOR_THREAD_FOOT_ACTIONS_SHOTS, or .local/proof/thread-foot-actions/.
@@ -140,6 +141,14 @@ test.afterAll(async () => {
     await removeInboxScratch();
   }
 });
+
+/** Which form the phone's button shows on the compiled window: the longest that keeps one row. */
+const PHONE_CASES: { width: number; thread: 'both' | 'longest'; form: 'full' | 'short' | 'count'; shot?: string }[] = [
+  { width: 390, thread: 'both', form: 'full', shot: 'phone-390-both' },
+  // 320: Reply and "2 questions, 1 action item" do not share a row (44 px phone buttons): "3 open".
+  { width: 320, thread: 'both', form: 'short' },
+  { width: 320, thread: 'longest', form: 'short', shot: 'phone-320-longest' },
+];
 
 async function openThread(page: Page, threadId: string): Promise<void> {
   await page.goto(`${world.url}#thread=${threadId}`);
@@ -268,22 +277,23 @@ test('the longest label, "12 questions, 10 action items": the buttons keep one r
   await openThread(page, world.longest.thread);
   await expect(button).toHaveText('12 questions, 10 action items');
 
-  // A phone (touch, 390 and 320 wide): the short form, which counts both; the name says each.
-  for (const [width, name, thread] of [
-    [390, 'phone-390-both', world.both.thread],
-    [320, 'phone-320-longest', world.longest.thread],
-  ] as const) {
-    const context = await browser.newContext({ viewport: { width, height: 760 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: 'light', reducedMotion: 'reduce' });
+  // A phone (touch, 390 and 320 wide) tries the long form first too (owner: "it should say both"), then "N open",
+  // then "N"; the name always says each kind.
+  for (const c of PHONE_CASES) {
+    const context = await browser.newContext({ viewport: { width: c.width, height: 760 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: 'light', reducedMotion: 'reduce' });
     try {
       const phone = await context.newPage();
-      await openThread(phone, thread);
+      const both = c.thread === 'both';
+      await openThread(phone, both ? world.both.thread : world.longest.thread);
       await expectOneRow(phone);
       const b = phone.locator('section.ib-pane .ib-pfoot [data-open-questions]');
-      await expect(b).toHaveAccessibleName(thread === world.both.thread ? '2 questions, 1 action item' : '12 questions, 10 action items');
-      await expect(b).toHaveText(thread === world.both.thread ? '3 open' : /^22( open)?$/);
-      await shot(phone, name);
+      const label = both ? '2 questions, 1 action item' : '12 questions, 10 action items';
+      await expect(b).toHaveAccessibleName(label);
+      await expect(b, `${c.thread} at ${c.width}`).toHaveAttribute('data-label-form', c.form);
+      await expect(b).toHaveText(c.form === 'full' ? label : c.form === 'short' ? (both ? '3 open' : '22 open') : both ? '3' : '22');
+      if (c.shot) await shot(phone, c.shot);
       // The list on a phone takes the person to the action item too.
-      if (thread === world.both.thread) {
+      if (both && c.width === 390) {
         await b.click();
         const entry = phone.locator('[data-open-questions-list] [data-open-action]');
         await expect(entry).toHaveCount(1);

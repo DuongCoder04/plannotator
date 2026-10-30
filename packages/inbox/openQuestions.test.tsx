@@ -254,7 +254,7 @@ describe('fitting the foot on one line (footFit.ts)', () => {
     expect(openQuestionsFormText(0, 'short', 2)).toBe('2 open');
   });
 
-  test('each form is tried on the usual spacing, then tightened, longest first; a phone starts at "6 open"', () => {
+  test('each form is tried on the usual spacing, then tightened, longest first; from the short form, "6 open" first', () => {
     const order = (max: Parameters<typeof footFitCandidates>[0]) => footFitCandidates(max).map((f) => `${f.form}${f.tight ? '+tight' : ''}`);
     expect(order('full')).toEqual(['full', 'full+tight', 'short', 'short+tight', 'count', 'count+tight']);
     expect(order('short')).toEqual(['short', 'short+tight', 'count', 'count+tight']);
@@ -484,12 +484,12 @@ test.skipIf(!hasDom)('arrow keys move through the rows; Escape closes the list a
   expect(b.getAttribute('aria-expanded')).toBe('false');
 });
 
-test.skipIf(!hasDom)('on a phone: "4 open" named in full, and the list is a bottom sheet with a scrim and a close', async () => {
+test.skipIf(!hasDom)('on a phone: the long form first, and the list is a bottom sheet with a scrim and a close', async () => {
   await render(thread(sample()), { phone: true });
   const b = button()!;
-  // The short form counts both kinds; the name says each.
-  expect(b.textContent?.trim()).toBe('5 open');
-  expect(b.getAttribute('aria-label')).toBe('4 questions, 1 action item');
+  // The owner's words on a phone too (no layout here, so nothing is shortened): "it should say both".
+  expect(b.textContent?.trim()).toBe('4 questions, 1 action item');
+  expect(b.getAttribute('data-label-form')).toBe('full');
   await openList();
   const positioner = list()!.closest('.ib-oq-pos')!;
   expect(positioner.hasAttribute('data-phone')).toBe(true);
@@ -557,6 +557,28 @@ test.skipIf(!hasDom)("choosing an action item's row opens its folded message, sc
   await until(() => rowIn(second)!.classList.contains('ib-q-target'), 'the ring on the checklist row');
   // Focus went to that row, not back to the button.
   expect(document.activeElement).toBe(rowIn(second));
+});
+
+test.skipIf(!hasDom)('Escape closing the list never runs the jump a row would: nothing unfolds or rings, focus goes back to the button', async () => {
+  const el = await render(thread(actionsSample()));
+  const b = button()!;
+  await act(async () => b.focus());
+  await act(async () => {
+    b.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+  });
+  await until(() => !!list(), 'the list from the keyboard');
+  // A row is highlighted (Enter would choose it): Escape instead.
+  await until(() => [...rows(), ...actionRows()].some((r) => r.hasAttribute('data-highlighted')), 'a highlighted row');
+  await act(async () => {
+    (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  });
+  await until(() => !list(), 'the list to close on Escape');
+  // Frames for a jump to have run, had one been scheduled.
+  for (let i = 0; i < 5; i += 1) await act(async () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  await settle();
+  expect(el.querySelector(`[data-message-id="${M2}"] [data-action-card]`)).toBeNull();
+  expect(el.querySelector('.ib-q-target')).toBeNull();
+  expect(document.activeElement).toBe(b);
 });
 
 test.skipIf(!hasDom)('select mode chooses questions only: the action rows leave while it is on', async () => {
