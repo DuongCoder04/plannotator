@@ -85,7 +85,7 @@ afterEach(() => {
   host = null;
 });
 
-function render(shape: Shape): HTMLElement {
+function render(shape: Shape, filtered = false): HTMLElement {
   host = document.createElement('div');
   host.className = 'pn-inbox';
   document.body.append(host);
@@ -93,7 +93,7 @@ function render(shape: Shape): HTMLElement {
   act(() => {
     root!.render(
       <SidebarProvider>
-        <InboxList title="Inbox" path={null} sections={SECTIONS} filtered={false} narrow={shape === 'narrow'} selectedThreadId={null} notice={null} onShowNew={() => {}} onOpen={() => {}} phone={shape === 'phone'} />
+        <InboxList title="Inbox" path={null} sections={SECTIONS} filtered={filtered} narrow={shape === 'narrow'} selectedThreadId={null} notice={null} onShowNew={() => {}} onOpen={() => {}} phone={shape === 'phone'} />
       </SidebarProvider>,
     );
   });
@@ -171,6 +171,16 @@ describe.if(hasDom)("a row's agents", () => {
       expect(r.querySelectorAll('.ib-ags').length).toBe(1);
     });
   }
+
+  test("one project's wide list: the marks alone, a run that can wrap inside its column, never one line forced over the title", () => {
+    const el = render('wide', true);
+    const marks = el.querySelector<HTMLElement>(`.ib-row[data-thread-id="${FOUR.thread_id}"] .ib-from > .ib-ags`)!;
+    expect(marks.parentElement!.querySelector('.ib-p')).toBeNull();
+    const cascade = loadCascade(CSS);
+    expect(cascade.resolved(marks, 'flex-wrap')).toBe('wrap');
+    expect(cascade.resolved(marks, 'max-width')).toBe('100%');
+    expect(cascade.resolved(marks, 'height')).toBe('auto');
+  });
 
   test('beside a thread the title is never cut: whole text, plain, and a line that wraps', () => {
     const el = render('narrow');

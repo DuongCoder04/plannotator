@@ -158,7 +158,7 @@ describe.if(hasDom)('the wide list', () => {
     expect(l1('msg_sent').querySelector('.ib-ags')!.getAttribute('aria-label')).toBe('Pi');
   });
 
-  test('every project, in a list narrower than the wide row needs: two-line rows; one project keeps its wide rows', () => {
+  test('every project, in a list narrower than the wide row needs: three-line rows; one project keeps its wide rows', () => {
     const saved = globalThis.ResizeObserver;
     let width = 800;
     // happy-dom lays nothing out: report the list's width the way a browser's observer would.
@@ -175,7 +175,7 @@ describe.if(hasDom)('the wide list', () => {
       let el = render(false);
       expect(el.querySelectorAll('.ib-row').length).toBe(0);
       expect(el.querySelectorAll('.ib-nrow').length).toBe(4);
-      // The guided review mark stays on the two-line row.
+      // The guided review mark stays on the three-line row.
       expect(el.querySelector('.ib-nrow[data-thread-id="msg_wait"] [data-guide-mark]')).not.toBeNull();
       act(() => root?.unmount());
       host?.remove();
@@ -191,7 +191,7 @@ describe.if(hasDom)('the wide list', () => {
     }
   });
 
-  test('a focused row keeps focus when the list crosses the two-line width, both ways', () => {
+  test('a focused row keeps focus when the list crosses the three-line width, both ways', () => {
     const saved = globalThis.ResizeObserver;
     let resize: (width: number) => void = () => {};
     // happy-dom lays nothing out: the stub reports the widths a browser's observer would.

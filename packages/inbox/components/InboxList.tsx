@@ -534,7 +534,7 @@ function RowWithAction({
             type="button"
             className="ib-ract"
             data-row-send-now=""
-            aria-label={`Send now: ${row.subject ?? '(no subject)'}`}
+            aria-label={`Send now: ${titleOf(row)}`}
             onClick={(event) => {
               event.stopPropagation();
               onSendNow(row);
@@ -551,7 +551,7 @@ function RowWithAction({
             type="button"
             className="ib-ract"
             data-row-mark-read=""
-            aria-label={`Mark read: ${row.subject ?? '(no subject)'}`}
+            aria-label={`Mark read: ${titleOf(row)}`}
             onClick={(event) => {
               event.stopPropagation();
               onMarkRead(row);

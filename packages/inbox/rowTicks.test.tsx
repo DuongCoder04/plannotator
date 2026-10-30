@@ -1,6 +1,6 @@
 /**
  * The delivery glyph before a row's time ("Ticks", approval
- * "inbox-row-delivery"): one shape per state on wide, two-line and phone
+ * "inbox-row-delivery"): one shape per state on wide, three-line and phone
  * rows; the state in words in the row's accessible name; the thread's line
  * as ui's tooltip (no native title); the delivery time once delivered; and
  * a Sent row keeps its real subject. An older Inbox (no `delivery`) keeps
@@ -135,7 +135,7 @@ function hover(target: HTMLElement) {
 
 const tooltipWith = (el: HTMLElement, text: string) => [...document.body.querySelectorAll('*')].some((n) => !el.contains(n) && n.children.length === 0 && n.textContent === text);
 
-test.skipIf(!hasDom)('one shape per state, on wide, two-line and phone rows; a row from an older Inbox has none', () => {
+test.skipIf(!hasDom)('one shape per state, on wide, three-line and phone rows; a row from an older Inbox has none', () => {
   for (const options of [{}, { narrow: true }, { phone: true }]) {
     const el = render(options);
     expect(tick(el, QUEUED.thread_id)!.dataset.tick).toBe('queued');

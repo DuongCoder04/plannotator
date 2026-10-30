@@ -83,24 +83,30 @@ const label = (el: HTMLElement, id: string) => el.querySelector<HTMLElement>(`[d
 const nativeTitles = (el: HTMLElement) => [...el.querySelectorAll('[title]')].map((node) => node.getAttribute('title'));
 
 test.skipIf(!hasDom)('a cut project label in a wide row opens the component tooltip; one that fits opens none; neither has a native title', async () => {
-  // Beside a thread the project is never cut (approval "list-rows-mail-icons": it wraps), so only the wide row cuts it.
-  for (const narrow of [false]) {
-    const el = list(narrow);
-    expect(nativeTitles(el)).toEqual([]);
-    const fits = label(el, SHORT.thread_id);
-    sized(fits, 30, 30);
-    expect(await tooltipOf(fits)).toBeNull();
-    unhover(fits);
-    const cut = label(el, LONG.thread_id);
-    sized(cut, 260, 120);
-    expect(await tooltipOf(cut)).toBe(LONG_PROJECT);
-    expect(cut.hasAttribute('title')).toBe(false);
-    // The label is no focus stop of its own: the row's button is.
-    expect(cut.tabIndex).toBe(-1);
-    unhover(cut);
-    act(() => root?.unmount());
-    host?.remove();
-  }
+  const el = list(false);
+  expect(nativeTitles(el)).toEqual([]);
+  const fits = label(el, SHORT.thread_id);
+  sized(fits, 30, 30);
+  expect(await tooltipOf(fits)).toBeNull();
+  unhover(fits);
+  const cut = label(el, LONG.thread_id);
+  sized(cut, 260, 120);
+  expect(await tooltipOf(cut)).toBe(LONG_PROJECT);
+  expect(cut.hasAttribute('title')).toBe(false);
+  // The label is no focus stop of its own: the row's button is.
+  expect(cut.tabIndex).toBe(-1);
+  unhover(cut);
+  act(() => root?.unmount());
+  host?.remove();
+
+  // Beside a thread the project is never cut (approval "list-rows-mail-icons": it wraps): plain text, so even a
+  // label measured wider than its box opens no tooltip.
+  const narrow = list(true);
+  const long = label(narrow, LONG.thread_id);
+  expect(long.textContent).toBe(LONG_PROJECT);
+  sized(long, 260, 120);
+  expect(await tooltipOf(long)).toBeNull();
+  unhover(long);
 });
 
 test.skipIf(!hasDom)('a preview cut by a fraction of a pixel counts as cut: three-line row, scrollWidth equal to clientWidth, the ellipsis painted', async () => {

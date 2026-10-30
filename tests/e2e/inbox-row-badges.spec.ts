@@ -392,11 +392,11 @@ test('beside an open thread: the project, its marks and the time on line 1; the 
   for (const m of pair) expect(Math.round(m.width)).toBe(16);
   expect(pair[0]!.right).toBeLessThan(pair[1]!.left);
   await expect(page.locator(`.ib-nrow[data-thread-id="${world.pair}"] .ib-ags`)).toHaveAttribute('aria-label', 'Claude Code and Pi');
-  // The long row at the column's narrowest (380 px): the long project wraps, never cut, and both marks follow it;
-  // the long name wraps on line 2, whole; the preview is cut first on line 3, and ?2 is whole.
+  // The long row at the column's narrowest (380 px): the long project is never cut (it wraps when it must; the
+  // 320 and 360 px phones below prove the wrap), and both marks follow it; the long name wraps on line 2, whole;
+  // the preview is cut first on line 3, and ?2 is whole.
   const long = rows.find((r) => r.id === world.long)!;
   expect(long.top.projectCut).toBe(false);
-  expect(long.top.projectLines).toBeGreaterThan(1);
   expect(long.top.marksDrawn).toBe(2);
   expect(long.top.marksName).toBe('OpenCode and Pi');
   expect(long.top.title).toBe('ledger-migration-dry-run-before-the-q3-close-and-audit');

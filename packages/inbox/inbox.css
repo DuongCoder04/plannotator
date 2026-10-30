@@ -780,8 +780,8 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-row { display: grid; grid-template-columns: 220px minmax(0, 1fr) 124px 52px 84px 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
 .ib-fullw .ib-row { grid-template-columns: 260px minmax(0, 1fr) clamp(148px, 14%, 160px) 110px 84px 76px; }
 /* One project's list: the first column holds the agents' marks alone (InboxList's WideRow). */
-.ib-noproj .ib-row { grid-template-columns: 72px minmax(0, 1fr) 124px 52px 84px 76px; }
-.ib-noproj.ib-fullw .ib-row { grid-template-columns: 72px minmax(0, 1fr) clamp(148px, 14%, 160px) 110px 84px 76px; }
+.ib-noproj .ib-row { grid-template-columns: clamp(80px, 10%, 112px) minmax(0, 1fr) 124px 52px 84px 76px; }
+.ib-noproj.ib-fullw .ib-row { grid-template-columns: clamp(80px, 10%, 112px) minmax(0, 1fr) clamp(148px, 14%, 160px) 110px 84px 76px; }
 /* The words, the badge and the open counts, each right-aligned in its column, so every title starts on one left
    edge. Open counts wider than their column (two-digit pairs and up, "[□ 99+] ?99+" is 108px at 14px text) run out
    to the left, never into the time; past the gap they slide under the badge, which paints above them on an opaque
@@ -799,9 +799,12 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-row .ib-bcol .ib-badge.ib-b-hold { background: linear-gradient(var(--ib-badge-hold-bg), var(--ib-badge-hold-bg)), linear-gradient(var(--ib-row-fill), var(--ib-row-fill)) var(--card); }
 .ib-row .ib-c.ib-qn { justify-content: flex-end; }
 /* The project cell: the project, cut first with "…", then the agents' marks, never cut. In one project's list the
-   marks alone; several hosts with "×N" each may wrap onto a second line inside the row rather than be cut. */
+   marks alone, in a column of 10% of the row, from 80px to 112px (a fixed 112px squeezes the title out of a narrow
+   one-project list). At 112px (a list of about 1120px or more) three hosts with "×N" each fit on one line; narrower,
+   the run wraps between marks inside the column, never over the title: at 80px or more two "×N" marks share a
+   line, so the widest run (three marks) takes two lines, which the 50px row holds. */
 .ib-row .ib-from { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.ib-noproj .ib-row .ib-from { flex-wrap: wrap; row-gap: 2px; }
+.ib-noproj .ib-row .ib-ags { flex: 0 1 auto; flex-wrap: wrap; height: auto; min-height: 16px; row-gap: 2px; max-width: 100%; }
 .ib-row .ib-p { flex: 0 1 auto; min-width: 0; font-weight: 400; font-size: var(--ib-fs-14, 14px); color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-row.ib-u .ib-title { font-weight: 600; }
 /* The thread chip: it can shrink to its border (flex), and its name keeps its

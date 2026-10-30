@@ -627,6 +627,86 @@ test('Settings: in sections; Settings → Agents switches apply to the next sess
   await expect(page).not.toHaveURL(/#settings/);
 });
 
+// Late, in a project of its own, so its threads change no count above (review of #2374, finding 1).
+test("one project's list: three agents with ×N stay in the marks' column and end before the title, at its widest and narrowest", async () => {
+  const { page } = world;
+  const ops = scratchProject(join(world.root, 'src'), 'ops-console');
+  // Hosts this spec has already seen: a host new to it brings the agent-note dialog, over the Update test below.
+  const [claudeA, claudeB, codexA, codexB, codexC, opencodeA, opencodeB] = [
+    await agent('Claude Code', 'claude-code'),
+    await agent('Claude Code', 'claude-code'),
+    await agent('Codex', 'codex'),
+    await agent('Codex', 'codex'),
+    await agent('Codex', 'codex'),
+    await agent('OpenCode', 'opencode'),
+    await agent('OpenCode', 'opencode'),
+  ];
+  const ask = (prompt: string) => [':::question', prompt, '', '- [ ] Yes', '- [ ] No', ':::'].join('\n');
+  // Three hosts, each with "×N" (Claude Code ×2, Codex ×3, OpenCode ×2): the widest run of three marks.
+  const trio = await claudeA!.send({ project_path: ops, thread: 'three-agents', subject: 'Three agents, each twice or more', body: ask('Keep the icons in their column?') });
+  for (const a of [claudeB, codexA, codexB, codexC, opencodeA, opencodeB]) await a!.send({ project_path: ops, reply_to: trio.thread_id, body: 'Here too.' });
+  // Three hosts, one session each: the common run.
+  const plain = await claudeA!.send({ project_path: ops, thread: 'three-plain', subject: 'Three agents, one session each', body: ask('Three bare marks?') });
+  for (const a of [codexA, opencodeA]) await a!.send({ project_path: ops, reply_to: plain.thread_id, body: 'Joined.' });
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(world.url);
+  await side(page).getByRole('button', { name: /^ops-console(?: \d+)?$/ }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'ops-console' })).toBeVisible();
+  await expect(page.locator('.ib-lbody .ib-row')).toHaveCount(2);
+  await expect(page.locator(`.ib-row[data-thread-id="${trio.thread_id}"] .ib-ags`)).toHaveAttribute('aria-label', '2 Claude Code sessions, 3 Codex sessions and 2 OpenCode sessions');
+  await expect(page.locator(`.ib-row[data-thread-id="${trio.thread_id}"] .ib-agx`)).toHaveText(['×2', '×3', '×2']);
+  // 1440: the column's widest (112 px), the runs on one line. 1000: its narrowest (80 px), the runs wrap inside it.
+  for (const width of [1440, 1000]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.waitForTimeout(150);
+    const rows = await page.locator('.ib-lbody .ib-row').evaluateAll((els) =>
+      els.map((r) => {
+        const from = r.querySelector('.ib-from')!.getBoundingClientRect();
+        const marks = r.querySelector('.ib-ags')!;
+        const parts = [...marks.children].map((c) => c.getBoundingClientRect());
+        const box = r.getBoundingClientRect();
+        return {
+          id: (r as HTMLElement).dataset.threadId,
+          drawn: marks.querySelectorAll(':scope > .ib-ag').length,
+          lines: new Set(parts.map((b) => Math.round(b.top))).size,
+          marksRight: Math.max(...parts.map((b) => b.right)),
+          marksTop: Math.min(...parts.map((b) => b.top)),
+          marksBottom: Math.max(...parts.map((b) => b.bottom)),
+          rowTop: box.top,
+          rowBottom: box.bottom,
+          fromRight: from.right,
+          titleLeft: r.querySelector('.ib-subj')!.getBoundingClientRect().left,
+        };
+      }),
+    );
+    for (const r of rows) {
+      const where = `row ${r.id} at ${width}`;
+      expect(r.drawn, where).toBe(3);
+      if (width === 1440) expect(r.lines, `${where}: the run wraps at the column's widest`).toBe(1);
+      // Every mark and "×N" ends inside the marks' column (wrapping there when the run is wider), before the
+      // title starts; none spills out of the row.
+      expect(r.marksRight, `${where}: the marks run into the title`).toBeLessThanOrEqual(r.titleLeft);
+      expect(r.marksRight, `${where}: the marks leave their column`).toBeLessThanOrEqual(r.fromRight + 0.5);
+      expect(r.marksTop, where).toBeGreaterThanOrEqual(r.rowTop);
+      expect(r.marksBottom, where).toBeLessThanOrEqual(r.rowBottom);
+    }
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  // These sessions bring the agent-note dialog on this load (docs/agent-guides/inbox-foundation.md, asked once per
+  // agent): answer it "Not now", or it opens again over the Update test below.
+  const note = page.locator('dialog[data-dialog="agent-note"]');
+  await note.waitFor({ state: 'visible', timeout: 8_000 }).catch(() => {});
+  if (await note.isVisible()) {
+    const notNow = note.locator('[data-anote-notnow]');
+    if (await notNow.count()) await notNow.click();
+    else await page.keyboard.press('Escape');
+    await expect(note).toHaveCount(0);
+  }
+  await shot('1.3-project-filter-agents');
+  await side(page).getByRole('button', { name: /^Inbox/ }).click();
+});
+
 // Before the restart, whose gap (the old Inbox gone, the new one not yet up)
 // the page's health polls see as refused connections, by design.
 test('no page errors and no CSP refusals along the way', async () => {

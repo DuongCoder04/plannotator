@@ -224,7 +224,7 @@ describe.if(hasDom)('the badges in the list', () => {
     expect(hold.querySelector('.ib-bw')!.textContent).toBe('Holds up 3');
   });
 
-  test('a two-line row: a triangle alone and a triangle with its count; the words stay for a screen reader', () => {
+  test('a three-line row: a triangle alone and a triangle with its count; the words stay for a screen reader', () => {
     const el = mount({ narrow: true });
     const stop = el.querySelector<HTMLElement>('[data-thread-id="msg_stop"] [data-row-badge]')!;
     expect(stop.classList.contains('ib-bwords')).toBe(false);
