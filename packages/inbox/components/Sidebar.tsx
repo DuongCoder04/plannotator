@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { InboxHealth, InboxListRow, InboxRestartAgents } from '@plannotator/core/inbox-types';
 import { restartAgentsDescription, restartAgentsLabel, restartAgentsOf } from '../restartAgents';
 import { copyTextToClipboard } from '@plannotator/ui/utils/clipboard';
@@ -34,6 +34,11 @@ export interface SidebarProps {
   /** Rows waiting on the person, all projects. */
   inboxCount: number;
   projects: readonly ProjectFolder[];
+  /**
+   * The window's name for each project (`windowProjectNames`, App.tsx), shared with the rows so a project reads
+   * the same in both, the pins' tooltip and name too. Absent, or a project not in it: the server's name.
+   */
+  projectNames?: ReadonlyMap<string, string>;
   /** Rows waiting on the person, per project id. */
   projectCounts: ReadonlyMap<string, number>;
   /**
@@ -146,7 +151,11 @@ export function Sidebar(props: SidebarProps) {
   const phone = usePhone();
   // A project with nothing in the list leaves the sidebar (automatic hiding); the one the list shows stays until the person leaves it.
   const held = props.page === 'inbox' ? props.projectId : null;
-  const shown = shownProjects(props.projects, held);
+  // Each project by the window's one name for it (windowProjectNames, App.tsx), as the rows name it.
+  const shown = useMemo(
+    () => shownProjects(props.projects, held).map((project) => ({ ...project, name: props.projectNames?.get(project.id) ?? project.name })),
+    [props.projects, props.projectNames, held],
+  );
   const pins = props.pins ?? [];
   // One scroll area holds Pinned and Projects (no limit on pins: a long Pinned section scrolls with the projects).
   const [projsRef, moreProjects] = useMoreBelow<HTMLDivElement>(`${shown.length}:${pins.length}`);
@@ -310,6 +319,7 @@ export function Sidebar(props: SidebarProps) {
                 <PinnedRow
                   key={row.thread_id}
                   row={row}
+                  project={props.projectNames?.get(row.project.id)}
                   on={props.page === 'inbox' && props.openThreadId === row.thread_id}
                   first={index === 0}
                   last={index === pins.length - 1}

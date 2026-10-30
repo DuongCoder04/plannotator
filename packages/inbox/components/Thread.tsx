@@ -102,6 +102,8 @@ import { ActionChecklist, type ActionMark } from './ActionChecklist';
 import { actionForBlock } from '../actions';
 import { splitInboxSkillsBlock } from '@plannotator/core/skill-reference-block';
 import { Tip } from './Tip';
+import { ThreadChip } from './InboxList';
+import { threadChipName } from '../threadChip';
 import { OpenQuestionsButton, type OpenQuestionsDecide } from './OpenQuestions';
 import { fitWholeFootRow, footRowOpenQuestionsForm, footRowTokens, laidOutChildren, pillHitsButtons, type OpenQuestionsLabelForm } from '../footFit';
 import { openQuestionsShown, placeOf, reaskItemLabel, skipToggledAnswer, threadOpenQuestions, type OpenQuestion, type OpenQuestionPlace } from '../openQuestions';
@@ -1335,6 +1337,8 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
   // look (the window's `lookSeq`, else the first thread this pane was given),
   // so the "New" marks last until the person leaves the thread.
   const one = thread.messages.length < 2;
+  // The thread's name as the list shows it: nothing when unnamed or when the subject already starts with it.
+  const nameChip = threadChipName(thread.thread_name, thread.subject ?? '(no subject)');
   // The agent sessions this thread involves (approval "inbox-tag-agents"): overlapping marks in the head.
   const participants = useMemo(() => threadParticipants(thread), [thread]);
   const lookRef = useRef<{ threadId: string; seq: number | null } | null>(null);
@@ -4004,25 +4008,32 @@ export function ThreadPane({ notice, thread, sent, onQuestions, onChanged, draft
             )}
           </div>
         )}
-        {!one && (
+        {/* The thread's name first (the list's own pill and rule), then the count and time; a one-message thread has only the name. */}
+        {(!one || nameChip) && (
           <div className="ib-tmeta" data-thread-meta="">
-            {participants.length > 1 && (
-              <>
-                <span className="ib-tg-hwho" data-thread-participants="">
-                  <TagStack participants={participants} />
-                  <span>{participantsWords(participants)}</span>
-                </span>
+            <ThreadChip name={nameChip} lead="Thread name: " />
+            {/* The rest of the line moves as one beside the name: a name that leaves too little room sends it all to the next line, never one dot. */}
+            {!one && (
+              <span className="ib-tmeta-rest" data-thread-meta-rest="">
+                {participants.length > 1 && (
+                  <>
+                    <span className="ib-tg-hwho" data-thread-participants="">
+                      <TagStack participants={participants} />
+                      <span>{participantsWords(participants)}</span>
+                    </span>
+                    <span className="ib-tdot" aria-hidden="true" />
+                  </>
+                )}
+                <span>{plural(thread.messages.length, 'message')}</span>
                 <span className="ib-tdot" aria-hidden="true" />
-              </>
-            )}
-            <span>{plural(thread.messages.length, 'message')}</span>
-            <span className="ib-tdot" aria-hidden="true" />
-            <span>{spanWords(root.created_at, thread.messages[thread.messages.length - 1]!.created_at)}</span>
-            {showNew && (
-              <>
-                <span className="ib-tdot" aria-hidden="true" />
-                <b>{fresh.size} new since you looked</b>
-              </>
+                <span>{spanWords(root.created_at, thread.messages[thread.messages.length - 1]!.created_at)}</span>
+                {showNew && (
+                  <>
+                    <span className="ib-tdot" aria-hidden="true" />
+                    <b>{fresh.size} new since you looked</b>
+                  </>
+                )}
+              </span>
             )}
           </div>
         )}
