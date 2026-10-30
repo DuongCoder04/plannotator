@@ -98,13 +98,15 @@ export async function externalRefsFetch(
 		}
 	} finally {
 		// No path, query, headers, request body or credentials in the measurement.
-		// A throwing log never turns an answer into a throw.
+		// A log that throws, or returns a promise that rejects, never turns
+		// an answer into a throw or leaves an unhandled rejection.
 		try {
-			log("external_ref_provider_call", {
+			const written: unknown = log("external_ref_provider_call", {
 				host,
 				status,
 				duration_ms: Date.now() - started,
 			});
+			if (written instanceof Promise) written.catch(() => {});
 		} catch {
 			// The log line is best effort.
 		}
@@ -112,7 +114,10 @@ export async function externalRefsFetch(
 }
 
 /** The fetch an adapter uses: the port's fetch behind the policy above,
- * logging to the port's `log` when it has one. */
+ * logging to the port's `log` when it has one. The log is called as a
+ * method of the port, so a `log` that reads `this` keeps it. */
 export function providerFetch(port: Pick<ReferencePort, "fetch" | "log">): FetchLike {
-	return (input, init) => externalRefsFetch(port.fetch, input, init, port.log);
+	const log: ProviderCallLog =
+		port.log === undefined ? consoleLog : (event, fields) => port.log?.(event, fields);
+	return (input, init) => externalRefsFetch(port.fetch, input, init, log);
 }

@@ -172,9 +172,13 @@ describe("external reference fetch", () => {
 		expect(JSON.stringify(info.mock.calls)).not.toContain("token-abc");
 	});
 
-	it("aborts a provider request after the ten-second deadline", async () => {
-		await expect(
-			externalRefsFetch(
+	it("aborts a provider request at the ten-second deadline", async () => {
+		// Bun's fake timers do not drive AbortSignal.timeout: the deadline
+		// signal is replaced by one the test fires, so no real wait runs.
+		const deadline = new AbortController();
+		const timeout = spyOn(AbortSignal, "timeout").mockImplementation(() => deadline.signal);
+		try {
+			const pending = externalRefsFetch(
 				async (_input, init) =>
 					new Promise((_resolve, reject) => {
 						const signal = init?.signal;
@@ -185,9 +189,14 @@ describe("external reference fetch", () => {
 						signal.addEventListener("abort", () => reject(signal.reason), { once: true });
 					}),
 				"https://provider.example/",
-			),
-		).rejects.toMatchObject({ name: "TimeoutError" });
-	}, 15_000);
+			);
+			expect(timeout).toHaveBeenCalledWith(10_000);
+			deadline.abort(new DOMException("t", "TimeoutError"));
+			await expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
+		} finally {
+			timeout.mockRestore();
+		}
+	});
 });
 
 describe("the port's user agent and log", () => {
@@ -263,5 +272,38 @@ describe("the port's user agent and log", () => {
 			},
 		};
 		expect((await githubAdapter.resolve(refOf("https://github.com/a/b/issues/1"), port)).ok).toBe(true);
+	});
+
+	it("a log that is a method keeps its `this`", async () => {
+		const fake = forges();
+		const port = {
+			...makePort(fake.fetch),
+			lines: [] as string[],
+			log(_event: string, fields: ProviderCallFields): void {
+				this.lines.push(fields.host);
+			},
+		};
+		expect((await githubAdapter.resolve(refOf("https://github.com/a/b/issues/1"), port)).ok).toBe(true);
+		expect(port.lines).toEqual(["api.github.com"]);
+	});
+
+	it("an async log that rejects leaves no unhandled rejection", async () => {
+		const fake = forges();
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			const port = {
+				...makePort(fake.fetch),
+				log: async () => {
+					throw new Error("log sink down");
+				},
+			};
+			expect((await githubAdapter.resolve(refOf("https://github.com/a/b/issues/1"), port)).ok).toBe(true);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(unhandled).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
 	});
 });
