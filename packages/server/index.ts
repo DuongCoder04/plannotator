@@ -731,7 +731,7 @@ export async function startPlannotatorServer(
               if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
                 return Response.json(crossOriginRefusalBody(), { status: 403 });
               }
-              const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"));
+              const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"), url.searchParams.get("client"));
               return Response.json(result.body, { status: result.status });
             }
             if (req.method === "POST") {
@@ -741,7 +741,7 @@ export async function startPlannotatorServer(
               } catch {
                 return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
               }
-              const result = planDocumentDrafts.saveDocuments(body);
+              const result = planDocumentDrafts.saveDocuments(body, url.searchParams.get("client"));
               return Response.json(result.body, { status: result.status });
             }
             return Response.json({ error: "Method not allowed" }, { status: 405 });
@@ -876,7 +876,7 @@ export async function startPlannotatorServer(
 
             // Clean up draft on successful submit
             deleteDraft(draftKey, draftGeneration);
-            planDocumentDrafts?.settle();
+            planDocumentDrafts?.settle(url.searchParams.get("client"));
 
             // Use permission mode from client request if provided, otherwise fall back to hook input
             const effectivePermissionMode = requestedPermissionMode || permissionMode;
@@ -927,7 +927,7 @@ export async function startPlannotatorServer(
             archivePlanDecision("denied", feedback);
 
             deleteDraft(draftKey, draftGeneration);
-            planDocumentDrafts?.settle();
+            planDocumentDrafts?.settle(url.searchParams.get("client"));
             decisionSettled = true;
             resolveDecision({ approved: false, feedback, savedPath, ...(answersOnly ? { answersOnly: true } : {}) });
             return Response.json({ ok: true, savedPath });
