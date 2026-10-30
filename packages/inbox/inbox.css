@@ -4466,6 +4466,9 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .pn-inbox .ib-chk-why :is(a, code) { overflow-wrap: anywhere; word-break: break-word; }
 .pn-inbox .ib-chk-why :not(pre) > code { font-size: 0.92em; padding: 0 4px; }
 .pn-inbox .ib-chk-why pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+/* A command in the why: its copy button always shows (not on hover only), and the text runs clear of it. */
+.pn-inbox .ib-chk-why [data-block-id] > button[title] { opacity: 1; }
+.pn-inbox .ib-chk-why [data-block-id] > button[title] + pre > code { padding-right: 40px; }
 .pn-inbox .ib-chk-do code { font-size: 0.88em; padding: 0 4px; overflow-wrap: anywhere; word-break: break-word; }
 .pn-inbox .ib-chk-holds { margin: 0 0 8px; font-size: var(--ib-fs-13, 13px); line-height: 1.45; color: var(--ib-badge-hold-fg, var(--foreground)); overflow-wrap: anywhere; }
 .pn-inbox .ib-chk-holds b { font-weight: 600; }
