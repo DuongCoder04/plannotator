@@ -28,6 +28,7 @@ import {
 	resolveWindowsCommandShim,
 } from "./command-path.ts";
 import { createPiVersionProbe } from "./pi-version.ts";
+import { askAiPiEnv } from "./pi-events.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -71,8 +72,8 @@ class PiProcess {
 				cwd,
 				// The LIVE env, never Bun's startup env (which still holds the
 				// variables the CLI scrubbed, like the bridge token): see
-				// packages/shared/child-env.ts.
-				env: { ...process.env },
+				// packages/shared/child-env.ts. Plannotator's tools off: see askAiPiEnv.
+				env: askAiPiEnv(),
 				stdin: "pipe",
 				stdout: "pipe",
 				stderr: "ignore",
