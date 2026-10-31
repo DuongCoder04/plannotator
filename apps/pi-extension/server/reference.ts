@@ -44,6 +44,7 @@ import {
 	docResolutionError,
 	getAllowedRootPaths,
 	getTrustedBaseDir,
+	isDocServeAllowed,
 	isPathAllowed,
 	relativizeToAllowedRoots,
 	resolveAllowedDocPath,
@@ -93,6 +94,8 @@ export interface HandleDocOptions {
 	sourceSaveBundlePaths?: ReadonlySet<string>;
 	onSourceDocumentServed?: (path: string) => void;
 	rootPaths?: string[];
+	/** A reader on this machine (`isThisMachineReader`, this-machine-reader.ts): documents are served from anywhere, code files keep the roots (`isDocServeAllowed`). */
+	anyPath?: boolean;
 	/**
 	 * When set, /api/doc runs annotate's per-file version-history pipeline for
 	 * eligible markdown-branch documents (local file under an allowed root,
@@ -334,7 +337,8 @@ export async function handleDocRequest(res: Res, url: URL, options: HandleDocOpt
 	}
 
 	// A base is only honored when it is itself inside an allowed root.
-	const resolvedBase = getTrustedBaseDir(url.searchParams.get("base"), allowedRoots);
+	const anyPath = options.anyPath === true;
+	const resolvedBase = getTrustedBaseDir(url.searchParams.get("base"), allowedRoots, anyPath);
 	const convert = url.searchParams.get("convert") === "1";
 	// `?doc=1` (set by the file browser) forces annotatable plain-text rendering
 	// for extensions that overlap CODE_FILE_REGEX (.yaml, .json, .toml, .ini,
@@ -346,11 +350,12 @@ export async function handleDocRequest(res: Res, url: URL, options: HandleDocOpt
 		base: resolvedBase,
 		forceDoc,
 		roots: allowedRoots,
+		anyPath,
 	});
 	// The one authorization site. A named path is gated whether or not it
 	// exists, so an escaping name is denied rather than reported absent.
 	const named = resolution.kind === "file" || resolution.kind === "not_found" ? resolution.path : undefined;
-	if (named !== undefined && !isPathAllowed(named, allowedRoots)) {
+	if (named !== undefined && !isDocServeAllowed(named, resolution.kind === "file" ? resolution.render : null, allowedRoots, anyPath)) {
 		sendDocError(res, DOC_ACCESS_DENIED);
 		return;
 	}

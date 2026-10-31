@@ -106,15 +106,22 @@ export function defineAnnotateDraftScenarios(runtime: string, start: StartDraftS
       servers.splice(servers.indexOf(server), 1);
     }
 
-    const post = (server: DraftScenarioServer, path: string, body: unknown) =>
+    const post = (server: DraftScenarioServer, path: string, body: unknown, headers: Record<string, string> = {}) =>
       fetch(`${server.url}${path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...headers },
         body: JSON.stringify(body),
       });
 
-    const saveDocuments = (server: DraftScenarioServer, documents: { path: string; annotations: unknown[] }[]) =>
-      post(server, "/api/draft/document", { documents });
+    const saveDocuments = (
+      server: DraftScenarioServer,
+      documents: { path: string; annotations: unknown[] }[],
+      headers: Record<string, string> = {},
+    ) => post(server, "/api/draft/document", { documents }, headers);
+
+    // A reader that keeps the session's roots (#2291): a tab on this machine
+    // may keep copies of documents anywhere, as /api/doc serves it them.
+    const FORWARDED = { "X-Forwarded-For": "192.0.2.10" };
 
     test("a comment comes back after the file is edited and the review reopened", async () => {
       const first = await openFile("notes.md", "# Notes\n\nBody v1\n");
@@ -430,13 +437,13 @@ export function defineAnnotateDraftScenarios(runtime: string, start: StartDraftS
       const outside = join(root, "elsewhere.md");
       writeFileSync(outside, "# Elsewhere\n");
       const folder = await openFolder();
-      expect((await fetch(`${folder.url}/api/draft/document?path=${encodeURIComponent(outside)}`)).status).toBe(403);
+      expect((await fetch(`${folder.url}/api/draft/document?path=${encodeURIComponent(outside)}`, { headers: FORWARDED })).status).toBe(403);
       const inside = join(docDir, "inside.md");
       writeFileSync(inside, "# Inside\n");
       const res = await saveDocuments(folder, [
         { path: outside, annotations: [comment("x")] },
         { path: inside, annotations: [comment("y")] },
-      ]);
+      ], FORWARDED);
       const body = await res.json();
       expect(body.rejected).toEqual([outside]);
       expect(body.written).toBe(1);

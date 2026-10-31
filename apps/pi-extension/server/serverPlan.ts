@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 
 import { contentHash, deleteDraft, loadDraft } from "../generated/draft.ts";
 import { createDocumentDraftStore, documentDraftIndexKey, loadSessionDraftWithDocuments } from "../generated/annotate-draft.ts";
-import { getAllowedRootPaths, isPathAllowed } from "../generated/doc-resolve.ts";
+import { getAllowedRootPaths, isDocServeAllowed } from "../generated/doc-resolve.ts";
 import { countUnsentDraftComments, hostSessionClosedEvent, type HostCloseOutcome } from "../generated/host-control.ts";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "../generated/server-session.ts";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control.ts";
@@ -64,6 +64,7 @@ import { isFaviconStyle, type FaviconStyle } from "../generated/favicon.ts";
 import { readImprovementHook, getImprovementHookExpectedPath } from "../generated/improvement-hooks.ts";
 import { composeImproveContext } from "../generated/pfm-reminder.ts";
 import { detectProjectName, getRepoInfo } from "./project.ts";
+import { isThisMachineRequest } from "./this-machine.ts";
 import {
 	handleDocRequest,
 	handleDocExistsRequest,
@@ -304,7 +305,7 @@ export async function startPlanReviewServer(options: {
 	// server's /api/doc serves it: inside the project.
 	const planDocumentDrafts = options.mode !== "archive"
 		? createDocumentDraftStore({
-				isAllowed: (path) => isPathAllowed(path, getAllowedRootPaths()),
+				isAllowed: (path, anyPath) => isDocServeAllowed(path, null, getAllowedRootPaths(), anyPath),
 				indexKey: documentDraftIndexKey(draftKey),
 			})
 		: null;
@@ -523,7 +524,7 @@ export async function startPlanReviewServer(options: {
 					json(res, crossOriginRefusalBody(), 403);
 					return;
 				}
-				const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"), url.searchParams.get("client"));
+				const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"), url.searchParams.get("client"), isThisMachineRequest(req));
 				json(res, result.body, result.status);
 			} else if (req.method === "POST") {
 				let body: unknown;
@@ -533,7 +534,7 @@ export async function startPlanReviewServer(options: {
 					json(res, { ok: false, error: "Invalid JSON" }, 400);
 					return;
 				}
-				const result = planDocumentDrafts.saveDocuments(body, url.searchParams.get("client"));
+				const result = planDocumentDrafts.saveDocuments(body, url.searchParams.get("client"), isThisMachineRequest(req));
 				json(res, result.body, result.status);
 			} else {
 				json(res, { error: "Method not allowed" }, 405);
@@ -545,7 +546,12 @@ export async function startPlanReviewServer(options: {
 		} else if (url.pathname.startsWith("/api/ai/") && await handlePiAIRequest(req, res, url, aiRuntime)) {
 			return;
 		} else if (url.pathname === "/api/doc" && req.method === "GET") {
-			await handleDocRequest(res, url);
+			// A tab on this machine reads any path (#2291), so no other site may.
+			if (!isSameOriginRequest(req)) {
+				json(res, crossOriginRefusalBody(), 403);
+				return;
+			}
+			await handleDocRequest(res, url, { anyPath: isThisMachineRequest(req) });
 		} else if (url.pathname === "/api/doc/exists" && req.method === "POST") {
 			await handleDocExistsRequest(res, req);
 		} else if (url.pathname === "/api/obsidian/vaults") {
