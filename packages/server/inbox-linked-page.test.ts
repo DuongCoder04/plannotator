@@ -152,3 +152,16 @@ test("Markdown siblings open as text under the same folder and origin guards", a
   expect((await linked(server, notes, "image.png")).status).toBe(415);
   expect((await linked(server, notes, "peer.md", { "Sec-Fetch-Site": "same-site" })).status).toBe(403);
 });
+
+test("a link named like a document but leading to another kind of file is refused by where it leads", async () => {
+  const { server, project, sheet, notes } = await world();
+  writeFileSync(join(project, "data.json"), '{"token":"x"}');
+  symlinkSync(join(project, "data.json"), join(project, "alias.md"));
+  symlinkSync(join(project, "data.json"), join(project, "alias.html"));
+  const code = async (res: Response) => [res.status, ((await res.json()) as { code: string }).code];
+  expect(await code(await linked(server, notes, "alias.md"))).toEqual([415, "linked_page_not_html"]);
+  expect(await code(await linked(server, sheet, "alias.html"))).toEqual([415, "linked_page_not_html"]);
+  // The image route reads a linked document the same way.
+  const image = await fetch(`http://127.0.0.1:${server.port}/api/inbox/attachments/${notes}/markdown-image?document=alias.md&path=a.png`);
+  expect(image.status).toBe(415);
+});

@@ -93,4 +93,8 @@ test('Markdown links resolve from the current document and retain fragments with
   expect(resolveInboxHtmlLink('../peer.md', { ...ctx, baseDir: `${FOLDER}/sub` })).toMatchObject({ kind: 'page', relative: 'peer.md' });
   for (const href of ['../escape.md', '.hidden/secret.md', 'not-attached.html']) expect(resolveInboxHtmlLink(href, ctx).kind).toBe('refused');
   expect(resolveInboxHtmlLink('peer.md', context()).kind).toBe('refused');
+  // A Markdown file has no asset route, so an image beside it does not open, and the note promises none.
+  const image = resolveInboxHtmlLink('shot.png', ctx);
+  expect(image.kind).toBe('refused');
+  expect(image.kind === 'refused' && image.note).not.toContain('image');
 });

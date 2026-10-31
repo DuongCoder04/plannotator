@@ -13,6 +13,7 @@ import {
 import { CodeFileView } from '@plannotator/ui/components/CodeFilePopout';
 import { getImageSrc } from '@plannotator/ui/components/ImageThumbnail';
 import { ImageResolverContext, type ImageResolver } from '@plannotator/ui/components/ImageResolverContext';
+import type { LocalLinkResolver } from '@plannotator/ui/components/LocalLinkContext';
 import { AnnotationPanel } from '@plannotator/ui/components/AnnotationPanel';
 import { AnnotationToolstrip } from '@plannotator/ui/components/AnnotationToolstrip';
 import { HtmlSurfaceControls } from '@plannotator/ui/components/HtmlSurfaceControls';
@@ -1285,6 +1286,15 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   };
   const followLinkRef = useRef(followLink);
   followLinkRef.current = followLink;
+  // Stable across renders: ui's HtmlBlock redraws a raw HTML block whenever its link resolver changes.
+  const resolveFileLink = useCallback<LocalLinkResolver>(
+    (href) => ({ kind: 'open', open: () => followLinkRef.current(href, pageFolder) }),
+    [pageFolder],
+  );
+  const linkedPath = linkedTop?.path ?? null;
+  const openFromLinked = useCallback((href: string) => {
+    if (linkedPath) followLinkRef.current(href, folderOf(linkedPath));
+  }, [linkedPath]);
 
   const isText = kind === 'markdown' || kind === 'text';
   const isCode = kind === 'code';
@@ -1877,7 +1887,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               </div>
               <div className="ib-linkedframe">
                 {linkedTop.html === null ? (
-                  <LinkedMarkdown key={`${linkedStack.length}:${linkedTop.path}`} page={linkedTop} attachmentId={attachment.id} onOpenLink={(href) => followLinkRef.current(href, folderOf(linkedTop.path))} />
+                  <LinkedMarkdown key={`${linkedStack.length}:${linkedTop.path}`} page={linkedTop} attachmentId={attachment.id} onOpenLink={openFromLinked} />
                 ) : <HtmlViewer
                   key={`${linkedStack.length}:${linkedTop.path}`}
                   rawHtml={linkedTop.html}
@@ -2062,7 +2072,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 blocks={blocks}
                 markdown={view.text}
                 imageBaseDir={imageBaseDir}
-                resolveLocalLink={kind === 'markdown' ? (href) => ({ kind: 'open', open: () => followLinkRef.current(href, pageFolder) }) : undefined}
+                resolveLocalLink={kind === 'markdown' ? resolveFileLink : undefined}
                 questionDecisionLines={false}
                 annotations={annotations}
                 mentionSource={props.mentionSource}

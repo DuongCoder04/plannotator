@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Viewer, type ViewerHandle } from '@plannotator/ui/components/Viewer';
 import { ImageResolverContext, type ImageResolver } from '@plannotator/ui/components/ImageResolverContext';
+import type { LocalLinkResolver } from '@plannotator/ui/components/LocalLinkContext';
 import { ScrollViewportProvider } from '@plannotator/ui/hooks/useScrollViewport';
 import { getImageSrc } from '@plannotator/ui/components/ImageThumbnail';
 import type { LinkedPageView } from '../api';
@@ -8,6 +9,7 @@ import { attachmentBlocks } from '../attachments';
 import { inboxMarkdownImageBase } from '../images';
 
 const noop = () => {};
+const NO_ANNOTATIONS: [] = [];
 
 /** Sibling documents are read-only: annotations belong to attached files. */
 export function LinkedMarkdown({ page, attachmentId, onOpenLink }: {
@@ -24,6 +26,10 @@ export function LinkedMarkdown({ page, attachmentId, onOpenLink }: {
     (src) => ({ kind: 'src', src: /^(https?:|data:|blob:)/i.test(src) ? src : getImageSrc(src, imageBaseDir) }),
     [imageBaseDir],
   );
+  // Stable across renders (through a ref): ui's HtmlBlock redraws a raw HTML block whenever its link resolver changes.
+  const openLinkRef = useRef(onOpenLink);
+  openLinkRef.current = onOpenLink;
+  const resolveLocalLink = useCallback<LocalLinkResolver>((href) => ({ kind: 'open', open: () => openLinkRef.current(href) }), []);
   useEffect(() => {
     if (!viewport || !page.hash) return;
     viewer.current?.scrollToAnchor?.(page.hash);
@@ -38,11 +44,11 @@ export function LinkedMarkdown({ page, attachmentId, onOpenLink }: {
             blocks={blocks}
             markdown={page.text}
             imageBaseDir={imageBaseDir}
-            annotations={[]}
+            annotations={NO_ANNOTATIONS}
             onAddAnnotation={noop}
             onSelectAnnotation={noop}
             selectedAnnotationId={null}
-            resolveLocalLink={(href) => ({ kind: 'open', open: () => onOpenLink(href) })}
+            resolveLocalLink={resolveLocalLink}
             questionDecisionLines={false}
             stickyActions={false}
             disableCodePathValidation

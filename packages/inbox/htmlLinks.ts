@@ -126,8 +126,12 @@ export function resolveInboxHtmlLink(href: string, context: InboxHtmlLinkContext
   if (intent.kind === 'document' && (context.markdown ? /\.mdx?$/i : /\.html?$/i).test(path)) {
     return { kind: 'page', path, relative, name, hash: intent.hash };
   }
+  // A Markdown file has no asset route: only other Markdown files in its folder open from a link.
+  if (context.markdown) {
+    return { kind: 'refused', name, note: `${name} is not attached to this thread. Only Markdown files in this file's folder open from a link.` };
+  }
   if (intent.kind === 'unsupported' && intent.reason === 'no-asset-root') {
     return { kind: 'refused', name, note: `${name} is not attached, and this page's images are not available here.` };
   }
-  return { kind: 'refused', name, note: `${name} is not attached to this thread. Only ${context.markdown ? 'Markdown documents' : 'HTML pages'} and images in this page's folder open from a link.` };
+  return { kind: 'refused', name, note: `${name} is not attached to this thread. Only HTML pages and images in this page's folder open from a link.` };
 }

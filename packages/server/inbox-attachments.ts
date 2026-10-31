@@ -101,7 +101,8 @@ export const INBOX_HTML_DOCUMENT_CSP = `${HTML_ASSET_DOCUMENT_CSP}; connect-src 
  * The document `relativePath` names in the folder of the attached document at
  * `attachedPath` (its realpath): its realpath and text. Refused (InboxError)
  * when the path is not a plain relative path, names a hidden segment or a
- * dotenv file (as requested or by where it leads), has the wrong extension for `kind`,
+ * dotenv file (as requested or by where it leads), has the wrong extension for `kind`
+ * (as requested or by where it leads),
  * leads outside that folder, is not a regular file, or is over 2 MB.
  */
 export async function readInboxLinkedPage(attachedPath: string, relativePath: string | null, kind: "html" | "markdown" = "html"): Promise<{ path: string; text: string }> {
@@ -115,7 +116,9 @@ export async function readInboxLinkedPage(attachedPath: string, relativePath: st
   }
   const clean = segments.join("/");
   const name = segments[segments.length - 1]!;
-  if (!(kind === "markdown" ? /\.mdx?$/i : /\.html?$/i).test(name)) throw new InboxError("linked_page_not_html", `${name} is not ${kind === "markdown" ? "a Markdown document" : "an HTML page"}.`);
+  const extension = kind === "markdown" ? /\.mdx?$/i : /\.html?$/i;
+  const wrongKind = () => new InboxError("linked_page_not_html", `${name} is not ${kind === "markdown" ? "a Markdown document" : "an HTML page"}.`);
+  if (!extension.test(name)) throw wrongKind();
   const root = dirname(attachedPath);
   const target = resolvePath(root, clean);
   if (!isWithinDirectory(target, root)) throw new InboxError("linked_page_outside", "Only pages in the attached page's own folder open here.");
@@ -134,6 +137,8 @@ export async function readInboxLinkedPage(attachedPath: string, relativePath: st
   if (inboxRefusesAssetPath(relativeTo(root, real).split(sep).join("/"))) {
     throw new InboxError("linked_page_refused", "Plannotator does not open hidden files or .env files.");
   }
+  // And by what it is: `notes.md` linked to `data.json` is not a Markdown document.
+  if (!extension.test(basename(real))) throw wrongKind();
   // The handle is opened on the realpath without following a link. O_NOFOLLOW covers
   // only the last segment, so once open the realpath must still lead to the very
   // file the descriptor holds (dev and ino): a parent folder swapped for a symlink
