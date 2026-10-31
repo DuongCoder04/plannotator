@@ -74,7 +74,9 @@ import { handleHostControl, resolveHostControlToken, type HostControl } from "./
 import { countUnsentDraftComments } from "@plannotator/shared/host-control";
 import { isAIEndpointPath, isLongLivedAIEndpointPath, type AIEndpoints, type SessionBridge } from "@plannotator/ai";
 import { isArchiveDocumentMutation } from "@plannotator/shared/archive-mode";
+import { isThisMachineRequest } from "./this-machine";
 import { getAllowedRootPaths, isPathAllowed, isPlanLinkedDocPath, readPlanFile } from "@plannotator/shared/doc-resolve";
+import { isReferenceReadPath, referenceReadRefusal } from "@plannotator/shared/reference-reader";
 import { createDocumentDraftStore, documentDraftIndexKey, loadSessionDraftWithDocuments } from "@plannotator/shared/annotate-draft";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "@plannotator/shared/server-session";
 
@@ -661,6 +663,14 @@ export async function startPlannotatorServer(
               const message = err instanceof Error ? err.message : "Failed to open VS Code diff";
               return Response.json({ error: message }, { status: 500 });
             }
+          }
+
+          // The Files sidebar and Obsidian routes: never for another site, and
+          // a reader off this machine keeps the roots and Obsidian's own vaults.
+          if (isReferenceReadPath(url.pathname)) {
+            if (!isSameOriginRequest(req)) return Response.json(crossOriginRefusalBody(), { status: 403 });
+            const refusal = referenceReadRefusal(url, { thisMachine: isThisMachineRequest(req), roots: getAllowedRootPaths() });
+            if (refusal) return Response.json({ error: refusal.error }, { status: refusal.status });
           }
 
           // API: Detect Obsidian vaults

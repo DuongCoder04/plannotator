@@ -17,7 +17,7 @@ import { openPackedApp, packedAppResponse } from "@plannotator/shared/packed-app
 import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl, getLocalUrlHostname } from "./remote";
 import { createRequestHostGuard } from "./request-host-guard";
 import { withPlannotatorServerHeader } from "./plannotator-server-marker";
-import { refuseCrossOriginWrite } from "./request-origin-guard";
+import { isSameOriginRequest, refuseCrossOriginWrite } from "./request-origin-guard";
 import { getRepoInfo } from "./repo";
 import { createRefCards, refCardRouteResponse, refCardsTailnetAllowed, type RefRunner } from "./ref-cards";
 import type { Origin } from "@plannotator/shared/agents";
@@ -28,6 +28,8 @@ import { getExtraMarkdownExtensions, isAnnotatableTextPath, MAX_ANNOTATABLE_FILE
 import { contentHash } from "./draft";
 import { annotateDraftFilePath, annotateSessionHasRootlessDocuments, createAnnotateDraftSession } from "@plannotator/shared/annotate-draft";
 import { isPathAllowed } from "@plannotator/shared/doc-resolve";
+import { isThisMachineRequest } from "./this-machine";
+import { isReferenceReadPath, referenceReadRefusal } from "@plannotator/shared/reference-reader";
 import { getPlanVersion, getVersionCount, listVersions } from "@plannotator/shared/storage";
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "@plannotator/shared/annotate-history";
 import { ANNOTATE_LIVE_VERSION_PATH, annotateLiveVersionFilePath, saveAnnotateLiveVersion } from "@plannotator/shared/annotate-live-version";
@@ -1346,6 +1348,14 @@ export async function startAnnotateServer(
           // API: Batch existence check for code-file paths the renderer detected
           if (url.pathname === "/api/doc/exists" && req.method === "POST") {
             return handleDocExists(req, { rootPaths: getReferenceRootPaths() });
+          }
+
+          // The Files sidebar and Obsidian routes: never for another site, and
+          // a reader off this machine keeps the roots and Obsidian's own vaults.
+          if (isReferenceReadPath(url.pathname)) {
+            if (!isSameOriginRequest(req)) return Response.json(crossOriginRefusalBody(), { status: 403 });
+            const refusal = referenceReadRefusal(url, { thisMachine: isThisMachineRequest(req), roots: getReferenceRootPaths() });
+            if (refusal) return Response.json({ error: refusal.error }, { status: refusal.status });
           }
 
           // API: Detect Obsidian vaults

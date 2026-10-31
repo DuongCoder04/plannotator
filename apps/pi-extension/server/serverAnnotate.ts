@@ -74,6 +74,7 @@ import { getAvailableOpenInApps, handleOpenInRequest } from "./open-in-apps.ts";
 
 import { getRepoInfo } from "./project.ts";
 import {
+	refuseReferenceRead,
 	handleDocRequest,
 	handleDocExistsRequest,
 	handleFileBrowserRequest,
@@ -884,6 +885,7 @@ export async function startAnnotateServer(options: {
 
 		if (handleHostControl(req, res, url, { token: hostControlToken, getServerPort: () => boundPort, control: hostControl })) return;
 		if (await handleRefCards(req, res, url, refCards, serverSession)) return;
+		if (refuseReferenceRead(req, res, url, getReferenceRootPaths)) return;
 		if (await externalAnnotations.handle(req, res, url)) return;
 		if (url.pathname.startsWith("/api/ai/") && await handlePiAIRequest(req, res, url, aiRuntime)) return;
 

@@ -43,6 +43,7 @@ import {
 	type ResolveAllowedDocPathResult,
 } from "@plannotator/shared/doc-resolve";
 import { htmlToMarkdown } from "@plannotator/shared/html-to-markdown";
+import { vaultDocRefusal } from "@plannotator/shared/reference-reader";
 import { disabledSourceSave, type SourceFileSnapshot, type SourceSaveCapability } from "@plannotator/shared/source-save";
 import {
 	createBundleSourceSaveCapability,
@@ -474,13 +475,9 @@ export async function handleObsidianDoc(req: Request): Promise<Response> {
 		}
 	}
 
-	// Security: must be within vault
-	if (!resolvedFile.startsWith(resolvedVault + "/")) {
-		return Response.json(
-			{ error: "Access denied: path is outside vault" },
-			{ status: 403 },
-		);
-	}
+	// Inside the vault after symlinks, Markdown by its real path, within 2MB.
+	const refusal = vaultDocRefusal(resolvedFile, resolvedVault);
+	if (refusal) return Response.json({ error: refusal.error }, { status: refusal.status });
 
 	try {
 		const file = Bun.file(resolvedFile);
