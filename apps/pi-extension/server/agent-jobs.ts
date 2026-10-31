@@ -27,7 +27,7 @@ import {
 import { resolveGuideLaunchInstructions } from "../generated/guide-instructions-store.ts";
 import { gitColorFreeEnvironment } from "../generated/review-core.ts";
 import { askAiChildEnv } from "../generated/ai/providers/ask-ai-env.ts";
-import { planAgentJobSpawn } from "../generated/ai/providers/command-path.ts";
+import { killWindowsProcessTree, planAgentJobSpawn } from "../generated/ai/providers/command-path.ts";
 import { ghAccountEnvForPRUrl } from "../generated/pr-github-account.ts";
 import type { GuideLaunchReview } from "../generated/guide-format.ts";
 import { allowedToolsOf, CLAUDE_SHELL_BLOCKED_WARNING, detectClaudeShellBlocked, disallowedToolsOf, formatClaudeLogEvent } from "../generated/claude-review.ts";
@@ -187,12 +187,25 @@ async function discoverMarkerModels(engine: MarkerEngine, program: string): Prom
 		// A Windows .cmd shim starts through cmd.exe, as a job does (#2372).
 		const launch = planAgentJobSpawn([program, ...engine.modelsArgv], { which: whichPath });
 		if (launch.unsafeScript) return [];
-		const { stdout } = await execFileAsync(launch.command[0]!, launch.command.slice(1), {
-			timeout: 5000,
+		const pending = execFileAsync(launch.command[0]!, launch.command.slice(1), {
 			encoding: "utf8",
 			windowsVerbatimArguments: launch.verbatim,
 		});
-		return engine.parseModels(stdout);
+		// Out of time: through cmd.exe the whole tree ends, not cmd.exe alone.
+		const timer = setTimeout(() => {
+			const child = pending.child;
+			try {
+				if (!launch.verbatim || !killWindowsProcessTree(child.pid)) child.kill();
+			} catch {
+				// Already gone.
+			}
+		}, 5000);
+		try {
+			const { stdout } = await pending;
+			return engine.parseModels(stdout);
+		} finally {
+			clearTimeout(timer);
+		}
 	} catch {
 		return [];
 	}
@@ -202,7 +215,9 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 	const { mode, getServerUrl, getCwd } = options;
 
 	// --- State ---
-	const jobs = new Map<string, { info: AgentJobInfo; proc: ChildProcess | null }>();
+	// `tree`: the job runs through cmd.exe (a Windows .cmd shim), so Stop ends
+	// the whole process tree, not cmd.exe alone (#2372).
+	const jobs = new Map<string, { info: AgentJobInfo; proc: ChildProcess | null; tree?: boolean }>();
 	const jobOutputPaths = new Map<string, string>();
 	const jobChangedFilesSnapshots = new Map<string, string[]>();
 	const jobLaunchReviews = new Map<string, GuideLaunchReview>();
@@ -358,6 +373,9 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 
 			// Write prompt to stdin and close (for providers that read prompt from stdin)
 			if (hasStdinPrompt && proc.stdin) {
+				// A child that exits before reading its prompt (EPIPE) must not
+				// crash the person's Pi session; the job's exit reports it.
+				proc.stdin.on("error", () => {});
 				proc.stdin.write(stdinPrompt);
 				proc.stdin.end();
 			}
@@ -365,7 +383,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 			info.status = "running";
 			info.cwd = spawnCwd;
 			if (spawnOptions?.prompt) info.prompt = spawnOptions.prompt;
-			jobs.set(id, { info, proc });
+			jobs.set(id, { info, proc, tree: launch.verbatim });
 			if (outputPath) jobOutputPaths.set(id, outputPath);
 			if (spawnOptions?.cwd) jobOutputPaths.set(`${id}:cwd`, spawnOptions.cwd);
 			if (spawnOptions?.changedFilesSnapshot) jobChangedFilesSnapshots.set(id, spawnOptions.changedFilesSnapshot);
@@ -541,7 +559,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 
 		if (entry.proc) {
 			try {
-				entry.proc.kill();
+				if (!entry.tree || !killWindowsProcessTree(entry.proc.pid)) entry.proc.kill();
 			} catch {
 				// Process may have already exited
 			}

@@ -111,8 +111,7 @@ export interface AgentJobSpawn {
 	/**
 	 * Set when the CLI is a Windows command script (`.cmd`/`.bat`) whose
 	 * arguments cmd.exe would misread. `command` is then the job's own argv,
-	 * unchanged; a runtime that cannot start a script without a shell (Node)
-	 * fails the job with this text.
+	 * unchanged, and both runtimes refuse the job with this text.
 	 */
 	unsafeScript?: string;
 }

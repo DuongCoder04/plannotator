@@ -164,6 +164,14 @@ jobs:
       - name: Run workspace symlink tests
         run: bun test packages/server/review-workspace.test.ts --test-name-pattern discoverWorkspaceRepoPaths
 
+      # #2372: agent jobs start a stub pi.cmd (never a real agent CLI) through
+      # both servers' real spawn path; skipped off Windows.
+      - name: Run agent job .cmd shim tests (Bun server)
+        run: bun test packages/server/agent-jobs-windows-cmd-shim.test.ts
+
+      - name: Run agent job .cmd shim tests (Pi server)
+        run: bun test apps/pi-extension/server/agent-jobs-windows-cmd-shim.test.ts
+
       - name: Build Pi AI runtime smoke
         run: bun build scripts/smoke-pi-extension-ai-runtime.ts --target=node --outfile "$env:RUNNER_TEMP/pi-ai-runtime-smoke.mjs"
 

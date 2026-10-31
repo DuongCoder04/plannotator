@@ -48,11 +48,18 @@ started as `cmd.exe /d /s /c ""<script>" "<arg>" …"` with
 with `spawn pi ENOENT`. A prompt cannot cross cmd.exe (line breaks, quotes,
 `%`), so the engine's `promptOnStdin` (Pi only: `pi … -p` reads the prompt from
 piped stdin) moves it to stdin. When an argument still holds a character that
-cmd.exe reads (`"`, `%`, `!`, `^`, control characters), the Pi server fails the
-job and names the script. The Bun server spawns the command as built, as it did
-before. An `.exe`, a program not on PATH, and other platforms keep the command
+cmd.exe reads (`"`, `%`, `!`, `^`, control characters), both servers fail the
+job and name the script; nothing is started. Stop (and the model listing's 5 s
+limit) ends such a job's whole tree with `taskkill /t /f`
+(`killWindowsProcessTree`), not cmd.exe alone. A job's stdin pipe has an error
+listener, so a child that exits before reading its prompt cannot crash the
+host. An `.exe`, a program not on PATH, and other platforms keep the command
 as built. Tests: `planAgentJobSpawn` in `packages/ai/ai.test.ts`, and Pi's
-argv in `packages/server/marker-review.test.ts`. Both simulate win32.
+argv in `packages/server/marker-review.test.ts` (both simulate win32);
+`agent-jobs-windows-cmd-shim.test.ts` (in `packages/server/` and
+`apps/pi-extension/server/`) runs a stub `pi.cmd` (`tests/helpers/fake-pi-cmd.ts`)
+through each server's real spawn path, on Windows only: the Windows workflow's
+`pi-extension-ai-runtime-windows` job.
 
 ### Review directory targets
 
