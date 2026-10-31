@@ -30,6 +30,10 @@ import {
 	type WorkspaceFileChange,
 } from "../generated/workspace-status.ts";
 import { detectObsidianVaults } from "../generated/integrations-common.ts";
+import { isReferenceReadPath, referenceReadRefusal, vaultDocRefusal } from "../generated/reference-reader.ts";
+import { crossOriginRefusalBody } from "../generated/request-origin.ts";
+import { isSameOriginRequest } from "./request-origin-guard.ts";
+import { isThisMachineRequest } from "./this-machine.ts";
 import {
 	resolveUserPath,
 	warmFileListCache,
@@ -421,6 +425,23 @@ export async function handleDocExistsRequest(res: Res, req: IncomingMessage, opt
 	json(res, { results });
 }
 
+/**
+ * The Files sidebar and Obsidian routes (`isReferenceReadPath`): refused for
+ * another site, and for a reader off this machine outside the session's roots
+ * and Obsidian's own vaults (`referenceReadRefusal`). True when it answered.
+ */
+export function refuseReferenceRead(req: IncomingMessage, res: Res, url: URL, roots: () => string[]): boolean {
+	if (!isReferenceReadPath(url.pathname)) return false;
+	if (!isSameOriginRequest(req)) {
+		json(res, crossOriginRefusalBody(), 403);
+		return true;
+	}
+	const refusal = referenceReadRefusal(url, { thisMachine: isThisMachineRequest(req), roots: roots() });
+	if (!refusal) return false;
+	json(res, { error: refusal.error }, refusal.status);
+	return true;
+}
+
 export function handleObsidianVaultsRequest(res: Res): void {
 	json(res, { vaults: detectObsidianVaults() });
 }
@@ -446,7 +467,8 @@ export function handleObsidianFilesRequest(res: Res, url: URL): void {
 	}
 }
 
-export function handleObsidianDocRequest(res: Res, url: URL): void {
+/** `thisMachine`: the reader is a page on this machine (`vaultDocRefusal`). */
+export function handleObsidianDocRequest(res: Res, url: URL, thisMachine = false): void {
 	const vaultPath = url.searchParams.get("vaultPath");
 	const filePath = url.searchParams.get("path");
 	if (!vaultPath || !filePath) {
@@ -482,12 +504,10 @@ export function handleObsidianDocRequest(res: Res, url: URL): void {
 		}
 	}
 
-	// Security: must be within vault
-	if (
-		!resolvedFile.startsWith(resolvedVault + "/") &&
-		resolvedFile !== resolvedVault
-	) {
-		json(res, { error: "Access denied: path is outside vault" }, 403);
+	// Inside the vault (after symlinks too, off this machine), a regular Markdown file, within 2MB.
+	const refusal = vaultDocRefusal(resolvedFile, resolvedVault, thisMachine);
+	if (refusal) {
+		json(res, { error: refusal.error }, refusal.status);
 		return;
 	}
 

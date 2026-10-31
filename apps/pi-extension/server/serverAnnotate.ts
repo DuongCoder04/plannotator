@@ -75,6 +75,7 @@ import { getAvailableOpenInApps, handleOpenInRequest } from "./open-in-apps.ts";
 import { getRepoInfo } from "./project.ts";
 import { isThisMachineRequest } from "./this-machine.ts";
 import {
+	refuseReferenceRead,
 	handleDocRequest,
 	handleDocExistsRequest,
 	handleFileBrowserRequest,
@@ -910,6 +911,7 @@ export async function startAnnotateServer(options: {
 
 		if (handleHostControl(req, res, url, { token: hostControlToken, getServerPort: () => boundPort, control: hostControl })) return;
 		if (await handleRefCards(req, res, url, refCards, serverSession)) return;
+		if (refuseReferenceRead(req, res, url, getReferenceRootPaths)) return;
 		if (await externalAnnotations.handle(req, res, url)) return;
 		if (url.pathname.startsWith("/api/ai/") && await handlePiAIRequest(req, res, url, aiRuntime)) return;
 
@@ -1392,7 +1394,7 @@ export async function startAnnotateServer(options: {
 		} else if (url.pathname === "/api/reference/obsidian/files" && req.method === "GET") {
 			handleObsidianFilesRequest(res, url);
 		} else if (url.pathname === "/api/reference/obsidian/doc" && req.method === "GET") {
-			handleObsidianDocRequest(res, url);
+			handleObsidianDocRequest(res, url, isThisMachineRequest(req));
 		} else if (url.pathname === "/api/reference/files" && req.method === "GET") {
 			await handleFileBrowserRequest(res, url);
 		} else if (url.pathname === "/api/reference/files/stream" && req.method === "GET") {

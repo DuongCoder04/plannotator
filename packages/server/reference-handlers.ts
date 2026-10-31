@@ -44,6 +44,7 @@ import {
 	type ResolveAllowedDocPathResult,
 } from "@plannotator/shared/doc-resolve";
 import { htmlToMarkdown } from "@plannotator/shared/html-to-markdown";
+import { vaultDocRefusal } from "@plannotator/shared/reference-reader";
 import { disabledSourceSave, type SourceFileSnapshot, type SourceSaveCapability } from "@plannotator/shared/source-save";
 import {
 	createBundleSourceSaveCapability,
@@ -431,8 +432,11 @@ export async function handleObsidianFiles(req: Request): Promise<Response> {
 	}
 }
 
-/** Read an Obsidian vault document. Supports direct path and bare filename search. */
-export async function handleObsidianDoc(req: Request): Promise<Response> {
+/**
+ * Read an Obsidian vault document. Supports direct path and bare filename search.
+ * `thisMachine`: the reader is a page on this machine (`vaultDocRefusal`).
+ */
+export async function handleObsidianDoc(req: Request, thisMachine = false): Promise<Response> {
 	const url = new URL(req.url);
 	const vaultPath = url.searchParams.get("vaultPath");
 	const filePath = url.searchParams.get("path");
@@ -479,13 +483,9 @@ export async function handleObsidianDoc(req: Request): Promise<Response> {
 		}
 	}
 
-	// Security: must be within vault
-	if (!resolvedFile.startsWith(resolvedVault + "/")) {
-		return Response.json(
-			{ error: "Access denied: path is outside vault" },
-			{ status: 403 },
-		);
-	}
+	// Inside the vault (after symlinks too, off this machine), a regular Markdown file, within 2MB.
+	const refusal = vaultDocRefusal(resolvedFile, resolvedVault, thisMachine);
+	if (refusal) return Response.json({ error: refusal.error }, { status: refusal.status });
 
 	try {
 		const file = Bun.file(resolvedFile);
