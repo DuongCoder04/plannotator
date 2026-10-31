@@ -4,6 +4,7 @@
  * and the feedback text a Send carries after the picks.
  */
 
+import { inboxUrl, machineOf } from './inboxUrl';
 import { shouldStripFrontmatter } from '@plannotator/core/annotatable';
 import { codeFenceFor } from '@plannotator/core/markdown-structure';
 import { cutText } from '@plannotator/core/inbox-questions';
@@ -136,21 +137,21 @@ export function attachmentLabel(attachment: Pick<InboxAttachmentState, 'path' | 
 
 /** Where an attachment's bytes are served: an image for `<img src>`, and any kind as a download. By id only. */
 export function attachmentImageUrl(attachment: Pick<InboxAttachmentState, 'id'>, version: 'current' | 'sent' = 'current'): string {
-  return `/api/inbox/attachments/${encodeURIComponent(attachment.id)}/image${version === 'sent' ? '?version=sent' : ''}`;
+  return inboxUrl(`/attachments/${encodeURIComponent(attachment.id)}/image${version === 'sent' ? '?version=sent' : ''}`, undefined, machineOf(attachment.id));
 }
 
 /** A video's bytes for `<video src>` (HTTP Range, by id only). */
 export function attachmentVideoUrl(attachment: Pick<InboxAttachmentState, 'id'>, version: 'current' | 'sent' = 'current'): string {
-  return `/api/inbox/attachments/${encodeURIComponent(attachment.id)}/video${version === 'sent' ? '?version=sent' : ''}`;
+  return inboxUrl(`/attachments/${encodeURIComponent(attachment.id)}/video${version === 'sent' ? '?version=sent' : ''}`, undefined, machineOf(attachment.id));
 }
 
 export function attachmentDownloadUrl(attachment: Pick<InboxAttachmentState, 'id'>, version: 'current' | 'sent' = 'current'): string {
-  return `/api/inbox/attachments/${encodeURIComponent(attachment.id)}/download${version === 'sent' ? '?version=sent' : ''}`;
+  return inboxUrl(`/attachments/${encodeURIComponent(attachment.id)}/download${version === 'sent' ? '?version=sent' : ''}`, undefined, machineOf(attachment.id));
 }
 
 /** An attached HTML page in a tab of its own, sandboxed, from its own folder ("Open in" → Browser). */
 export function attachmentPageUrl(attachment: Pick<InboxAttachmentState, 'id'>, version: 'current' | 'sent' = 'current'): string {
-  return `/api/inbox/attachments/${encodeURIComponent(attachment.id)}/page${version === 'sent' ? '?version=sent' : ''}`;
+  return inboxUrl(`/attachments/${encodeURIComponent(attachment.id)}/page${version === 'sent' ? '?version=sent' : ''}`, undefined, machineOf(attachment.id));
 }
 
 /** Wider than this width-to-height ratio, an image is a panorama: the gallery crops it from the left, the viewer scrolls it sideways. */
@@ -552,6 +553,19 @@ export const ATTACHMENT_FEEDBACK_HEADING = {
   intro: 'The following feedback is on the files you attached, one section per file and version.',
 };
 
+/**
+ * What a file's heading in the export adds when the comments are on a version
+ * that was sent rather than the file as it is now. The thread reads them back
+ * to link the heading in the person's sent reply (replyFileLinks.ts).
+ */
+export const SENT_VERSION_SUFFIX = {
+  /** An image the store captured the first time the thread was read. */
+  firstSaw: ' (the version I first saw)',
+  /** An image in the person's own message. */
+  mine: ' (the version I sent)',
+  yours: ' (the version you sent)',
+} as const;
+
 /** The same heading when the feedback covers an image your message's text showed. */
 export const ATTACHMENT_AND_IMAGE_FEEDBACK_HEADING = {
   title: ATTACHMENT_FEEDBACK_HEADING.title,
@@ -593,7 +607,7 @@ export function attachmentFeedback(
     if (!attachment) {
       // A file the caller does not list (an image a message shows, on a phone app older than
       // `inline_images`): its comment still rides the Send, under the path it was made on.
-      const label = `${record.path}${sent ? ' (the version you sent)' : ''}`;
+      const label = `${record.path}${sent ? SENT_VERSION_SUFFIX.yours : ''}`;
       const group = groups.get(label) ?? { annotations: [], blocks: [] };
       groups.set(label, group);
       const { exportLocation: _dropped, ...annotation } = annotationOf(record) as Annotation & { exportLocation?: unknown };
@@ -602,7 +616,7 @@ export function attachmentFeedback(
     }
     if (attachment.ref !== undefined) inlineImages = true;
     const mine = attachment.ref !== undefined && options.personMessageIds?.has(attachment.message_id) === true;
-    const sentLabel = attachment.captured === 'on_open' ? ' (the version I first saw)' : mine ? ' (the version I sent)' : ' (the version you sent)';
+    const sentLabel = attachment.captured === 'on_open' ? SENT_VERSION_SUFFIX.firstSaw : mine ? SENT_VERSION_SUFFIX.mine : SENT_VERSION_SUFFIX.yours;
     const label = `${exportFileLabel(attachment, projectRoot, attachments, mine)}${sent ? sentLabel : ''}`;
     let group = groups.get(label);
     if (!group) {

@@ -69,7 +69,8 @@ export function useTagConnections(threadId: string, sessions: readonly string[],
 }
 import { mentionGroups } from '@plannotator/ui/components/MentionPicker';
 import { HostMark, Icon } from '../icons';
-import { TAG_READERS_GROUP, TAG_UPDATE_WORDS, tagHeadsUp, type TagOption } from '../tags';
+import { TAG_READERS_GROUP, TAG_UPDATE_WORDS, tagHeadsUp, tagModeLine, type TagOption } from '../tags';
+import type { TagMode } from '../api';
 
 export function TagPicker({
   id,
@@ -137,7 +138,10 @@ export function TagPicker({
 /**
  * Several agents on one thread (Lines): their marks overlapping, the first
  * agent first. Decorative: the words beside it (or the row's label) name them.
- * At most four marks; more read as "+N".
+ * At most four marks; more read as "+N". (A list row draws its agents its
+ * own way: `RowAgents` on a wide row, approval "list-rows-mail-icons", and
+ * `RowAgentTiles`, one tile per agent, on a three-line or phone row, approval
+ * "inbox-list-row-v2".)
  */
 export function TagStack({ participants }: { participants: readonly { host: string | null; session: string }[] }) {
   const shown = participants.slice(0, 4);
@@ -191,5 +195,38 @@ export function TagNotes({
         </p>
       ))}
     </div>
+  );
+}
+
+/**
+ * The reply box's one line once it tags agents that do not own the thread
+ * (approval "inbox-tag-handoff", A2), in place of "Goes to" and the
+ * heads-ups: what Send does with them, and the links that switch it ("Asks
+ * Claude Code (herdr) · Add instead · Hand off instead"). Plain buttons in
+ * the tab order after the field; no shortcut. The words are a polite live
+ * region, so a switch is heard.
+ */
+export function TagModeNote({ id, tagged, mode, onMode }: { id?: string; tagged: readonly TagOption[]; mode: TagMode; onMode: (mode: TagMode) => void }) {
+  const line = tagModeLine(tagged, mode);
+  if (!line) return null;
+  const icon = line.mode === 'handoff' ? 'forward' : line.mode === 'add' ? 'plus' : 'eye';
+  return (
+    <p className="ib-tg-mode" id={id} data-tag-mode={line.mode}>
+      <Icon name={icon} size={14} />
+      <span aria-live="polite" data-tag-mode-words="">
+        {line.lead} <b>{line.names}</b>
+        {line.after}
+      </span>
+      {line.links.map((link) => (
+        <span key={link.mode} className="ib-tg-mode-opt">
+          <span className="ib-tg-mode-sep" aria-hidden="true">
+            ·
+          </span>
+          <button type="button" className="ib-tg-mode-link" data-tag-mode-to={link.mode} onClick={() => onMode(link.mode)}>
+            {link.label}
+          </button>
+        </span>
+      ))}
+    </p>
   );
 }

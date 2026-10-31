@@ -9,6 +9,7 @@ import { DiagramOverlay } from './DiagramOverlay';
 import { useDiagramComments, type DiagramComment, type DiagramCreateComment } from './useDiagramComments';
 import { useDiagramRender, type DiagramRenderState } from './useDiagramRender';
 import { useDiagramSourceDraft, type SaveResult } from './useDiagramSourceDraft';
+import { LazyBlockBoundary } from '../LazyBlockBoundary';
 
 /**
  * The one diagram viewer: the canvas with its overlay, the Source pane on
@@ -204,6 +205,12 @@ export function DiagramViewer({
     if (!sourceOpen) cancelComposer();
   }, [cancelComposer, sourceOpen]);
 
+  // A host that takes commenting away (no handler, no reason) closes an open
+  // composer: left open it became a Comment form nothing could save.
+  useEffect(() => {
+    if (!canCreate) cancelComposer();
+  }, [cancelComposer, canCreate]);
+
   // The composer handed to the host: the draft's part goes out, and the
   // host's cancel closes it only while it is still the open one.
   const onHostDraftRef = useRef(onHostDraft);
@@ -284,9 +291,18 @@ export function DiagramViewer({
           column and the pane stays stacked UNDER the canvas, which
           `order-last` keeps while `md:order-first` puts it left from `md`. */}
       {hasPane && sourceOpen && (
-        <Suspense fallback={<div data-diagram-source-pane-pending="" aria-hidden="true" className={PANE_CLASS} />}>
-          <DiagramSourcePane draft={draft} editable={editable} markedLines={markedLines} className={PANE_CLASS} />
-        </Suspense>
+        <LazyBlockBoundary
+          fallback={(notice) => (
+            <div data-diagram-source-pane-failed="" className={cn(PANE_CLASS, 'overflow-auto p-3')}>
+              {notice}
+              <pre className="text-xs text-muted-foreground"><code className="font-mono">{draft.draft}</code></pre>
+            </div>
+          )}
+        >
+          <Suspense fallback={<div data-diagram-source-pane-pending="" aria-hidden="true" className={PANE_CLASS} />}>
+            <DiagramSourcePane draft={draft} editable={editable} markedLines={markedLines} className={PANE_CLASS} />
+          </Suspense>
+        </LazyBlockBoundary>
       )}
       <div className="relative min-h-0 min-w-0 flex-1">
         {showFallback ? (

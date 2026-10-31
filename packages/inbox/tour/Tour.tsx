@@ -8,6 +8,7 @@
  * tour's state (model.ts); nothing here calls a route that writes. The
  * person's own Inbox stays mounted in App, untouched, and comes back on exit.
  */
+import { inboxUrl } from '../inboxUrl';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { InboxAnnotationRecord, InboxAttachmentState, InboxInlineImage, InboxMessageWire } from '@plannotator/core/inbox-types';
@@ -873,6 +874,8 @@ export function TourNavigation({
       onUpdate={() => {}}
       onWhatsNew={() => {}}
       connectPrompt={false}
+      // The tour draws Pinned and Projects open whatever this browser closed.
+      rememberSections={false}
     />
   );
 }
@@ -962,7 +965,7 @@ export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, sa
   useEffect(() => {
     const onError = (event: Event) => {
       const img = event.target;
-      if (!(img instanceof HTMLImageElement) || !img.src.includes('/api/inbox/tour/assets/')) return;
+      if (!(img instanceof HTMLImageElement) || !img.src.includes(inboxUrl('/tour/assets/'))) return;
       requestAnimationFrame(() => {
         const card = document.querySelector('[data-tour-message="ask"] .question-block');
         if (card && !card.querySelector('[data-question-tiles]')) degradedRef.current?.({ pictures: true });
@@ -1053,6 +1056,8 @@ export function TourMain({ fixture, state, dispatch, phone, stacked, reduced, sa
       onOpen={(r) => dispatch({ type: 'open', thread: r.thread_id }, { focusCoach: true })}
       onCompose={state.step === 9 && state.compose !== 'sent' ? onCompose : undefined}
       phone={phone}
+      // The tour draws today's list whatever look this browser chose (as its sidebar ignores closed sections).
+      rememberLook={false}
     />
   );
 

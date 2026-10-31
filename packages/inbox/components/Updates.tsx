@@ -6,6 +6,12 @@
  * restart and failure dialogs; the What's new page; Settings → About.
  */
 
+import {
+  UPDATE_EXIT_CHECKSUM_MISMATCH,
+  UPDATE_EXIT_DOWNLOAD_FAILED,
+  UPDATE_OTHER_TMPDIR_COMMAND,
+  updateStagingAdvice,
+} from '@plannotator/core/update-exit-codes';
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { Viewer } from '@plannotator/ui/components/Viewer';
 import { ImageResolverContext, type ImageResolution } from '@plannotator/ui/components/ImageResolverContext';
@@ -315,8 +321,8 @@ export function UpdateDialog({ details, update, error, busy, onUpdateNow, onRemi
       ) : (
         managed && (
           <p className="ib-sum ib-quietline">
-            It also updates the Claude Code plugin when it is installed, and OpenCode&apos;s cached plugin: restart those agents
-            afterwards. Pi: run <code>pi update --extensions</code>.
+            It also updates the Claude Code plugin when it is installed, and OpenCode&apos;s cached plugin: reload those agents
+            afterwards (Settings, Agents says which). Pi: run <code>pi update --extensions</code>, then <code>/reload</code>.
           </p>
         )
       )}
@@ -325,16 +331,19 @@ export function UpdateDialog({ details, update, error, busy, onUpdateNow, onRemi
           <input
             type="checkbox"
             checked={auto.on}
-            disabled={auto.env !== null}
+            // Auto-update needs update checks: with them off it could never act (as Settings → About says).
+            disabled={auto.env !== null || details?.check.on === false}
             onChange={(event) => onAutoUpdate(event.target.checked)}
             data-auto-update-checkbox=""
           />
           <span>
             Install new versions automatically
             <small>
-              {auto.env !== null
-                ? `PLANNOTATOR_AUTO_UPDATE is set in this Inbox's environment, so it is ${auto.env ? 'on' : 'off'}.`
-                : 'At most once a day, never while another review is open. Change it in Settings.'}
+              {details?.check.on === false
+                ? `Needs update checks, which are off${details.check.env === false ? ': this Inbox started with PLANNOTATOR_UPDATE_CHECK=0' : ''}.`
+                : auto.env !== null
+                  ? `PLANNOTATOR_AUTO_UPDATE is set in this Inbox's environment, so it is ${auto.env ? 'on' : 'off'}.`
+                  : 'At most once a day, never while another review is open. Change it in Settings.'}
             </small>
           </span>
         </label>
@@ -398,18 +407,83 @@ export function FailedDialog({
   onClose: () => void;
 }) {
   const code = details?.failure?.exit_code;
+  const tls = details?.failure?.tls;
+  // Safe updates (step 1): the download didn't match the checksum Plannotator
+  // fetched, or the connection presented a revoked certificate (a blocked
+  // key). Neither offers the `curl | bash` line: it would go through the same
+  // connection, and curl trusts it. Any other failed download can be a lasting
+  // local condition (a proxy, a network that inspects HTTPS), so it keeps the
+  // way out: the install command and the release page.
+  const mismatch = code === UPDATE_EXIT_CHECKSUM_MISMATCH;
+  const couldNotDownload = code === UPDATE_EXIT_DOWNLOAD_FAILED;
+  const revoked = couldNotDownload && tls === 'revoked';
+  // Downloaded, but the temp folder could not hold it: not a network problem, so no way out by curl either.
+  const prepare = couldNotDownload ? details?.failure?.prepare : undefined;
+  const sub = prepare
+    ? `Plannotator couldn't prepare the update: ${prepare}. Nothing was changed; Plannotator ${update.current} still works. ${updateStagingAdvice(prepare)}, then try again.`
+    : mismatch
+      ? `The download didn't match the checksum Plannotator fetched for it. Nothing was changed; Plannotator ${update.current} still works. Try again later, or on another network.`
+      : revoked
+        ? `The connection presented a revoked certificate, so Plannotator downloaded nothing. Plannotator ${update.current} still works. Don't install Plannotator over this network; try again on another network.`
+        : couldNotDownload
+          ? `Plannotator couldn't download the update. Nothing was changed; Plannotator ${update.current} still works. Try again later.`
+          : `Plannotator is still ${update.current}.${code !== undefined ? ` The install script exited with code ${code}.` : ''}`;
   return (
-    <Modal label="The update didn't install" onClose={onClose} testId="failed">
-      <h2>The update didn&apos;t install</h2>
-      <p className="ib-sub">
-        Plannotator is still {update.current}.{code !== undefined ? ` The install script exited with code ${code}.` : ''}
-      </p>
+    <Modal label={mismatch ? 'The update stopped' : "The update didn't install"} onClose={onClose} testId="failed">
+      <h2>{mismatch ? 'The update stopped' : <>The update didn&apos;t install</>}</h2>
+      <p className="ib-sub">{sub}</p>
       {details && (
         <>
-          <p className="ib-sum">The log says what went wrong:</p>
+          <p className="ib-sum">{mismatch || couldNotDownload ? 'Details are in the log:' : 'The log says what went wrong:'}</p>
           <CommandRow text={tildePath(details.log, home)} />
-          <p className="ib-sum">Or run the install script yourself:</p>
-          <CommandRow text={details.command} />
+          {prepare && (
+            <>
+              <p className="ib-sum">Or update from a terminal with another temp folder:</p>
+              <CommandRow text={UPDATE_OTHER_TMPDIR_COMMAND} />
+            </>
+          )}
+          {couldNotDownload && !revoked && !prepare && (
+            <>
+              {tls === 'untrusted' && (
+                <>
+                  <p className="ib-sum">If your network inspects HTTPS with its own certificate, point NODE_EXTRA_CA_CERTS at that certificate and update from a terminal:</p>
+                  <CommandRow text="NODE_EXTRA_CA_CERTS=/path/to/its-root.pem plannotator update" />
+                </>
+              )}
+              {details.failure?.release_first ? (
+                // macOS curl still trusts emSign G3: should a network holding a
+                // leaked key read as "untrusted", the release page comes first.
+                <>
+                  <p className="ib-sum">
+                    If this keeps happening, download it from{' '}
+                    <a href={update.releaseUrl} target="_blank" rel="noopener noreferrer" data-failed-release="">
+                      the release page
+                    </a>
+                    .
+                  </p>
+                  <p className="ib-sum">Or run the install script yourself:</p>
+                  <CommandRow text={details.command} />
+                </>
+              ) : (
+                <>
+                  <p className="ib-sum">
+                    If this keeps happening, install it yourself, or download it from{' '}
+                    <a href={update.releaseUrl} target="_blank" rel="noopener noreferrer" data-failed-release="">
+                      the release page
+                    </a>
+                    :
+                  </p>
+                  <CommandRow text={details.command} />
+                </>
+              )}
+            </>
+          )}
+          {!mismatch && !couldNotDownload && (
+            <>
+              <p className="ib-sum">Or run the install script yourself:</p>
+              <CommandRow text={details.command} />
+            </>
+          )}
         </>
       )}
       <div className="ib-acts-row">
@@ -742,6 +816,21 @@ export function checkStatusWords(details: UpdateDetails | null, news: boolean, n
 // ───────────────────────────── Settings → General ─────────────────────────────
 
 /**
+ * Why update checks are off and how to turn them back on (null: they are on).
+ * Off stops only the automatic checks: Check now and Update still work.
+ */
+export function checksOffWords(details: UpdateDetails | null): ReactNode {
+  if (!details || details.check.on) return null;
+  if (details.check.env === false)
+    return (
+      <>
+        Update checks are off: this Inbox started with <code>PLANNOTATOR_UPDATE_CHECK=0</code>. Restart it without that to turn them back on.
+      </>
+    );
+  return 'Update checks are off. Turn on "Tell me when a new version is out" in Settings → About to check again.';
+}
+
+/**
  * The first row of Settings → General (the owner, 2026-10-26: "the update
  * button to also show up in the general part of settings"): the version this
  * Inbox runs and the same action the sidebar's Update button offers, plus
@@ -771,6 +860,9 @@ export function GeneralUpdateRow({
 }) {
   const known = details?.latest && newerThan(details.latest.version, version) ? details.latest.version : null;
   const busy = restarting || update?.state === 'updating';
+  // Checks off: say why and how to turn them back on, under whatever the row offers.
+  const off = version === 'dev' ? null : checksOffWords(details);
+  let offLine = !!off;
   let status: ReactNode;
   if (version === 'dev') status = 'A development build';
   else if (restarting && update) status = `Restarting into ${update.version}…`;
@@ -787,7 +879,17 @@ export function GeneralUpdateRow({
       </>
     );
   else if (failing) status = checkFailingStatus(failing, details);
-  // A newer release known but not offered (checks off, or Remind me tomorrow): never "Up to date".
+  else if (off) {
+    // Nothing to offer: the reason is the status (a snoozed release still says it exists).
+    offLine = false;
+    status = (
+      <>
+        {known && `${known} is available · `}
+        {off}
+      </>
+    );
+  }
+  // A newer release known but not offered (Remind me tomorrow): never "Up to date".
   else status = [checkStatusWords(details, !!known), known && `${known} is available`].filter(Boolean).join(' · ');
   const label = restarting
     ? 'Restarting…'
@@ -810,6 +912,11 @@ export function GeneralUpdateRow({
             <span className="ib-desc" data-general-update-status="">
               {status}
             </span>
+            {offLine && (
+              <span className="ib-desc" data-general-checks-off="">
+                {off}
+              </span>
+            )}
           </span>
           <span className="ib-ctl">
             {label && (
@@ -970,7 +1077,7 @@ export function AboutBlock({
           <Icon name="info" />
           {locked
             ? checks?.env !== null && checks?.env !== undefined
-              ? `PLANNOTATOR_UPDATE_CHECK is set in this Inbox's environment, so update checks are ${checks.env ? 'on' : 'off'}.`
+              ? `PLANNOTATOR_UPDATE_CHECK is set in this Inbox's environment, so update checks are ${checks.env ? 'on' : 'off'}. Restart the Inbox without it to change that.${checks.env ? '' : ' Check now and Update still work.'}`
               : `PLANNOTATOR_AUTO_UPDATE is set in this Inbox's environment, so automatic updates are ${auto?.env ? 'on' : 'off'}.`
             : 'Off makes no request to GitHub at all. Check now always asks.'}
         </div>

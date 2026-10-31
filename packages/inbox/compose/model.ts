@@ -22,6 +22,16 @@ export interface ComposeGroup {
 
 export const hostLabel = (host: string): string => INBOX_HOST_NAMES[host] ?? host;
 
+/**
+ * A project's name in its two parts: the folder's own name, and the parent
+ * folders the Inbox adds when two projects share it ("main · workspaces/worktrees",
+ * `inboxProjectLabels`), or null. To keeps the first whole and cuts the parents.
+ */
+export function splitProjectName(name: string): { folder: string; parents: string | null } {
+  const at = name.indexOf(' · ');
+  return at > 0 ? { folder: name.slice(0, at), parents: name.slice(at + 3) || null } : { folder: name, parents: null };
+}
+
 /** Every live session, in the server's order (the most recently active project first). */
 export function composeTargets(projects: readonly InboxComposeProject[]): ComposeTarget[] {
   return projects.flatMap((group) => group.sessions.map((session) => ({ ...session, project: group.project })));
@@ -202,10 +212,40 @@ export interface ComposeSnapshot {
   files: readonly string[];
   /** The thread name the person typed in the chip (`draftThreadName`); absent counts as none. */
   threadName?: string;
+  /** The Board chip is on (approval "inbox-compose-board-chip"); absent counts as off. */
+  board?: boolean;
 }
 
-export function draftSnapshot(draft: Pick<InboxDraft, 'body' | 'to' | 'files' | 'thread_name'> | null): ComposeSnapshot {
-  return { body: draft?.body ?? '', session: draft?.to?.session ?? null, files: (draft?.files ?? []).map((file) => file.upload_id), threadName: draft?.thread_name ?? '' };
+export function draftSnapshot(draft: Pick<InboxDraft, 'body' | 'to' | 'files' | 'thread_name' | 'board_request'> | null): ComposeSnapshot {
+  return {
+    body: draft?.body ?? '',
+    session: draft?.to?.session ?? null,
+    files: (draft?.files ?? []).map((file) => file.upload_id),
+    threadName: draft?.thread_name ?? '',
+    board: draft?.board_request === true,
+  };
+}
+
+/** Where the browser keeps the Board chip's last choice (approval "inbox-compose-board-chip": remembered per browser). */
+export const COMPOSE_BOARD_CHOICE_KEY = 'plannotator-inbox-compose-board';
+
+/** The Board chip's last choice in this browser: off unless it was last turned on. */
+export function composeBoardChoice(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(COMPOSE_BOARD_CHOICE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/** Keep the Board chip's choice for the next compose in this browser. */
+export function rememberComposeBoardChoice(on: boolean): void {
+  try {
+    if (on) localStorage.setItem(COMPOSE_BOARD_CHOICE_KEY, '1');
+    else localStorage.removeItem(COMPOSE_BOARD_CHOICE_KEY);
+  } catch {
+    // Storage refused (private mode, quota): the choice lasts this compose only.
+  }
 }
 
 /**
@@ -221,11 +261,15 @@ export function isDirty(now: ComposeSnapshot, saved: ComposeSnapshot, savedExist
     now.body !== saved.body ||
     now.session !== saved.session ||
     now.files.join('\n') !== saved.files.join('\n') ||
-    (now.threadName ?? '').trim() !== (saved.threadName ?? '').trim()
+    (now.threadName ?? '').trim() !== (saved.threadName ?? '').trim() ||
+    (now.board === true) !== (saved.board === true)
   );
 }
 
-/** The status line beside Send. */
+/**
+ * The status line beside Send: why nothing can be sent yet. With an agent chosen it is empty (the
+ * thread's own delivery line says Queued / Sending / Delivered once it is sent).
+ */
 export function statusLine(input: {
   target: ComposeTarget | null;
   anyLive: boolean;
@@ -235,10 +279,7 @@ export function statusLine(input: {
   loading?: boolean;
 }): string {
   if (input.loading) return 'Looking for live agents…';
-  if (input.target) {
-    const name = hostLabel(input.target.host);
-    return input.target.busy ? `${name} is working; it takes this when its turn ends.` : `${name} takes it as its next turn.`;
-  }
+  if (input.target) return '';
   if (input.ended) return 'That session has ended.';
   if (input.anyLive) return 'Choose an agent to send it.';
   return input.projectName ? `No agent is running in ${input.projectName}.` : 'No agent is running.';

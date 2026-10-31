@@ -18,6 +18,7 @@ import {
 } from '../utils/themeRegistry';
 import type { Mode } from './themeModes';
 import { usePrintMedia } from '../hooks/usePrintMedia';
+import { markRootPlatform } from '../utils/platform';
 
 // Kept here because published consumers already import Mode from ThemeProvider.
 export type { Mode } from './themeModes';
@@ -62,11 +63,21 @@ const ThemeProviderContext = createContext<ThemeProviderState>({
   manageFavicon: false,
 });
 
-/** Sync theme classes on <html> without stripping non-theme classes (e.g. transitions-ready). */
+/**
+ * Sync theme classes on <html> without stripping non-theme classes (e.g. transitions-ready).
+ *
+ * A page that sets an inline `color-scheme` on <html> before its scripts run
+ * (Plannotator's packed pages do, so the empty page does not paint white under
+ * a dark theme) hands it over here: from the first render it follows the mode
+ * on screen, so it never goes stale after a theme switch. A host page that sets
+ * none keeps none.
+ */
 function applyThemeClasses(themeId: string, resolvedMode: 'dark' | 'light'): void {
   const el = document.documentElement;
   const themeClass = `theme-${themeId}`;
   const wantLight = resolvedMode === 'light';
+
+  if (el.style.colorScheme && el.style.colorScheme !== resolvedMode) el.style.colorScheme = resolvedMode;
 
   if (el.classList.contains(themeClass) && el.classList.contains('light') === wantLight) return;
 
@@ -223,6 +234,8 @@ export function ThemeProvider({
   // without this the first frame has no valid --background/--foreground.
   if (typeof window !== 'undefined') {
     applyThemeClasses(colorTheme, resolvedMode);
+    // theme.css scopes the Linux-only font-feature rule to this class (#1961).
+    markRootPlatform();
   }
 
   // Keep class in sync after state changes

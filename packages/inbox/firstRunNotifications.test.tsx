@@ -16,7 +16,7 @@
  * yet). The agents this computer has are a canned model (the Inbox's scratch
  * agent environment finds none), so the note dialog has someone to ask about.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { act } from 'react';
@@ -191,7 +191,9 @@ afterEach(async () => {
   pokeStream = null;
   globalThis.fetch = savedFetch;
   (globalThis as Record<string, unknown>).EventSource = savedEventSource;
-  (window as unknown as Record<string, unknown>).Notification = savedNotification;
+  // Put back "none" as none: a property set to undefined reads as support (see tour.test.tsx).
+  if (savedNotification === undefined) delete (window as unknown as Record<string, unknown>).Notification;
+  else (window as unknown as Record<string, unknown>).Notification = savedNotification;
   setUrl('about:blank');
   childOut?.releaseLock();
   child?.kill();

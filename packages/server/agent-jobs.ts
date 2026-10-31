@@ -9,6 +9,7 @@
  */
 
 import { childEnv } from "@plannotator/shared/child-env";
+import { askAiChildEnv } from "@plannotator/ai/providers/ask-ai-env";
 import { resolve as resolvePath } from "node:path";
 import { allowedToolsOf, CLAUDE_SHELL_BLOCKED_WARNING, detectClaudeShellBlocked, disallowedToolsOf, formatClaudeLogEvent } from "./claude-review";
 import {
@@ -326,7 +327,10 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
         stdout: captureStdout ? "pipe" : "ignore",
         stderr: "pipe",
         env: {
-          ...process.env,
+          // The live env with Plannotator's own integration off (the Inbox MCP,
+          // the agent tool, the plan and Stop hooks). No job uses it: each
+          // returns its result on stdout or in its output file (ask-ai-env.ts).
+          ...askAiChildEnv(),
           // The agent runs `git diff` / `git log` itself through a pipe; keep a
           // user's `color.diff = always` from filling its context with ANSI
           // escapes (#1661).

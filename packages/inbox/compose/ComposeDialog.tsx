@@ -25,12 +25,14 @@ import { inboxId, type InboxDraftTo } from '@plannotator/core/inbox-types';
 import { InboxApiError, inboxApi, type ComposeSessionsModel, type DraftView, type StartThreadInput } from '../api';
 import { whenTime } from '../format';
 import { HostMark, Icon } from '../icons';
-import { ComposeFileTiles, attachedAnnouncement, useComposeFiles } from './ComposeFiles';
-import { ToPicker } from './ToPicker';
+import { AttachFilesButton, ComposeFileTiles, attachedAnnouncement, useComposeFiles, useFileDrop } from './ComposeFiles';
+import { SessionDetail, ToPicker } from './ToPicker';
 import { ThreadNameChip } from './ThreadNameChip';
 import { useComposeSessions } from './useComposeSessions';
 import { InboxComposerField, type CaretMenuOptions } from '../components/ComposerField';
 import { Tip } from '../components/Tip';
+import { ShortcutHint, useShortcutAria } from '../shortcuts/hint';
+import { inboxThreadShortcuts } from '../shortcuts/thread.shortcuts';
 import { INBOX_MESSAGE_SKILL_AUDIENCE, inboxSkillsBlock, withSkillsBlock } from '../skills';
 import {
   NOTHING_SENT_NO_AGENT,
@@ -43,6 +45,8 @@ import {
   hostLabel,
   isDirty,
   composeOpening,
+  composeBoardChoice,
+  rememberComposeBoardChoice,
   statusLine,
   sendThreadName,
   suggestThreadName,
@@ -61,6 +65,14 @@ export interface ComposeRequest {
   body?: string;
   /** A session to put in To (the palette's "Message <host> in <project>"). */
   session?: string | null;
+  /**
+   * A Board card with no thread (its opened card's "Create thread"): the
+   * message starts with the card's title, so the thread's subject is the
+   * title, and the window links the sent thread to the card (`ComposeSent.cardId`).
+   * Saved as a draft, the draft keeps the card (`InboxDraft.card`), so sending
+   * it later from Drafts still links the thread.
+   */
+  card?: { id: string; title: string } | null;
 }
 
 export interface ComposeSent {
@@ -70,6 +82,8 @@ export interface ComposeSent {
   projectName: string;
   /** The draft it was sent from (it is deleted with the Send), or null. */
   draftId: string | null;
+  /** The Board card the thread was created for (`ComposeRequest.card`): link the thread to it. */
+  cardId?: string | null;
 }
 
 /**
@@ -105,9 +119,28 @@ export interface ComposeDialogProps {
    * it. Absent: nothing.
    */
   aside?: React.ReactNode;
+  /** The Board is on (Settings): compose offers the Board chip. Absent: off, no chip. */
+  board?: boolean;
 }
 
-const isMac = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+/**
+ * The Board chip (approval "inbox-compose-board-chip", v3): at the right of
+ * the Thread row, a plain toggle (`aria-pressed`) named "Track on Board",
+ * with a component tooltip. On, the Send asks the agent to track the work on
+ * the Board (`board_request`); the agent makes the card(s). No shortcut.
+ */
+function BoardChip(props: { on: boolean; onToggle: () => void }) {
+  return (
+    <Tip content={props.on ? 'On your Board when sent' : 'Track on your Board'}>
+      <button type="button" className="ib-cp-board" aria-pressed={props.on} aria-label="Track on Board" data-compose-board="" onClick={props.onToggle}>
+        <span className="ib-cp-board-box" aria-hidden="true">
+          {props.on && <Icon name="check" size={11} />}
+        </span>
+        Board
+      </button>
+    </Tip>
+  );
+}
 
 export function ComposeDialog(props: ComposeDialogProps) {
   const { request, phone, current, lastSent, home, transport } = props;
@@ -122,7 +155,14 @@ export function ComposeDialog(props: ComposeDialogProps) {
   const statusId = `ib-cp-status-${uid}`;
 
   const [draft, setDraft] = useState<DraftView | null>(request.draft ?? null);
-  const [body, setBody] = useState(request.draft?.body ?? request.body ?? '');
+  const [body, setBody] = useState(request.draft?.body ?? request.body ?? (request.card ? `${request.card.title}\n\n` : ''));
+  // The Board card this thread is for (Create thread), kept on its draft so a draft sent later still links it.
+  const card = request.card ?? request.draft?.card ?? null;
+  // The Board chip: a draft's own choice, else this browser's last one. Never in Create thread (the card is the Board's
+  // already), and shown only while the Board is on; a draft keeps its choice while the Board is off.
+  const [boardOn, setBoardOn] = useState(() => (request.draft ? request.draft.board_request === true : composeBoardChoice()));
+  const boardChip = props.board === true && !card;
+  const boardRequest = !card && boardOn;
   // The thread's name (its chip): follows the message until the person types in it (ThreadNameChip).
   const [nameState, setNameState] = useState<ThreadNameState>(() => threadNameStateOf(request.draft));
   const [chosen, setChosen] = useState<string | null>(opening.chosen);
@@ -134,6 +174,8 @@ export function ComposeDialog(props: ComposeDialogProps) {
       setTimeout(() => setPasteSaid(attachedAnnouncement(names)), 30);
     },
   });
+  // A drop anywhere on the dialog attaches the files ("Drop files to attach").
+  const drop = useFileDrop(files.add, takesFiles);
   const { model, load } = useComposeSessions(true, transport?.sessions);
   const projects = model?.projects ?? [];
   const target = findTarget(projects, chosen);
@@ -169,7 +211,6 @@ export function ComposeDialog(props: ComposeDialogProps) {
   const [nameError, setNameError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<DraftView | null>(null);
   const [busy, setBusy] = useState<null | 'send' | 'save' | 'delete'>(null);
-  const [dropping, setDropping] = useState(false);
 
   // The idempotency key of one Send: new whenever what would be sent changes.
   const sendKey = useRef(crypto.randomUUID());
@@ -184,13 +225,16 @@ export function ComposeDialog(props: ComposeDialogProps) {
   const threadName = draftThreadName(nameState);
   useEffect(() => {
     sendKey.current = crypto.randomUUID();
-  }, [body, chosen, threadName, nameState.edited ? '' : suggested, uploadIds.join(',')]);
+  }, [body, chosen, threadName, nameState.edited ? '' : suggested, uploadIds.join(','), boardChip && boardRequest]);
   const draftId = useRef(request.draft?.id ?? inboxId('drf'));
 
   // Nothing written: no words, no files, no typed thread name. An empty compose is never kept as a draft.
-  const empty = body.trim() === '' && files.files.length === 0 && threadName.trim() === '';
+  // A Board card's Create thread starts with the card's title: left as it was, that is nothing written either.
+  const cardStart = request.card && !request.draft ? `${request.card.title}\n\n` : null;
+  const untouched = cardStart !== null && body === cardStart && files.files.length === 0 && threadName.trim() === '';
+  const empty = untouched || (body.trim() === '' && files.files.length === 0 && threadName.trim() === '');
   const saved = draftSnapshot(draft);
-  const dirty = isDirty({ body, session: chosen, files: uploadIds, threadName }, saved, draft !== null) || files.uploading;
+  const dirty = !untouched && (isDirty({ body, session: chosen, files: uploadIds, threadName, board: boardRequest }, saved, draft !== null) || files.uploading);
   const projectName = current?.name ?? null;
 
   // ── the dialog ──
@@ -271,8 +315,9 @@ export function ComposeDialog(props: ComposeDialogProps) {
         uploads: uploadIds,
         ...named,
         ...(draft ? { draft_id: draft.id } : {}),
+        ...(boardChip && boardRequest ? { board_request: true as const } : {}),
       });
-      props.onSent({ threadId: result.thread_id, session: target.session, host: target.host, projectName: result.project?.name ?? target.project.name, draftId: draft?.id ?? null });
+      props.onSent({ threadId: result.thread_id, session: target.session, host: target.host, projectName: result.project?.name ?? target.project.name, draftId: draft?.id ?? null, cardId: card?.id ?? null });
     } catch (cause) {
       if (cause instanceof InboxApiError && cause.code === 'session_not_live') {
         void load();
@@ -302,7 +347,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
       const project = target
         ? { id: target.project.id, root: target.project.root, name: target.project.name }
         : (draft?.project ?? (current?.root ? { id: current.id, root: current.root, name: current.name ?? current.root } : null));
-      const result = await inboxApi.saveDraft(draftId.current, { body, to, project, files: uploadIds, base, thread_name: threadName });
+      const result = await inboxApi.saveDraft(draftId.current, { body, to, project, files: uploadIds, base, thread_name: threadName, ...(card ? { card } : {}), ...(boardRequest ? { board_request: true as const } : {}) });
       setDraft(result.draft);
       setConflict(null);
       return result.draft;
@@ -382,6 +427,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
   };
 
   const sendable = !!target;
+  const sendKeys = useShortcutAria({ scope: inboxThreadShortcuts, action: 'send' });
   // While the sessions are read, neither Save draft nor a dead To: a neutral "Looking…" state.
   const loading = !model;
   // Save draft only for something written: an empty compose offers none (a phone shows the disabled Send instead).
@@ -425,23 +471,17 @@ export function ComposeDialog(props: ComposeDialogProps) {
             <>
               <HostMark host={target.host} />
               <b>{hostLabel(target.host)}</b>
-              <span className="ib-cp-tod">
-                · <bdi>{target.project.name}</bdi>
-              </span>
+              <SessionDetail name={target.project.name} root={target.project.root} />
             </>
           ) : endedNote ? (
             <>
               <HostMark host={endedNote.host} />
               <s>{hostLabel(endedNote.host)}</s>
-              <span className="ib-cp-tod">
-                ·{' '}
-                {endedNote.project_name ? (
-                  <>
-                    <bdi>{endedNote.project_name}</bdi> ·{' '}
-                  </>
-                ) : null}
-                ended
-              </span>
+              {endedNote.project_name ? (
+                <SessionDetail name={endedNote.project_name} root={endedNote.project_root} suffix="ended" />
+              ) : (
+                <span className="ib-cp-tod">· ended</span>
+              )}
             </>
           ) : (
             <span className="ib-cp-tod">{model ? 'Choose an agent' : 'Looking for live agents…'}</span>
@@ -473,24 +513,10 @@ export function ComposeDialog(props: ComposeDialogProps) {
         const r = dialog.getBoundingClientRect();
         if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) requestClose();
       }}
-      onDragOver={(event) => {
-        if (!takesFiles || ![...event.dataTransfer.types].includes('Files')) return;
-        event.preventDefault();
-        setDropping(true);
-      }}
-      onDragLeave={(event) => {
-        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-        setDropping(false);
-      }}
+      {...drop.handlers}
       // A paste anywhere in the dialog that carries files attaches them; text pastes as text.
       onPaste={(event) => {
         if (takesFiles && files.paste(event)) setError(null);
-      }}
-      onDrop={(event) => {
-        if (!takesFiles || event.dataTransfer.files.length === 0) return;
-        event.preventDefault();
-        setDropping(false);
-        files.add(event.dataTransfer.files);
       }}
     >
       {phone ? (
@@ -522,6 +548,13 @@ export function ComposeDialog(props: ComposeDialogProps) {
         </h2>
       )}
       {toRow}
+      {card && (
+        <p className="ib-cp-card" data-compose-card={card.id}>
+          <span>
+            A thread for the Board card <b dir="auto">{card.title}</b>. Sending links it to the card.
+          </span>
+        </p>
+      )}
       {picker && (
         <ToPicker
           groups={groups}
@@ -565,6 +598,15 @@ export function ComposeDialog(props: ComposeDialogProps) {
           }}
           idBase={`ib-cp-tname-${uid}`}
         />
+        {boardChip && (
+          <BoardChip
+            on={boardOn}
+            onToggle={() => {
+              setBoardOn(!boardOn);
+              rememberComposeBoardChoice(!boardOn);
+            }}
+          />
+        )}
       </div>
       {model && !anyLive && !endedNote && (
         <div className="ib-cp-note" data-compose-note="none">
@@ -598,7 +640,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
           <InboxComposerField
             textareaRef={textRef}
             ariaLabel="Message"
-            ariaDescribedBy={statusId}
+            ariaDescribedBy={status ? statusId : undefined}
             destination="your message"
             placeholder="Write an idea or a request. It starts a new thread."
             // The field is tall and sits in a scrolling body above the footer: the picker opens at the
@@ -664,21 +706,8 @@ export function ComposeDialog(props: ComposeDialogProps) {
       ) : (
         <div className="ib-cp-foot">
           {takesFiles ? (
-            <Tip content="Attach files">
-              <label className="ib-cp-clip" aria-label="Attach files">
-                <Icon name="clip" size={17} />
-                <input
-                  type="file"
-                  multiple
-                  className="ib-sr"
-                  data-compose-attach=""
-                  onChange={(event) => {
-                    if (event.target.files) files.add(event.target.files);
-                    event.target.value = '';
-                  }}
-                />
-              </label>
-            </Tip>
+            // On a phone what the picker hands over is named as a paste is (`image.jpg` -> `pasted-image-<stamp>.jpg`).
+            <AttachFilesButton className="ib-cp-clip" iconSize={17} phone={phone} inputData="data-compose-attach" onFiles={(list) => (phone ? files.attach : files.add)(list)} />
           ) : (
             <Tip content="Files: not in the tour">
               <span className="ib-cp-clip" role="img" aria-label="Files: not in the tour" aria-disabled="true" data-compose-attach-off="">
@@ -699,9 +728,11 @@ export function ComposeDialog(props: ComposeDialogProps) {
             </button>
           )}
           <span className="ib-sp" />
-          <span className="ib-cp-status" id={statusId} data-compose-status="">
-            {status}
-          </span>
+          {status && (
+            <span className="ib-cp-status" id={statusId} data-compose-status="">
+              {status}
+            </span>
+          )}
           {saveOffered && !phone && (
             <button type="button" className="ib-btn" onClick={() => void keepDraft()} disabled={busy !== null} data-compose-save="">
               Save draft
@@ -712,16 +743,14 @@ export function ComposeDialog(props: ComposeDialogProps) {
               type="button"
               className={`ib-btn ib-pri${sendable ? '' : ' ib-dis'}`}
               aria-disabled={!sendable || undefined}
-              aria-keyshortcuts={isMac() ? 'Meta+Enter' : 'Control+Enter'}
+              aria-keyshortcuts={sendKeys}
               onClick={() => void send()}
               disabled={busy !== null}
               data-compose-send=""
             >
               <Icon name="send" size={15} />
               Send
-              <kbd className="ib-kbd" aria-hidden="true">
-                {isMac() ? '⌘↵' : 'Ctrl ↵'}
-              </kbd>
+              <ShortcutHint scope={inboxThreadShortcuts} action="send" />
             </button>
           )}
         </div>
@@ -730,7 +759,7 @@ export function ComposeDialog(props: ComposeDialogProps) {
         {pasteSaid}
       </div>
       {props.aside}
-      {dropping && (
+      {drop.over && (
         <div className="ib-cp-drop" aria-hidden="true">
           <Icon name="clip" size={20} />
           Drop files to attach

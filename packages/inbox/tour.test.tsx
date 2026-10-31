@@ -16,7 +16,7 @@
  * - A pick other than the real answer: the honest note.
  * - Returning users: Settings → General → Take the tour.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { act } from 'react';
@@ -166,7 +166,11 @@ afterEach(async () => {
   globalThis.fetch = savedFetch;
   (globalThis as Record<string, unknown>).EventSource = savedEventSource;
   window.matchMedia = savedMatchMedia;
-  (window as unknown as Record<string, unknown>).Notification = savedNotification;
+  // happy-dom has no Notification: put back "none", not a property set to undefined, which
+  // `'Notification' in window` reads as support (a read still in flight after the unmount
+  // then reached Notification.permission: an unhandled error between tests on Bun 1.4.4).
+  if (savedNotification === undefined) delete (window as unknown as Record<string, unknown>).Notification;
+  else (window as unknown as Record<string, unknown>).Notification = savedNotification;
   document.hasFocus = savedHasFocus;
   resetStorageBackend();
   window.location.hash = '';

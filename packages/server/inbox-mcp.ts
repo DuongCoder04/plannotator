@@ -16,9 +16,10 @@ import { isAbsolute } from "node:path";
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod";
 import { QUESTION_AUTHORING_GUIDE } from "@plannotator/core/question-block";
+import { inboxQuestionKeysWithRecommendedMarker } from "@plannotator/core/inbox-questions";
 import { INBOX_ACTION_EXAMPLE, INBOX_ACTION_GUIDE, INBOX_DONE_DESCRIPTION } from "@plannotator/core/inbox-actions";
-import { checkInboxSubject, INBOX_CARD_ACTION_ON, inboxAgentName, INBOX_NAME_THIS_THREAD_HINT, INBOX_SECTIONS, isInboxNote, INBOX_THREAD_NAME_MAX, type InboxGuideRef, type InboxSectionId, type InboxLine, type InboxMessage, type InboxProject } from "@plannotator/core/inbox-types";
-import { INBOX_WAKES_META_KEY, inboxTaggedLine } from "@plannotator/shared/inbox/connection";
+import { checkInboxSubject, INBOX_CARD_ACTION_ON, INBOX_HOST_NAMES, inboxAgentName, inboxTidyMcpLine, INBOX_NAME_THIS_THREAD_HINT, INBOX_SECTIONS, isInboxNote, INBOX_THREAD_NAME_MAX, type InboxGuideRef, type InboxSectionId, type InboxLine, type InboxMessage, type InboxProject } from "@plannotator/core/inbox-types";
+import { INBOX_AGENT_RULES, INBOX_PEEK_META_KEY, INBOX_REF_LINK_RULE, INBOX_REPLY_TO_CHECK, INBOX_WAKES_META_KEY, INBOX_WORKING_FOLDER_META_KEY, inboxHandedAwayLine, inboxTaggedLine } from "@plannotator/shared/inbox/connection";
 import { inboxBodyForAgent } from "@plannotator/shared/inbox/uploads";
 import { inboxSectionOf } from "@plannotator/shared/inbox/list";
 import { bodyShowsLocalImages, captureInboxInlineImages, type InlineImageFailure } from "@plannotator/shared/inbox/inline-images";
@@ -27,6 +28,7 @@ import { InboxError } from "@plannotator/shared/inbox/schema";
 import type { InboxSendResult, InboxStore } from "@plannotator/shared/inbox/store";
 import type { InboxAttachment, InboxListRow, InboxQuestion } from "@plannotator/core/inbox-types";
 import { registerInboxGuideTools } from "./inbox-guides";
+import { lastContactOf, noteSessionRead, staleThreadOf, staleThreadText } from "./inbox-session-reads";
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, clip, questionWords, shortTime, sizeText, windowedThread, windowedThreadText } from "./inbox-mcp-read";
 import { registerInboxSearchTool } from "./inbox-mcp-search";
 import { registerInboxCardTool } from "./inbox-mcp-cards";
@@ -58,19 +60,23 @@ export const INBOX_SERVED_TOOLS: readonly (typeof INBOX_MCP_TOOLS)[number][] = I
 export const INBOX_DEFAULT_SERVED_TOOLS: readonly (typeof INBOX_MCP_TOOLS)[number][] = INBOX_SERVED_TOOLS.filter((name) => name !== "card");
 
 
-/** Under Claude Code's 2,048-character cap on server instructions. */
+/**
+ * Under Claude Code's 2,048-character cap on server instructions. Room for
+ * INBOX_THREAD_RULE (in INBOX_AGENT_RULES) came from the attachments line's
+ * examples, which the field's own description gives.
+ */
 export const INBOX_MCP_INSTRUCTIONS = [
-  "Plannotator Inbox: a local window on this machine where the person reads what you send and answers when they can, without holding your session open.",
+  "Plannotator Inbox: a local window where the person reads what you send and answers later, without blocking your session.",
   "",
-  "Use it when the person may not be watching this chat: a decision only they can make (ask it as a :::question block, then go on with other work), finished long work to hand over (a short summary, the files to look at in `attachments`), or when they ask you to. Ask in the chat instead when they are there; do not send routine progress.",
+  INBOX_AGENT_RULES,
   "",
-  "- send_message posts markdown. Your messages join your session's thread until the person resolves it; pass `thread` (a short name) to keep separate work apart, or reply_to to answer a message. Pass an idempotency_key so a retry never posts twice. The question syntax is in send_message's description.",
-  "- attachments: paths of files to show the person (a plan, a screenshot, an HTML mock, any file), absolute or relative to project_path. Link one from the body (`[the mock](mock.html)`) to open it beside the thread. The person's annotations come back in their reply.",
-  "- wait_for_reply (thread_id) returns the reply as soon as it lands, or { status: \"waiting\", cursor } after about 50 seconds: call it again with that cursor. Call it when you need the answer, after the work that does not depend on it.",
-  "- read_thread reads one thread (thread_id): open questions, the newest messages in full, earlier ones one line each; without an id it lists yours. search finds messages by words. When an open question of yours no longer fits, send with reply_to into its thread with `supersedes` instead of leaving it open. resolve_message archives the thread for the person; use it only when nothing in it is left for them to read or answer.",
-  "- To walk the person through a code change: get_guide_brief, write the guide, then submit_guide with the exact patch.",
+  "- send_message posts markdown. Messages join your session's thread until the person resolves it; pass `thread` (a short name) to keep separate work apart, or reply_to (an id from the Inbox, never from memory) to answer a message. Question syntax: send_message's description.",
+  "- attachments: files to show the person; link one from the body (`[the mock](mock.html)`) to open it beside the thread.",
+  "- wait_for_reply (thread_id) returns the reply when it lands, or { status: \"waiting\", cursor } after about 50 s: call it again with that cursor. Call it only after the work that does not need the answer.",
+  "- read_thread reads one thread (thread_id); without an id it lists yours (asked_by \"anyone\": all). search finds older messages by words. resolve_message archives the thread, only when nothing in it is left for the person to read or answer.",
+  "- A guided review of a code change: get_guide_brief, write the guide, then submit_guide with the exact patch.",
   "",
-  "The reply is the person's answer, framed as theirs: their words, then \"Answers to your questions\". No tool answers or approves on the person's behalf.",
+  "A reply is the person's own: their words, then \"Answers to your questions\"; no tool answers or approves for them.",
 ].join("\n");
 
 /**
@@ -97,7 +103,7 @@ export const SUPERSEDES_DESCRIPTION =
  * itself, INBOX_AGENT_ACTION_LEADS). A thread read is a window, so a long
  * thread costs a few thousand tokens instead of the whole history.
  */
-export const READ_THREAD_DESCRIPTION = `Read one Inbox thread (thread_id, or message_id to show that message in full) as a transcript: the questions still waiting on the person (key, state, prompt, choices), the newest messages in full (\`limit\`, default ${INBOX_THREAD_WINDOW}), the person's earlier messages in full (up to ${sizeText(INBOX_EARLIER_PERSON_BYTES)}), and every other earlier message as one line with its questions' states and answers; a body over ${sizeText(INBOX_BODY_CUT_BYTES)} is cut. \`expand\` shows messages in full, \`before\` reads further back, \`after\` (the result's cursor, or a message id) returns only what is new; \`format: "full"\` returns every full record. A message the person marked 👍 Looks good carries \`ack\` (they read it and need nothing more; no reply is needed). Without an id, list this project's threads, newest activity first, one short row each (subject, name, section in the person's list, open questions, last author and time, the person's last message, \`unread\`: the person wrote something you have not read): only the ones you sent in unless asked_by is "anyone", and only open ones unless include_resolved.`;
+export const READ_THREAD_DESCRIPTION = `Read one Inbox thread (thread_id, or message_id to show that message in full) as a transcript: the questions still waiting on the person (key, state, prompt, choices), the newest messages in full (\`limit\`, default ${INBOX_THREAD_WINDOW}), the person's earlier messages in full (up to ${sizeText(INBOX_EARLIER_PERSON_BYTES)}), and every other earlier message as one line with its questions' states and answers; a body over ${sizeText(INBOX_BODY_CUT_BYTES)} is cut. \`expand\` shows messages in full, \`before\` reads further back, \`after\` (the result's cursor, or a message id) returns only what is new; \`format: "full"\` returns every full record. A message the person marked 👍 Looks good carries \`ack\` (they read it and need nothing more; no reply is needed). Without an id, list this project's threads, newest activity first, one short row each (subject, name, section in the person's list, open questions, last author and time, the person's last message, \`unread\`: the person wrote something you have not read): only the ones you sent in unless asked_by is "anyone", and only open ones unless include_resolved. ${INBOX_REPLY_TO_CHECK}`;
 
 /**
  * The Inbox-only `Stopped:` / `Holds up:` lines, as a whole block. The body
@@ -148,7 +154,8 @@ export const INBOX_CONTRACT_EXAMPLE = [
 const sectionLabel = (id: InboxSectionId): string => INBOX_SECTIONS.find((section) => section.id === id)?.label ?? id;
 
 export const SEND_BODY_DESCRIPTION = [
-  "The message, markdown. Question blocks render as answerable cards.",
+  "The message, markdown. Question blocks render as answerable cards. Blocks fenced as `mermaid` or `dot` draw as diagrams; one fenced as `html` draws as a live, sandboxed page in the message (chart, SVG, mock; https libraries load). Leave its background transparent; use var(--foreground), var(--chart-1)…var(--chart-5). Let content set its height: no vh units or height:100% on html or body.",
+  INBOX_REF_LINK_RULE,
   "",
   "Two Inbox-only lines a question block can carry, each on its own line after the question:",
   `- \`Stopped: <why>\` only when you truly cannot go on until this is answered: the thread goes first in the person's list, under "${sectionLabel("stopped")}". Otherwise leave the line out. A negative value (\`no\`, \`none\`, \`n/a\`, \`-\`) means no stop, so never write \`Stopped: no\`.`,
@@ -187,13 +194,13 @@ export const SEND_ROUTING_FIELDS = {
     .describe(
       `A short thread name (1-${INBOX_THREAD_NAME_MAX} characters, one line). Without it, your messages join your session's open thread in this project (a new one the first time, or once the person resolved it; a thread keeps its first subject). With it, the same name in this project is the same open thread, across sessions (compared without case, spacing or invisible characters). Use it to split separate work, or to join another session's thread. Ignored with reply_to, with one exception: in a thread the person started (read_thread or wait_for_reply says name_this_thread: true, or the Inbox's message asks you to name it), your reply's \`thread\` names that thread, once: a few words saying what it is about, not the name of another open thread in the project.`,
     ),
-  reply_to: z.string().optional().describe("A message id: post this as a reply in that message's thread."),
+  reply_to: z.string().optional().describe(`A message id: post this as a reply in that message's thread. ${INBOX_REPLY_TO_CHECK}`),
   supersedes: z
     .array(z.string())
     .optional()
     .describe(SUPERSEDES_DESCRIPTION),
   done: z.array(z.string()).optional().describe(INBOX_DONE_DESCRIPTION),
-  idempotency_key: z.string().optional().describe("Any unique string; sending again with the same key answers the first message instead of posting twice."),
+  idempotency_key: z.string().optional().describe("Pass an idempotency_key so a retry never posts twice. Any unique string; sending again with the same key answers the first message."),
   agent_session: z.string().optional().describe(AGENT_SESSION_DESCRIPTION),
   agent_name: z.string().optional().describe("How the person sees you, e.g. \"Claude Code\"."),
   agent_host: z.string().optional().describe("Your agent host, e.g. claude-code, codex, cursor."),
@@ -220,6 +227,8 @@ export interface InboxMcpContext {
   recordAttachments?: (paths: readonly string[], project: InboxProject, base: string) => Promise<InboxAttachment[]>;
   /** wait_for_reply's default hold in ms (tests pass a shorter one only through timeout_seconds). */
   waitDefaultMs?: number;
+  /** The clock (epoch ms) send_message's "not read since" line compares with (inbox-session-reads.ts). Default: Date.now. Tests inject. */
+  now?: () => number;
   /**
    * Presence from MCP activity, for "the session that asked has ended": a
    * tool call naming an `agent_session` counts as seen, and an open
@@ -270,6 +279,29 @@ export function callerWakes(ctx: unknown): boolean {
 }
 
 /**
+ * A connection's own read_thread list for the session's thread list (not a
+ * call the agent made, INBOX_PEEK_META_KEY): it makes no project and does not
+ * count as the session having looked at the threads it lists.
+ */
+export function callerPeeks(ctx: unknown): boolean {
+  const meta = (ctx as { mcpReq?: { _meta?: Record<string, unknown> } } | undefined)?.mcpReq?._meta;
+  return meta?.[INBOX_PEEK_META_KEY] === true;
+}
+
+/**
+ * The folder the sender works in now, when its connection says so
+ * (`INBOX_WORKING_FOLDER_META_KEY` on the `tools/call`: the Claude Code mod,
+ * whose `project_path` is the folder the session started in while a shell
+ * `cd` moves the agent). An absolute path of at most 4096 characters with no
+ * control characters, else nothing (the send resolves as before).
+ */
+export function callerWorkingFolder(ctx: unknown): string | undefined {
+  const value = (ctx as { mcpReq?: { _meta?: Record<string, unknown> } } | undefined)?.mcpReq?._meta?.[INBOX_WORKING_FOLDER_META_KEY];
+  if (typeof value !== "string" || !isAbsolute(value) || value.length > 4096 || /[\u0000-\u001f\u007f]/.test(value)) return undefined;
+  return value;
+}
+
+/**
  * Whether a sender's session is woken by the person's reply: its own
  * connection says so (`callerWakes`), or the Inbox knows that session is
  * woken (`sessionWakes`: its bridge polls now, or a Codex thread it wakes).
@@ -279,6 +311,31 @@ export async function senderWakes(context: Pick<InboxMcpContext, "sessionWakes">
   if (!context.sessionWakes) return false;
   const meta = (ctx as { mcpReq?: { _meta?: unknown } } | undefined)?.mcpReq?._meta;
   return context.sessionWakes(input.agent_host?.trim(), input.agent_session?.trim(), meta).catch(() => false);
+}
+
+/**
+ * Tidy for a session no connection wakes (MCP only): its wake note, once, at
+ * the end of its next Inbox tool result (delivered then). A session that is
+ * woken gets it from its connection when its turn ends instead.
+ */
+async function withTidy(context: InboxMcpContext, result: ToolResult, input: Record<string, unknown>, ctx: unknown): Promise<ToolResult> {
+  const session = typeof input?.agent_session === "string" ? input.agent_session.trim() : "";
+  if (!session || result.isError) return result;
+  const note = context.store.pendingReplies(session).find((m) => m.tidy?.wake);
+  if (!note) return result;
+  const host = typeof input.agent_host === "string" ? input.agent_host : undefined;
+  if (await senderWakes(context, ctx, { agent_host: host, agent_session: session })) return result;
+  try {
+    context.store.recordDelivery(note.id, { host: note.to?.host ?? host ?? "agent", session });
+  } catch {
+    return result;
+  }
+  const tidy = `\n\n${inboxTidyMcpLine(note.id)}\n\n${note.body}`;
+  const content = [...result.content];
+  const last = content.length - 1;
+  if (last >= 0) content[last] = { ...content[last]!, text: `${content[last]!.text}${tidy}` };
+  else content.push({ type: "text", text: tidy.trimStart() });
+  return { ...result, content, ...(result.structuredContent ? { structuredContent: { ...result.structuredContent, tidy: { id: note.id, text: note.body } } } : {}) };
 }
 
 /** The send tools' last sentence for a caller whose reply arrives by itself. */
@@ -374,8 +431,10 @@ function replyAnsweredMessages(store: InboxStore, reply: InboxMessage): string[]
     .map((m) => m.id);
 }
 
-function replyResult(store: InboxStore, reply: InboxMessage, base: string, caller: string | null = null): ToolResult {
+function replyResult(store: InboxStore, reply: InboxMessage, base: string, caller: string | null = null, now = Date.now()): ToolResult {
   const cursor = store.messageCursor(reply.id) ?? store.cursor();
+  // The caller has read this thread now (send_message's "not read since" line).
+  noteSessionRead(store, caller, reply.thread_id, now);
   // A reply that tags agents (approval "inbox-tag-agents") reached the caller, its owner or a session it
   // tags: delivered to that one only, so its connection does not wake it again and nobody else's copy moves.
   const tag = caller && reply.tags?.length && !store.isOwner(reply, caller) ? (reply.tags.find((t) => t.session === caller) ?? null) : null;
@@ -389,6 +448,23 @@ function replyResult(store: InboxStore, reply: InboxMessage, base: string, calle
   // The agent now has this reply (not any later one): a Sent row moves to Quiet.
   // Not for a session only tagged here: its read must not settle what the owner still waits for.
   if (!store.isTaggedGuest(reply.thread_id, caller)) store.markAgentChecked(reply.thread_id, cursor);
+  // The former owner of a handed-off thread (approval "inbox-tag-handoff"): the stop notice alone, never the
+  // person's words, as its bridge command (`replyCommand` in inbox.ts) carries it.
+  if (tag?.handed_away) {
+    const to = reply.to?.host && Object.hasOwn(INBOX_HOST_NAMES, reply.to.host) ? INBOX_HOST_NAMES[reply.to.host]! : "another agent";
+    const notice = inboxHandedAwayLine(to);
+    const url = threadUrl(base, reply.thread_id);
+    const subject = store.threadSubject(reply.thread_id);
+    return okComplete(`Thread ${reply.thread_id}${subject ? ` (${subject})` : ""}: ${notice}\n\n[reply ${reply.id} · ${shortTime(reply.created_at)} · cursor ${cursor} · ${url}]`, {
+      status: "replied",
+      thread_id: reply.thread_id,
+      handed_away: { to },
+      reply: { message_id: reply.id, reply_to: reply.reply_to, body: notice, created_at: reply.created_at },
+      questions: [],
+      cursor,
+      url,
+    });
+  }
   // Every question of each message the reply answers (its reply_to and any other of the session's messages
   // it sent answers or skips on), each named by its message.
   const answered = replyAnsweredMessages(store, reply);
@@ -444,7 +520,14 @@ function replyResult(store: InboxStore, reply: InboxMessage, base: string, calle
       status: "replied",
       thread_id: reply.thread_id,
       ...(tag ? { tagged_you: true } : {}),
-      reply: { message_id: reply.id, reply_to: reply.reply_to, body, created_at: reply.created_at },
+      // The person's words (and files) as in read_thread's JSON: the Board request is a flag here, the block only in the text.
+      reply: {
+        message_id: reply.id,
+        reply_to: reply.reply_to,
+        body: inboxBodyForAgent(reply, { boardRequest: false }),
+        created_at: reply.created_at,
+        ...(reply.board_request === true ? { board_request: true } : {}),
+      },
       questions,
       cursor,
       url,
@@ -459,8 +542,9 @@ function replyResult(store: InboxStore, reply: InboxMessage, base: string, calle
  * counts as delivered (the window says "Delivered to <agent>"), so the
  * agent's connection, if it has one, does not wake it with the same 👍.
  */
-function ackResult(store: InboxStore, message: InboxMessage, base: string): ToolResult {
+function ackResult(store: InboxStore, message: InboxMessage, base: string, now = Date.now()): ToolResult {
   const ack = message.ack!;
+  if (message.author.kind === "agent") noteSessionRead(store, message.author.session, message.thread_id, now);
   const note = store.ackNote(message.id);
   const cursor = Math.max(ack.settled_seq ?? 0, (note && store.messageCursor(note.id)) ?? 0) || store.cursor();
   store.markAcksSeen(message.thread_id, cursor);
@@ -489,8 +573,14 @@ export type AgentSendInput = {
   thread?: string;
   reply_to?: string;
   idempotency_key?: string;
-  /** Files to attach (send_message only): absolute, or relative to project_path. */
+  /** Files to attach (send_message only): absolute, or relative to working_folder, else project_path. */
   attachments?: string[];
+  /**
+   * Not a tool field: the folder the agent works in now, from its connection
+   * (`callerWorkingFolder`). Relative attachments and the body's relative
+   * images and links resolve there instead of at project_path.
+   */
+  working_folder?: string;
   /** Earlier questions of the thread this message supersedes (`<message id>` or `<message id>/<key>`). */
   supersedes?: string[];
   /** Its own action items of the thread the agent saw done (`<message id>/<key>`, or `<message id>`). */
@@ -537,6 +627,25 @@ export async function threadReadScope(context: InboxMcpContext, path: string): P
   return { project, projectIds };
 }
 
+/** Most projects read_thread's list names under an empty folder. */
+const PROJECTS_INSIDE_MAX = 3;
+
+/**
+ * The known projects whose root lies strictly inside `path` (whole path
+ * segments), with threads, most threads first. Reads only: no project is
+ * made and none of their threads are merged into the list.
+ */
+async function projectsInside(context: InboxMcpContext, path: string, own: InboxProject | null, includeResolved: boolean): Promise<{ name: string; root: string; threads: number }[]> {
+  const folder = (await context.projectRootOf?.(path).catch(() => null))?.folder ?? path;
+  const found: { name: string; root: string; threads: number }[] = [];
+  for (const candidate of context.store.listProjects()) {
+    if (candidate.id === own?.id || candidate.root === folder || !isInsideFolder(candidate.root, folder)) continue;
+    const rows = context.store.listRows({ projectId: candidate.id }).filter((row) => includeResolved || row.resolved_at === null || row.agent_after_archive === true);
+    if (rows.length > 0) found.push({ name: candidate.name, root: candidate.root, threads: rows.length });
+  }
+  return found.sort((a, b) => b.threads - a.threads || a.root.localeCompare(b.root)).slice(0, PROJECTS_INSIDE_MAX);
+}
+
 /** The list rows of `projectIds` (every project when null), of one session's threads when given. */
 function listScopedRows(store: InboxStore, projectIds: ReadonlySet<string> | null, session: string | null) {
   if (projectIds === null) return store.listRows({ session });
@@ -548,11 +657,12 @@ function listScopedRows(store: InboxStore, projectIds: ReadonlySet<string> | nul
  * The folder an agent sent from, when it is not the project's root
  * (`InboxMessage.base_path`): relative image paths in its body, and links to
  * its attachments, start there. Kept when it is a subfolder of the project,
- * or when it lies in a linked worktree of the project's repository (a
- * worktree folds into the main repository's project, but the agent's files
- * are in the worktree, wherever on disk that is).
+ * when it lies in a linked worktree of the project's repository (a worktree
+ * folds into the main repository's project, but the agent's files are in the
+ * worktree, wherever on disk that is), or when it is the folder the
+ * connection says the agent works in (`working`, `callerWorkingFolder`).
  */
-async function sendBasePath(context: InboxMcpContext, projectPath: string | undefined, project: InboxProject): Promise<string | null> {
+async function sendBasePath(context: InboxMcpContext, projectPath: string | undefined, project: InboxProject, working = false): Promise<string | null> {
   if (!projectPath || !isAbsolute(projectPath)) return null;
   let real: string;
   try {
@@ -561,7 +671,9 @@ async function sendBasePath(context: InboxMcpContext, projectPath: string | unde
     return null;
   }
   if (real === project.root) return null;
-  if (isInsideFolder(real, project.root)) return real;
+  // The folder the connection says the agent works in, wherever it is: before the project
+  // stopped following a shell `cd`, that folder was the project_path, so its paths resolved there.
+  if (working || isInsideFolder(real, project.root)) return real;
   const resolved = await context.projectRootOf?.(projectPath).catch(() => null);
   return resolved && resolved.worktree !== null && resolved.root === project.root ? real : null;
 }
@@ -578,7 +690,7 @@ const IMAGE_NOT_SHOWN_REASONS: Record<string, string> = {
   image_read_failed: "could not be read",
   not_an_image: "not an image (png, jpg, gif, webp, svg, avif, bmp, ico)",
   image_too_large: "over 10 MB or 50 megapixels",
-  image_hidden: "in a hidden folder, or a hidden or .env file",
+  image_hidden: "a .env file, or in a hidden folder of the home folder such as ~/.ssh",
   validation_error: "not a file path",
 };
 const IMAGE_NOT_YET_REASON = "does not exist yet; it will show if it is written there later";
@@ -620,7 +732,7 @@ export function imagesNotShownText(list: readonly ImageNotShown[]): string {
   const later = list.filter((image) => image.not_yet);
   let text = "";
   if (never.length > 0) {
-    text += ` The message was sent, but ${never.length === 1 ? "this image will not show" : `${never.length} images will not show`}: ${namedImages(never, IMAGES_NOT_SHOWN_MAX)}. Save the image as a local file outside hidden folders and link that path, or attach it with attachments.`;
+    text += ` The message was sent, but ${never.length === 1 ? "this image will not show" : `${never.length} images will not show`}: ${namedImages(never, IMAGES_NOT_SHOWN_MAX)}. Copy the image to a plain folder and link that path, or attach it with attachments.`;
   }
   if (later.length > 0) {
     text += ` ${later.length === 1 ? "This image does not exist yet" : `${later.length} images do not exist yet`}: ${namedImages(later, IMAGES_NOT_SHOWN_MAX)}; ${later.length === 1 ? "it shows" : "they show"} once written there.`;
@@ -638,6 +750,20 @@ export function noStakesText(count: number): string {
   return count === 1
     ? " 1 question you are stopped or held up on has no `Stakes:` line; next time add one (what the choice affects, one sentence) so the person can decide in one look."
     : ` ${count} questions you are stopped or held up on have no \`Stakes:\` line; next time add one to each (what the choice affects, one sentence) so the person can decide in one look.`;
+}
+
+/**
+ * The send tools' nudge for a question that marks its recommendation inside
+ * a choice label (`- [ ] Foo (Recommended)`, the AskUserQuestion habit) with
+ * no `Recommended:` line. The card reads one marked choice as the
+ * recommendation, but two on a pick-one question name none, so the agent is
+ * told the grammar. Never a refusal. "" when there is none.
+ */
+export function recommendedInLabelText(count: number): string {
+  if (count <= 0) return "";
+  return count === 1
+    ? " 1 question marks its recommendation inside a choice label; next time mark it only with `Recommended: <label>` on its own line after the choices, and keep labels plain."
+    : ` ${count} questions mark their recommendation inside a choice label; next time mark each only with \`Recommended: <label>\` on its own line after the choices, and keep labels plain.`;
 }
 
 /** A message id (`msg_` and a 26-character ULID), as an agent might pass one as `thread` by mistake. */
@@ -683,17 +809,20 @@ export async function sendAgentMessage(
   input: AgentSendInput,
   guide?: InboxGuideRef,
   wakes = false,
-): Promise<{ structured: Record<string, unknown>; replayed: boolean; questions: number; attachments: number; superseded: number; actions: number; done: number; imagesNotShown: ImageNotShown[]; noStakes: number; naming: InboxSendResult["naming"] | null }> {
+): Promise<{ structured: Record<string, unknown>; replayed: boolean; questions: number; attachments: number; superseded: number; actions: number; done: number; imagesNotShown: ImageNotShown[]; noStakes: number; recommendedInLabel: number; naming: InboxSendResult["naming"] | null }> {
   const { store } = context;
   refuseIdShapedThread(input.thread, input.reply_to);
   refuseBadSubject(input.subject);
+  // Where relative paths start: the folder the agent works in, when its connection says (a cd away from its project).
+  const working = !!input.working_folder && isAbsolute(input.working_folder);
+  const here = working ? input.working_folder : input.project_path;
   let attachments: InboxAttachment[] | undefined;
   if (input.attachments && input.attachments.length > 0) {
     if (!context.recordAttachments) throw new InboxError("validation_error", "attachments: not taken by this Inbox.");
-    const base = input.project_path && isAbsolute(input.project_path) ? input.project_path : project.root;
+    const base = here && isAbsolute(here) ? here : project.root;
     attachments = await context.recordAttachments(input.attachments, project, base);
   }
-  const basePath = await sendBasePath(context, input.project_path, project);
+  const basePath = await sendBasePath(context, here, project, working);
   // The images the body shows, copied now under the message-image route's rules (inline-images.ts):
   // files of the thread, with a sent version. One that cannot be read is captured on a later read.
   // Asynchronous and yielding; the blobs stay staged until the store accepts the message.
@@ -750,9 +879,13 @@ export async function sendAgentMessage(
   const noStakes = (message.questions ?? [])
     .filter((q) => q.kind !== "action" && (q.stopped !== null || q.holds_up.length > 0) && !q.stakes)
     .map((q) => q.key);
+  // A question written with a recommended marker in a choice label (read
+  // by the parser or not, with or without a `Recommended:` line).
+  const recommendedInLabel = inboxQuestionKeysWithRecommendedMarker(message.body);
   return {
     imagesNotShown: notShown,
     noStakes: noStakes.length,
+    recommendedInLabel: recommendedInLabel.length,
     superseded: superseded.length,
     actions: actions.length,
     done: markedDone.length,
@@ -787,6 +920,8 @@ export async function sendAgentMessage(
       ...(notShown.length > IMAGES_NOT_SHOWN_MAX ? { images_not_shown_more: notShown.length - IMAGES_NOT_SHOWN_MAX } : {}),
       /** Keys of the Stopped / Holds up questions with no `Stakes:` line (a nudge; the message was sent). */
       ...(noStakes.length > 0 ? { no_stakes: noStakes } : {}),
+      /** Keys of the questions that marked their recommendation in a choice label, not a `Recommended:` line (a nudge; the message was sent). */
+      ...(recommendedInLabel.length > 0 ? { recommended_in_label: recommendedInLabel } : {}),
     },
   };
 }
@@ -926,10 +1061,15 @@ export function agentThreadRow(store: InboxStore, row: InboxListRow, caller: str
 
 export function createInboxMcpServer(context: InboxMcpContext): McpServer {
   const { store } = context;
+  const clock = () => context.now?.() ?? Date.now();
   const server = new McpServer(
     { name: "plannotator-inbox", version: "1.0.0" },
     { instructions: INBOX_MCP_INSTRUCTIONS, capabilities: { tools: {} } },
   );
+  // Every tool's result carries a Tidy waiting on an agent no connection wakes (MCP only), once, at its end.
+  const register = server.registerTool.bind(server) as (name: string, config: unknown, handler: (input: never, ctx: unknown) => Promise<ToolResult>) => unknown;
+  server.registerTool = ((name: string, config: unknown, handler: (input: Record<string, unknown>, ctx: unknown) => Promise<ToolResult>) =>
+    register(name, config, async (input: Record<string, unknown>, ctx: unknown) => withTidy(context, await handler(input, ctx), input, ctx))) as unknown as typeof server.registerTool;
 
   server.registerTool(
     "send_message",
@@ -954,16 +1094,28 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
       guarded(async () => {
         const project = await sendProject(context, input);
         const wakes = await senderWakes(context, ctx, input);
-        const sent = await sendAgentMessage(context, project, input, undefined, wakes);
+        const sent = await sendAgentMessage(context, project, { ...input, working_folder: callerWorkingFolder(ctx) }, undefined, wakes);
+        // Named a thread (reply_to, or a thread name) this session has not looked at for hours (or ever):
+        // one line naming its subject. Not for a message routed to the session's own thread by default,
+        // never on a replay (the first answer stands), and it never blocks the send.
+        const named = !!input.reply_to?.trim() || !!input.thread?.trim();
+        const stale = sent.replayed || !named ? null : staleThreadOf(store, String(sent.structured.message_id), input.agent_session, clock());
         const asked =
           (sent.questions > 0 ? ` asking ${sent.questions} question${sent.questions === 1 ? "" : "s"}` : "") +
           (sent.attachments > 0 ? ` with ${sent.attachments} attachment${sent.attachments === 1 ? "" : "s"}` : "") +
           (sent.actions > 0 ? `${sent.questions > 0 ? " and" : " with"} ${sent.actions} action item${sent.actions === 1 ? "" : "s"}` : "") +
           supersededWords(sent.structured.superseded as string[]) +
           (sent.done > 0 ? `, marking ${sent.done} action item${sent.done === 1 ? "" : "s"} done` : "");
+        // The hints after the sent line, in this order, each "" when it has nothing to say.
+        const hints = [
+          imagesNotShownText(sent.imagesNotShown),
+          noStakesText(sent.noStakes),
+          recommendedInLabelText(sent.recommendedInLabel),
+        ];
+        if (stale) hints.push(`\n${staleThreadText(stale, shortTime)}`);
         return ok(
-          `${sent.replayed ? "Already sent" : "Sent"} to the Plannotator Inbox${asked} (thread ${sent.structured.thread_id}, ${sent.structured.url}).${namingLine(sent.naming)} ${wakes ? INBOX_REPLY_ARRIVES_TEXT : INBOX_REPLY_WAITS_TEXT}${imagesNotShownText(sent.imagesNotShown)}${noStakesText(sent.noStakes)}`,
-          sent.structured,
+          `${sent.replayed ? "Already sent" : "Sent"} to the Plannotator Inbox${asked} (thread ${sent.structured.thread_id}, ${sent.structured.url}).${namingLine(sent.naming)} ${wakes ? INBOX_REPLY_ARRIVES_TEXT : INBOX_REPLY_WAITS_TEXT}${hints.join("")}`,
+          stale ? { ...sent.structured, not_read_since: lastContactOf(stale) } : sent.structured,
         );
       }),
   );
@@ -978,8 +1130,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           thread_id: z.string().optional(),
           message_id: z.string().optional(),
           project_path: z.string().optional().describe(PROJECT_PATH_DESCRIPTION),
-          asked_by: z.enum(["me", "anyone"]).optional().describe("Default \"me\" when your session is known."),
-          include_resolved: z.boolean().optional(),
+          asked_by: z.enum(["me", "anyone"]).optional().describe("Default \"me\" (threads you sent in) when your session is known; \"anyone\" lists every thread."),
+          include_resolved: z.boolean().optional().describe("List archived threads too."),
           limit: z.number().int().min(1).max(100).optional().describe(`How many: a thread's messages in full (default ${INBOX_THREAD_WINDOW}), listed threads (20), search results (10, at most 50).`),
           expand: z.array(z.string()).optional().describe("Message ids of this thread to show in full."),
           before: z.union([z.string(), z.number().min(0)]).optional().describe("Only messages before this message id or cursor."),
@@ -990,7 +1142,7 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
         .strict(),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async (input) =>
+    async (input, ctx) =>
       guarded(async () => {
         const threadId = threadOf(store, input);
         if (threadId) {
@@ -1005,6 +1157,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
             if (!guest) store.markAcksSeen(threadId);
             // An agent that is not woken read a thread it was tagged in: the window says it saw it.
             if (reader) store.recordTagRead(threadId, reader);
+            // This session has read the thread now (send_message's "not read since" line).
+            noteSessionRead(store, reader, threadId, clock());
             // The full records, as before the window (tests, scripts, a jq over the result).
             const thread = store.agentThread(threadId, reader)!;
             const replies = thread.messages.filter((m) => m.author.kind === "person").length;
@@ -1021,13 +1175,28 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           }
           // An agent that is not woken read a thread it was tagged in: the window says it saw it.
           if (reader) store.recordTagRead(threadId, reader);
+          noteSessionRead(store, reader, threadId, clock());
           return okComplete(windowedThreadText(result, order, naming?.line ?? ""), { ...result, ...(naming?.structured ?? {}) });
         }
         if (input.expand || input.before !== undefined || input.after !== undefined) {
           throw new InboxError("validation_error", "expand, before and after read one thread: pass thread_id (or message_id).");
         }
         if (!input.project_path) throw new InboxError("validation_error", "project_path: required to list threads (or pass thread_id).");
-        const { project, projectIds } = await threadReadScope(context, input.project_path);
+        const peek = callerPeeks(ctx);
+        // A list never makes a project: it is scoped by the projects the folder names (findProjects,
+        // as search: its project, plus the one an older Inbox kept for its worktree), looked up, never
+        // made. A folder with neither has no threads of its own: a connection's own list for the
+        // session's thread list (peek) lists nothing; an agent's list still shows the threads it was
+        // tagged in. Without findProjects (or when its lookup refused the path), the resolving scope,
+        // so a path that is not a folder is still a validation_error.
+        const found = context.findProjects ? await context.findProjects(input.project_path).catch(() => null) : null;
+        if (peek && (!found || found.projects.length === 0)) return okComplete("0 threads.", { project: null, threads: [], total: 0 });
+        if (found?.unresolved) {
+          throw new InboxError("project_unresolved", "git did not answer in time, so this folder's project is not known yet. Nothing was listed; try the same call again.");
+        }
+        const { project, projectIds } = found
+          ? { project: found.projects[0] ?? null, projectIds: new Set(found.projects.map((p) => p.id)) }
+          : await threadReadScope(context, input.project_path);
         const session = input.agent_session?.trim() || null;
         const askedBy = input.asked_by ?? (session ? "me" : "anyone");
         if (askedBy === "me" && !session) throw new InboxError("validation_error", "asked_by: \"me\" needs agent_session.");
@@ -1045,11 +1214,20 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
         const total = threads.length;
         // One short row per thread: the window's row is the person's view (and its `ack` shows a 👍 before it settles).
         const rows = threads.slice(0, limit).map((row) => ({ ...agentThreadRow(store, row, session), ...(tagged.has(row.thread_id) ? { tagged_you: true as const } : {}) }));
-        const head = `${total} thread${total === 1 ? "" : "s"} in ${project.name}${total > limit ? `, showing ${limit}` : ""}.`;
-        return okComplete(rows.length > 0 ? `${head}\n${rows.map(threadRowText).join("\n")}` : head, {
-          project: { id: project.id, name: project.name, root: project.root },
+        // The session saw these subjects (the check INBOX_REPLY_TO_CHECK asks for), unless a connection read them for it.
+        if (!peek) for (const row of rows) noteSessionRead(store, session, row.thread_id, clock());
+        const head = `${total} thread${total === 1 ? "" : "s"}${project ? ` in ${project.name}` : ""}${total > limit ? `, showing ${limit}` : ""}.`;
+        // A folder that holds projects (a plain folder over a repo) lists nothing itself: name the projects below it, so the agent can ask for them.
+        const inside = total === 0 ? await projectsInside(context, input.project_path, project, input.include_resolved === true) : [];
+        const insideLine =
+          inside.length > 0
+            ? `Projects inside this folder: ${inside.map((p) => `${p.name} (${p.root}), ${p.threads} thread${p.threads === 1 ? "" : "s"}`).join("; ")}. Pass its project_path to list ${inside.length === 1 ? "them" : "one"}.`
+            : "";
+        return okComplete(rows.length > 0 ? `${head}\n${rows.map(threadRowText).join("\n")}` : insideLine ? `${head}\n${insideLine}` : head, {
+          project: project ? { id: project.id, name: project.name, root: project.root } : null,
           threads: rows,
           total,
+          ...(inside.length > 0 ? { projects_inside: inside } : {}),
         });
       }),
   );
@@ -1140,6 +1318,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
               : [],
           );
           const forCaller = (message: InboxMessage) => {
+            // A hand-off inside its Undo window goes to nobody yet.
+            if (store.handoffHeld(message)) return false;
             if (caller && (taggedOnly.has(message.thread_id) || (message.tags?.length ?? 0) > 0)) return store.isFor(message, caller);
             return !message.to || message.to.session === caller;
           };
@@ -1148,7 +1328,7 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
             let best: { message: InboxMessage; seq: number } | null = null;
             for (const [threadId, threshold] of thresholds) {
               for (const message of store.thread(threadId)?.messages ?? []) {
-                if (message.author.kind !== "person" || !forCaller(message)) continue;
+                if (message.author.kind !== "person" || message.tidy || !forCaller(message)) continue;
                 const seq = store.messageCursor(message.id) ?? 0;
                 if (seq > threshold && (!best || seq < best.seq)) best = { message, seq };
               }
@@ -1182,9 +1362,9 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
           };
 
           const existing = findExisting();
-          if (existing) return replyResult(store, existing, context.baseUrl(), caller);
+          if (existing) return replyResult(store, existing, context.baseUrl(), caller, clock());
           const acked = findAck();
-          if (acked) return ackResult(store, acked, context.baseUrl());
+          if (acked) return ackResult(store, acked, context.baseUrl(), clock());
           // A resolved thread takes no reply: say so now instead of holding the call.
           // (An agent that wrote after the archive line can still get a reply there.)
           if (single && store.message(single)?.resolved_at != null && !store.agentAfterArchive(single)) {
@@ -1214,7 +1394,7 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
                 const threshold = thresholds.get(message.thread_id);
                 if (threshold === undefined) return;
                 // The note carrying a 👍 is answered as `acknowledged`, from the ack's own line.
-                if (message.author.kind === "person" && !message.ack_of && forCaller(message) && line.seq > threshold && store.messageCursor(message.id) === line.seq) {
+                if (message.author.kind === "person" && !message.ack_of && !message.tidy && forCaller(message) && line.seq > threshold && store.messageCursor(message.id) === line.seq) {
                   finish({ kind: "reply", message });
                 } else if (message.ack?.settled_seq === line.seq && !message.ack.not_sent && ackCounts(message, line.seq)) {
                   finish({ kind: "ack", message });
@@ -1225,8 +1405,8 @@ export function createInboxMcpServer(context: InboxMcpContext): McpServer {
               signal?.addEventListener("abort", onAbort);
             },
           );
-          if (outcome.kind === "reply") return replyResult(store, outcome.message, context.baseUrl(), caller);
-          if (outcome.kind === "ack") return ackResult(store, outcome.message, context.baseUrl());
+          if (outcome.kind === "reply") return replyResult(store, outcome.message, context.baseUrl(), caller, clock());
+          if (outcome.kind === "ack") return ackResult(store, outcome.message, context.baseUrl(), clock());
           const cursor = store.cursor();
           if (outcome.kind === "resolved") {
             return okComplete(`The person resolved thread ${outcome.threadId} without a reply. (cursor ${cursor})`, { status: "resolved", thread_id: outcome.threadId, cursor });

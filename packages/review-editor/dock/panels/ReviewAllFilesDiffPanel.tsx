@@ -1,9 +1,12 @@
 import React, { useMemo } from 'react';
 import type { IDockviewPanelProps } from 'dockview-react';
+import { LazyBlockBoundary } from '@plannotator/ui/components/LazyBlockBoundary';
+import { MarkdownPreviewFailed } from '../../components/DiffViewer';
 import { AllFilesCodeView } from '../../components/AllFilesCodeView';
 import { CommitDescriptionHeader } from '../../components/CommitDescriptionHeader';
 import { ImageDiffPreview } from '../../components/ImageDiffPreview';
 import { MarkdownViewMenu } from '../../components/MarkdownViewMenu';
+import { PackageChangesCard } from '../../components/PackageChangesCard';
 // Lazy: loaded the first time a Markdown file is previewed.
 const MarkdownFilePreview = React.lazy(async () => ({ default: (await import('../../components/MarkdownFilePreview')).MarkdownFilePreview }));
 import type { DiffFile } from '../../types';
@@ -33,6 +36,11 @@ function ReviewMarkdownViewControl({ file, iconOnly, touch }: { file: DiffFile; 
 
 export const ReviewAllFilesDiffPanel: React.FC<IDockviewPanelProps> = () => {
   const state = useReviewState();
+  // Comments outside the diff live in whole-file views, not on the diff.
+  const diffOnlyAnnotations = useMemo(
+    () => (state.allAnnotations.some((a) => a.outsideDiff) ? state.allAnnotations.filter((a) => !a.outsideDiff) : state.allAnnotations),
+    [state.allAnnotations],
+  );
 
   // A commit diff heads the surface with the full commit message and opens
   // its files folded — the description gives the "what/why", the collapsed
@@ -63,6 +71,26 @@ export const ReviewAllFilesDiffPanel: React.FC<IDockviewPanelProps> = () => {
     [state.imagePreviewAvailable, snapshotId, compact],
   );
 
+  // Package changes under each package.json and lockfile header, wherever
+  // the server can read the files behind the diff (never a static patch).
+  const packageReviewBase = state.reviewBase;
+  const renderPackageChanges = useMemo(
+    () =>
+      state.contextExpansionAvailable !== false
+        ? ({ file, onHeightChange }: { file: DiffFile; onHeightChange: () => void }) => (
+            <PackageChangesCard
+              key={`${snapshotId ?? ''}:${file.path}`}
+              filePath={file.path}
+              reviewBase={packageReviewBase}
+              reviewSnapshotId={snapshotId}
+              onHeightChange={onHeightChange}
+              compactTouchLayout={compact}
+            />
+          )
+        : undefined,
+    [state.contextExpansionAvailable, packageReviewBase, snapshotId, compact],
+  );
+
   // Rendered Markdown views (one Source / Changes / Read menu per Markdown
   // file). The card fetches its own contents, lazily, when CodeView mounts
   // its header slot.
@@ -83,7 +111,8 @@ export const ReviewAllFilesDiffPanel: React.FC<IDockviewPanelProps> = () => {
               <ReviewMarkdownViewControl file={file} iconOnly={iconOnly} touch={touch} />
             ),
             render: ({ file, onHeightChange }: { file: DiffFile; onHeightChange: () => void }) => (
-              <React.Suspense key={`${reviewSnapshotId ?? ''}:${file.path}`} fallback={null}>
+              <LazyBlockBoundary key={`${reviewSnapshotId ?? ''}:${file.path}`} fallback={(notice) => <MarkdownPreviewFailed notice={notice} />}>
+              <React.Suspense fallback={null}>
               <MarkdownFilePreview
                 key={`${reviewSnapshotId ?? ''}:${file.path}`}
                 filePath={file.path}
@@ -98,6 +127,7 @@ export const ReviewAllFilesDiffPanel: React.FC<IDockviewPanelProps> = () => {
                 onHeightChange={onHeightChange}
               />
               </React.Suspense>
+              </LazyBlockBoundary>
             ),
           }
         : undefined,
@@ -124,7 +154,7 @@ export const ReviewAllFilesDiffPanel: React.FC<IDockviewPanelProps> = () => {
       expandUnchanged={state.expandUnchanged}
       fontFamily={state.fontFamily}
       fontSize={state.fontSize}
-      annotations={state.allAnnotations}
+      annotations={diffOnlyAnnotations}
       selectedAnnotationId={state.selectedAnnotationId}
       scrollTargetAnnotation={state.scrollTargetAnnotation}
       pendingSelection={state.pendingSelection}
@@ -132,6 +162,7 @@ export const ReviewAllFilesDiffPanel: React.FC<IDockviewPanelProps> = () => {
       reviewSnapshotId={state.feedbackDiffContext?.snapshotId}
       contextExpansionAvailable={state.contextExpansionAvailable}
       renderImagePreview={renderImagePreview}
+      renderPackageChanges={renderPackageChanges}
       markdownPreview={markdownPreview}
       compactTouchLayout={state.isCompactTouchLayout}
       onLineSelection={state.onLineSelection}
@@ -139,6 +170,8 @@ export const ReviewAllFilesDiffPanel: React.FC<IDockviewPanelProps> = () => {
       onEditAnnotation={state.onEditAnnotation}
       onSelectAnnotation={state.onSelectAnnotation}
       onDeleteAnnotation={state.onDeleteAnnotation}
+      onExplainAnnotation={state.aiAvailable ? state.onExplainAnnotation : undefined}
+      agentFindingSources={state.agentFindingSources}
       onAddFileCommentForFile={state.onAddFileCommentForFile}
       viewedFiles={state.viewedFiles}
       onToggleViewed={state.onToggleViewed}
@@ -165,6 +198,7 @@ export const ReviewAllFilesDiffPanel: React.FC<IDockviewPanelProps> = () => {
       onCodeNavRequest={state.onCodeNavRequest}
       onTokenHoverEnter={state.onTokenHoverEnter}
       onTokenHoverLeave={state.onTokenHoverLeave}
+      onTokenTarget={state.onTokenTarget}
       onVisibleFileChange={state.onAllFilesVisibleFileChange}
       onFileScrolledPast={state.onAllFilesFileScrolledPast}
       fileOrder={state.allFilesOrder}

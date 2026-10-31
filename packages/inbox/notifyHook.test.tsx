@@ -8,7 +8,7 @@
  * drops a thread the person opened, a notice is silent only when the bell
  * owns its sound, and two tabs raise each item once.
  *
- * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from the test.yml DOM list.
+ * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { act } from 'react';
@@ -53,8 +53,14 @@ function installStubs() {
 }
 
 function restoreStubs() {
-  (window as unknown as { Notification: unknown }).Notification = saved.notification;
-  (globalThis as unknown as { Notification: unknown }).Notification = saved.notification;
+  // Put back "none" as none: a property set to undefined reads as support (see tour.test.tsx).
+  if (saved.notification === undefined) {
+    delete (window as unknown as { Notification?: unknown }).Notification;
+    delete (globalThis as unknown as { Notification?: unknown }).Notification;
+  } else {
+    (window as unknown as { Notification: unknown }).Notification = saved.notification;
+    (globalThis as unknown as { Notification: unknown }).Notification = saved.notification;
+  }
   document.hasFocus = saved.hasFocus!;
   if (saved.visibility) Object.defineProperty(document, 'visibilityState', saved.visibility);
   else delete (document as unknown as Record<string, unknown>).visibilityState;

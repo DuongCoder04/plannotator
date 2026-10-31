@@ -1,8 +1,11 @@
 import { useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import { Icon, type IconName } from '../icons';
+import { hintText, ShortcutHint, useShortcutAria } from '../shortcuts/hint';
+import { shortcutPrefs } from '../shortcuts/prefs';
+import { inboxThreadShortcuts } from '../shortcuts/thread.shortcuts';
 
 /** `thumb`: 👍 Looks good (the emoji itself, as plan review's button draws it). */
-export type InboxToastIcon = 'check' | 'warn' | 'archive' | 'mute' | 'thumb' | 'unpin';
+export type InboxToastIcon = 'check' | 'warn' | 'archive' | 'mute' | 'thumb' | 'unpin' | 'clock';
 
 export interface InboxToastModel {
   /** Bumped per toast, so a new one replays its entrance. */
@@ -30,18 +33,19 @@ export interface InboxToastModel {
   speech?: string;
 }
 
-const ICONS: Record<Exclude<InboxToastIcon, 'thumb'>, IconName> = { check: 'checkCircle', warn: 'warn', archive: 'archive', mute: 'mute', unpin: 'pinOff' };
+const ICONS: Record<Exclude<InboxToastIcon, 'thumb'>, IconName> = { check: 'checkCircle', warn: 'warn', archive: 'archive', mute: 'mute', unpin: 'pinOff', clock: 'clock' };
 
 /**
  * What the window's live region says for a toast, as sentences, and how to
  * undo it when it can be undone: "Marked read. Moves to Quiet. Press Z to
  * undo." (a phone has no Z: "Undo is available.").
  */
-export function toastSpeech(toast: Pick<InboxToastModel, 'lead' | 'detail' | 'onUndo' | 'speech'>, phone = false): string {
+export function toastSpeech(toast: Pick<InboxToastModel, 'lead' | 'detail' | 'onUndo' | 'speech'>, phone = false, singleKeys = shortcutPrefs().singleKeys): string {
   const sentence = (text: string) => (/[.!?…”"]$/.test(text) ? text : `${text}.`);
   const said = toast.speech ? sentence(toast.speech) : toast.detail ? `${sentence(toast.lead)} ${sentence(toast.detail)}` : sentence(toast.lead);
   if (!toast.onUndo) return said;
-  return `${said} ${phone ? 'Undo is available.' : 'Press Z to undo.'}`;
+  // With single keys off Z does nothing, so it is not offered.
+  return `${said} ${phone || !singleKeys ? 'Undo is available.' : `Press ${hintText({ scope: inboxThreadShortcuts, action: 'undo' })} to undo.`}`;
 }
 
 /**
@@ -81,6 +85,7 @@ function toastClass(toast: InboxToastModel, phone: boolean, closable: boolean): 
 
 function ToastBody({ toast, phone, onDismiss }: { toast: InboxToastModel; phone: boolean; onDismiss?: () => void }) {
   const reply = !phone && toast.onReply;
+  const undoKeys = useShortcutAria({ scope: inboxThreadShortcuts, action: 'undo' });
   return (
     <>
       {toast.icon === 'thumb' ? (
@@ -107,9 +112,9 @@ function ToastBody({ toast, phone, onDismiss }: { toast: InboxToastModel; phone:
             </button>
           )}
           {toast.onUndo && (
-            <button type="button" className="ib-tundo" onClick={toast.onUndo} data-toast-undo="" aria-keyshortcuts={phone ? undefined : 'Z'}>
+            <button type="button" className="ib-tundo" onClick={toast.onUndo} data-toast-undo="" aria-keyshortcuts={phone ? undefined : undoKeys}>
               Undo
-              {!phone && <kbd aria-hidden="true">Z</kbd>}
+              {!phone && <ShortcutHint scope={inboxThreadShortcuts} action="undo" className="" />}
             </button>
           )}
           {onDismiss && (

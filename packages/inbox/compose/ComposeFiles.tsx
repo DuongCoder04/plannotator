@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent } from 'react';
 import { inboxAttachmentKindLabel, readInboxAttachmentKind, type InboxUpload } from '@plannotator/core/inbox-types';
 import { InboxApiError, uploadFile } from '../api';
 import { formatBytes } from '../format';
 import { Icon, type IconName } from '../icons';
 import { FileName } from '../components/FileName';
-import { clipboardHasText, pastedFiles } from './paste';
+import { Tip } from '../components/Tip';
+import { isPhone } from '../phone';
+import { chosenFiles, clipboardHasText, pastedFiles, pastedImageOwnLink } from './paste';
 
 /**
  * Compose's files, and the reply box's: each one the person picked, dropped
@@ -46,7 +48,7 @@ export function attachedAnnouncement(names: readonly string[]): string {
  * The files of one compose session (or reply box), and its uploads.
  * `onPasted`: the names a paste attached, for the host's polite live region.
  */
-export function useComposeFiles(initial: readonly InboxUpload[], options: { onPasted?: (names: string[]) => void } = {}) {
+export function useComposeFiles(initial: readonly InboxUpload[], options: { onPasted?: (names: string[]) => void; machine?: string | null } = {}) {
   const [files, setFiles] = useState<ComposeFile[]>(() => initial.map(fromUpload));
   const aborts = useRef(new Map<string, AbortController>());
   /** Each local preview's object URL by its file's key, freed when the file goes. */
@@ -55,6 +57,9 @@ export function useComposeFiles(initial: readonly InboxUpload[], options: { onPa
   filesRef.current = files;
   const onPasted = useRef(options.onPasted);
   onPasted.current = options.onPasted;
+  // Linked machines: a reply to another machine's thread uploads its files to that machine.
+  const machine = useRef(options.machine ?? null);
+  machine.current = options.machine ?? null;
   const release = (key: string) => {
     aborts.current.get(key)?.abort();
     aborts.current.delete(key);
@@ -72,7 +77,7 @@ export function useComposeFiles(initial: readonly InboxUpload[], options: { onPa
       setFiles((current) => [...current, { key, name: file.name, size: file.size, state: 'uploading', progress: 0, upload: null, error: null, preview }]);
       const controller = new AbortController();
       aborts.current.set(key, controller);
-      uploadFile(file, { signal: controller.signal, onProgress: (loaded, total) => patch(key, { progress: total > 0 ? loaded / total : 0 }) })
+      uploadFile(file, { machine: machine.current, signal: controller.signal, onProgress: (loaded, total) => patch(key, { progress: total > 0 ? loaded / total : 0 }) })
         .then((upload) => patch(key, { state: 'done', progress: 1, upload }))
         .catch((cause) => {
           if (cause instanceof DOMException && cause.name === 'AbortError') return;
@@ -117,13 +122,30 @@ export function useComposeFiles(initial: readonly InboxUpload[], options: { onPa
     (event: ReactClipboardEvent<HTMLElement>): boolean => {
       if (event.defaultPrevented) return false;
       const data = event.clipboardData;
-      const list = pastedFiles(data, namesRef.current);
+      const phone = isPhone();
+      const list = pastedFiles(data, namesRef.current, new Date(), { phone });
       if (list.length === 0) return false;
-      if (!clipboardHasText(data)) event.preventDefault();
+      // Text the person meant still pastes natively; on a phone an image's own link (paste.ts) is not inserted.
+      if (!clipboardHasText(data) || pastedImageOwnLink(data, phone)) event.preventDefault();
       namesRef.current = [...namesRef.current, ...list.map((file) => file.name)];
       add(list);
       onPasted.current?.(list.map((file) => file.name));
       return true;
+    },
+    [add],
+  );
+
+  /**
+   * Files chosen with the attach button (a phone's: iOS offers no Paste for a
+   * picture in a plain text field), named and announced as a paste is.
+   */
+  const attach = useCallback(
+    (list: Iterable<File>) => {
+      const named = chosenFiles(list, namesRef.current);
+      if (named.length === 0) return;
+      namesRef.current = [...namesRef.current, ...named.map((file) => file.name)];
+      add(named);
+      onPasted.current?.(named.map((file) => file.name));
     },
     [add],
   );
@@ -139,7 +161,131 @@ export function useComposeFiles(initial: readonly InboxUpload[], options: { onPa
 
   const uploaded = files.filter((file) => file.state === 'done' && file.upload).map((file) => file.upload!);
   const uploading = files.some((file) => file.state === 'uploading');
-  return { files, add, remove, forget, reset, current, paste, uploaded, uploading };
+  return { files, add, attach, remove, forget, reset, current, paste, uploaded, uploading };
+}
+
+/** A phone's picker offers the photo library and Files (iOS gives no Paste for a picture in a text field). */
+const PHONE_ACCEPT = 'image/*,*/*';
+
+/**
+ * The paperclip: a label over a hidden `<input type="file" multiple>`, named
+ * "Attach files" with a `Tip`. Any file type; on a phone the picker offers the
+ * photo library too. `onFiles` gets what was chosen (the input is emptied, so
+ * the same file can be picked again). New message's foot and the reply box's
+ * toolbar both use it.
+ */
+export function AttachFilesButton({
+  className,
+  iconSize,
+  phone = false,
+  onFiles,
+  inputData,
+}: {
+  className: string;
+  iconSize: number;
+  phone?: boolean;
+  onFiles: (files: FileList) => void;
+  /** A `data-*` attribute for the input, for tests and the page's own lookups. */
+  inputData?: string;
+}) {
+  return (
+    <Tip content="Attach files">
+      <label className={className} aria-label="Attach files">
+        <Icon name="clip" size={iconSize} />
+        <input
+          type="file"
+          multiple
+          className="ib-sr"
+          accept={phone ? PHONE_ACCEPT : undefined}
+          {...(inputData ? { [inputData]: '' } : {})}
+          onChange={(event) => {
+            if (event.target.files && event.target.files.length > 0) onFiles(event.target.files);
+            event.target.value = '';
+          }}
+        />
+      </label>
+    </Tip>
+  );
+}
+
+/** A drag that carries files from the system (not text, a link, or a card being moved). */
+export function dragHasFiles(event: ReactDragEvent): boolean {
+  return [...event.dataTransfer.types].includes('Files');
+}
+
+/**
+ * A drag that started on the page itself (an image in a message dragged a
+ * little): `dragstart` fires only for those, never for files from the system,
+ * and `dragend` ends it. Some browsers give such a drag a `Files` type, so the
+ * drop targets below ignore it. One pair of document listeners for every
+ * target on the page.
+ */
+let pageDrag = false;
+let pageDragWatchers = 0;
+const onPageDragStart = () => {
+  pageDrag = true;
+};
+const onPageDragEnd = () => {
+  pageDrag = false;
+};
+function watchPageDrags(): () => void {
+  if (pageDragWatchers++ === 0) {
+    document.addEventListener('dragstart', onPageDragStart, true);
+    document.addEventListener('dragend', onPageDragEnd, true);
+  }
+  return () => {
+    if (--pageDragWatchers > 0) return;
+    document.removeEventListener('dragstart', onPageDragStart, true);
+    document.removeEventListener('dragend', onPageDragEnd, true);
+    pageDrag = false;
+  };
+}
+
+/**
+ * A drop target for files: `over` while files are dragged over it, `onFiles`
+ * on a drop. Drags that carry no files (text, a link, a Board card) pass
+ * through untouched, and so does a drag that started on the page itself. A
+ * drag or drop a target inside already took (`defaultPrevented`: the reply box
+ * inside the thread) is left to it, and `over` goes off, so only the innermost
+ * target shows.
+ */
+export function useFileDrop(onFiles: (files: FileList) => void, enabled = true) {
+  const [over, setOver] = useState(false);
+  const onFilesRef = useRef(onFiles);
+  onFilesRef.current = onFiles;
+  useEffect(() => {
+    if (!enabled) setOver(false);
+  }, [enabled]);
+  useEffect(() => watchPageDrags(), []);
+  const onDragOver = useCallback(
+    (event: ReactDragEvent) => {
+      if (!enabled || pageDrag || !dragHasFiles(event)) return;
+      if (event.defaultPrevented) {
+        setOver(false);
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+      setOver(true);
+    },
+    [enabled],
+  );
+  const onDragLeave = useCallback((event: ReactDragEvent) => {
+    // Still inside (onto a child); leaving the window has no related target.
+    const to = event.relatedTarget;
+    if (to instanceof Node && event.currentTarget.contains(to)) return;
+    setOver(false);
+  }, []);
+  const onDrop = useCallback(
+    (event: ReactDragEvent) => {
+      setOver(false);
+      if (!enabled || pageDrag || event.defaultPrevented || event.dataTransfer.files.length === 0) return;
+      event.preventDefault();
+      onFilesRef.current(event.dataTransfer.files);
+    },
+    [enabled],
+  );
+  return { over, handlers: { onDragOver, onDragEnter: onDragOver, onDragLeave, onDrop } };
 }
 
 function iconFor(upload: Pick<InboxUpload, 'kind'> | null): IconName {

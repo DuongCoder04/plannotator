@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useEffect, useLayoutEffect, useCallback, useState } from 'react';
 import { FileDiff, type DiffLineAnnotation } from '@pierre/diffs/react';
+import { LazyBlockBoundary } from '@plannotator/ui/components/LazyBlockBoundary';
 import { getSingularPatch, processFile } from '@pierre/diffs';
 import { CodeAnnotation, CodeAnnotationType, SelectedLineRange, DiffAnnotationMetadata, TokenAnnotationMeta, ConventionalLabel, ConventionalDecoration } from '@plannotator/ui/types';
 import type { DiffTokenEventBaseProps } from '@pierre/diffs';
@@ -27,6 +28,8 @@ import { DiffHScrollbar } from './DiffHScrollbar';
 import { OversizedFileNotice } from './OversizedFileNotice';
 import { isContentlessBinaryPatch, isImagePreviewCandidate, isOversizedReviewStubPatch } from '@plannotator/shared/diff-paths';
 import { ImageDiffPreview } from './ImageDiffPreview';
+import { PackageChangesCard } from './PackageChangesCard';
+import { isPackageChangePath } from '@plannotator/core/package-changes';
 import { isFileScopedAnnotation, lineRangeForAnnotation } from '../utils/annotationScope';
 import { lineAnnotationMetadata } from '../utils/annotationDisplay';
 import type { AnnotationScrollTarget } from '../types';
@@ -175,6 +178,11 @@ const PierreDiffContent = React.memo(({
 ));
 
 interface DiffViewerProps {
+  /** A control drawn in the file header (the Changes | Whole file switch). */
+  headerAccessory?: React.ReactNode;
+  /** Replaces the diff below the header (the Whole file view): the header,
+   *  its viewed and staging controls stay as they are. */
+  bodyOverride?: React.ReactNode;
   patch: string;
   filePath: string;
   oldPath?: string;
@@ -194,6 +202,9 @@ interface DiffViewerProps {
   /** Snapshot the image preview binds its requests to (set in PR mode too,
    *  where `reviewSnapshotId` is not). Falls back to `reviewSnapshotId`. */
   imageSnapshotId?: string;
+  /** A package.json or lockfile diff shows its package changes under the
+   *  header. Absent (read-only hosts): nothing is fetched or drawn. */
+  packageChangesAvailable?: boolean;
   /** Current PR url + diff scope — used to namespace file-comment drafts so they don't leak across in-place PR switches. */
   prUrl?: string;
   prDiffScope?: string;
@@ -223,6 +234,8 @@ interface DiffViewerProps {
   onEditAnnotation: (id: string, text?: string, suggestedCode?: string, originalCode?: string, conventionalLabel?: ConventionalLabel | null, decorations?: ConventionalDecoration[]) => void;
   onSelectAnnotation: (id: string | null) => void;
   onDeleteAnnotation: (id: string) => void;
+  onExplainAnnotation?: (id: string) => void;
+  agentFindingSources?: ReadonlySet<string>;
   isViewed?: boolean;
   onToggleViewed?: () => void;
   /** Chrome preference (#1277): false hides the header Viewed button; the `V`
@@ -267,6 +280,8 @@ interface DiffViewerProps {
    */
   onTokenHoverEnter?: (props: DiffTokenEventBaseProps, filePath: string) => void;
   onTokenHoverLeave?: () => void;
+  /** The token under the pointer, and the last one clicked: where F12 looks. */
+  onTokenTarget?: import('../utils/tokenTarget').TokenTargetHandler;
   /** Every file path in this review. A link in the Markdown preview to one of
    *  them opens it; any other local link renders inert. */
   reviewFilePaths?: ReadonlySet<string>;
@@ -296,7 +311,18 @@ const MarkdownPreviewPending: React.FC = () => (
   </div>
 );
 
+/** The preview's chunk could not load (`LazyBlockBoundary`): the same box, saying so. */
+export const MarkdownPreviewFailed: React.FC<{ notice: React.ReactNode }> = ({ notice }) => (
+  <div className="min-h-full px-4 py-4 sm:px-6" data-markdown-preview="" data-markdown-preview-view="failed">
+    <div className="mx-auto max-w-3xl rounded-md border border-border/60 bg-muted/20 p-4 [&>[role=status]]:mb-0">
+      {notice}
+    </div>
+  </div>
+);
+
 export const DiffViewer: React.FC<DiffViewerProps> = ({
+  headerAccessory,
+  bodyOverride,
   patch,
   filePath,
   oldPath,
@@ -304,6 +330,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   reviewBase,
   reviewSnapshotId,
   imagePreviewAvailable = false,
+  packageChangesAvailable = false,
   imageSnapshotId,
   contextExpansionAvailable = true,
   prUrl,
@@ -330,6 +357,8 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   onEditAnnotation,
   onSelectAnnotation,
   onDeleteAnnotation,
+  onExplainAnnotation,
+  agentFindingSources,
   isViewed = false,
   onToggleViewed,
   showViewedControls = true,
@@ -357,6 +386,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   onCodeNavRequest,
   onTokenHoverEnter,
   onTokenHoverLeave,
+  onTokenTarget,
   reviewFilePaths,
   onOpenReviewFile,
   markdownView: markdownViewProp,
@@ -816,9 +846,12 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         onSelect={onSelectAnnotation}
         onEdit={handleEdit}
         onDelete={onDeleteAnnotation}
+        onExplain={onExplainAnnotation}
+        agentFindingSources={agentFindingSources}
+        explainDisabled={isAILoading}
       />
     );
-  }, [filePath, selectedAnnotationId, onSelectAnnotation, handleEdit, onDeleteAnnotation, onClickAIMarker]);
+  }, [filePath, selectedAnnotationId, onSelectAnnotation, handleEdit, onDeleteAnnotation, onExplainAnnotation, agentFindingSources, isAILoading, onClickAIMarker]);
 
   const handleLineSelectionInteraction = useCallback((
     source: LineSelectionSource,
@@ -962,6 +995,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
 
   // Token interaction handlers (code area clicks)
   const handleTokenClick = useCallback((props: DiffTokenEventBaseProps, event: MouseEvent) => {
+    onTokenTarget?.('click', props, filePath);
     // Alt is an unadvertised alias for the same References-panel path; the
     // meta/ctrl branch itself is unchanged.
     if ((event.metaKey || event.ctrlKey || event.altKey) && onCodeNavRequest) {
@@ -969,7 +1003,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
       return;
     }
     toolbarHostRef.current?.handleTokenClick(props, event);
-  }, [filePath, onCodeNavRequest]);
+  }, [filePath, onCodeNavRequest, onTokenTarget]);
 
   const handleTokenEnter = useCallback((props: DiffTokenEventBaseProps, event: PointerEvent) => {
     // Only where a card can actually open. The class carries a pointer cursor
@@ -980,14 +1014,16 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
     if ((event.metaKey || event.ctrlKey) && onCodeNavRequest) {
       props.tokenElement.classList.add('pn-token-nav');
     }
+    onTokenTarget?.('enter', props, filePath);
     onTokenHoverEnter?.(props, filePath);
-  }, [filePath, onCodeNavRequest, onTokenHoverEnter]);
+  }, [filePath, onCodeNavRequest, onTokenHoverEnter, onTokenTarget]);
 
   const handleTokenLeave = useCallback((props: DiffTokenEventBaseProps) => {
     props.tokenElement.classList.remove('pn-token-hover');
     props.tokenElement.classList.remove('pn-token-nav');
+    onTokenTarget?.('leave', props, filePath);
     onTokenHoverLeave?.();
-  }, [onTokenHoverLeave]);
+  }, [filePath, onTokenHoverLeave, onTokenTarget]);
 
   const splitGridStyle = useMemo(() => {
     if (!isSplitLayout || diffOverflow === 'wrap') return undefined;
@@ -1073,6 +1109,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         showStageControl={showStageControls}
         stageError={stageError}
         onFileComment={setFileCommentAnchor}
+        accessory={headerAccessory}
         renderMarkdownView={canPreviewMarkdown
           ? ({ iconOnly, touch }) => (
             <MarkdownViewMenu
@@ -1093,7 +1130,9 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
       )}
       </div>
 
-      {!collapsed && (
+      {!collapsed && bodyOverride ? (
+        <div className="flex-1 min-h-0 relative flex flex-col" data-diff-body-override>{bodyOverride}</div>
+      ) : !collapsed && (
         <OverlayScrollArea
           className={`flex-1 min-h-0 relative ${isDraggingSplit ? 'select-none' : ''}`}
           overflowX="scroll"
@@ -1110,7 +1149,11 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                 onSelect={onSelectAnnotation}
                 onEdit={onEditAnnotation}
                 onDelete={onDeleteAnnotation}
+                onExplain={onExplainAnnotation}
+                agentFindingSources={agentFindingSources}
+                explainDisabled={isAILoading}
               />
+              <LazyBlockBoundary fallback={(notice) => <MarkdownPreviewFailed notice={notice} />}>
               <React.Suspense fallback={<MarkdownPreviewPending />}>
               <MarkdownFilePreview
                 filePath={filePath}
@@ -1127,6 +1170,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                 onViewChange={(view) => setMarkdownPreview(true, view)}
               />
               </React.Suspense>
+              </LazyBlockBoundary>
             </>
           ) : (
             <>
@@ -1148,12 +1192,24 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                   {isContentlessBinary && <BinaryFileNotice />}
                 </>
               )}
+              {packageChangesAvailable && isPackageChangePath(filePath) && (
+                <PackageChangesCard
+                  key={`${imageSnapshotId ?? reviewSnapshotId ?? ''}:${filePath}`}
+                  filePath={filePath}
+                  reviewBase={reviewBase}
+                  reviewSnapshotId={imageSnapshotId ?? reviewSnapshotId}
+                  compactTouchLayout={compactTouchLayout}
+                />
+              )}
               <FileCommentBanner
                 comments={fileComments}
                 selectedAnnotationId={selectedAnnotationId}
                 onSelect={onSelectAnnotation}
                 onEdit={onEditAnnotation}
                 onDelete={onDeleteAnnotation}
+                onExplain={onExplainAnnotation}
+                agentFindingSources={agentFindingSources}
+                explainDisabled={isAILoading}
               />
               <div className="p-4" ref={diffContentRef}>
                 <div ref={splitSurfaceRef} className="relative min-w-0" style={splitGridStyle}>

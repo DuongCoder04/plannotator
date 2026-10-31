@@ -162,23 +162,32 @@ test("a worktree inside a hidden folder (as Codex and Claude Code keep theirs) s
   writeFileSync(join(hidden, "shots", "after.png"), png());
   // A hidden folder inside the folder sent from is the agent's own, as in its project.
   writeFileSync(join(hidden, "shots", ".cache", "frame.png"), png());
-  // The same hidden parent, outside the worktree: not the folder sent from, so refused.
+  // The same hidden parent, outside the worktree: not the folder sent from, and (as `~/.codex`) a
+  // hidden folder of the home folder, so refused.
   mkdirSync(join(root, ".codex", "other"), { recursive: true });
   writeFileSync(join(root, ".codex", "other", "x.png"), png());
-  const server = await start(dataDir);
-  const sent = await send(await agent(server), {
-    project_path: hidden,
-    body: "![after](shots/after.png) ![frame](shots/.cache/frame.png) ![other](../../other/x.png)",
-    agent_session: "ses_codex",
-  });
-  expect(sent.project.root).toBe(main);
-  expect(server.store.message(sent.message_id)?.base_path).toBe(hidden);
-  expect((await image(server, sent.message_id, "shots/after.png")).status).toBe(200);
-  expect((await image(server, sent.message_id, "shots/.cache/frame.png")).status).toBe(200);
-  const other = await image(server, sent.message_id, "../../other/x.png");
-  expect(other.status).toBe(403);
-  expect(((await other.json()) as { code: string }).code).toBe("image_hidden");
-  expect(sent.images_not_shown).toEqual([{ ref: "../../other/x.png", reason: "in a hidden folder, or a hidden or .env file" }]);
+  // The temp root is a scratch home folder, as Codex keeps its worktrees in ~/.codex.
+  const previousHome = process.env.HOME;
+  process.env.HOME = root;
+  try {
+    const server = await start(dataDir);
+    const sent = await send(await agent(server), {
+      project_path: hidden,
+      body: "![after](shots/after.png) ![frame](shots/.cache/frame.png) ![other](../../other/x.png)",
+      agent_session: "ses_codex",
+    });
+    expect(sent.project.root).toBe(main);
+    expect(server.store.message(sent.message_id)?.base_path).toBe(hidden);
+    expect((await image(server, sent.message_id, "shots/after.png")).status).toBe(200);
+    expect((await image(server, sent.message_id, "shots/.cache/frame.png")).status).toBe(200);
+    const other = await image(server, sent.message_id, "../../other/x.png");
+    expect(other.status).toBe(403);
+    expect(((await other.json()) as { code: string }).code).toBe("image_hidden");
+    expect(sent.images_not_shown).toEqual([{ ref: "../../other/x.png", reason: "a .env file, or in a hidden folder of the home folder such as ~/.ssh" }]);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+  }
 });
 
 test("relative attachments resolve in the worktree and are recorded by their realpath", async () => {
@@ -357,4 +366,54 @@ test("a folder project holding the worktree (a project at ~) never takes a guess
   expect(refused.content[0]!.text).toStartWith("project_unresolved:");
   expect(server.store.listRows({ projectId: home.project.id }).map((row) => row.thread_id)).toEqual([home.thread_id]);
   expect(server.store.listProjects().map((p) => p.root)).toEqual([root]);
+});
+
+test("read_thread's list from a worktree an older Inbox kept a project for lists that project's threads and makes no main-repository project", async () => {
+  const { worktree, dataDir } = world();
+  const before = InboxStore.open(dataDir);
+  const old = before.ensureProject({ name: "api-wt", root: worktree });
+  const author = { kind: "agent" as const, host: "codex", session: "ses_codex_wt", name: "Codex" };
+  const asked = before.sendMessage({ project_id: old.id, author, body: "Asked before the fold." }).message;
+
+  const server = await start(dataDir);
+  const client = await agent(server);
+  const listed = (await client.callTool({
+    name: "read_thread",
+    arguments: { project_path: worktree, agent_session: "ses_codex_wt" },
+  })) as { isError?: boolean; structuredContent: Record<string, any> };
+  expect(listed.isError).toBeFalsy();
+  expect(listed.structuredContent.project.id).toBe(old.id);
+  expect(listed.structuredContent.threads.map((t: { thread_id: string }) => t.thread_id)).toEqual([asked.id]);
+  // A read is not a write: the main repository has no project until something is sent from it.
+  expect(server.store.listProjects().map((p) => p.root)).toEqual([worktree]);
+});
+
+test("read_thread's list when git does not answer in time: project_unresolved and nothing made; once git answers, the same call lists", async () => {
+  const { main, dataDir } = world();
+  const real = inboxGitRunner();
+  let slow = true;
+  const git: InboxGitRunner = async (args, cwd) => {
+    if (!slow) return real(args, cwd);
+    await Bun.sleep(20);
+    return null;
+  };
+  const server = await start(dataDir, git);
+  const client = await agent(server);
+  const refused = (await client.callTool({
+    name: "read_thread",
+    arguments: { project_path: main, agent_session: "ses_main" },
+  })) as { isError?: boolean; content: { text: string }[] };
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0]!.text).toStartWith("project_unresolved:");
+  expect(refused.content[0]!.text).toContain("try the same call again");
+  expect(server.store.listProjects()).toEqual([]);
+
+  slow = false;
+  const listed = (await client.callTool({
+    name: "read_thread",
+    arguments: { project_path: main, agent_session: "ses_main" },
+  })) as { isError?: boolean; structuredContent: Record<string, any> };
+  expect(listed.isError).toBeFalsy();
+  expect(listed.structuredContent.threads).toEqual([]);
+  expect(server.store.listProjects()).toEqual([]);
 });

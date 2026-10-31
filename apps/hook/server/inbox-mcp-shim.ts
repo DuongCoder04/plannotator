@@ -20,15 +20,37 @@
  * on every tool call (`params._meta.threadId`, from the `codex-mcp-client`)
  * and in the commands its shell runs (`CODEX_THREAD_ID`), and the shim sends
  * as `agent_host: "codex"` with that id, so the Inbox can queue the person's
- * reply into that thread (packages/server/inbox-codex-wake.ts). Otherwise it is one `ses_` id per shim process,
+ * reply into that thread (packages/server/inbox-codex-wake.ts). A Qwen Code
+ * session is read at every call (`inboxCallHostSession`): Qwen's registry
+ * record for the shim's parent process, since `/clear` and `/resume` change
+ * the id the shim was started with. Otherwise it is one `ses_` id per shim process,
  * and an MCP client that wants its threads across restarts passes
  * `agent_session` itself.
+ *
+ * Inside an agent Plannotator's Ask AI started (`PLANNOTATOR_ASK_AI_CHILD=1`,
+ * `isAskAiChild`), the shim is an MCP server with no tools and never starts
+ * or reaches the Inbox (`askAiChildReply`).
  *
  * stdout carries JSON-RPC only; anything else goes to stderr.
  */
 
-import { INBOX_CODEX_HOST, INBOX_CODEX_NAME, INBOX_HOST_NAMES, INBOX_WAKING_HOSTS, codexThreadOfCall, inboxId, isCodexThreadId } from "@plannotator/core/inbox-types";
+import {
+  INBOX_CODEX_HOST,
+  INBOX_CODEX_NAME,
+  INBOX_HOST_NAMES,
+  INBOX_QWEN_HOST,
+  INBOX_QWEN_NAME,
+  INBOX_QWEN_SESSION_ENV,
+  INBOX_WAKING_HOSTS,
+  codexThreadOfCall,
+  inboxId,
+  isCodexThreadId,
+  isQwenMcpClient,
+  isQwenSessionId,
+  qwenSessionOfCall,
+} from "@plannotator/core/inbox-types";
 import { inboxStatus, type InboxRegistryEntry } from "@plannotator/shared/inbox/registry";
+import { qwenHome, qwenSessionOfProcess } from "@plannotator/shared/inbox/qwen-sessions";
 import { INBOX_MAX_REQUEST_BYTES, inboxRequestTooLargeMessage } from "@plannotator/shared/inbox/connection";
 
 const FILLED_TOOLS = new Set(["send_message", "read_thread", "wait_for_reply", "submit_guide", "card"]);
@@ -40,8 +62,9 @@ const AUTHOR_TOOLS = new Set(["send_message", "submit_guide", "card"]);
 /**
  * The hosts whose sessions a reply wakes, with the name each one's
  * `plannotator_inbox` tool sends (`INBOX_AGENT_NAME` in the Claude Code mod,
- * `PI_INBOX_AGENT_NAME`, `OPENCODE_INBOX_AGENT_NAME`), and Codex, which the
- * Inbox wakes itself through `codex queue`.
+ * `PI_INBOX_AGENT_NAME`, `OPENCODE_INBOX_AGENT_NAME`), and Codex and Qwen
+ * Code, which the Inbox wakes itself (`codex queue`, Qwen's cross-session
+ * messaging).
  */
 export const INBOX_SESSION_HOST_NAMES: Readonly<Record<string, string>> = Object.fromEntries(INBOX_WAKING_HOSTS.map((host) => [host, INBOX_HOST_NAMES[host]!]));
 
@@ -70,7 +93,7 @@ export function inboxHostSessionFromEnv(env: Record<string, string | undefined>)
     const colon = tag.indexOf(":");
     const host = colon > 0 ? tag.slice(0, colon) : "";
     const session = tag.slice(colon + 1);
-    if (Object.hasOwn(INBOX_SESSION_HOST_NAMES, host) && HOST_SESSION_ID.test(session) && (host !== INBOX_CODEX_HOST || isCodexThreadId(session))) {
+    if (Object.hasOwn(INBOX_SESSION_HOST_NAMES, host) && HOST_SESSION_ID.test(session) && (host !== INBOX_CODEX_HOST || isCodexThreadId(session)) && (host !== INBOX_QWEN_HOST || isQwenSessionId(session))) {
       return { host, session, name: INBOX_SESSION_HOST_NAMES[host]! };
     }
   }
@@ -78,7 +101,67 @@ export function inboxHostSessionFromEnv(env: Record<string, string | undefined>)
   if (typeof pi === "string" && HOST_SESSION_ID.test(pi)) return { host: "pi", session: pi, name: INBOX_SESSION_HOST_NAMES.pi! };
   const codex = env.CODEX_THREAD_ID;
   if (isCodexThreadId(codex)) return { host: INBOX_CODEX_HOST, session: codex, name: INBOX_CODEX_NAME };
+  const qwen = env[INBOX_QWEN_SESSION_ENV];
+  if (isQwenSessionId(qwen)) return { host: INBOX_QWEN_HOST, session: qwen, name: INBOX_QWEN_NAME };
   return null;
+}
+
+/**
+ * Where the shim looks for the Qwen Code session it runs in: Qwen's home
+ * (`$QWEN_HOME`, else `~/.qwen`), the shim's parent process (the Qwen process
+ * that started it as an MCP server), and the session id Qwen set when it
+ * started the shim (`QWEN_CODE_SESSION_ID`; stale after `/clear` or `/resume`).
+ */
+export interface InboxQwenShimContext {
+  home: string;
+  parentPid: number;
+  envSession: string | null;
+}
+
+export function inboxQwenShimContext(env: Record<string, string | undefined>, homeDir: string, cwd: string, parentPid: number): InboxQwenShimContext {
+  const session = env[INBOX_QWEN_SESSION_ENV];
+  return { home: qwenHome(env, homeDir, cwd), parentPid, envSession: isQwenSessionId(session) ? session : null };
+}
+
+const qwenHostSession = (session: string): InboxHostSession => ({ host: INBOX_QWEN_HOST, session, name: INBOX_QWEN_NAME });
+
+/**
+ * The host session a tool call belongs to, with Qwen Code's read at the call:
+ *
+ *  - a daemon-run Qwen session names itself on the call
+ *    (`_meta["qwen-code/invocation"].sessionId`);
+ *  - otherwise, when the caller is Qwen (its MCP client name, or Qwen's
+ *    session variable in this process's environment), the session is the one
+ *    Qwen's registry has now for the parent process
+ *    (`$QWEN_HOME/sessions/<parent pid>.json`, read on every call, so `/clear`
+ *    and `/resume` move the shim to the new session), else that variable;
+ *  - a variable another MCP client's process inherited (the client named
+ *    itself, and the registry has no record for the parent) is not Qwen's.
+ *
+ * Qwen wins over another host's variable only when Qwen's client or registry
+ * says so; on the variable alone, the environment's own order holds
+ * (`inboxHostSessionFromEnv`).
+ */
+export function inboxCallHostSession(
+  hostSession: InboxHostSession | null,
+  qwen: InboxQwenShimContext | null | undefined,
+  meta: unknown,
+  clientName: string | null,
+): InboxHostSession | null {
+  const named = qwenSessionOfCall(meta);
+  if (named) return qwenHostSession(named);
+  const fromEnv = qwen?.envSession ?? null;
+  const qwenClient = isQwenMcpClient(clientName);
+  const other = hostSession && hostSession.host !== INBOX_QWEN_HOST ? hostSession : null;
+  if (!qwen || (!qwenClient && fromEnv === null)) return hostSession;
+  const record = qwenSessionOfProcess(qwen.home, qwen.parentPid);
+  if (qwenClient || record) {
+    const session = record?.sessionId ?? fromEnv;
+    return session ? qwenHostSession(session) : other;
+  }
+  // The variable alone: another client that named itself is not Qwen; with no name, the environment's order.
+  if (clientName !== null) return other;
+  return other ?? qwenHostSession(fromEnv!);
 }
 /** The 2026-07-28 per-request envelope's protocol-version key. */
 const PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion";
@@ -89,6 +172,14 @@ export interface InboxMcpShimOptions {
   ensureRunning: () => Promise<InboxRegistryEntry>;
   /** The agent host session the shim runs inside (`inboxHostSessionFromEnv`); absent: one `ses_` id per process. */
   hostSession?: InboxHostSession | null;
+  /** Where a Qwen Code session is read at each call (`inboxQwenShimContext`); absent: Qwen only through `hostSession`. */
+  qwen?: InboxQwenShimContext | null;
+  /**
+   * The shim runs in an agent Plannotator's Ask AI started (`isAskAiChild`):
+   * it answers on its own with no tools (`askAiChildReply`), and never starts
+   * or reaches the Inbox.
+   */
+  askAiChild?: boolean;
   /** Default: process stdin / stdout. */
   input?: ReadableStream<Uint8Array>;
   write?: (line: string) => void;
@@ -140,6 +231,35 @@ export function fillInboxToolArguments(message: JsonRpc, cwd: string, own: strin
   return { ...message, params: { ...message.params, arguments: args } };
 }
 
+/**
+ * The shim's own answer inside an agent Ask AI started: an MCP server with no
+ * tools. `initialize`, an empty `tools/list` and `ping` are answered; any
+ * other request is refused, and notifications get nothing. Clients built on
+ * gemini-cli (Qwen Code) still report a server with no tools, prompts or
+ * resources as an error and mark it disconnected. That is harmless: they go
+ * on without it.
+ */
+export function askAiChildReply(message: JsonRpc): string | null {
+  if (!message || typeof message !== "object" || !("id" in message) || typeof message.method !== "string") return null;
+  const result = (value: Record<string, unknown>) => JSON.stringify({ jsonrpc: "2.0", id: message.id ?? null, result: value });
+  switch (message.method) {
+    case "initialize": {
+      const requested = message.params?.protocolVersion;
+      return result({
+        protocolVersion: typeof requested === "string" ? requested : "2025-06-18",
+        capabilities: { tools: {} },
+        serverInfo: { name: "plannotator-inbox", version: "1.0.0" },
+      });
+    }
+    case "tools/list":
+      return result({ tools: [] });
+    case "ping":
+      return result({});
+    default:
+      return rpcError(message.id, "The Plannotator Inbox is off in an agent that Plannotator's Ask AI started.", -32601);
+  }
+}
+
 /** The JSON-RPC messages in an SSE body (`data:` lines, joined per event). */
 function sseMessages(text: string): string[] {
   const out: string[] = [];
@@ -176,12 +296,19 @@ export async function runInboxMcpShim(options: InboxMcpShimOptions): Promise<voi
       write(rpcError(null, "Parse error", -32700));
       return;
     }
+    if (options.askAiChild) {
+      const reply = askAiChildReply(message);
+      if (reply) write(reply);
+      return;
+    }
     const isRequest = message && typeof message === "object" && "id" in message && typeof message.method === "string";
     if (message?.method === "initialize") {
       const name = (message.params?.clientInfo as { name?: unknown } | undefined)?.name;
       if (typeof name === "string") clientName = name;
     }
-    const outgoing = fillInboxToolArguments(message, options.cwd, own, hostSession, clientName);
+    // Qwen's session is read again for each call: /clear and /resume change it under the same Qwen process.
+    const callHost = message?.method === "tools/call" ? inboxCallHostSession(hostSession, options.qwen, message.params?._meta, clientName) : hostSession;
+    const outgoing = fillInboxToolArguments(message, options.cwd, own, callHost, clientName);
     let target: InboxRegistryEntry;
     try {
       target = await entry();
