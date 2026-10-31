@@ -540,24 +540,40 @@ verify_attestation=0
 # Layer 3: config file (lowest precedence of the opt-in sources).
 # Crude grep against a flat boolean — PlannotatorConfig has no nested
 # verifyAttestation, so false positives are not a concern.
-# Resolve the data directory, expanding ~ the same way the runtime does.
-# Unset: an existing ~/.plannotator (legacy default) always wins; otherwise
-# an explicitly-set absolute XDG_DATA_HOME places it at
+# Resolve the data directory, expanding ~ the same way the runtime does
+# (packages/shared/data-dir.ts). Unset: an existing ~/.plannotator (legacy
+# default) wins, unless it holds none of Plannotator's data while
+# $XDG_DATA_HOME/plannotator does (a stray folder, #2305); otherwise an
+# explicitly-set absolute XDG_DATA_HOME places it at
 # $XDG_DATA_HOME/plannotator; otherwise ~/.plannotator.
+# BEGIN data-dir resolution (tests/data-dir-mirrors.test.ts runs this block)
+_holds_plannotator_data() {
+    for _marker in history sessions drafts inbox claude-code-mod install-flags.json; do
+        [ -e "$1/$_marker" ] && return 0
+    done
+    return 1
+}
 _raw_dir="${PLANNOTATOR_DATA_DIR:-}"
 case "$_raw_dir" in
     "")
         _config_dir="$HOME/.plannotator"
-        if [ ! -d "$_config_dir" ]; then
-            case "${XDG_DATA_HOME:-}" in
-                /*) _config_dir="$XDG_DATA_HOME/plannotator" ;;
-            esac
+        _xdg_dir=""
+        case "${XDG_DATA_HOME:-}" in
+            /*) _xdg_dir="$XDG_DATA_HOME/plannotator" ;;
+        esac
+        if [ -e "$_config_dir" ]; then
+            if [ -n "$_xdg_dir" ] && _holds_plannotator_data "$_xdg_dir" && ! _holds_plannotator_data "$_config_dir"; then
+                _config_dir="$_xdg_dir"
+            fi
+        elif [ -n "$_xdg_dir" ]; then
+            _config_dir="$_xdg_dir"
         fi
         ;;
     "~")     _config_dir="$HOME" ;;
     "~/"*)   _config_dir="$HOME/${_raw_dir#\~/}" ;;
     *)       _config_dir="$_raw_dir" ;;
 esac
+# END data-dir resolution
 if [ -f "$_config_dir/config.json" ]; then
     if grep -q '"verifyAttestation"[[:space:]]*:[[:space:]]*true' "$_config_dir/config.json" 2>/dev/null; then
         verify_attestation=1

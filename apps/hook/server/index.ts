@@ -220,6 +220,7 @@ import { isQwenPlanPermissionRequest, qwenPlanFromEvent, qwenPlanHookOutput } fr
 import { resolveClaudePlan } from "./claude-plan";
 import { takeModPlanApproval } from "./mod-plan-approval";
 import {
+  DATA_DIR_COMMAND_USAGE,
   formatInteractiveNoArgClarification,
   formatSubcommandHelp,
   formatTopLevelHelp,
@@ -240,7 +241,7 @@ import { runCardCommand } from "./card-command";
 import { runFeedbackCommand } from "./feedback-command";
 import { formatInboxHelp } from "./inbox-help";
 import { INBOX_CARD_ACTION_ON } from "@plannotator/core/inbox-types";
-import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
+import { getPlannotatorDataDir, getUnusedPlannotatorDataDir } from "@plannotator/shared/data-dir";
 import { isAgentSdkEntrypoint } from "@plannotator/shared/t3-hook-command";
 import {
   annotateStartupFailureExitCode,
@@ -659,6 +660,19 @@ if (helpSubcommand) {
 }
 
 exitOnUnknownSubcommand(args);
+
+// `plannotator data-dir`: print the data directory and exit, creating
+// nothing. Skills ask this instead of naming ~/.plannotator (#2305).
+if (args[0] === "data-dir") {
+  if (args.length > 1) {
+    console.error(`plannotator data-dir takes no arguments.\n\n${DATA_DIR_COMMAND_USAGE}`);
+    process.exit(2);
+  }
+  console.log(getPlannotatorDataDir());
+  const unused = getUnusedPlannotatorDataDir();
+  if (unused) console.error(`Note: ${unused} also exists; Plannotator does not use it.`);
+  process.exit(0);
+}
 
 // Read a caller-supplied unified diff for static patch mode (`--patch-file`).
 /**

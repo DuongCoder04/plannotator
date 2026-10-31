@@ -486,20 +486,31 @@ set "VERIFY_ATTESTATION=0"
 
 REM Layer 3: config file (lowest precedence of the opt-in sources).
 REM Unset PLANNOTATOR_DATA_DIR: an existing %USERPROFILE%\.plannotator
-REM (legacy default) always wins; otherwise an explicitly-set absolute
-REM XDG_DATA_HOME (rare on Windows but honored the same way as the runtime;
-REM drive-rooted or UNC) places the directory at XDG_DATA_HOME\plannotator;
-REM otherwise %USERPROFILE%\.plannotator.
+REM (legacy default) wins, unless it holds none of Plannotator's data while
+REM XDG_DATA_HOME\plannotator does (a stray folder, #2305); otherwise an
+REM explicitly-set absolute XDG_DATA_HOME (rare on Windows but honored the
+REM same way as the runtime, packages/shared/data-dir.ts; drive-rooted or
+REM UNC) places the directory at XDG_DATA_HOME\plannotator; otherwise
+REM %USERPROFILE%\.plannotator.
 if defined PLANNOTATOR_DATA_DIR (
     set "_CONFIG_DIR=!PLANNOTATOR_DATA_DIR!"
 ) else (
     set "_CONFIG_DIR=%USERPROFILE%\.plannotator"
-    if not exist "%USERPROFILE%\.plannotator\" if defined XDG_DATA_HOME (
-        if "!XDG_DATA_HOME:~1,1!"==":" (
-            set "_CONFIG_DIR=!XDG_DATA_HOME!\plannotator"
-        ) else if "!XDG_DATA_HOME:~0,2!"=="\\" (
-            set "_CONFIG_DIR=!XDG_DATA_HOME!\plannotator"
+    set "_XDG_DIR="
+    if defined XDG_DATA_HOME (
+        if "!XDG_DATA_HOME:~1,1!"==":" set "_XDG_DIR=!XDG_DATA_HOME!\plannotator"
+        if "!XDG_DATA_HOME:~0,2!"=="\\" set "_XDG_DIR=!XDG_DATA_HOME!\plannotator"
+    )
+    if not exist "%USERPROFILE%\.plannotator\" (
+        if defined _XDG_DIR set "_CONFIG_DIR=!_XDG_DIR!"
+    ) else if defined _XDG_DIR (
+        set "_XDG_DATA=0"
+        set "_LEGACY_DATA=0"
+        for %%M in (history sessions drafts inbox claude-code-mod install-flags.json) do (
+            if exist "!_XDG_DIR!\%%M" set "_XDG_DATA=1"
+            if exist "%USERPROFILE%\.plannotator\%%M" set "_LEGACY_DATA=1"
         )
+        if "!_XDG_DATA!"=="1" if "!_LEGACY_DATA!"=="0" set "_CONFIG_DIR=!_XDG_DIR!"
     )
 )
 if /i "!_CONFIG_DIR!"=="~" set "_CONFIG_DIR=%USERPROFILE%"

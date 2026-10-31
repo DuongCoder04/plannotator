@@ -227,16 +227,24 @@ $installCallFlowResolved = $false
 
 # Layer 3: config file (lowest precedence of the opt-in sources).
 # Unset PLANNOTATOR_DATA_DIR: an existing ~/.plannotator (legacy default)
-# always wins; otherwise an explicitly-set absolute XDG_DATA_HOME (rare on
-# Windows but honored the same way as the runtime) places the directory at
+# wins, unless it holds none of Plannotator's data while
+# $XDG_DATA_HOME\plannotator does (a stray folder, #2305); otherwise an
+# explicitly-set absolute XDG_DATA_HOME (rare on Windows but honored the same
+# way as the runtime, packages/shared/data-dir.ts) places the directory at
 # $XDG_DATA_HOME\plannotator; otherwise ~/.plannotator.
+$dataDirMarkers = @("history", "sessions", "drafts", "inbox", "claude-code-mod", "install-flags.json")
+function Test-PlannotatorData([string]$dir) {
+    foreach ($marker in $dataDirMarkers) { if (Test-Path -LiteralPath (Join-Path $dir $marker)) { return $true } }
+    return $false
+}
 $configDir = if ($env:PLANNOTATOR_DATA_DIR) { $env:PLANNOTATOR_DATA_DIR.Trim() } else {
     $legacyDir = Join-Path $env:USERPROFILE ".plannotator"
     $xdgDataHome = if ($env:XDG_DATA_HOME) { $env:XDG_DATA_HOME.Trim() } else { "" }
+    $xdgDir = if ($xdgDataHome -and [System.IO.Path]::IsPathRooted($xdgDataHome)) { Join-Path $xdgDataHome "plannotator" } else { "" }
     if (Test-Path $legacyDir) {
-        $legacyDir
-    } elseif ($xdgDataHome -and [System.IO.Path]::IsPathRooted($xdgDataHome)) {
-        Join-Path $xdgDataHome "plannotator"
+        if ($xdgDir -and (Test-PlannotatorData $xdgDir) -and -not (Test-PlannotatorData $legacyDir)) { $xdgDir } else { $legacyDir }
+    } elseif ($xdgDir) {
+        $xdgDir
     } else {
         $legacyDir
     }
