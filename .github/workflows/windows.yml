@@ -483,6 +483,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # install.ps1's and install.cmd's data-dir resolution on real PowerShell
+      # and cmd.exe (#2305): home-only, XDG-only, stray, both, and more, in
+      # temp folders, without PLANNOTATOR_DATA_DIR (which skips the branch).
+      - name: Data-dir resolution in install.ps1 and install.cmd
+        shell: pwsh
+        run: .\scripts\check-data-dir-windows.ps1
+
       - name: Run install.ps1 end-to-end
         shell: pwsh
         run: .\scripts\install.ps1 v0.17.1 -SkipAttestation
