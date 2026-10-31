@@ -117,7 +117,7 @@ export function MachinesSection({ machines, via, onChanged }: MachinesSectionPro
                     setUnlinkedNote(null);
                     try {
                       const answer = await inboxApi.unlinkMachine(machine.id);
-                      if (!answer.told) setUnlinkedNote(`Unlinked here. ${machine.name} could not be reached, so it drops the link the next time it is in touch.`);
+                      if (!answer.told) setUnlinkedNote(`Unlinked here. ${machine.name} could not be reached, so it drops the link the next time it is in touch. This computer stays reachable on your tailnet for it for up to 7 days, until it hears.`);
                     } catch (cause) {
                       setError(linkErrorText(cause));
                     }

@@ -332,6 +332,8 @@ export interface SettingsModel {
   notify_reach?: InboxNotifyReach;
   /** The question sound (config.json inboxSound). Absent from an Inbox that predates it. */
   sound?: InboxSoundSettings;
+  /** The one-time list options dialog waits to be claimed (POST /api/inbox/list-intro). Absent from an older Inbox. */
+  list_intro?: { due: boolean };
   /** Settings → About: update notices and automatic updates (`env`: the env var decides). Absent from an older Inbox. */
   updates?: UpdateSwitches;
   /** Whether this Inbox serves phones (PLANNOTATOR_INBOX_PHONES): the Phones block shows only then. */
@@ -1220,6 +1222,8 @@ export const inboxApi = {
   seeBoard: (throughSeq: number) => post<{ seen_seq: number }>(inboxUrl('/cards/seen'), { through_seq: throughSeq }),
   /** The Board's first-visit dialog: the first page on this computer to ask gets `show: true`, once per machine. */
   claimBoardIntro: () => post<{ show: boolean }>(inboxUrl('/board/intro'), {}),
+  /** The one-time list options dialog: only the first claim ever gets `show: true` (once per machine). */
+  claimListIntro: () => post<{ show: boolean; list_intro: { due: boolean } }>(inboxUrl('/list-intro'), {}),
   /** The person looked at Dropped: an agent's drops there are seen. */
   seeDrops: (ids: readonly string[]) => post<{ cards: InboxCardWire[] }>(inboxUrl('/cards/dropped/seen'), { cards: [...ids] }),
   pin: (threadId: string, pinned: boolean) =>
@@ -1318,17 +1322,17 @@ export interface AttachmentView {
   html: string | null;
 }
 
-/** A page an attached HTML page links to, as `/linked-page` answers it. */
-export interface LinkedPageView {
+/** A sibling document, as `/linked-page` answers it. */
+interface LinkedPageBase {
   serverSession: string;
   /** Its realpath. */
   path: string;
   name: string;
-  /** The page with a `<base href>` at its own folder's asset route. */
-  html: string;
   /** Its asset-route URL, for Open in new tab. */
   url: string | null;
 }
+
+export type LinkedPageView = LinkedPageBase & ({ html: string } | { html: null; text: string });
 
 /** What `subscribeInboxEvents` calls (the server's frames, read). */
 export interface InboxEventHandlers {

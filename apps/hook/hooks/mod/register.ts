@@ -91,7 +91,7 @@ import {
 } from './inbox'
 import { inboxAgentTool, inboxReminderFor, type InboxToolInfo } from './inbox-contract'
 import { INBOX_DEFAULT_TOOLS } from './inbox-default-tools'
-import { COMMANDS, dataDirOf, debugAppendArgv, INBOX_COMMAND, isModCommand, waitArgv } from './launch'
+import { COMMANDS, debugAppendArgv, INBOX_COMMAND, isModCommand, resolveDataDir, waitArgv } from './launch'
 import { PLAN_TOOL } from './plan'
 import { answerShellCall, SHELL_TOOL, shellTakeOver } from './take-over'
 import { PLANNOTATOR_TOOL_NAME, PLANNOTATOR_TOOL_TAILSCALE_DESCRIPTION, PLANNOTATOR_TOOL_TAILSCALE_INPUT_SCHEMA } from './tool'
@@ -476,12 +476,14 @@ async function resolveAllowed($: Engine, e: { isInteractive?: unknown }): Promis
   if ((await $.env.get('PLANNOTATOR_ASK_AI_CHILD')) === '1') return null
   if (!(await $.fs.exists('/bin/sh'))) return null
   const home = await $.env.get('HOME')
-  const dataDir = dataDirOf({
-    home,
-    dataDir: await $.env.get('PLANNOTATOR_DATA_DIR'),
-    xdgDataHome: await $.env.get('XDG_DATA_HOME'),
-    legacyExists: home ? await $.fs.exists(`${String(home).replace(/\/+$/, '')}/.plannotator`) : false,
-  })
+  const dataDir = await resolveDataDir(
+    {
+      home: home ? String(home) : undefined,
+      dataDir: await $.env.get('PLANNOTATOR_DATA_DIR'),
+      xdgDataHome: await $.env.get('XDG_DATA_HOME'),
+    },
+    async (path) => Boolean(await $.fs.exists(path)),
+  )
   if (!dataDir) return null
   // On by default; nothing happens when the user turned the mod off.
   const read = await $.fs.read(`${dataDir}/config.json`).catch(() => null)

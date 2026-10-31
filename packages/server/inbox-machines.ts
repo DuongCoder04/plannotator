@@ -58,8 +58,12 @@ export interface InboxMachineDoor {
   offerDevice: (secret: string) => string | null;
   /** Close a machine offer that will not be used; the device it made, if one was. */
   closeMachineOffer: (secret: string) => string | null;
-  /** Remove a device from this Inbox's door (its token stops at once). */
-  revokeDevice: (deviceId: string) => void;
+  /**
+   * Remove a device from this Inbox's door (its token stops at once).
+   * `oweRefusal`: the machine could not be told, so the tailnet door stays
+   * published until its token has been refused once (or a week passes).
+   */
+  revokeDevice: (deviceId: string, options?: { oweRefusal?: boolean }) => void;
   /** This Inbox's door on the tailnet (`host:8443`), or null while it is not published. */
   tailnetAddress: () => string | null;
   /** Why the door is not published while it should be (its port held, Tailscale stopped), or null. */
@@ -317,16 +321,19 @@ export function createInboxMachines(context: InboxMachinesContext) {
   /**
    * Rules 4 and 13, this side: the link goes, the other machine's device on
    * this door goes, and every write held for it ends with its notice.
+   * `closeDoor`: "now" when the other machine already knows; "after_answer"
+   * when it is told by the answer on this door; "after_refusal" when it could
+   * not be told, so the door stays until its token has been refused once.
    */
-  const forget = (id: string, closeDoor: "now" | "after_answer" = "now"): InboxLinkRecord | null => {
+  const forget = (id: string, closeDoor: "now" | "after_answer" | "after_refusal" = "now"): InboxLinkRecord | null => {
     peers.get(id)?.stop();
     peers.delete(id);
     const link = links.remove(id);
-    if (link?.device_id) context.door.revokeDevice(link.device_id);
+    if (link?.device_id) context.door.revokeDevice(link.device_id, { oweRefusal: closeDoor === "after_refusal" });
     outbox.dropMachine(id, link?.name ?? null);
-    // The last link gone: with Phones off the tailnet door has nothing left to serve.
-    if (closeDoor === "now") context.door.closeTailnetIfUnused();
-    else closeDoorAfterAnswer();
+    // The last link gone: with Phones off the tailnet door has nothing left to serve (but a refusal owed).
+    if (closeDoor === "after_answer") closeDoorAfterAnswer();
+    else context.door.closeTailnetIfUnused();
     machinesChanged();
     return link;
   };
@@ -439,6 +446,8 @@ export function createInboxMachines(context: InboxMachinesContext) {
     if (!backRaw && !oneWay) {
       const published = context.door.publishTailnet();
       if (!published.ok) {
+        // Nothing came of it: with nothing else needing the door, its kept port is let go of (the held refusal says so).
+        context.door.closeTailnetIfUnused();
         throw new InboxError(
           "no_way_back",
           `The other machine needs a way to reach this one to show its threads, and this Inbox could not publish its tailnet door: ${published.message} Fix that and link again, or pass --back <address>, or --one-way.`,
@@ -508,13 +517,15 @@ export function createInboxMachines(context: InboxMachinesContext) {
    * Rule 13: Unlink removes both links. The other machine is told first; when
    * it cannot be reached, this side unlinks anyway and revokes its device
    * here, so its next contact gets `device_revoked` and it cleans up then.
+   * That contact needs this door, so it stays published (with Phones off,
+   * even when this was the last link) until that refusal has been answered.
    */
   const unlink = async (id: string) => {
     const record = links.get(id);
     if (!record) throw new InboxError("machine_not_linked", "That machine is not linked.");
     peers.get(id)?.stop();
     const told = await tellUnlink(openTransport(record.transport), record.token);
-    forget(id);
+    forget(id, told ? "now" : "after_refusal");
     return { unlinked: { id, name: record.name }, told };
   };
 
