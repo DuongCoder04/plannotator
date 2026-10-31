@@ -436,6 +436,29 @@ test('⌘/Ctrl+Enter opens the result in a new tab and keeps the palette open', 
   expect(errors).toEqual([]);
 });
 
+/** The box of the palette's first named thread chip, and of a plain `.ib-key` mounted in the Inbox outside the palette, as the rest of the Inbox draws it (border, corners, fill, padding, face). */
+async function chipBoxes(p: Page): Promise<{ search: string | null; list: string | null; boxed: boolean }> {
+  return p.evaluate(() => {
+    const box = (el: Element | null | undefined) => {
+      if (!el) return null;
+      const s = getComputedStyle(el);
+      return [s.borderTopWidth, s.borderTopStyle, s.borderTopColor, s.borderTopLeftRadius, s.backgroundColor, s.paddingLeft, s.fontFamily].join(' | ');
+    };
+    const ref = document.createElement('span');
+    ref.className = 'ib-key';
+    ref.textContent = 'ref';
+    document.querySelector('.pn-inbox')!.append(ref);
+    const list = box(ref);
+    ref.remove();
+    const chip = document.querySelector('dialog.ib-sp .ib-sp-tl .ib-key[data-result-thread="name"]');
+    // Drawn as a box: padded, and filled or outlined (the default style fills it; others outline it).
+    const clear = (c: string) => c === 'transparent' || /\/ 0\)$|, 0\)$/.test(c);
+    const s = chip ? getComputedStyle(chip) : null;
+    const boxed = Boolean(s && parseFloat(s.paddingLeft) > 0 && (!clear(s.backgroundColor) || (parseFloat(s.borderTopWidth) > 0 && s.borderTopStyle !== 'none' && !clear(s.borderTopColor))));
+    return { search: box(chip), list, boxed };
+  });
+}
+
 /** WCAG contrast of two CSS colours, the first composited over the second (canvas-resolved, so oklch and color-mix work). */
 async function contrastOf(p: Page, fg: string, bg: string, under?: string): Promise<{ ratio: number; fgLum: number; bgLum: number }> {
   return p.evaluate(
@@ -535,6 +558,10 @@ test('every result starts with its mark; the selected row stands apart from the 
     ] as const) {
       expect((await contrastOf(page, fg, look.selectedBg, look.panel)).ratio, `${scheme} ${name}`).toBeGreaterThanOrEqual(4.5);
     }
+    // The thread's name keeps the chip form, the box the rest of the Inbox draws (owner request 2026-10-16), in each theme.
+    const chip = await chipBoxes(page);
+        expect(chip.boxed, `${scheme}: the thread chip is drawn as a box`).toBe(true);
+    expect(chip.search, `${scheme}: the thread chip is the Inbox's chip`).toBe(chip.list);
     await page.screenshot({ path: join(proofDir, `10-marks-${scheme}.png`) });
   }
   await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'no-preference' });
@@ -602,6 +629,14 @@ test('a phone: the list header opens a full-screen sheet; a result opens the thr
     await expect(relayRow.locator('[data-result-time]')).toHaveCount(0);
     await expect(relayRow.locator('.ib-sp-tl .ib-sp-at')).toBeVisible();
     await expect(palette(p).locator('[data-search-keys]')).toHaveCount(0);
+    // A phone draws the thread chip with the Inbox's box too.
+    await input(p).fill('retry');
+    await settled(p);
+    const chip = await chipBoxes(p);
+    expect(chip.boxed, 'phone: the thread chip is drawn as a box').toBe(true);
+    expect(chip.search, "phone: the thread chip is the Inbox's chip").toBe(chip.list);
+    await input(p).fill('rate lim');
+    await settled(p);
     await shot(p, '22-phone-typing');
     await palette(p).locator(`[data-result="thread"][data-result-id="${world.threads.relay}"]`).tap();
     await expect(palette(p)).toBeHidden();

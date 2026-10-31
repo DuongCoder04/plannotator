@@ -3474,8 +3474,6 @@ dialog.ib-sp::backdrop { background: oklch(0.1 0.012 260 / 0.72); }
 .ib-sp-tl .ib-sp-lead { max-width: 30%; }
 .ib-sp-tl > span.ib-sp-pj { flex: 0 1 auto; min-width: 2.5em; }
 .ib-sp-tl .ib-key.ib-sp-key { flex: 0 1 auto; min-width: 4.5em; max-width: min(55%, 24em); margin-right: 10px; }
-/* The thread's name in the meta line: the list's mono face, without the box (as approved). */
-dialog.ib-sp .ib-sp-tl .ib-key.ib-sp-key { border: 0; background: none; padding: 0; border-radius: 0; color: color-mix(in oklch, var(--muted-foreground) 60%, var(--foreground)); font-size: var(--ib-fs-12, 12px); }
 .ib-sp-key > .ib-keyt { display: block; min-width: 0; max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A thread with no name: its subject in the chip, in the row's face (the monospace face is for names). */
 .ib-sp-key.ib-sp-key-subj { font-family: inherit; }
