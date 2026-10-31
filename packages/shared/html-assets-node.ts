@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve as resolvePath, posix as pathPosix, sep } from "node:path";
 import {
+  HTML_ASSET_DOCUMENT_CSP,
   htmlAssetContentType,
   refusesHiddenHtmlAssetPath,
   rewriteCssAssetReferences,
@@ -8,6 +9,29 @@ import {
 } from "./html-assets";
 
 export const MAX_HTML_ASSET_BYTES = 50 * 1024 * 1024;
+
+/**
+ * The CSP of an HTML document served from an asset root outside the session's
+ * roots (#2291): no network, so a page opened from anywhere cannot send what
+ * its scripts load (the Inbox's INBOX_HTML_DOCUMENT_CSP is the same rule).
+ */
+export const OUTSIDE_ROOT_HTML_DOCUMENT_CSP = `${HTML_ASSET_DOCUMENT_CSP}; connect-src 'none'`;
+
+/**
+ * Whether an asset file may be read: a regular file by its real path (a FIFO
+ * or device would block the read) within `maxBytes`. "missing", "not-file" or
+ * "too-large" otherwise.
+ */
+export function htmlAssetFileState(path: string, maxBytes: number): "ok" | "missing" | "not-file" | "too-large" {
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch {
+    return "missing";
+  }
+  if (!stat.isFile()) return "not-file";
+  return stat.size > maxBytes ? "too-large" : "ok";
+}
 
 /**
  * Where an HTML document's relative assets are served from. Normally the

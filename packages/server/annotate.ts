@@ -67,7 +67,7 @@ import { appendFeedbackRecord, type FeedbackDecision, type FeedbackSurface } fro
 import { isFaviconStyle, type FaviconStyle } from "@plannotator/shared/favicon";
 import { existsSync } from "fs";
 import { dirname, resolve as resolvePath } from "path";
-import { isWithinDirectory } from "@plannotator/shared/html-assets-node";
+import { htmlAssetFileState } from "@plannotator/shared/html-assets-node";
 import { isWSL } from "./browser";
 import { isNotionAvailable } from "./integrations";
 import { handleOpenInApps, handleOpenIn } from "./open-in";
@@ -608,6 +608,7 @@ export async function startAnnotateServer(
     folderPath: mode === "annotate-folder" ? folderPath : undefined,
     // An HTML document opened outside the roots (#2291) gets a narrow asset root.
     isInsideRoots: (htmlFilePath) => isPathAllowed(htmlFilePath, getReferenceRootPaths()),
+    isThisMachine: isThisMachineRequest,
   });
   const agentTerminal = await createBunAgentTerminalBridge({
     enabled: supportsAnnotateAgentTerminalMode(mode),
@@ -671,7 +672,8 @@ export async function startAnnotateServer(
         }
       : undefined;
 
-  async function loadShareHtml(pathParam: string | null): Promise<Response> {
+  /** `thisMachine`: the reader may share an HTML document from anywhere, as /api/doc serves it (#2291). */
+  async function loadShareHtml(pathParam: string | null, thisMachine: boolean): Promise<Response> {
     if (/^https?:\/\//i.test(filePath)) {
       return Response.json({ error: "Raw HTML sharing is unavailable for URL annotations" }, { status: 400 });
     }
@@ -681,36 +683,32 @@ export async function startAnnotateServer(
     if (!/\.html?$/i.test(requestedPath)) {
       return Response.json({ error: "Share HTML is only available for HTML documents" }, { status: 400 });
     }
-    if (!isAllowedHtmlSharePath(requestedPath)) {
+    const isRoot = rootHtmlSourcePath !== null && requestedPath === rootHtmlSourcePath;
+    // The same gate as /api/doc: the reference roots for a reader off this
+    // machine, a document anywhere for a page on it, the real file's type.
+    if (!isRoot && !isDocServeAllowed(requestedPath, null, getReferenceRootPaths(), thisMachine)) {
       return Response.json({ error: "Access denied" }, { status: 403 });
     }
 
     try {
       let html: string;
-      if (rootHtmlSourcePath && requestedPath === rootHtmlSourcePath) {
+      if (isRoot) {
         const read = await readRootHtml();
         if (read?.kind === "snapshot" && read.reason === "too-large") {
           return Response.json({ error: "File too large to share (max 2MB)" }, { status: 413 });
         }
         html = read?.kind === "current" ? read.html : rawHtml!;
       } else {
+        const state = htmlAssetFileState(requestedPath, MAX_ANNOTATABLE_FILE_BYTES);
+        if (state === "missing") return Response.json({ error: "File not found" }, { status: 404 });
+        if (state === "not-file") return Response.json({ error: "Not a regular file" }, { status: 403 });
+        if (state === "too-large") return Response.json({ error: "File too large to share (max 2MB)" }, { status: 413 });
         html = await Bun.file(requestedPath).text();
       }
       return Response.json({ shareHtml: htmlAssets.inlineHtml(html, requestedPath) });
     } catch {
       return Response.json({ error: "Failed to prepare share HTML" }, { status: 500 });
     }
-  }
-
-  function isAllowedHtmlSharePath(targetPath: string): boolean {
-    const roots = new Set<string>([process.cwd()]);
-    if (folderPath) roots.add(folderPath);
-    for (const path of bundlePaths) roots.add(dirname(path));
-    if (!bundleFiles && !/^https?:\/\//i.test(filePath)) roots.add(dirname(filePath));
-    for (const root of roots) {
-      if (isWithinDirectory(targetPath, root)) return true;
-    }
-    return false;
   }
 
   const singleFileSourceSaveEligible = mode === "annotate" && !sourceConverted && !(renderHtml && rawHtml) && !/^https?:\/\//i.test(filePath);
@@ -1155,7 +1153,9 @@ export async function startAnnotateServer(
           }
 
           if (url.pathname === "/api/share-html" && req.method === "GET") {
-            return loadShareHtml(url.searchParams.get("path"));
+            // A page on this machine shares from anywhere (#2291), so no other site may.
+            if (!isSameOriginRequest(req)) return Response.json(crossOriginRefusalBody(), { status: 403 });
+            return loadShareHtml(url.searchParams.get("path"), isThisMachineRequest(req));
           }
 
           // API: List apps the host can open a file in (Open in App control).

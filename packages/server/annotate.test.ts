@@ -170,6 +170,8 @@ describe("annotate server: /api/share-html symlink containment", () => {
   // containment check, so a symlinked *.html inside the doc directory pointing
   // outside it leaked the target's contents into the share payload. (Completes
   // the #927 symlink fix, which hardened the asset sinks but missed this one.)
+  // Since #2291 a page on this machine shares an HTML document from anywhere,
+  // as /api/doc serves it; the containment holds for a reader off this machine.
   test("rejects a symlinked .html that escapes the document directory", async () => {
     const docDir = mkdtempSync(join(tmpdir(), "plannotator-sharehtml-"));
     const secretDir = mkdtempSync(join(tmpdir(), "plannotator-secret-"));
@@ -190,6 +192,7 @@ describe("annotate server: /api/share-html symlink containment", () => {
     try {
       const response = await fetch(
         `${server.url}/api/share-html?path=${encodeURIComponent(join(docDir, "evil.html"))}`,
+        { headers: { "X-Forwarded-For": "192.0.2.10" } },
       );
       expect(response.status).toBe(403);
       expect(await response.text()).not.toContain("SECRET_OUTSIDE_CONTENT");

@@ -19,6 +19,8 @@ import {
   htmlAssetPathRefused,
   isWithinDirectory,
   MAX_HTML_ASSET_BYTES,
+  htmlAssetFileState,
+  OUTSIDE_ROOT_HTML_DOCUMENT_CSP,
   outsideRootAssetAllowsCors,
   refusesOutsideRootHtmlAsset,
 } from "@plannotator/shared/html-assets-node";
@@ -94,6 +96,12 @@ export interface HtmlAssetRegistryOptions {
    * root is treated as inside.
    */
   isInsideRoots?: (htmlFilePath: string) => boolean;
+  /**
+   * Whether a request is a page on this machine (`isThisMachineRequest`).
+   * Roots outside the session's roots are minted only for such a page, and
+   * answer only such a page: anyone else gets 404.
+   */
+  isThisMachine?: (req: Request) => boolean;
 }
 
 export function createHtmlAssetRegistry(options: HtmlAssetRegistryOptions = {}) {
@@ -180,6 +188,7 @@ export function createHtmlAssetRegistry(options: HtmlAssetRegistryOptions = {}) 
     const docDir = docDirByToken.get(token);
     const outside = outsideTokens.has(token);
     if (
+      (outside && !(options.isThisMachine?.(req) ?? false)) ||
       (options.refuseAssetPath && htmlAssetPathRefused(root, assetPath, options.refuseAssetPath)) ||
       (docDir && !folderSessionAssetAllowed(root, docDir, assetPath)) ||
       (outside && htmlAssetPathRefused(root, assetPath, refusesOutsideRootHtmlAsset))
@@ -188,20 +197,23 @@ export function createHtmlAssetRegistry(options: HtmlAssetRegistryOptions = {}) 
     }
 
     try {
-      const file = Bun.file(resolved);
-      if (!(await file.exists())) {
+      const cap = Math.min(maxBytes, MAX_HTML_ASSET_BYTES);
+      // A regular file by its real path: a FIFO or device would block the read.
+      const state = htmlAssetFileState(resolved, cap);
+      if (state === "missing" || state === "not-file") {
         return assetError(404, "Not found", asDocument, assetPath);
       }
-      const cap = Math.min(maxBytes, MAX_HTML_ASSET_BYTES);
-      // A root outside the session's roots: only fonts are readable by script.
-      const cors: Record<string, string> = !outside || outsideRootAssetAllowsCors(assetPath) ? { "Access-Control-Allow-Origin": "*" } : {};
-      if (file.size > cap) {
+      if (state === "too-large") {
         return assetError(413, "Asset too large", asDocument, assetPath);
       }
+      const file = Bun.file(resolved);
+      // A root outside the session's roots: only fonts are readable by script.
+      const cors: Record<string, string> = !outside || outsideRootAssetAllowsCors(assetPath) ? { "Access-Control-Allow-Origin": "*" } : {};
       if (document) {
         return new Response(file, {
           headers: {
-            ...htmlAssetDocumentHeaders(options.documentCsp ?? HTML_ASSET_DOCUMENT_CSP),
+            // Outside the session's roots a page gets no network (connect-src 'none').
+            ...htmlAssetDocumentHeaders(outside ? OUTSIDE_ROOT_HTML_DOCUMENT_CSP : (options.documentCsp ?? HTML_ASSET_DOCUMENT_CSP)),
             // Kept for parity with the other assets: a nested document load is
             // not a CORS request, but a `fetch('./page.html')` from the
             // opaque-origin frame is.

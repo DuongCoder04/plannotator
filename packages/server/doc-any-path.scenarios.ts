@@ -23,7 +23,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createTestEnvironment } from "../../tests/helpers/environment";
 import { closeServer, occupyConsecutivePorts } from "../../tests/helpers/ports";
 
@@ -290,6 +290,9 @@ export function defineDocAnyPathScenarios(
             writeFileSync(join(dir, "data.xml"), "<s>SECRET-XML</s>");
             writeFileSync(join(dir, ".hidden/creds.json"), '{"s":"SECRET-HIDDEN"}');
             writeFileSync(join(dir, ".hidden/pic.png"), "SECRET-HIDDEN-PNG");
+            // Render-type names that are links to what is refused.
+            symlinkSync(join(dir, "config.json"), join(dir, "link-data.png"));
+            symlinkSync(join(dir, ".hidden/pic.png"), join(dir, "link-hidden.png"));
           }
           const server = await open(kind);
           const assetBase = async (dir: string) => {
@@ -309,16 +312,61 @@ export function defineDocAnyPathScenarios(
           expect(font.status).toBe(200);
           expect(font.headers["access-control-allow-origin"]).toBe("*");
           // Data files and hidden paths beside it are not.
-          for (const asset of ["config.json", "data.xml", ".hidden/creds.json", ".hidden/pic.png"]) {
+          for (const asset of ["config.json", "data.xml", ".hidden/creds.json", ".hidden/pic.png", "link-data.png", "link-hidden.png"]) {
             const answer = await get(server, `${outside}${asset}`);
             expect([asset, answer.status]).toEqual([asset, 404]);
             expect(answer.text).not.toContain("SECRET-");
           }
+          // The page itself, opened through the asset route, gets no network.
+          const page = await get(server, `${outside}page.html`);
+          expect(page.status).toBe(200);
+          expect(String(page.headers["content-security-policy"])).toContain("connect-src 'none'");
+          // Its root answers only a page on this machine.
+          const forwarded = await get(server, `${outside}pic.png`, { "x-forwarded-for": "192.0.2.10" });
+          expect(forwarded.status).toBe(404);
+          expect(forwarded.text).not.toContain("PNG-BYTES");
           // An HTML document inside the project keeps its folder's assets, as before.
           const inside = await assetBase(project);
           const config = await get(server, `${inside}config.json`);
           expect(config.status).toBe(200);
           expect(config.headers["access-control-allow-origin"]).toBe("*");
+          const insidePage = await get(server, `${inside}page.html`);
+          expect(insidePage.status).toBe(200);
+          expect(String(insidePage.headers["content-security-policy"])).not.toContain("connect-src");
+          expect((await get(server, `${inside}pic.png`, { "x-forwarded-for": "192.0.2.10" })).status).toBe(200);
+        });
+
+        test("/api/share-html reads like /api/doc: the folder for a reader off this machine, a regular file within 2MB", async () => {
+          await isolate();
+          writeFileSync(join(shared, "statement.html"), "<p>SECRET-STATEMENT</p>");
+          writeFileSync(join(added, "notes.html"), "<p>FOLDER-NOTES</p>");
+          writeFileSync(join(added, "big.html"), `<p>${"x".repeat(2 * 1024 * 1024 + 16)}</p>`);
+          mkdirSync(join(added, "dir.html"));
+          const share = (path: string) => `/api/share-html?path=${encodeURIComponent(path)}`;
+          const FORWARDED = { "x-forwarded-for": "192.0.2.10" };
+          // `cd ~ && plannotator annotate ~/notes/`: the cwd holds files outside the folder.
+          const cwd = process.cwd();
+          process.chdir(dirname(added));
+          try {
+            const server = await open(kind, { folderPath: added });
+            const refused = await get(server, share(join(shared, "statement.html")), FORWARDED);
+            expect(refused.status).toBe(403);
+            expect(refused.text).not.toContain("SECRET-STATEMENT");
+            const inFolder = await get(server, share(join(added, "notes.html")), FORWARDED);
+            expect(inFolder.status).toBe(200);
+            expect(inFolder.text).toContain("FOLDER-NOTES");
+            // A page on this machine shares a document from anywhere, as /api/doc serves it.
+            const local = await get(server, share(join(shared, "statement.html")));
+            expect(local.status).toBe(200);
+            expect(local.text).toContain("SECRET-STATEMENT");
+            expect((await get(server, share(join(added, "big.html")))).status).toBe(413);
+            expect((await get(server, share(join(added, "dir.html")))).status).toBe(403);
+            const crossSite = await get(server, share(join(added, "notes.html")), { origin: "https://evil.example", "sec-fetch-site": "cross-site" });
+            expect(crossSite.status).toBe(403);
+            expect(crossSite.body?.code).toBe("cross_origin");
+          } finally {
+            process.chdir(cwd);
+          }
         });
       }
 

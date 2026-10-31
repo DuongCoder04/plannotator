@@ -102,7 +102,7 @@ import {
 	resolveHtmlAssetRoute,
 	rewriteHtmlAssetReferences,
 } from "../generated/html-assets.ts";
-import { folderSessionAssetAllowed, htmlAssetContext, htmlAssetPathRefused, inlineHtmlLocalAssets, isWithinDirectory, MAX_HTML_ASSET_BYTES, outsideRootAssetAllowsCors, refusesOutsideRootHtmlAsset } from "../generated/html-assets-node.ts";
+import { folderSessionAssetAllowed, htmlAssetContext, htmlAssetFileState, htmlAssetPathRefused, inlineHtmlLocalAssets, isWithinDirectory, MAX_HTML_ASSET_BYTES, OUTSIDE_ROOT_HTML_DOCUMENT_CSP, outsideRootAssetAllowsCors, refusesOutsideRootHtmlAsset } from "../generated/html-assets-node.ts";
 import {
 	supportsAnnotateAgentTerminalMode,
 	type AgentTerminalCapability,
@@ -162,10 +162,15 @@ function firstHeader(value: string | string[] | undefined): string | null {
 /**
  * `isInsideRoots`: whether an HTML file sits inside the session's roots. One
  * that does not (#2291) gets a root that serves only render types, never
- * hidden paths or data files, with CORS for fonts only (mirrors the Bun
- * registry's option).
+ * hidden paths or data files, with CORS for fonts only and no network for its
+ * documents; it answers only a page on this machine (`isThisMachine`). Mirrors
+ * the Bun registry's options.
  */
-function createHtmlAssetRegistry(folderPath?: string, isInsideRoots?: (htmlFilePath: string) => boolean) {
+function createHtmlAssetRegistry(
+	folderPath?: string,
+	isInsideRoots?: (htmlFilePath: string) => boolean,
+	isThisMachine?: (req: import("node:http").IncomingMessage) => boolean,
+) {
 	const rootsByToken = new Map<string, string>();
 	const tokensByScope = new Map<string, string>();
 	/** Folder-session tokens: one per (selected folder, document directory), as in the Bun registry. */
@@ -249,6 +254,7 @@ function createHtmlAssetRegistry(folderPath?: string, isInsideRoots?: (htmlFileP
 		const docDir = docDirByToken.get(token);
 		const outside = outsideTokens.has(token);
 		if (
+			(outside && !(isThisMachine?.(req) ?? false)) ||
 			(docDir && !folderSessionAssetAllowed(root, docDir, assetPath)) ||
 			(outside && htmlAssetPathRefused(root, assetPath, refusesOutsideRootHtmlAsset))
 		) {
@@ -257,12 +263,13 @@ function createHtmlAssetRegistry(folderPath?: string, isInsideRoots?: (htmlFileP
 		}
 
 		try {
-			if (!existsSync(resolved)) {
+			// A regular file by its real path: a FIFO or device would block the read (and the server).
+			const state = htmlAssetFileState(resolved, Math.min(maxBytes, MAX_HTML_ASSET_BYTES));
+			if (state === "missing" || state === "not-file") {
 				assetError(res, 404, "Not found", asDocument, assetPath);
 				return true;
 			}
-			const stat = statSync(resolved);
-			if (stat.size > Math.min(maxBytes, MAX_HTML_ASSET_BYTES)) {
+			if (state === "too-large") {
 				assetError(res, 413, "Asset too large", asDocument, assetPath);
 				return true;
 			}
@@ -272,7 +279,8 @@ function createHtmlAssetRegistry(folderPath?: string, isInsideRoots?: (htmlFileP
 				200,
 				document
 					? {
-							...htmlAssetDocumentHeaders(HTML_ASSET_DOCUMENT_CSP),
+							// Outside the session's roots a page gets no network (connect-src 'none').
+							...htmlAssetDocumentHeaders(outside ? OUTSIDE_ROOT_HTML_DOCUMENT_CSP : HTML_ASSET_DOCUMENT_CSP),
 							...cors,
 						}
 					: {
@@ -691,22 +699,12 @@ export async function startAnnotateServer(options: {
 	const htmlAssets = createHtmlAssetRegistry(
 		options.mode === "annotate-folder" ? options.folderPath : undefined,
 		(htmlFilePath) => isPathAllowed(htmlFilePath, getReferenceRootPaths()),
+		isThisMachineRequest,
 	);
 	let agentTerminalCapability: AgentTerminalCapability = {
 		enabled: false,
 		reason: "unsupported-runtime",
 	};
-
-	function isAllowedHtmlSharePath(targetPath: string): boolean {
-		const roots = new Set<string>([process.cwd()]);
-		if (options.folderPath) roots.add(options.folderPath);
-		for (const path of bundlePaths) roots.add(dirname(path));
-		if (!bundleFiles && !/^https?:\/\//i.test(options.filePath)) roots.add(dirname(options.filePath));
-		for (const root of roots) {
-			if (isWithinDirectory(targetPath, root)) return true;
-		}
-		return false;
-	}
 
 	// The fallback is silent to the reviewer, so the reason is logged once per
 	// process: a genuine bug in the read must not hide behind the snapshot.
@@ -768,7 +766,8 @@ export async function startAnnotateServer(options: {
 			  }
 			: undefined;
 
-	function handleShareHtml(res: import("node:http").ServerResponse, url: URL): void {
+	/** `thisMachine`: the reader may share an HTML document from anywhere, as /api/doc serves it (#2291). */
+	function handleShareHtml(res: import("node:http").ServerResponse, url: URL, thisMachine: boolean): void {
 		if (/^https?:\/\//i.test(options.filePath)) {
 			json(res, { error: "Raw HTML sharing is unavailable for URL annotations" }, 400);
 			return;
@@ -782,14 +781,17 @@ export async function startAnnotateServer(options: {
 			json(res, { error: "Share HTML is only available for HTML documents" }, 400);
 			return;
 		}
-		if (!isAllowedHtmlSharePath(requestedPath)) {
+		const isRoot = rootHtmlSourcePath !== null && requestedPath === rootHtmlSourcePath;
+		// The same gate as /api/doc: the reference roots for a reader off this
+		// machine, a document anywhere for a page on it, the real file's type.
+		if (!isRoot && !isDocServeAllowed(requestedPath, null, getReferenceRootPaths(), thisMachine)) {
 			json(res, { error: "Access denied" }, 403);
 			return;
 		}
 
 		try {
 			let htmlContent: string;
-			if (rootHtmlSourcePath && requestedPath === rootHtmlSourcePath) {
+			if (isRoot) {
 				const read = readRootHtml();
 				if (read?.kind === "snapshot" && read.reason === "too-large") {
 					json(res, { error: "File too large to share (max 2MB)" }, 413);
@@ -797,6 +799,10 @@ export async function startAnnotateServer(options: {
 				}
 				htmlContent = read?.kind === "current" ? read.html : options.rawHtml!;
 			} else {
+				const state = htmlAssetFileState(requestedPath, MAX_ANNOTATABLE_FILE_BYTES);
+				if (state === "missing") return json(res, { error: "File not found" }, 404);
+				if (state === "not-file") return json(res, { error: "Not a regular file" }, 403);
+				if (state === "too-large") return json(res, { error: "File too large to share (max 2MB)" }, 413);
 				htmlContent = readFileSync(requestedPath, "utf-8");
 			}
 			json(res, { shareHtml: htmlAssets.inlineHtml(htmlContent, requestedPath) });
@@ -1161,7 +1167,12 @@ export async function startAnnotateServer(options: {
 			if (outcome.status === 200) annotateHistory = outcome.history;
 			json(res, outcome.body, outcome.status);
 		} else if (url.pathname === "/api/share-html" && req.method === "GET") {
-			handleShareHtml(res, url);
+			// A page on this machine shares from anywhere (#2291), so no other site may.
+			if (!isSameOriginRequest(req)) {
+				json(res, crossOriginRefusalBody(), 403);
+				return;
+			}
+			handleShareHtml(res, url, isThisMachineRequest(req));
 		} else if (url.pathname === "/api/config" && req.method === "POST") {
 			if (!isSameOriginOrNoOrigin(req.headers.origin ?? null, req.headers.host ?? "", req.headers["sec-fetch-site"])) {
 				json(res, { error: "Cross-origin config writes are not allowed" }, 403);
