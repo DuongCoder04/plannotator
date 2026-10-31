@@ -484,6 +484,7 @@
   },
   "patchedDependencies": {
     "@opencode-ai/sdk@1.19.3": "patches/@opencode-ai%2Fsdk@1.19.3.patch",
+    "@pierre/diffs@1.5.2": "patches/@pierre%2Fdiffs@1.5.2.patch",
   },
   "overrides": {
     "dompurify": "^3.4.17",
