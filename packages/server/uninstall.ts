@@ -697,18 +697,15 @@ function reportHostCleanupFailure(
  */
 function reportUnreadableConfig(
   owner: string,
-  { file, reason }: Unreadable,
+  { file, reason, next }: Unreadable,
   request: UninstallRequest,
   state: MutableUninstallResult,
 ): void {
   if (state.unreadable.has(file)) return;
   state.unreadable.add(file);
-  const retry = formatUninstallRetryCommand(request);
-  // The size cap (agent-files.ts) is Plannotator's own limit, not something wrong with the file.
-  const next = reason.startsWith("it is larger than")
-    ? `${reason}, the most Plannotator reads. Plannotator did not change it. To continue, quit ${owner}, move the file aside, run \`${retry}\`, then move the file back.`
-    : `${reason}. Plannotator did not change it. To continue, fix that (or put back a working copy of the file), then run \`${retry}\` again.`;
-  state.errors.push(`Could not read ${owner}'s ${file}: ${next}`);
+  state.errors.push(
+    `Could not read ${owner}'s ${file}: ${reason}. Plannotator did not change it. ${next ?? "To continue, fix that (or put back a working copy of the file)"}, then run \`${formatUninstallRetryCommand(request)}\` again.`,
+  );
 }
 
 /** Hooks that still run Plannotator but are not ones uninstall removes itself: one error per file, naming each. */
@@ -893,11 +890,17 @@ async function removeHostPlugins(
         : "";
       state.warnings.push(`Skipped: ${action.label} installed in ${other.scope} scope${where} (${other.field}), which uninstall leaves. Its hooks need the plannotator command${how}.`);
     }
+    if (scan.enabledOnly) {
+      const clear = action.command === "claude"
+        ? `run \`claude plugin disable ${pluginId} --scope user\``
+        : "remove that key by hand";
+      state.warnings.push(`Skipped: ${scan.enabledOnly} turns on ${action.label}, but it is not installed for your user, so there is nothing for \`${action.command} plugin uninstall --scope user\` to remove and the key alone runs nothing. To clear it, ${clear}.`);
+    }
     const references = scan.references;
     if (references.length === 0) continue;
     const executable = environment.which(action.command);
     const manualCommand = [action.command, ...action.args].join(" ");
-    const byHand = (entries: readonly string[]) => `remove only these Plannotator entries by hand: ${entries.join("; ")}. Keep everything else in those files, then run \`${retry}\` again.`;
+    const byHand = (entries: readonly string[]) => `remove only these Plannotator entries by hand: ${entries.join("; ")}. Keep everything else, then run \`${retry}\` again.`;
     if (!executable) {
       state.errors.push(
         `${action.label} was detected but ${action.command} is unavailable; it was not removed. Manual cleanup: restore ${action.command} on PATH and run \`${manualCommand}\`. After it succeeds, rerun \`${retry}\`. If ${action.owner} was uninstalled for good, ${byHand(references)}`,
@@ -922,7 +925,7 @@ async function removeHostPlugins(
       }
     } else {
       state.errors.push(
-        `${action.label} was not removed automatically (${result.timedOut ? "command timed out" : `exit ${result.exitCode}`}). Manual cleanup: run \`${manualCommand}\` directly and resolve the host error until it succeeds. Then rerun \`${retry}\`. If ${action.command} says it is not installed, ${byHand(references)}`,
+        `${action.label} was not removed automatically (${result.timedOut ? "command timed out" : `exit ${result.exitCode}`}). Manual cleanup: run \`${manualCommand}\` directly and resolve the host error until it succeeds. Then rerun \`${retry}\`. If ${action.command} keeps refusing because ${action.owner} no longer has it installed, ${byHand(references)}`,
       );
     }
   }
@@ -1662,8 +1665,10 @@ function cleanupVibeHooks(
     nextLines.push(line);
   }
 
+  // Parsed before anything is written: a file it cannot read as TOML is left exactly as it was.
+  const original = parseVibeHooks(filePath, content, request, state);
+  if (state.unreadable.has(filePath)) return;
   if (request.dryRun) {
-    const original = parseVibeHooks(filePath, content, request, state);
     reportRemainingHookReferences("Mistral Vibe", original, filePath, binaryPaths, platform, false, request, state, [], removedHookIndices);
   }
   if (!sawStart) return;

@@ -2748,6 +2748,24 @@ describe("host plugin managers", () => {
     expect(existsSync(binary)).toBe(false);
   });
 
+  test("a user enabledPlugins key with no user install never asks the host, and says how to clear it", async () => {
+    const fixture = createFixture({ which: (command) => (command === "claude" ? "/fake/claude" : null) });
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    const settings = join(fixture.homeDir, ".claude", "settings.json");
+    writeText(binary);
+    writeJson(settings, { enabledPlugins: { "plannotator@plannotator": true } });
+    writeJson(join(fixture.homeDir, ".claude", "plugins", "installed_plugins.json"), {
+      version: 2,
+      plugins: { "plannotator@plannotator": [{ scope: "project", projectPath: "/work/app", installPath: "/cache/plannotator" }] },
+    });
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(result.ok).toBe(true);
+    expect(fixture.commandCalls).toEqual([]);
+    expect(existsSync(binary)).toBe(false);
+    expect(result.warnings.join("\n")).toContain(`${settings}, enabledPlugins["plannotator@plannotator"] turns on Claude Code plugin plannotator@plannotator, but it is not installed for your user`);
+    expect(result.warnings.join("\n")).toContain("run `claude plugin disable plannotator@plannotator --scope user`");
+  });
+
   test("a user-scope entry still there after the host reported success keeps the CLI, and says what to remove", async () => {
     const fixture = createFixture({ which: (command) => (command === "claude" ? "/fake/claude" : null) });
     const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
@@ -2847,18 +2865,51 @@ describe("configs uninstall cannot read keep the CLI", () => {
     expect(existsSync(binary)).toBe(false);
   });
 
-  test("~/.claude.json over the size cap says so plainly, and how to get past it", async () => {
+  // The Inbox reads at most 32 MiB of it; uninstall runs once and reads it all, so its size never blocks.
+  test("~/.claude.json over the Inbox's size cap is still checked, and never keeps the CLI for its size", async () => {
     const fixture = createFixture();
     const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
     const file = join(fixture.homeDir, ".claude.json");
     writeText(binary);
     writeText(file, "");
     truncateSync(file, 33 * 1024 * 1024);
+    const sparse = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
+    expect(sparse.ok).toBe(true);
+    expect(sparse.errors).toEqual([]);
+
+    const history = "x".repeat(33 * 1024 * 1024);
+    writeText(file, JSON.stringify({ mcpServers: { "plannotator-inbox": { command: binary, args: ["inbox", "mcp"] } }, projects: { "/work": { history } } }));
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(result.ok).toBe(true);
+    expect(existsSync(binary)).toBe(false);
+    expect(result.warnings.filter((warning) => warning.includes("plannotator-inbox"))).toHaveLength(1);
+    expect(result.warnings.join("\n")).toContain("run `claude mcp remove plannotator-inbox -s user`");
+  });
+
+  test("another agent's file over the size cap that names the entry says how to remove it", async () => {
+    const fixture = createFixture();
+    const file = join(fixture.homeDir, ".cursor", "mcp.json");
+    writeText(file, JSON.stringify({ mcpServers: { "plannotator-inbox": { command: "plannotator", args: ["inbox", "mcp"] } }, pad: "x".repeat(1024 * 1024) }));
     const result = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
     expect(result.ok).toBe(false);
     expect(result.errors).toEqual([
-      `Could not read Claude Code's ${file}: it is larger than 32 MiB, the most Plannotator reads. Plannotator did not change it. To continue, quit Claude Code, move the file aside, run \`plannotator uninstall\`, then move the file back.`,
+      `Could not read Cursor's ${file}: it is larger than 1 MiB, the most Plannotator reads, and it mentions "plannotator-inbox". Plannotator did not change it. To continue, remove that entry yourself (delete that entry by hand), then run \`plannotator uninstall\` again.`,
     ]);
+  });
+
+  test("a real run leaves a Vibe hooks.toml it cannot parse exactly as it was, managed block included", async () => {
+    const fixture = createFixture();
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    const file = join(fixture.homeDir, ".vibe", "hooks.toml");
+    const content = '[[hooks]]\nname = "mine"\ncommand = "unterminated\n# >>> plannotator-managed-vibe-hooks\n[[hooks]]\ncommand = "plannotator"\n# <<< plannotator-managed-vibe-hooks\n';
+    writeText(binary);
+    writeText(file, content);
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(result.ok).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(content);
+    expect(result.removed.some((item) => item.includes(file))).toBe(false);
+    expect(result.errors.filter((error) => error.includes(file))).toHaveLength(1);
+    expect(existsSync(binary)).toBe(true);
   });
 
   test("a Vibe hooks.toml that is not valid TOML says what is wrong", async () => {
