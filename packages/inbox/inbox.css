@@ -6004,3 +6004,48 @@ dialog.ib-dlg.ib-fbk { width: min(540px, calc(100vw - 32px)); }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
   .pn-inbox:has(.ib-fcomp) .ib-toast { bottom: calc(148px + env(safe-area-inset-bottom)); }
 }
+
+/* The list's look options (approval "inbox-list-options", 2026-10-30; listLook.ts): three checkboxes in the list's
+   ⋮ menu, all off by default. Every rule here needs its option's class on the list column (.ib-lk-pill,
+   .ib-lk-compact, .ib-lk-noagents), so with all three off none applies. */
+/* Highlight thread subject: the row's title in the thread chip's pill (.ib-key: the open thread's pill, its face,
+   fill and radius), its text at the title's own size, one line, cut with "…". The text takes the pill's weight and
+   colour (500, the chip's grey) only where the row sets none of its own, which is a read row; an unread row keeps its
+   600 and its bigger size, a Sent or Quiet row its quieter colour (their rules are more specific). `:where` keeps
+   the text rule at (0,2,0) so those rules still win. */
+:where(.ib-lk-pill) .ib-rowkey { max-width: 100%; padding: 1px 8px; align-items: center; }
+:where(.ib-lk-pill) .ib-rowkey > .ib-keyt { display: block; max-width: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; color: inherit; font-weight: inherit; line-height: 1.35; }
+.ib-lk-pill .ib-nrow .ib-l2 > .ib-rowkey { display: inline-flex; vertical-align: top; }
+/* Hide agent icons: the marks leave the row, the run's words stay for a screen reader (the .ib-sr technique). In one
+   project's list the agents were the whole first cell: it goes, and a wide row's title takes its column. */
+.ib-listcol.ib-lk-noagents :is(.ib-atiles, .ib-ags) { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.ib-noproj.ib-lk-noagents .ib-from { display: contents; }
+.ib-noproj.ib-lk-noagents .ib-row { grid-template-columns: minmax(0, 1fr) 124px 52px 84px 76px; }
+.ib-noproj.ib-lk-noagents.ib-fullw .ib-row { grid-template-columns: minmax(0, 1fr) clamp(148px, 14%, 160px) 110px 84px 76px; }
+/* Compact rows: line 1 is the agents, the project, the title and the time; line 2 the preview. The project (with its
+   agents) gives way first, down to a floor of min(its width, --ib-lk-floor), then the title, cut with "…"; the time
+   never. flex-basis: content with the floor as its width is that floor (min-width: auto takes the smaller of the
+   content and the width); the project is overflow: clip, not hidden, so its whole width still counts as the run's
+   content. The floor is 136px; on a phone 360px wide or less it is 72px, so a long title next to a long project
+   still shows about ten characters (the title matters more than the rest of the project's name). */
+.ib-lk-compact { --ib-lk-floor: 136px; }
+.ib-lk-compact :is(.ib-nrow .ib-l1, .ib-m1) > .ib-from { flex: 0 1000000 content; width: var(--ib-lk-floor); min-width: auto; }
+.ib-lk-compact :is(.ib-nrow .ib-l1, .ib-m1) > .ib-from > .ib-p { flex: 0 1 auto; min-width: 0; overflow: clip; }
+.ib-lk-compact .ib-nrow .ib-l1 > .ib-title { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+.ib-lk-pill.ib-lk-compact .ib-nrow .ib-l1 > .ib-rowkey { flex: 0 1 auto; min-width: 0; }
+.ib-lk-compact .ib-nrow .ib-l1 { margin-bottom: 1px; }
+/* The height of a row not drawn yet, as its content box (as the three-line rows' estimates are): a compact row is
+   62px in all, 43px inside its padding and rule. */
+.ib-lk-compact .ib-lbody > .ib-group > .ib-rw:has(> .ib-nrow) { contain-intrinsic-size: auto none auto 43px; }
+@media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
+  /* A phone's title in its pill hugs the pill, as beside a thread. */
+  .ib-lk-pill .ib-mrow > .ib-rowkey { align-self: flex-start; }
+  .ib-lk-compact .ib-m1 > .ib-m2 { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+  .ib-lk-pill.ib-lk-compact .ib-m1 > .ib-rowkey { flex: 0 1 auto; min-width: 0; }
+  .ib-lk-compact .ib-mrow { min-height: 0; }
+  /* A compact phone row is 70px in all, 47px inside its padding and rule. */
+  .ib-lk-compact .ib-lbody > .ib-group > .ib-mrow { contain-intrinsic-size: auto none auto 47px; }
+}
+@media (max-width: 360px) {
+  .ib-lk-compact { --ib-lk-floor: 72px; }
+}
