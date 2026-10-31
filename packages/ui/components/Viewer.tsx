@@ -1750,7 +1750,6 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
           ...(vimModeActive ? { outline: 'none' } : {}),
         } as React.CSSProperties}
       >
-        {/* Legacy badge placement remains byte-for-byte opt-out behavior. */}
         {!viewerAnnotationHeader && (repoInfo || hasPreviousVersion || showDemoBadge || linkedDocInfo || archiveInfo || sourceInfo || openInAppPath) && (
           <div
             ref={docBadgesRef}
