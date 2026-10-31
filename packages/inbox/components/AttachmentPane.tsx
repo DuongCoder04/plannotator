@@ -1197,9 +1197,10 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     if (isEditableTarget(document.activeElement)) return;
     back.focus({ preventScroll: true });
   }, [linkedTop, view]);
+  // A fragment a link named on an attached Markdown file (`notes.md#setup`): scrolled once the file is drawn.
   useEffect(() => {
-    if (kind === 'markdown' && linkFragment?.id === attachment.id && !linkedTop) viewerRef.current?.scrollToAnchor?.(linkFragment.hash);
-  }, [kind, linkFragment, attachment.id, linkedTop]);
+    if (kind === 'markdown' && view && linkFragment?.id === attachment.id && !linkedTop) viewerRef.current?.scrollToAnchor?.(linkFragment.hash);
+  }, [kind, view, linkFragment, attachment.id, linkedTop]);
   // A fragment is replayed once: cleared after the page had time to take it, so a remount does not scroll again and the same #hash works twice.
   useEffect(() => {
     if (!linkFragment || linkFragment.id !== attachment.id || !view) return;
@@ -1919,7 +1920,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               />
             </div>
           )}
-          {view && contentsButton && (
+          {view && contentsButton && !linkedTop && (
             <ContentsPanel
               key={`contents:${docKey}`}
               mode={contentsButton}
@@ -2095,7 +2096,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               blocks={documentBlocks}
               scrollViewport={scrollViewport}
               contentSelector="[data-doc-text-root]"
-              hidden={!contentsShown}
+              // A linked document over the file hides the file's Contents with it.
+              hidden={!contentsShown || linkedTop !== null}
               onAvailableChange={(fits) => setRailFit({ key: docKey, fits })}
               panelAction={<ContentsHide onHide={hideContents} />}
             />

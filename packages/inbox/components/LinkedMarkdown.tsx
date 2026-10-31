@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Viewer, type ViewerHandle } from '@plannotator/ui/components/Viewer';
 import { ImageResolverContext, type ImageResolver } from '@plannotator/ui/components/ImageResolverContext';
 import { ScrollViewportProvider } from '@plannotator/ui/hooks/useScrollViewport';
+import { getImageSrc } from '@plannotator/ui/components/ImageThumbnail';
 import type { LinkedPageView } from '../api';
 import { attachmentBlocks } from '../attachments';
+import { inboxMarkdownImageBase } from '../images';
 
 const noop = () => {};
 
@@ -16,10 +18,12 @@ export function LinkedMarkdown({ page, attachmentId, onOpenLink }: {
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
   const viewer = useRef<ViewerHandle>(null);
   const blocks = useMemo(() => attachmentBlocks('markdown', page.text, page.name), [page.text, page.name]);
-  const resolveImage = useCallback<ImageResolver>((src) => ({
-    kind: 'src',
-    src: /^(https?:|data:|blob:|\/\/)/i.test(src) ? src : `/api/inbox/attachments/${encodeURIComponent(attachmentId)}/markdown-image?document=${encodeURIComponent(page.relative)}&path=${encodeURIComponent(src)}`,
-  }), [attachmentId, page.relative]);
+  // Its own images, relative to its folder and only those it references (the attachment's markdown-image route).
+  const imageBaseDir = inboxMarkdownImageBase(attachmentId, 'current', page.relative);
+  const resolveImage = useCallback<ImageResolver>(
+    (src) => ({ kind: 'src', src: /^(https?:|data:|blob:)/i.test(src) ? src : getImageSrc(src, imageBaseDir) }),
+    [imageBaseDir],
+  );
   useEffect(() => {
     if (!viewport || !page.hash) return;
     viewer.current?.scrollToAnchor?.(page.hash);
@@ -33,6 +37,7 @@ export function LinkedMarkdown({ page, attachmentId, onOpenLink }: {
             ref={viewer}
             blocks={blocks}
             markdown={page.text}
+            imageBaseDir={imageBaseDir}
             annotations={[]}
             onAddAnnotation={noop}
             onSelectAnnotation={noop}
