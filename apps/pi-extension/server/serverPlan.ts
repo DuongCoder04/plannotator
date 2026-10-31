@@ -524,7 +524,7 @@ export async function startPlanReviewServer(options: {
 					json(res, crossOriginRefusalBody(), 403);
 					return;
 				}
-				const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"), isThisMachineRequest(req));
+				const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"), url.searchParams.get("client"), isThisMachineRequest(req));
 				json(res, result.body, result.status);
 			} else if (req.method === "POST") {
 				let body: unknown;
@@ -534,7 +534,7 @@ export async function startPlanReviewServer(options: {
 					json(res, { ok: false, error: "Invalid JSON" }, 400);
 					return;
 				}
-				const result = planDocumentDrafts.saveDocuments(body, isThisMachineRequest(req));
+				const result = planDocumentDrafts.saveDocuments(body, url.searchParams.get("client"), isThisMachineRequest(req));
 				json(res, result.body, result.status);
 			} else {
 				json(res, { error: "Method not allowed" }, 405);
@@ -721,7 +721,7 @@ export async function startPlanReviewServer(options: {
 				feedback,
 			);
 			deleteDraft(draftKey, draftGeneration);
-			planDocumentDrafts?.settle();
+			planDocumentDrafts?.settle(url.searchParams.get("client"));
 			const effectivePermissionMode = requestedPermissionMode || options.permissionMode;
 			publishDecision({
 				approved: true,
@@ -786,7 +786,7 @@ export async function startPlanReviewServer(options: {
 			}
 			archivePlanDecision("denied", feedback);
 			deleteDraft(draftKey, draftGeneration);
-			planDocumentDrafts?.settle();
+			planDocumentDrafts?.settle(url.searchParams.get("client"));
 			publishDecision({ approved: false, feedback, savedPath, ...(answersOnly ? { answersOnly: true } : {}) });
 			json(res, { ok: true, savedPath });
 		} else if (url.pathname.startsWith("/api/")) {

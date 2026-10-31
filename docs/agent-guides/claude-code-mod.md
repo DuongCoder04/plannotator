@@ -268,6 +268,12 @@ released 0.27.25 and 0.27.10 binaries as processes:
   approved-with-notes prompt as "Approved with notes" (a user-customized
   approved prompt cannot be told apart and arrives as feedback). Close and an
   empty Done log only.
+- Data dir (#2305): a mod with the stray-folder rule (`resolveDataDir` in
+  `launch.ts`) and a CLI from before it can disagree only on a machine where a
+  stray `~/.plannotator` sits beside an XDG folder with data (the mod picks the
+  XDG folder, the old CLI the stray one). It heals itself on the old CLI's first
+  server run: that run writes `sessions/` into the stray folder, which then
+  holds data, so the mod picks it too from its next session start.
 - Review platform flag (0.28.0 to 0.28.3 CLIs): those CLIs wrote `platform:
   true, noop: true` for ANY request-changes review with zero code annotations,
   so feedback made only of PR description, PR comment or editor comments would

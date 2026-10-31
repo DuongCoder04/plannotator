@@ -469,13 +469,13 @@ export async function startAnnotateServer(
   // local file is also saved under its path, and the documents a local-file
   // or folder session holds comments on are each saved under their own path,
   // so the comments come back after an agent edits the file and the review
-  // is reopened. URL, live-app and agent-message sessions have no file path.
+  // is reopened, and are listed in an index so a reload offers them all
+  // (#1545). URL, live-app and agent-message sessions have no file path.
   // Drafts are crash recovery, not history, so PLANNOTATOR_ANNOTATE_HISTORY
   // does not govern them (it never governed the content-keyed draft either).
   const draftFilePath = annotateDraftFilePath({ mode, filePath });
   // A URL or the last message has no file of its own, but its linked
-  // documents do: they get per-document copies plus the index that lets a
-  // reload offer them all, as in plan review (#1545).
+  // documents do: they get per-document copies too, as in plan review.
   const rootlessDocuments = annotateSessionHasRootlessDocuments({ mode, filePath });
   const annotateDrafts = createAnnotateDraftSession({
     contentKey: draftKey,
@@ -484,7 +484,6 @@ export async function startAnnotateServer(
       draftFilePath !== null || (mode === "annotate-folder" && folderPath) || bundleFiles || rootlessDocuments
         ? {
             isAllowed: (path, anyPath) => isDocServeAllowed(path, null, getReferenceRootPaths(), anyPath),
-            ...(rootlessDocuments ? { indexed: true } : {}),
           }
         : null,
   });
@@ -1436,7 +1435,7 @@ export async function startAnnotateServer(
               if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
                 return Response.json(crossOriginRefusalBody(), { status: 403 });
               }
-              const result = annotateDrafts.loadDocument(url.searchParams.get("path"), isThisMachineRequest(req));
+              const result = annotateDrafts.loadDocument(url.searchParams.get("path"), url.searchParams.get("client"), isThisMachineRequest(req));
               return Response.json(result.body, { status: result.status });
             }
             if (req.method === "POST") {
@@ -1446,7 +1445,7 @@ export async function startAnnotateServer(
               } catch {
                 return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
               }
-              const result = annotateDrafts.saveDocuments(body, isThisMachineRequest(req));
+              const result = annotateDrafts.saveDocuments(body, url.searchParams.get("client"), isThisMachineRequest(req));
               return Response.json(result.body, { status: result.status });
             }
             return Response.json({ error: "Method not allowed" }, { status: 405 });
@@ -1525,7 +1524,7 @@ export async function startAnnotateServer(
             // Decision-only line — a dismissal has no content, so a failed
             // write must not change the legacy draft behavior.
             archiveAnnotateDecision("", [], "dismissed");
-            annotateDrafts.settle(readDraftGenerationFromUrl(req));
+            annotateDrafts.settle(readDraftGenerationFromUrl(req), url.searchParams.get("client"));
             clientLease.cancel();
             return Response.json({ ok: true });
           }
@@ -1583,7 +1582,7 @@ export async function startAnnotateServer(
               (body.annotations as unknown[] | undefined) || [],
               true,
             );
-            if (approvalDurable) annotateDrafts.settle(readDraftGenerationFromBody(body));
+            if (approvalDurable) annotateDrafts.settle(readDraftGenerationFromBody(body), url.searchParams.get("client"));
             clientLease.cancel();
             return Response.json({ ok: true });
           }
@@ -1616,7 +1615,7 @@ export async function startAnnotateServer(
                 body.annotations || [],
                 false,
               );
-              if (feedbackDurable) annotateDrafts.settle(readDraftGenerationFromBody(body));
+              if (feedbackDurable) annotateDrafts.settle(readDraftGenerationFromBody(body), url.searchParams.get("client"));
               clientLease.cancel();
 
               return Response.json({ ok: true });
