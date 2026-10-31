@@ -29,7 +29,6 @@ import { DecisionPill, decideEntryShown } from './decisions/entry';
 import { threadDecisions } from './decisions/model';
 import {
   InboxApiError,
-  InboxHeldError,
   inboxApi,
   setPageSession,
   subscribeInboxEvents,
@@ -59,7 +58,7 @@ import {
   stopSettle,
   type SettleSnapshot,
 } from './settle';
-import { plural, tildePath } from './format';
+import { plural, shortAgentName, tildePath } from './format';
 import { copyMarkdown, threadMarkdown } from './copyMarkdown';
 import { inboxImageSrcResolver } from './images';
 import { shellLine, type ConnectContext } from './harnesses';
@@ -94,12 +93,13 @@ import { useInboxNotifications } from './notify';
 import { useInboxSound } from './sound';
 import { notificationLine, SoundIntroDialog } from './components/SoundIntro';
 import { ListLookIntro, type ListIntroGroup } from './components/ListLookIntro';
-import { listIntroMayAsk, listIntroWanted, type ListIntroLoad } from './listIntro';
+import { LIST_INTRO_LIST_MS, listIntroListAlone, listIntroMayAsk, listIntroWanted, type ListIntroLoad } from './listIntro';
 import { readListLook, writeListLook } from './listLook';
 import { GuidePane } from './components/GuidePane';
 import { AboutBlock, FailedDialog, GeneralUpdateRow, RestartDialog, UpdateDialog, WhatsNewPage } from './components/Updates';
 import { leaveOnPurpose, unsentReply } from './unsent';
 import { InboxToast, type InboxToastModel, toastSpeech } from './components/Toast';
+import { errorToast } from './toastError';
 import { canToggleRead, MARK_READ_LOOK_WAIT_MS, MARK_READ_UNDO_MS, markReadToast, seenHeldInNew } from './markRead';
 import { threadLink, type RowMenuAction } from './rowMenu';
 import { movePin, unpinnedWhere } from './pins';
@@ -763,12 +763,14 @@ function Inbox() {
    * Inbox gave it to this page; it opens once the page is free), open, or closed. `listIntroDecided`: this load
    * asked the Inbox and has its answer. `listIntroLatch`: what decides whether this load wants it, read once when
    * the first list and settings are in (a list that grows later never brings it up mid-session).
-   * `tourThisLoad`: the tour was on screen in this load, so the dialog never shows on it.
+   * `tourThisLoad`: the tour was on screen in this load, so the dialog never shows on it. `listIntroListLong`: the
+   * list alone (no thread open) has been on screen for `LIST_INTRO_LIST_MS` since it last came back.
    */
   const [listIntro, setListIntro] = useState<'none' | 'claimed' | 'open' | 'shown'>('none');
   const [listIntroDecided, setListIntroDecided] = useState(false);
   const listIntroAsked = useRef(false);
   const listIntroLatch = useRef<{ due: boolean; local: boolean; firstRun: boolean; rows: number } | null>(null);
+  const [listIntroListLong, setListIntroListLong] = useState(false);
   const tourThisLoad = useRef(false);
   /** Sidebar → Feedback (components/FeedbackDialog.tsx): open only on the person's click. */
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -1967,7 +1969,7 @@ function Inbox() {
       {
         icon: 'check',
         lead: `Sent to ${hostLabel(sent.host)}`,
-        // Short enough for one line; the thread's own line says Queued / Sending / Delivered.
+        // The thread's own line says Queued / Sending / Delivered. A long project name is cut on screen (Toast.tsx), never in speech.
         detail: `in ${sent.projectName}`,
         speech: `Sent to ${hostLabel(sent.host)} in ${sent.projectName}. It takes it as its next turn.`,
         action: { label: 'Open', onPress: () => {
@@ -1991,7 +1993,9 @@ function Inbox() {
     showToast({
       icon: 'check',
       lead: 'Draft saved',
-      detail: 'It waits under Drafts and never sends itself.',
+      // Drafts (the action) says where it waits; one line on a phone too (design record "inbox-toasts-break-fixes").
+      detail: 'It never sends itself',
+      speech: 'Draft saved. It waits under Drafts and never sends itself.',
       action: { label: 'Drafts', onPress: () => {
         dismissToast();
         go({ page: 'drafts', project: null, thread: null });
@@ -2006,7 +2010,7 @@ function Inbox() {
       try {
         await inboxApi.deleteDraft(draft.id);
       } catch (cause) {
-        showToast({ icon: 'warn', lead: cause instanceof Error ? cause.message : 'The draft was not deleted.', wrap: true });
+        showToast(errorToast(cause, 'The draft was not deleted.'));
         return;
       }
     }
@@ -2187,7 +2191,8 @@ function Inbox() {
   const showToast = (next: Omit<InboxToastModel, 'id'>, ms = MARK_READ_UNDO_MS) => {
     toastLeft.current = null;
     setToast({ ...next, id: Date.now() });
-    say(toastSpeech(next, phone));
+    // A narrow desktop window (the phone layout, a mouse and keys) keeps Z, so it hears "Press Z to undo".
+    say(toastSpeech(next, isTouchPhone()));
     armToastTimer(ms);
   };
   /** A swipe in progress pauses the toast's timer; a spring-back resumes it (at least 1.5 s more, so it never vanishes on release). */
@@ -2207,11 +2212,11 @@ function Inbox() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   /**
-   * A write that failed: its message, whole (it may wrap). A write held for another machine (linked machines) did not
-   * fail: it waits in this Inbox's outbox and applies when that machine takes it, and says so, without the warning.
+   * A write that failed: the Inbox's own words, or plain ones (toastError.ts); what to do always shows whole. A write
+   * held for another machine (linked machines) did not fail: it waits in this Inbox's outbox and applies when that
+   * machine takes it, and says so, without the warning.
    */
-  const showError = (cause: unknown) =>
-    showToast({ icon: cause instanceof InboxHeldError ? 'clock' : 'warn', lead: cause instanceof Error ? cause.message : 'The thread did not change.', wrap: true });
+  const showError = (cause: unknown) => showToast(errorToast(cause, 'The thread did not change.'));
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
   }, []);
@@ -2347,8 +2352,12 @@ function Inbox() {
     showToast({
       icon: 'thumb',
       lead: 'Looks good',
-      // Short enough for one line at 520 px with Undo and its Z (a toast's words always show whole).
-      detail: `Goes to ${agent} in 10 s · Moves to Quiet`,
+      // One line at 520 px with Undo and its Z for a name up to 40 characters (longer ones are cut, shortAgentName).
+      detail: `Goes to ${shortAgentName(agent)} in 10 s · Moves to Quiet`,
+      // A phone: the news first and the name last, so a cut with "…" only ever eats the name. "Read" is the phone's word
+      // for Marked read (the thread moves to Quiet), short enough that the news fits whole at 320 px beside Undo and the ×.
+      phoneDetail: `Read · Sends in 10 s · ${shortAgentName(agent)}`,
+      speech: `Looks good. Goes to ${agent} in 10 seconds and moves to Quiet.`,
       onUndo: () => void acknowledge(threadId, messageId, false, agent),
     });
   };
@@ -2561,7 +2570,7 @@ function Inbox() {
         }
       }
     } catch (cause) {
-      showError(cause);
+      showToast(errorToast(cause, 'The project did not change.'));
       return;
     }
     await afterWrite();
@@ -2574,13 +2583,14 @@ function Inbox() {
     showToast({
       ...copy,
       // Stopped partway: the warning, and why, whole (it may wrap); Undo still covers what did apply.
-      ...(incomplete ? { icon: 'warn' as const, detail: `${incomplete} · ${name}`, speech: undefined, wrap: true } : {}),
+      // The project is on screen (its menu was just used) and in what the live region says.
+      ...(incomplete ? { icon: 'warn' as const, detail: incomplete, phoneDetail: undefined, speech: `${copy.lead} in ${name}. ${incomplete}`, wrap: true } : {}),
       onUndo: () => {
         void (async () => {
           try {
             await undo();
           } catch (cause) {
-            showToast({ icon: 'warn', lead: cause instanceof Error ? cause.message : 'The project did not change.', wrap: true });
+            showToast(errorToast(cause, 'The project did not change.'));
             return;
           }
           await afterWrite();
@@ -3080,8 +3090,10 @@ function Inbox() {
   const firstRun = latest !== null && projects.length === 0;
 
   // The one-time list options dialog (listIntro.ts): after this load's sound and agent-note dialogs are decided, never
-  // on a load that showed either or the tour, only on the list page with three rows or more; it waits while a reply
-  // is typed or another dialog is open, then claims it from the Inbox (only the first claim ever shows it).
+  // on a load that showed either or the tour, only with three rows or more and only once the list alone (no thread,
+  // so no file or document either) has been on screen for a moment: a load that opens on a thread waits, unclaimed,
+  // until the person is back on the list. It waits while a reply is typed or another dialog is open, then claims it
+  // from the Inbox (only the first claim ever shows it).
   if (route.page === 'tour') tourThisLoad.current = true;
   if (listIntroLatch.current === null && settings && latest !== null && shown !== null) {
     listIntroLatch.current = {
@@ -3092,19 +3104,29 @@ function Inbox() {
     };
   }
   const listIntroAtLoad = listIntroLatch.current;
+  const listIntroAlone = listIntroListAlone(route, { search: searchOpen, compose: compose !== null });
   const listIntroLoad: ListIntroLoad = {
     due: listIntroAtLoad?.due ?? false,
     local: listIntroAtLoad?.local ?? false,
     listLoaded: listIntroAtLoad !== null,
     firstRun: listIntroAtLoad?.firstRun ?? false,
     rows: listIntroAtLoad?.rows ?? 0,
-    page: route.page,
+    // Read with the list on screen now: the wait's flag clears an effect later, never a render late.
+    listAlone: listIntroListLong && listIntroAlone,
     tourThisLoad: tourThisLoad.current,
     otherDialogThisLoad: soundDialog !== 'none' || agentNote !== 'none',
     othersSettled: soundSettled && agentNoteSettled,
     updating: updateDialog !== null || restarting,
   };
   const listIntroWant = listIntroWanted(listIntroLoad);
+  // Watched only while the dialog may still show on this load: each time the list alone comes back, the same wait.
+  const listIntroWatch = listIntroWant && (!listIntroDecided || listIntro === 'claimed');
+  useEffect(() => {
+    setListIntroListLong(false);
+    if (!listIntroWatch || !listIntroAlone) return;
+    const timer = setTimeout(() => setListIntroListLong(true), LIST_INTRO_LIST_MS);
+    return () => clearTimeout(timer);
+  }, [listIntroWatch, listIntroAlone]);
   const listIntroReady = listIntroMayAsk(listIntroLoad, { modal: false, replying: false });
   useEffect(() => {
     if (!listIntroReady || listIntroAsked.current) return;
@@ -3125,10 +3147,11 @@ function Inbox() {
     }, 700);
     return () => clearInterval(timer);
   }, [listIntroReady]);
-  // A claim answered after the person opened Settings, the Board or an update, began a reply or opened another
-  // dialog: it opens when they are back on the list with nothing open or typed (never dropped: it is spent).
+  // A claim answered after the person opened a thread, Settings, the Board or an update, began a reply or opened
+  // another dialog: it opens when they are back on the list alone for a moment with nothing open or typed (never
+  // dropped: it is spent).
   const listIntroClaimed = listIntro === 'claimed';
-  const listIntroPlaceFree = route.page === 'inbox' && !listIntroLoad.updating;
+  const listIntroPlaceFree = listIntroLoad.listAlone && !listIntroLoad.updating;
   useEffect(() => {
     if (!listIntroClaimed || !listIntroPlaceFree) return;
     const open = () => {
@@ -4566,7 +4589,7 @@ function Inbox() {
               void inboxApi
                 .editCard(sent.cardId, { op: 'link', thread_id: sent.threadId })
                 .then(() => refreshCards())
-                .catch(() => showToast({ icon: 'warn', lead: 'Sent, but not linked to the card', detail: 'Open the thread from the Inbox.' }, 7000));
+                .catch(() => showToast({ icon: 'warn', lead: 'Sent, but not linked to the card', phoneLead: 'Not linked to the card', detail: 'Open the thread from the Inbox.' }, 7000));
             }
           }}
           onSaved={composeSaved}

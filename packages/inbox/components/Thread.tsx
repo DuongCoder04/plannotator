@@ -34,7 +34,7 @@ import { fullScreenExit, type FrameMove } from '../fullScreenOrigin';
 import { takeArrivalFocus } from '../threadStep';
 import type { InboxToastModel } from './Toast';
 import { AnnotationsChip } from './AnnotationsChip';
-import { agentName, clockTime, dayWords, formatCount, fullTime, plural, whenTime } from '../format';
+import { agentName, clockTime, dayWords, formatCount, fullTime, plural, shortAgentName, whenTime } from '../format';
 import { foldSnippet, holdingsOf, isDelivered, isPersonLook, isPersonReply, lastNonNote, lookBoundary, newSinceLook, planFolds, snippetText, type FoldSnippet, type Holding } from '../folding';
 import { highlightSearchHits } from '../search/highlight';
 import { AuthorMark, Icon } from '../icons';
@@ -3241,7 +3241,7 @@ export function ThreadPane({ notice, thread, machine = null, outbox = NO_OUTBOX,
         const name = handoffName(reply);
         onToast?.({
           icon: 'check',
-          lead: `Handed to ${name}`,
+          lead: `Handed to ${shortAgentName(name)}`,
           phoneLead: 'Handed off',
           detail: 'Your later replies go there',
           speech: `Handed this thread to ${name}. Your later replies go there. Undo takes it back for a few seconds.`,

@@ -1,11 +1,12 @@
 /**
  * Inbox search's palette model (search/model.ts): the group order and its
  * "Show all" rows, where each result opens (the hash and a message's
- * landing), what the live region says, the time format and the marked runs.
+ * landing), what the live region says, the time format, the marked runs and
+ * the mark each row starts with.
  */
 import { expect, test } from 'bun:test';
 import type { InboxSearchRow } from '@plannotator/core/inbox-search';
-import { countWords, markedRuns, moreLabel, resultTarget, searchGroups, searchTime } from './search/model';
+import { countWords, markedRuns, moreLabel, resultTarget, searchGroups, searchRowMark, searchTime } from './search/model';
 
 const project = { id: 'prj_a', name: 'api' };
 const base = { project, section: 'quiet' as const, archived: false, at: '2026-10-09T14:03:00Z' };
@@ -62,4 +63,18 @@ test('marked runs follow the marks, ignore overlaps', () => {
     { text: 'lim', mark: true },
     { text: 'it', mark: false },
   ]);
+});
+
+test('the mark a row starts with: the agent for a message, an outline for what the row is otherwise', () => {
+  const agent = (host: string | null | undefined): InboxSearchRow => ({ ...message, author: host === undefined ? { kind: 'agent', name: 'Codex' } : { kind: 'agent', name: 'Codex', host } });
+  expect(searchRowMark(agent('codex'))).toEqual({ kind: 'agent', host: 'codex' });
+  // No host known, or an older Inbox without the field: the generic agent mark, as the list draws it.
+  expect(searchRowMark(agent(null))).toEqual({ kind: 'agent', host: null });
+  expect(searchRowMark(agent(undefined))).toEqual({ kind: 'agent', host: null });
+  // The person's reply never shows an agent's mark.
+  expect(searchRowMark({ ...message, author: { kind: 'me', name: 'You', host: null } })).toEqual({ kind: 'icon', icon: 'user' });
+  expect(searchRowMark(thread)).toEqual({ kind: 'icon', icon: 'comment' });
+  expect(searchRowMark(file)).toEqual({ kind: 'icon', icon: 'doc' });
+  expect(searchRowMark(guide)).toEqual({ kind: 'icon', icon: 'book' });
+  expect(searchRowMark(projectRow)).toEqual({ kind: 'icon', icon: 'folder' });
 });

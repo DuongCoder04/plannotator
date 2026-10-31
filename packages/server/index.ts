@@ -75,7 +75,7 @@ import { countUnsentDraftComments } from "@plannotator/shared/host-control";
 import { isAIEndpointPath, isLongLivedAIEndpointPath, type AIEndpoints, type SessionBridge } from "@plannotator/ai";
 import { isArchiveDocumentMutation } from "@plannotator/shared/archive-mode";
 import { isThisMachineRequest } from "./this-machine";
-import { getAllowedRootPaths, isPathAllowed, isPlanLinkedDocPath, readPlanFile } from "@plannotator/shared/doc-resolve";
+import { getAllowedRootPaths, isDocServeAllowed, isPlanLinkedDocPath, readPlanFile } from "@plannotator/shared/doc-resolve";
 import { isReferenceReadPath, referenceReadRefusal } from "@plannotator/shared/reference-reader";
 import { createDocumentDraftStore, documentDraftIndexKey, loadSessionDraftWithDocuments } from "@plannotator/shared/annotate-draft";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "@plannotator/shared/server-session";
@@ -311,7 +311,7 @@ export async function startPlannotatorServer(
   // project, or a file the plan links beside its own plan file.
   const planDocumentDrafts = mode !== "archive"
     ? createDocumentDraftStore({
-        isAllowed: (path) => isPathAllowed(path, getAllowedRootPaths()) || isPlanLinkedDocPath(path, planFile),
+        isAllowed: (path, anyPath) => isDocServeAllowed(path, null, getAllowedRootPaths(), anyPath) || isPlanLinkedDocPath(path, planFile),
         indexKey: documentDraftIndexKey(draftKey),
       })
     : null;
@@ -549,7 +549,12 @@ export async function startPlannotatorServer(
 
           // API: Serve a linked markdown document
           if (url.pathname === "/api/doc" && req.method === "GET") {
-            return handleDoc(req, { planFile });
+            // A tab on this machine reads any path (#2291), so no other site may.
+            if (!isSameOriginRequest(req)) return Response.json(crossOriginRefusalBody(), { status: 403 });
+            return handleDoc(req, {
+              planFile,
+              anyPath: isThisMachineRequest(req),
+            });
           }
 
           // API: Batch existence check for code-file paths the renderer detected
@@ -741,7 +746,7 @@ export async function startPlannotatorServer(
               if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
                 return Response.json(crossOriginRefusalBody(), { status: 403 });
               }
-              const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"), url.searchParams.get("client"));
+              const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"), url.searchParams.get("client"), isThisMachineRequest(req));
               return Response.json(result.body, { status: result.status });
             }
             if (req.method === "POST") {
@@ -751,7 +756,7 @@ export async function startPlannotatorServer(
               } catch {
                 return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
               }
-              const result = planDocumentDrafts.saveDocuments(body, url.searchParams.get("client"));
+              const result = planDocumentDrafts.saveDocuments(body, url.searchParams.get("client"), isThisMachineRequest(req));
               return Response.json(result.body, { status: result.status });
             }
             return Response.json({ error: "Method not allowed" }, { status: 405 });

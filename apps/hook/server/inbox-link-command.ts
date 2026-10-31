@@ -100,7 +100,7 @@ export async function runInboxLinkCommand(args: readonly string[], ensureRunning
       const answer = await control(entry, "POST", "/unlink", { machine: positional[0] });
       if (answer.status !== 200) return fail(answer.body.error ?? `The Inbox answered ${answer.status}.`);
       process.stdout.write(`Unlinked ${answer.body.unlinked.name}.\n`);
-      if (!answer.body.told) process.stderr.write(`${answer.body.unlinked.name} could not be reached; it removes its side the next time it reaches this computer.\n`);
+      if (!answer.body.told) process.stderr.write(`${answer.body.unlinked.name} could not be reached; it removes its side the next time it reaches this computer. This computer stays reachable on your tailnet for it for up to 7 days, until it hears.\n`);
       return 0;
     }
     if (list) {

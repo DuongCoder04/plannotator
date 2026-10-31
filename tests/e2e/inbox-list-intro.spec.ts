@@ -10,6 +10,8 @@
  *  - Escape and Keep as it is change nothing and retire it (with reduced motion: no preview at all).
  *  - A key or a click during the preview ends it at once, back to the defaults.
  *  - Never on the same load as the sound dialog or the tour; the next load shows it.
+ *  - Only on the list alone: a first load on a thread link (desktop or phone) never shows it over the thread; back on
+ *    the list it shows after the same short wait as a first load on the list.
  *  - Dark, and a 390 px phone: a bottom sheet with the phone's rows.
  *
  * Build the apps first (bun run --cwd apps/review build && bun run build:hook), then
@@ -160,7 +162,7 @@ test('a new user never gets it, even with a long list', async ({ browser }) => {
   const w = await world({ earlier: false });
   expect(saved(w)?.shownAt).toMatch(/^\d{4}-/);
   const page = await (await context(browser)).newPage();
-  await page.goto(`${w.url}#thread=${w.opened}`);
+  await page.goto(w.url);
   await expect(page.locator('.ib-lbody [data-thread-id]').first()).toBeVisible();
   await page.waitForTimeout(3500);
   await expect(page.locator(DIALOG)).toHaveCount(0);
@@ -171,7 +173,7 @@ test('once, in one of two tabs: the preview plays, Done puts the switches on the
   expect(saved(w)?.dueAt).toMatch(/^\d{4}-/);
   const ctx = await context(browser);
   const [a, b] = await Promise.all([ctx.newPage(), ctx.newPage()]);
-  await Promise.all([a.goto(`${w.url}#thread=${w.opened}`), b.goto(`${w.url}#thread=${w.opened}`)]);
+  await Promise.all([a.goto(w.url), b.goto(w.url)]);
   await expect.poll(async () => (await a.locator(DIALOG).count()) + (await b.locator(DIALOG).count()), { timeout: 15_000 }).toBe(1);
   const page = (await a.locator(DIALOG).count()) === 1 ? a : b;
   const other = page === a ? b : a;
@@ -204,7 +206,7 @@ for (const how of ['Escape', 'Keep as it is'] as const) {
   test(`${how} changes nothing and retires it; with reduced motion there is no preview`, async ({ browser }) => {
     const w = await world({ earlier: true });
     const page = await (await context(browser, { reduce: true })).newPage();
-    await page.goto(`${w.url}#thread=${w.opened}`);
+    await page.goto(w.url);
     await expect(page.locator(DIALOG)).toBeVisible({ timeout: 15_000 });
     // Reduced motion: never a preview; the switches are usable from the start.
     await expect(page.locator('[data-list-intro-playing]')).toHaveCount(0);
@@ -222,8 +224,8 @@ for (const how of ['Escape', 'Keep as it is'] as const) {
     else await page.locator('[data-list-intro-keep]').click();
     await expect(page.locator(DIALOG)).toHaveCount(0);
     expect(await lookClasses(page)).toEqual([]);
-    // The thread beside the list is still open: Escape closed only the dialog.
-    await expect(page.locator('.ib-pane h2.ib-subject').first()).toBeVisible();
+    // The list is still there: Escape closed only the dialog.
+    await expect(page.locator('.ib-lbody [data-thread-id]').first()).toBeVisible();
     await page.reload();
     await expect(page.locator('.ib-lbody [data-thread-id]').first()).toBeVisible();
     await page.waitForTimeout(3000);
@@ -236,7 +238,7 @@ for (const how of ['a key', 'a click'] as const) {
   test(`${how} during the preview ends it at once, back to the defaults`, async ({ browser }) => {
     const w = await world({ earlier: true });
     const page = await (await context(browser)).newPage();
-    await page.goto(`${w.url}#thread=${w.opened}`);
+    await page.goto(w.url);
     await expect(option(page, 'compact')).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
     await expect(page.locator('[data-list-intro-playing]')).toHaveCount(1);
     // The key is Tab: it ends the preview and moves focus from Done (the first focus) to the first switch.
@@ -288,10 +290,59 @@ test('never on the same load as the tour: the next load shows it', async ({ brow
   await expect(page.locator(DIALOG)).toBeVisible({ timeout: 15_000 });
 });
 
+test('a first load on the list: it shows after the short wait, not the moment the list is up', async ({ browser }) => {
+  const w = await world({ earlier: true });
+  const page = await (await context(browser, { reduce: true })).newPage();
+  const t0 = Date.now();
+  await page.goto(w.url);
+  await expect(page.locator('.ib-lbody [data-thread-id]').first()).toBeVisible();
+  await expect(page.locator(DIALOG)).toHaveCount(0);
+  await expect(page.locator(DIALOG)).toBeVisible({ timeout: 15_000 });
+  expect(Date.now() - t0).toBeGreaterThanOrEqual(2000);
+  expect(saved(w)?.shownAt).toMatch(/^\d{4}-/);
+  await shot(page, 'first-load-on-list');
+});
+
+for (const phone of [false, true]) {
+  test(`a first load on a thread link${phone ? ' on a phone' : ''}: never over the thread; back on the list it shows after the short wait`, async ({ browser }) => {
+    const w = await world({ earlier: true });
+    const page = await (await context(browser, { phone, reduce: true })).newPage();
+    await page.goto(`${w.url}#thread=${w.opened}`);
+    const subject = page.locator('.ib-pane h2.ib-subject').first();
+    await expect(subject).toBeVisible({ timeout: 15_000 });
+    // Well past the wait a load on the list has: no dialog over the thread, and the claim is not spent.
+    await page.waitForTimeout(6000);
+    await expect(page.locator(DIALOG)).toHaveCount(0);
+    expect(saved(w)?.shownAt).toBeUndefined();
+    await shot(page, `thread-link${phone ? '-phone' : ''}-no-dialog`);
+    // Back to the list, through the thread's own way back.
+    await page.locator(phone ? '[data-phone-back]' : 'button[aria-label="Close the thread"]').first().click();
+    const back = Date.now();
+    await expect(subject).toHaveCount(0);
+    await expect(page.locator('.ib-lbody [data-thread-id]').first()).toBeVisible();
+    // Not the moment the list is back: after the same short wait as a first load on the list.
+    await page.waitForTimeout(1000);
+    await expect(page.locator(DIALOG)).toHaveCount(0);
+    await expect(page.locator(DIALOG)).toBeVisible({ timeout: 15_000 });
+    expect(Date.now() - back).toBeGreaterThanOrEqual(2000);
+    expect(saved(w)?.shownAt).toMatch(/^\d{4}-/);
+    await settledDialog(page);
+    await shot(page, `thread-link${phone ? '-phone' : ''}-then-list`);
+    // Once: Keep as it is retires it, and opening the thread and coming back never brings it again.
+    await page.locator('[data-list-intro-keep]').click();
+    await expect(page.locator(DIALOG)).toHaveCount(0);
+    await page.locator('.ib-lbody [data-thread-id]').first().click();
+    await expect(subject).toBeVisible();
+    await page.locator(phone ? '[data-phone-back]' : 'button[aria-label="Close the thread"]').first().click();
+    await page.waitForTimeout(3500);
+    await expect(page.locator(DIALOG)).toHaveCount(0);
+  });
+}
+
 test('dark, with options on', async ({ browser }) => {
   const w = await world({ earlier: true });
   const page = await (await context(browser, { dark: true, reduce: true })).newPage();
-  await page.goto(`${w.url}#thread=${w.opened}`);
+  await page.goto(w.url);
   await settledDialog(page);
   await option(page, 'highlight').click();
   await option(page, 'compact').click();
@@ -322,7 +373,7 @@ test('the preview, recorded', async ({ browser }) => {
   const ctx = await context(browser, { video: true });
   const page = await ctx.newPage();
   const t0 = Date.now();
-  await page.goto(`${w.url}#thread=${w.opened}`);
+  await page.goto(w.url);
   await expect(page.locator(DIALOG)).toBeVisible({ timeout: 15_000 });
   const openedAt = (Date.now() - t0) / 1000;
   const box = (await page.locator(DIALOG).boundingBox())!;

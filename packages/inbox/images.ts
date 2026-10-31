@@ -10,7 +10,8 @@
  * (packages/shared/inbox/message-images.ts). An attached Markdown file's
  * images work the same way with `inboxMarkdownImageBase(attachment, version)`:
  * `/api/inbox/attachments/<id>/markdown-image?path=<src>&version=…`, relative
- * to the file's folder (#2228). There is no route that takes a bare path.
+ * to the file's folder (#2228); a Markdown file a link in it opened adds
+ * `&document=<its path in that folder>` (#2230). There is no route that takes a bare path.
  *
  * Remote images (`http(s)`, protocol-relative `//host/…`) are left as
  * written: the window's CSP (`img-src 'self' data: blob:`) does not load them.
@@ -70,9 +71,12 @@ export function inlineImageRefFromSrc(src: string, messageId: string): string | 
   }
 }
 
-/** The image base for one Markdown attachment version (the images themselves remain live files). */
-export function inboxMarkdownImageBase(attachmentId: string, version: 'current' | 'sent'): string {
-  return `${ATTACHMENT_BASE_PREFIX}${attachmentId}:${version}`;
+/**
+ * The image base for one Markdown attachment version (the images themselves remain live files). `document`: a
+ * Markdown file a link in it opened (its path relative to the attachment's folder), whose own images these are.
+ */
+export function inboxMarkdownImageBase(attachmentId: string, version: 'current' | 'sent', document?: string): string {
+  return `${ATTACHMENT_BASE_PREFIX}${attachmentId}:${version}${document ? `:${encodeURIComponent(document)}` : ''}`;
 }
 
 /** The window's image resolver: message and Markdown images use scoped Inbox routes. */
@@ -92,8 +96,11 @@ export const inboxImageSrcResolver: ImageSrcResolver = (path, base) => {
     return TOUR_ASSET_RE.test(path) ? tourAssetUrl(path) : inboxUrl(`/tour/assets/none`);
   }
   if (base?.startsWith(ATTACHMENT_BASE_PREFIX)) {
-    const match = /^(att_[0-9A-Za-z]+):(current|sent)$/.exec(base.slice(ATTACHMENT_BASE_PREFIX.length));
-    if (match) return inboxUrl(`/attachments/${match[1]}/markdown-image?path=${encodeURIComponent(path)}&version=${match[2]}`, undefined, machineOf(match[1]));
+    const match = /^(att_[0-9A-Za-z]+):(current|sent)(?::([^:]+))?$/.exec(base.slice(ATTACHMENT_BASE_PREFIX.length));
+    if (match) {
+      const document = match[3] ? `&document=${match[3]}` : '';
+      return inboxUrl(`/attachments/${match[1]}/markdown-image?path=${encodeURIComponent(path)}&version=${match[2]}${document}`, undefined, machineOf(match[1]));
+    }
   }
   if (base?.startsWith(MESSAGE_BASE_PREFIX)) {
     const id = base.slice(MESSAGE_BASE_PREFIX.length);

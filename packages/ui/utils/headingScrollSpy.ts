@@ -17,6 +17,16 @@
 /** How far below the scroll element's top a heading becomes the current one. */
 export const CONTENTS_ACTIVATION_OFFSET = 80;
 
+/**
+ * How far below the activation line a heading still counts as reached. A pick
+ * scrolls to the heading's top less the offset, and that top is often
+ * fractional (1522.22 px); the browser snaps the scroll offset to a whole
+ * device pixel (1442, not 1442.22), so the picked heading can end up a fraction
+ * of a pixel below the line and the heading above it would be marked. One
+ * pixel covers the snap, as the document's end does below.
+ */
+export const CONTENTS_SNAP_TOLERANCE = 1;
+
 /** A heading drawn in the scroll element, with its top inside the scrolled content. */
 export interface HeadingBinding {
   /** The heading's index in the caller's own list. */
@@ -75,9 +85,9 @@ export function currentBinding(
 }
 
 /**
- * The heading being read: the last one at or above the activation line, or
- * the last heading once the document is scrolled to its end. `null` with no
- * bindings.
+ * The heading being read: the last one at or above the activation line (or
+ * within `CONTENTS_SNAP_TOLERANCE` below it), or the last heading once the
+ * document is scrolled to its end. `null` with no bindings.
  */
 export function activeHeadingBinding(
   bindings: readonly HeadingBinding[],
@@ -88,5 +98,8 @@ export function activeHeadingBinding(
   const atDocumentEnd = maxScrollTop > 0 && viewport.scrollTop >= maxScrollTop - 1;
   return atDocumentEnd
     ? bindings.at(-1)!
-    : currentBinding(bindings, viewport.scrollTop + CONTENTS_ACTIVATION_OFFSET);
+    : currentBinding(
+        bindings,
+        viewport.scrollTop + CONTENTS_ACTIVATION_OFFSET + CONTENTS_SNAP_TOLERANCE,
+      );
 }
