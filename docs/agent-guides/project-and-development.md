@@ -118,6 +118,7 @@ plannotator/
 │   │   ├── project.ts            # Pure string helpers (sanitizeTag, extractRepoName, extractDirName)
 │   │   └── inbox/                # The Inbox store (store.ts, append-only JSONL; thread routing), the per-thread list sections (list.ts), layout + line reader (schema.ts), registry (registry.ts: inbox/inbox.json)
 │   ├── inbox/                    # The Plannotator Inbox window (App, sidebar, list, thread, empty state, Settings), composed from ui, and surface/ (what a phone hosts); built by apps/inbox
+│   ├── references/               # @plannotator/references — published, Apache-2.0: the read side of reference integrations (URL grammars, registry, GitHub/GitLab/Linear read adapters) behind one credential port; never reads env or runs auth. Cut from Workspaces: see its PROVENANCE.md
 │   ├── acp-client/               # @plannotator/acp-client — the ACP client (client, agent table, spawn plan, ensure-launch, own-tool permission policy, same-program check, which); used by Guides in VS Code
 │   ├── t3-code/                  # @plannotator/t3-code — the opt-in T3 Code connection (Ask this session through a Claude Bash hook); loaded by the CLI only for `t3` / `t3-hook` (see "T3 Code")
 │   ├── guide-viewer/             # @plannotator/guide-viewer — the Guided Review chain (GuideView → GuideSectionCard → GuideFileCard → GuideViewportManager) behind a narrow GuideHost context; used by review-editor (ReviewGuideHost + AllFilesCodeView) and by the guides.show viewer (readOnly). Also home of diffParser, DiffFile, and the two markdown renderers.

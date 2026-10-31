@@ -8,7 +8,7 @@ import { agentName, formatCount, shortTime, waitCount } from '../format';
 import { reaskRowLine, sentRowLine, undeliveredLabel } from '../deliveryLine';
 import { sentRecipientsWords } from '../tags';
 import { TagStack } from './TagPicker';
-import { RowAgents } from './RowAgents';
+import { RowAgents, RowAgentTiles } from './RowAgents';
 import { ProjectTipText, Tip } from './Tip';
 import { AuthorMark, Icon } from '../icons';
 import { ListColumnEdge } from '../shell/ListColumnEdge';
@@ -126,7 +126,8 @@ export function rowAgent(row: InboxListRow): InboxListRow['author'] {
 
 /**
  * The badge card's footer mark: the agent's, or, when several agents are in the thread, their marks overlapping
- * (Lines). The row itself draws its agents beside the project (`RowAgents`).
+ * (Lines). The row itself draws its agents beside the project: after it on a wide row (`RowAgents`), before it on
+ * a three-line or phone row (`RowAgentTiles`).
  */
 function RowMark({ row }: { row: InboxListRow }) {
   if ((row.participants?.length ?? 0) > 1) return <TagStack participants={row.participants!} />;
@@ -216,23 +217,40 @@ function previewOf(row: InboxListRow): string | null {
 }
 
 /**
- * Line 1's start (approval "list-rows-mail-icons"): the project, then the agents' marks right after it. The
- * project is left out in one project's list, which leaves the marks alone. A three-line or phone row's line wraps
- * like text, so on a long project the marks follow its last word onto the next line, never cut and never dropped.
- * A wide row's cell is one line: the project gives way with "…" (its tooltip shows it whole), the marks never do.
+ * A wide row's first cell (approval "list-rows-mail-icons"): the project, then the agents' marks right after it.
+ * The project is left out in one project's list, which leaves the marks alone. The cell is one line: the project
+ * gives way with "…" (its tooltip shows it whole), the marks never do.
  */
-function FromLine({ row, project, filtered, wide = false, tip = true }: { row: InboxListRow; project: string; filtered: boolean; wide?: boolean; tip?: boolean }) {
+function FromLine({ row, project, filtered }: { row: InboxListRow; project: string; filtered: boolean }) {
   return (
     <span className="ib-from">
+      {!filtered && <ClipText className="ib-p" text={project} />}
+      <RowAgents participants={row.participants} agent={rowAgent(row)} />
+    </span>
+  );
+}
+
+/**
+ * Line 1's start in a three-line or phone row (approval "inbox-list-row-v2", 2026-10-30): the agents' tiles, then
+ * the project hugging them, as a sidebar row's icon hugs its name. The tiles are a bounded run, so the project always
+ * keeps the rest of the line: it never wraps, it ends in "…" (its tooltip shows it whole; not on a phone, where a
+ * hover is a first tap). The project is left out in one project's list, which leaves the tiles alone.
+ *
+ * The project comes first in the DOM and the tiles after it, so a screen reader reads where, then who, as on a wide
+ * row (`FromLine`), not every agent's name first; CSS (`.ib-lead > .ib-atiles`, `order: -1`) draws the tiles first.
+ */
+function LeadLine({ row, project, filtered, tip = true }: { row: InboxListRow; project: string; filtered: boolean; tip?: boolean }) {
+  return (
+    <span className="ib-from ib-lead">
       {!filtered &&
-        (wide ? (
+        (tip ? (
           <ClipText className="ib-p" text={project} />
         ) : (
           <span className="ib-p" dir="auto">
             {project}
           </span>
         ))}
-      <RowAgents participants={row.participants} agent={rowAgent(row)} tip={tip} />
+      <RowAgentTiles participants={row.participants} agent={rowAgent(row)} tip={tip} />
     </span>
   );
 }
@@ -468,7 +486,7 @@ function WideRow({ row, project, away, selected, filtered, lit, pinned, keys, fu
       aria-describedby={rowHasBadge(row) ? wordsId : undefined}
       {...focus}
     >
-      <FromLine row={row} project={project} filtered={filtered} wide />
+      <FromLine row={row} project={project} filtered={filtered} />
       <span className="ib-subj">
         <TitleCell row={row} pinned={pinned} />
       </span>
@@ -597,10 +615,10 @@ function NarrowRow({ row, project, away, selected, filtered, lit, pinned, keys, 
       aria-describedby={rowHasBadge(row) ? wordsId : undefined}
       {...focus}
     >
-      {/* Three lines (approval "list-rows-mail-icons", 2026-10-30). Line 1: the project and the agents' marks
-          after it, then the ✓ and the time at the right. */}
+      {/* Three lines (approval "inbox-list-row-v2", 2026-10-30). Line 1: the agents' tiles and the project after
+          them, on one line, then the ✓ and the time at the right. */}
       <div className="ib-l1">
-        <FromLine row={row} project={project} filtered={filtered} />
+        <LeadLine row={row} project={project} filtered={filtered} />
         <span className="ib-t">
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />
         </span>
@@ -629,8 +647,8 @@ function NarrowRow({ row, project, away, selected, filtered, lit, pinned, keys, 
 
 /**
  * A row on a phone, read like a mail app's, in the three-line row's order
- * (approval "list-rows-mail-icons", 2026-10-30): the project and the agents'
- * marks, the pin and the time on line 1; the title on line 2, never cut; the
+ * (approval "inbox-list-row-v2", 2026-10-30): the agents' tiles and the
+ * project, the pin and the time on line 1; the title on line 2, never cut; the
  * grey preview with the guided review book, the badge and the count at the
  * right end of line 3.
  */
@@ -656,7 +674,7 @@ function PhoneRow({ row, project, away, filtered, lit, menu, pinned, keys, onOpe
       aria-describedby={rowHasBadge(row) ? wordsId : undefined}
     >
       <span className="ib-m1">
-        <FromLine row={row} project={project} filtered={filtered} tip={false} />
+        <LeadLine row={row} project={project} filtered={filtered} tip={false} />
         {pinned && <PinMark />}
         <span className="ib-t">
           <TimeWithTick delivery={row.delivery} time={shortTime(rowTimeIso(row))} />

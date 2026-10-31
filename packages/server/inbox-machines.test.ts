@@ -745,11 +745,12 @@ describe("the tailnet door with Phones off, in process", () => {
 
   test("upgrading from a build that kept the door only in inbox.json: a mapping to exactly its door_port is the Inbox's (re-pointed, then taken down at stop and by purge); one to a different target is never touched", async () => {
     // What v0.28.40 leaves after an unclean stop: inbox.json `tailnet: { https_port: 8443, door_port }`, a live mapping, no tailnet-door.json.
-    const released = (target: (door: number) => string) => {
+    // The registry comes from a real run (its own port), with the old build's `tailnet` added, as the other door tests seed it.
+    const released = async (target: (door: number) => string) => {
       const dataDir = scratch("plannotator-machines-upgrade-");
       const door = closedPort();
-      mkdirSync(join(dataDir, "inbox"), { recursive: true });
-      writeFileSync(join(dataDir, "inbox", "inbox.json"), JSON.stringify({ v: 1, pid: 1, port: 1, url: "", version: "0.28.40", token: "t".repeat(64), serverSession: "s", startedAt: "", tailnet: { https_port: 8443, door_port: door } }));
+      (await startInboxServer({ dataDir, binaryPath: null, phones: false, tailscale: scriptedTailscale().run })).stop();
+      writeFileSync(join(dataDir, "inbox", "inbox.json"), JSON.stringify({ ...inboxJson(dataDir), version: "0.28.40", tailnet: { https_port: 8443, door_port: door } }));
       const link = { id: OTHER, name: "Mini", token: "tok_x", transport: { kind: "tailnet", url: `http://127.0.0.1:${closedPort()}` }, device_id: null, linked_at: "2026-10-30T00:00:00Z" };
       writeFileSync(join(dataDir, "inbox", "machines.json"), JSON.stringify({ v: 1, self: { id: "ibx_01K00000000000000000000001" }, links: [link] }), { mode: 0o600 });
       const tailscale = scriptedTailscale();
@@ -758,7 +759,7 @@ describe("the tailnet door with Phones off, in process", () => {
     };
 
     // The exact target the old build recorded: adopted, re-pointed at the new door listener, and taken down at a clean stop.
-    const own = released((door) => `http://127.0.0.1:${door}`);
+    const own = await released((door) => `http://127.0.0.1:${door}`);
     let inbox = await startInboxServer({ dataDir: own.dataDir, binaryPath: null, phones: false, tailscale: own.tailscale.run });
     try {
       expect(own.tailscale.doorCalls()).toEqual(["on"]);
@@ -771,13 +772,13 @@ describe("the tailnet door with Phones off, in process", () => {
     expect(own.tailscale.doorCalls()).toEqual(["on", "off"]);
 
     // The same leftover with the Inbox stopped: uninstall --purge takes it down.
-    const purged = released((door) => `http://127.0.0.1:${door}`);
+    const purged = await released((door) => `http://127.0.0.1:${door}`);
     expect(takeDownInboxTailnet(purged.dataDir, purged.tailscale.run)).toBe("removed");
     expect(purged.tailscale.serve.size).toBe(0);
 
     // A different target on that port: never the Inbox's. Not re-pointed, not removed, and the door refuses rather than move.
     const theirs = "http://127.0.0.1:62440";
-    const other = released(() => theirs);
+    const other = await released(() => theirs);
     inbox = await startInboxServer({ dataDir: other.dataDir, binaryPath: null, phones: false, tailscale: other.tailscale.run });
     try {
       expect([...other.tailscale.serve]).toEqual([[8443, theirs]]);
