@@ -85,6 +85,13 @@ export interface OutboxEntry {
   /** What the person is told about an entry that did not land (rules 3, 4). */
   notice: { kind: OutboxNoticeKind; at: string } | null;
   dismissed: boolean;
+  /**
+   * The thread the write is about, as the window that pressed Send named it (`X-Plannotator-Thread`), so the window
+   * shows a held answer even when that thread cannot open. Never sent on; absent from an older entry.
+   */
+  thread?: string | null;
+  /** The machine's name, kept when its link went (dropMachine), so what was not sent can still say where it was going. */
+  machine_name?: string | null;
 }
 
 /** What one try got back: the owner's status and JSON body, or `null` when the machine could not be reached. */
@@ -286,7 +293,7 @@ export class InboxOutbox {
    * whatever state it is in, and queues nothing. The same key on another
    * route or machine is refused, as the door refuses it.
    */
-  submit(machine: string, route: string, body: Record<string, unknown>): { entry: OutboxEntry; fresh: boolean } {
+  submit(machine: string, route: string, body: Record<string, unknown>, thread: string | null = null): { entry: OutboxEntry; fresh: boolean } {
     if (!MACHINE_FILE.test(machine)) throw new InboxError("validation_error", "machine: an ibx_ id.", { field: "machine" });
     const key = typeof body.idempotency_key === "string" ? body.idempotency_key.trim() : "";
     if (!key) throw new InboxError("validation_error", "idempotency_key: required on a write to another machine.", { field: "idempotency_key" });
@@ -317,6 +324,7 @@ export class InboxOutbox {
       settled_at: null,
       notice: null,
       dismissed: false,
+      thread,
     });
     return { entry, fresh: true };
   }
@@ -356,10 +364,19 @@ export class InboxOutbox {
    * "not delivered" when no request ever left, "may have been delivered"
    * when one did (rule 10).
    */
-  dropMachine(machine: string): OutboxEntry[] {
+  dropMachine(machine: string, name: string | null = null): OutboxEntry[] {
     const at = this.now().toISOString();
+    // Ended earlier without a name (a drain that met the other side's Unlink): its name too, now it is known.
+    if (name) for (const entry of this.list(machine)) if (entry.state === "dropped" && !entry.machine_name) this.save({ ...entry, machine_name: name });
     return this.list(machine, "pending").map((entry) =>
-      this.save({ ...entry, state: "dropped", settled_at: at, notice: { kind: entry.left ? "may_have_been_delivered" : "not_delivered", at } }),
+      this.save({
+        ...entry,
+        state: "dropped",
+        settled_at: at,
+        notice: { kind: entry.left ? "may_have_been_delivered" : "not_delivered", at },
+        // The machine is forgotten with its link: its name stays with what was not sent to it.
+        ...(name ? { machine_name: name } : {}),
+      }),
     );
   }
 
@@ -440,6 +457,8 @@ export class InboxOutbox {
     const keep = (entry: OutboxEntry) => {
       if (pending(entry)) return true;
       const settled = entry.settled_at ? Date.parse(entry.settled_at) : now;
+      // Not sent because the link went: its words are the only copy, so it stays until the person dismisses it.
+      if (entry.state === "dropped" && !entry.dismissed) return true;
       if (entry.notice !== null && !entry.dismissed) return now - settled < OUTBOX_KEEP_NOTICE_MS;
       return now - settled < OUTBOX_KEEP_SETTLED_MS;
     };

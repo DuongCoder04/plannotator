@@ -33,7 +33,7 @@ const noop = () => {};
 const reducedMotion = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
 
 /** The picture: the list column as it stands beside a thread (or a phone's list), with `look`. Not interactive. */
-function PreviewList({ groups, projectNames, look, phone }: { groups: readonly ListIntroGroup[]; projectNames?: ReadonlyMap<string, string>; look: ListLook; phone: boolean }) {
+function PreviewList({ groups, projectNames, awayMachines, look, phone }: { groups: readonly ListIntroGroup[]; projectNames?: ReadonlyMap<string, string>; awayMachines?: ReadonlySet<string>; look: ListLook; phone: boolean }) {
   const section = useRef<HTMLElement>(null);
   const classes = listLookClasses(look);
   const shownLook = useRef(classes);
@@ -67,6 +67,7 @@ function PreviewList({ groups, projectNames, look, phone }: { groups: readonly L
                   key={row.thread_id}
                   row={row}
                   project={projectNames?.get(row.project.id) ?? row.project.name}
+                  away={!!row.machine && (awayMachines?.has(row.machine) ?? false)}
                   drawn={group.id}
                   shape={phone ? 'phone' : 'narrow'}
                   full={false}
@@ -131,6 +132,8 @@ export interface ListLookIntroProps {
   /** The list's look as it stands (the ⋮ menu's options): the switches open at it and the preview returns to it. */
   initial: ListLook;
   projectNames?: ReadonlyMap<string, string>;
+  /** Linked machines that are away (machines.ts): their rows are greyed, as in the list. */
+  awayMachines?: ReadonlySet<string>;
   phone: boolean;
   /** Done: the switches as they stand. */
   onDone: (look: ListLook) => void;
@@ -138,7 +141,7 @@ export interface ListLookIntroProps {
   onKeep: () => void;
 }
 
-export function ListLookIntro({ groups, initial, projectNames, phone, onDone, onKeep }: ListLookIntroProps) {
+export function ListLookIntro({ groups, initial, projectNames, awayMachines, phone, onDone, onKeep }: ListLookIntroProps) {
   const [opened] = useState(initial);
   const [look, setLook] = useState<ListLook>(opened);
   const set = (key: ListLookKey, on: boolean) => setLook((current) => (current[key] === on ? current : { ...current, [key]: on }));
@@ -148,7 +151,7 @@ export function ListLookIntro({ groups, initial, projectNames, phone, onDone, on
     <Modal labelledBy="ib-lo-title" describedBy="ib-lo-desc" testId="list-look-intro" onClose={onKeep} ownKeys className={`ib-lo${phone ? ' ib-lo-phone' : ''}`}>
       <div className="ib-lo-art">
         <div className="ib-lo-frame" inert>
-          <PreviewList groups={groups} projectNames={projectNames} look={look} phone={phone} />
+          <PreviewList groups={groups} projectNames={projectNames} awayMachines={awayMachines} look={look} phone={phone} />
         </div>
       </div>
       <div className="ib-lo-text">

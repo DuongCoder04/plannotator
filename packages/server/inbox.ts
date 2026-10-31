@@ -986,7 +986,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // `pinned_at` (additive) on the window's and the phone's rows only: never on anything an agent reads.
     const pinnedAt = new Map(store.pins().map((pin) => [pin.thread_id, pin.pinned_at]));
     const own = store.listRows().map((row) => (pinnedAt.has(row.thread_id) ? { ...row, pinned_at: pinnedAt.get(row.thread_id)! } : row));
-    const rows: InboxListRow[] = merged ? [...own.map((row) => ({ ...row, machine: machines.selfId })), ...machines.rows()] : own;
+    // A linked machine never lists an id this store holds (archived and pinned included): its row is dropped, never merged.
+    const rows: InboxListRow[] = merged ? [...own.map((row) => ({ ...row, machine: machines.selfId })), ...machines.rows().filter((row) => !store.message(row.thread_id))] : own;
     const scoped = projectFilter ? rows.filter((row) => row.project.id === projectFilter) : rows;
     const byId = new Map(rows.map((row) => [row.thread_id, row]));
     return {
@@ -1003,7 +1004,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       /** Checking for updates has failed for hours: the sidebar's quiet "Can't check for updates". Additive. */
       update_check_failing: updates.checkFailing(),
       notice: portChanged ? "The Inbox moved to a new port: allow notifications again on this page." : null,
-      projects: merged ? [...projectFolders(own).map((project) => ({ ...project, machine: machines.selfId })), ...machines.projects()] : projectFolders(own),
+      projects: merged ? [...projectFolders(own).map((project) => ({ ...project, machine: machines.selfId })), ...machines.projects().filter((project) => typeof project.id !== "string" || !store.project(project.id))] : projectFolders(own),
       project: projectFilter,
       // `?archived=exclude` (the window): archived threads leave every section,
       // Quiet included, and Settings lists them (GET /api/inbox/threads/archived).
@@ -3457,6 +3458,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       door: devices.machineDoor,
       readBody,
       json,
+      holds: (kind, id) =>
+        kind === "projects" ? store.project(id) !== null : kind === "attachments" ? store.attachment(id) !== null : kind === "annotations" ? store.annotation(id) !== null : store.message(id) !== null,
       timings: options.machineLinkTimings,
     });
     if (phonesOn) {
