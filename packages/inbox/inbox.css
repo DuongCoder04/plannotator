@@ -6049,3 +6049,33 @@ dialog.ib-dlg.ib-fbk { width: min(540px, calc(100vw - 32px)); }
 @media (max-width: 360px) {
   .ib-lk-compact { --ib-lk-floor: 72px; }
 }
+
+/* The one-time list options dialog (approval "inbox-list-options-intro"; components/ListLookIntro.tsx): the Board
+   intro's width and well. The picture is the person's own rows in a column the list's width, centred, its bottom
+   fading out so no row is ever cut mid-line; the words, the three switches stacked, the actions. */
+dialog.ib-dlg.ib-lo { width: min(560px, calc(100vw - 32px)); }
+.ib-lo .ib-dlg-in { padding: 0; }
+.ib-lo { --lo-well: color-mix(in oklch, var(--background) 70%, var(--card)); }
+:root.light .ib-lo { --lo-well: color-mix(in oklch, var(--muted) 48%, var(--card)); }
+.ib-lo-art { background: var(--lo-well); padding: 20px 18px 0; }
+.ib-lo-frame { display: flex; width: 380px; max-width: 100%; height: 380px; margin: 0 auto; overflow: hidden; background: var(--card); border-radius: 10px 10px 0 0; box-shadow: 0 0 0 1px color-mix(in oklch, var(--border) 70%, transparent); text-align: left; -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 64px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 64px), transparent); }
+.ib-lo-frame .ib-lo-list { flex: 1; width: auto; height: 100%; border-right: 0; }
+.ib-lo-frame .ib-lbody { overflow: hidden; }
+.ib-lo-frame .ib-lbody > .ib-group > .ib-rw, .ib-lo-frame .ib-lbody > .ib-group > .ib-mrow { content-visibility: visible; }
+.ib-lo-frame .ib-band .ib-ic { margin-left: auto; }
+.ib-lo-text { padding: 20px 22px 0; }
+.ib-lo-text h2 { margin: 0; font-size: var(--ib-fs-16, 16px); font-weight: 650; }
+.ib-lo-text p { margin: 4px 0 0; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); line-height: 1.5; }
+.ib-lo-sw { display: flex; flex-direction: column; gap: 2px; padding: 14px 22px 0; }
+.ib-lo-opt { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; font-size: var(--ib-fs-13-5, 13.5px); cursor: pointer; }
+.ib-lo-acts { display: flex; align-items: center; gap: 8px; padding: 18px 18px 18px 22px; }
+@media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
+  /* A phone: a bottom sheet, the phone's rows (no list header), 44 px targets, Done full width above Keep as it is. */
+  dialog.ib-dlg.ib-lo.ib-lo-phone { margin: auto 8px calc(8px + env(safe-area-inset-bottom)); width: calc(100vw - 16px); }
+  .ib-lo-phone .ib-lo-art { padding: 14px 14px 0; }
+  .ib-lo-phone .ib-lo-frame { width: auto; height: 300px; }
+  .ib-lo-phone .ib-lo-frame .ib-lbody { padding-top: 8px; }
+  .ib-lo-phone .ib-lo-opt { min-height: 44px; font-size: var(--ib-fs-15, 15px); }
+  .ib-lo-phone .ib-lo-acts { flex-direction: column-reverse; align-items: stretch; padding-top: 14px; }
+  .pn-inbox .ib-lo-phone .ib-lo-acts .ib-btn, dialog.ib-lo-phone .ib-lo-acts .ib-btn { min-height: 44px; justify-content: center; }
+}

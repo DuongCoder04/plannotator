@@ -89,6 +89,9 @@ import { NotificationAsk, TabSleptLine } from './components/NotificationAsk';
 import { useInboxNotifications } from './notify';
 import { useInboxSound } from './sound';
 import { notificationLine, SoundIntroDialog } from './components/SoundIntro';
+import { ListLookIntro, type ListIntroGroup } from './components/ListLookIntro';
+import { listIntroMayAsk, listIntroWanted, type ListIntroLoad } from './listIntro';
+import { writeListLook } from './listLook';
 import { GuidePane } from './components/GuidePane';
 import { AboutBlock, FailedDialog, GeneralUpdateRow, RestartDialog, UpdateDialog, WhatsNewPage } from './components/Updates';
 import { leaveOnPurpose, unsentReply } from './unsent';
@@ -654,6 +657,15 @@ function Inbox() {
   const [loadError, setLoadError] = useState<string | null>(null);
   /** The one-time sound dialog: open on this load, or shown on it (then the notification ask line waits for another load). */
   const [soundDialog, setSoundDialog] = useState<'none' | 'open' | 'shown'>('none');
+  /**
+   * The one-time list options dialog (approval "inbox-list-options-intro") on this load: not shown, open, or closed.
+   * `listIntroDecided`: this load asked the Inbox and has its answer. `tourThisLoad`: the tour was on screen in
+   * this load, so the dialog never shows on it.
+   */
+  const [listIntro, setListIntro] = useState<'none' | 'open' | 'shown'>('none');
+  const [listIntroDecided, setListIntroDecided] = useState(false);
+  const listIntroAsked = useRef(false);
+  const tourThisLoad = useRef(false);
   /** Sidebar → Feedback (components/FeedbackDialog.tsx): open only on the person's click. */
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const soundDialogAsked = useRef(false);
@@ -2841,6 +2853,48 @@ function Inbox() {
   const listTitle = filterProject ? (projectNames.get(filterProject.id) ?? filterProject.name) : 'Inbox';
   const notice = shown && latest ? heldNotice(filterSections(shown, route.project), filterSections(latest.sections, route.project), openedHere.current, heldOpen(), projectNames).text : null;
   const firstRun = latest !== null && projects.length === 0;
+
+  // The one-time list options dialog (listIntro.ts): after this load's sound and agent-note dialogs are decided, never
+  // on a load that showed either or the tour, only on the list page with three rows or more; it waits while a reply
+  // is typed or another dialog is open, then claims it from the Inbox (only the first claim ever shows it).
+  if (route.page === 'tour') tourThisLoad.current = true;
+  const listIntroLoad: ListIntroLoad = {
+    due: settings?.list_intro?.due === true,
+    local: (settings?.via ?? 'local') === 'local',
+    listLoaded: latest !== null && shown !== null,
+    firstRun,
+    rows: shown ? shown.reduce((n, section) => n + section.threads.length, 0) : 0,
+    page: route.page,
+    tourThisLoad: tourThisLoad.current,
+    otherDialogThisLoad: soundDialog !== 'none' || agentNote !== 'none',
+    othersSettled: soundSettled && agentNoteSettled,
+    updating: updateDialog !== null || restarting,
+  };
+  const listIntroWant = listIntroWanted(listIntroLoad);
+  const listIntroReady = listIntroMayAsk(listIntroLoad, { modal: false, replying: false });
+  useEffect(() => {
+    if (!listIntroReady || listIntroAsked.current) return;
+    const ask = () => {
+      if (listIntroAsked.current || modalOpen() || replyInProgress()) return false;
+      listIntroAsked.current = true;
+      // Once claimed it is shown, even if the page moved on meanwhile: the Inbox has retired it.
+      inboxApi
+        .claimListIntro()
+        .then((answer) => answer.show && setListIntro('open'))
+        .catch(() => {})
+        .finally(() => setListIntroDecided(true));
+      return true;
+    };
+    if (ask()) return;
+    const timer = setInterval(() => {
+      if (ask()) clearInterval(timer);
+    }, 700);
+    return () => clearInterval(timer);
+  }, [listIntroReady]);
+  // The notification lines wait for it too, as for the other one-time dialogs, and stand down while it is open.
+  const linesFree = askLinesFree && (!listIntroWant || listIntroDecided) && listIntro !== 'open';
+  const listIntroGroups: ListIntroGroup[] =
+    listIntro === 'open' && shown ? shown.filter((section) => section.threads.length > 0).map((section) => ({ id: section.id, label: section.label, rows: section.threads.slice(0, 12) })) : [];
   // Tidy (2026-10-28): the list header's and the Board's ⋮ menu, each reading who it would ask in its scope.
   const listTidy = useTidy(route.page === 'inbox' ? (route.project ?? null) : null, 'list', shown, route.page === 'inbox' && !firstRun);
   const boardTidy = useTidy(boardFilter, 'board', cards, route.page === 'board');
@@ -3723,7 +3777,7 @@ function Inbox() {
           notice={notice}
           ask={
             // The first real thread's inline ask (the tour's, once) stands in for this line while it shows.
-            notifications.ask && askLinesFree && !(notifyAgain && notifyAgainThread !== null) ? (
+            notifications.ask && linesFree && !(notifyAgain && notifyAgainThread !== null) ? (
               <NotificationAsk
                 kind={notifications.ask}
                 soundOn={sound.settings.enabled}
@@ -3732,7 +3786,7 @@ function Inbox() {
                 onNotNow={notifications.notNow}
                 onSettings={() => go({ page: 'settings', project: null, thread: null, section: 'general' })}
               />
-            ) : notifications.slept && notifications.permission === 'granted' && askLinesFree ? (
+            ) : notifications.slept && notifications.permission === 'granted' && linesFree ? (
               <TabSleptLine slept={notifications.slept} onDismiss={notifications.dismissSlept} />
             ) : null
           }
@@ -4050,6 +4104,18 @@ function Inbox() {
           home={settings?.home ?? null}
           onRetry={() => void updateNow()}
           onClose={() => setUpdateDialog(null)}
+        />
+      )}
+      {listIntro === 'open' && (
+        <ListLookIntro
+          groups={listIntroGroups}
+          projectNames={projectNames}
+          phone={phone}
+          onDone={(look) => {
+            writeListLook(look);
+            setListIntro('shown');
+          }}
+          onKeep={() => setListIntro('shown')}
         />
       )}
       {soundDialog === 'open' && settings && (

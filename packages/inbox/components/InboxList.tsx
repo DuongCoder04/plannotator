@@ -1017,7 +1017,7 @@ interface ListRowProps {
  * row objects, so it is memoized on the row's content, not its identity: a
  * list update renders only the rows that changed.
  */
-const ListRow = memo(
+export const ListRow = memo(
   function ListRow({ row, project, drawn, shape, full, filtered, selected, lit, onOpen, onMarkRead, onSendNow, menu, pinned, keys, pill, compact }: ListRowProps) {
     const open = () => onOpen(row);
     if (shape === 'phone') return <PhoneRow row={row} project={project} filtered={filtered} lit={lit} menu={menu} pinned={pinned} keys={keys} pill={pill} compact={compact} onOpen={open} />;
