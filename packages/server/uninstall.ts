@@ -32,7 +32,8 @@ import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
 import { parseT3HookCommand, T3_SETTINGS_BACKUP_SUFFIX } from "@plannotator/shared/t3-hook-command";
 import { runningT3Workers, stopT3Workers } from "@plannotator/shared/t3-workers";
 import { inboxStatus, readInboxRegistry, stopInbox } from "@plannotator/shared/inbox/registry";
-import { INBOX_TAILNET_HTTPS_PORT, takeDownInboxTailnet } from "./inbox-devices";
+import { takeDownInboxTailnet } from "./inbox-devices";
+import { hasTailnetDoorRecord, readTailnetDoorRecord } from "./inbox-tailnet-door";
 import { takeDownInboxTailscale } from "./inbox-tailscale";
 import { agentHomeAllowed, forgetInboxAgents, planInboxAgentRemoval, type AgentEnvironment } from "./inbox-agents";
 import { qwenTrustRemoval, type QwenRevokeResult } from "./inbox-qwen-trust";
@@ -437,14 +438,18 @@ export async function runPlannotatorUninstall(
         );
       }
     }
-    // "Reach from my tailnet": a mapping a crashed Inbox left behind (a clean stop already took its own down).
-    if (!inboxBlocksPurge && !othersInbox && readInboxRegistry(state.dataDir)?.tailnet) {
+    // "Reach from my tailnet": the door mapping a crashed Inbox left behind, by its record (a clean stop already took its own down),
+    // or by inbox.json's `tailnet` when an older build left it (then only a mapping to exactly its door_port is taken down).
+    const record = inboxBlocksPurge || othersInbox ? null : readTailnetDoorRecord(state.dataDir);
+    const legacy = inboxBlocksPurge || othersInbox || hasTailnetDoorRecord(state.dataDir) ? undefined : readInboxRegistry(state.dataDir)?.tailnet;
+    const door = record?.published ? record : legacy?.door_port ? { https_port: legacy.https_port } : null;
+    if (door) {
       if (request.dryRun) {
-        state.planned.push(`Take down the Plannotator Inbox's tailnet address (tailscale serve --https=${INBOX_TAILNET_HTTPS_PORT})`);
+        state.planned.push(`Take down the Plannotator Inbox's tailnet address (tailscale serve --https=${door.https_port})`);
       } else {
         const tailnet = takeDownInboxTailnet(state.dataDir);
-        if (tailnet === "removed") state.removed.push(`Took down the Plannotator Inbox's tailnet address (tailscale serve --https=${INBOX_TAILNET_HTTPS_PORT})`);
-        if (tailnet === "failed") state.warnings.push(`Could not check or remove the Inbox's tailnet address; run: tailscale serve --https=${INBOX_TAILNET_HTTPS_PORT} off`);
+        if (tailnet === "removed") state.removed.push(`Took down the Plannotator Inbox's tailnet address (tailscale serve --https=${door.https_port})`);
+        if (tailnet === "failed") state.warnings.push(`Could not check or remove the Inbox's tailnet address; run: tailscale serve --https=${door.https_port} off`);
       }
     }
     // "Over your tailnet": the window's mapping a crashed Inbox left behind (a clean stop, including the stop above, takes its own down).
