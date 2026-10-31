@@ -1056,6 +1056,8 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .ib-pwait-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; max-width: 520px; text-align: center; color: var(--muted-foreground); font-size: var(--ib-fs-13, 13px); animation: ib-fade-in 160ms ease-out 600ms both; }
 /* Reduced motion: the same wait, then no fade. */
 @media (prefers-reduced-motion: reduce) { .ib-pwait-line { animation-duration: 1ms; } }
+/* Answers held for an asleep machine, under the line, as the thread draws them. */
+.ib-pwait-held { width: 100%; max-width: 640px; margin-top: 20px; text-align: left; }
 /* A full-screen file covers the window: no card of its own. */
 .ib-main > .ib-view.ib-full { border-radius: 0; box-shadow: none; }
 .ib-phead { height: 46px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--ib-hair); }
@@ -1455,6 +1457,26 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 }
 .ib-prow .ib-paired { display: inline-flex; align-items: center; gap: 5px; color: var(--foreground); }
 .ib-prow .ib-paired .ib-ic { color: var(--success, var(--primary)); }
+/* Settings → Machines: the link form and this machine's link code, inside the card, ruled like its rows. */
+/* Settings → Machines: what was waiting for a machine no longer linked, under its own line, words kept whole. */
+.ib-sgroup > p.ib-mnote { margin-top: 18px; }
+.ib-prow .ib-desc.ib-held-words { color: var(--foreground); }
+.ib-mform { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--ib-hair); }
+.ib-mform:last-child { border-bottom: 0; }
+.ib-mform .ib-l { font-size: var(--ib-fs-14, 14px); font-weight: 500; color: var(--foreground); }
+.ib-mfield { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ib-mfield .ib-fbk-contact { flex: none; width: 100%; }
+.ib-mor { font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
+.ib-mpair { display: flex; gap: 8px; }
+.ib-mpair > .ib-mfield { flex: 1 1 auto; }
+.ib-mpair > .ib-mdigits { flex: 0 0 116px; }
+.ib-mform .ib-callout { margin: 0; }
+.ib-mform-f { display: flex; justify-content: flex-end; gap: 8px; }
+.ib-prow:has(+ .ib-mcode) { border-bottom: 0; }
+.ib-mcode { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 14px; border-bottom: 1px solid var(--ib-hair); }
+.ib-mcode:last-child { border-bottom: 0; }
+.ib-mcode .ib-callout { margin: 0; }
+.ib-mcode-digits { letter-spacing: 0.08em; }
 .ib-sfp { font-family: var(--font-mono); font-size: var(--ib-fs-11-5, 11.5px); letter-spacing: 0.02em; color: var(--foreground); }
 .ib-tile { width: 30px; height: 30px; border-radius: 8px; background: var(--muted); display: inline-flex; align-items: center; justify-content: center; flex: none; color: var(--muted-foreground); }
 .pn-inbox .ib-tile svg.ib-ic { width: 16px; height: 16px; }
@@ -2080,6 +2102,13 @@ pre code.pn-code[data-keep-layout] {
 .ib-opt .ib-d { display: block; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
 .ib-opt[data-ended] { cursor: default; opacity: 0.55; }
 .ib-opt[data-ended]:hover { background: none; }
+/* A linked machine that is away (asleep, or needing an update): its rows greyed as an ended session's option is, and one
+   quiet line above them, read like a thread's meta line. No colour of its own. */
+.ib-row[data-away] > *, .ib-nrow[data-away] > *, .ib-mrow[data-away] > * { opacity: 0.55; }
+.ib-away { display: flex; align-items: center; gap: 6px; margin: 0; padding: 8px 12px 6px; font-size: var(--ib-fs-12-5, 12.5px); line-height: 1.45; color: var(--muted-foreground); }
+.ib-away > .ib-ic { flex: none; }
+/* An answer held for another machine: the words as they will land, then its "Sending to …" line. */
+.ib-held-words { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ib-route hr { border: 0; border-top: 1px solid var(--ib-hair); margin: 6px 4px; }
 .pn-inbox .ib-route .ib-more { display: block; margin: 2px 4px 4px 33px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--primary); font-weight: 550; }
 .ib-route-error { margin: -2px 0 10px; }
@@ -2914,6 +2943,10 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-spg > h1 { font-size: var(--ib-fs-24, 24px); margin-top: 4px; }
   .ib-prow { flex-wrap: wrap; min-height: 56px; }
   .ib-prow .ib-txt { flex-basis: 60%; }
+  .ib-mpair { flex-direction: column; }
+  .ib-mpair > .ib-mdigits { flex: none; }
+  .ib-mfield .ib-fbk-contact { height: 44px; font-size: var(--ib-fs-16-in, 16px); }
+  .ib-away { padding-inline: 14px; }
   .ib-ways { grid-template-columns: minmax(0, 1fr); }
   .ib-scan { flex-direction: column; align-items: center; }
   .ib-scan-t { width: 100%; }

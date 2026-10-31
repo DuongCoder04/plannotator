@@ -70,6 +70,25 @@ export interface InboxMachineDoor {
   closeTailnetIfUnused: () => void;
 }
 
+/** The id kinds a forwarded route names in its first segments. */
+export type HeldKind = "threads" | "messages" | "attachments" | "projects" | "annotations";
+const HELD_KINDS = new Set<string>(["threads", "messages", "attachments", "projects", "annotations"]);
+/** The body fields a forwarded write names an id in, and the kind each is. */
+const BODY_IDS = [
+  ["thread_id", "messages"],
+  ["message_id", "messages"],
+  ["reply_to", "messages"],
+  ["attachment_id", "attachments"],
+  ["project_id", "projects"],
+] as const;
+const safeDecode = (segment: string): string => {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+};
+
 export interface InboxMachinesContext {
   dataDir: string;
   serverSession: string;
@@ -77,6 +96,11 @@ export interface InboxMachinesContext {
   door: InboxMachineDoor;
   readBody: (req: Request) => Promise<Record<string, unknown>>;
   json: (body: unknown, status?: number) => Response;
+  /**
+   * Whether this Inbox's own store holds an id (archived and pinned threads included). The forward refuses a route
+   * whose thread, message, file, comment or project is this machine's: whatever a window believes, it never goes to a peer.
+   */
+  holds: (kind: HeldKind, id: string) => boolean;
   /** Tests: the links' clocks. */
   timings?: Partial<PeerLinkTimings>;
   now?: () => Date;
@@ -101,6 +125,12 @@ export interface MachineView {
   both_ways: boolean;
   /** Writes held for it (rule 12: "Will send when … is back"). */
   waiting: number;
+  /**
+   * The cursor of its list this Inbox holds (null: none yet). It moves when
+   * that list is read again, so the window's `machines` frame tells it to
+   * read the merged list once the far rows changed, not before.
+   */
+  list_cursor: number | null;
 }
 
 export interface OutboxView {
@@ -114,9 +144,25 @@ export interface OutboxView {
   answer: unknown;
   notice: OutboxEntry["notice"];
   dismissed: boolean;
+  /** The words a held reply or message carries, so the window can show what waits (null for any other write). Cut at
+   * OUTBOX_WORDS_SHOWN, then "…". */
+  words: string | null;
+  /** The thread it is about, as the window named it (null: not named, or an older entry). */
+  thread: string | null;
+  /** The machine's name once its link is gone (null while linked: the window knows it). */
+  machine_name: string | null;
 }
 
-const outboxView = (entry: OutboxEntry): OutboxView => ({
+/** At most this much of a held write's words rides its view. */
+const OUTBOX_WORDS_SHOWN = 2_000;
+
+const wordsOf = (body: Record<string, unknown>): string | null => {
+  const words = typeof body.words === "string" ? body.words : typeof body.body === "string" ? body.body : null;
+  if (words === null) return null;
+  return words.length > OUTBOX_WORDS_SHOWN ? `${words.slice(0, OUTBOX_WORDS_SHOWN)}…` : words;
+};
+
+export const outboxView = (entry: OutboxEntry): OutboxView => ({
   key: entry.key,
   machine: entry.machine,
   route: entry.route,
@@ -127,10 +173,15 @@ const outboxView = (entry: OutboxEntry): OutboxView => ({
   answer: entry.answer,
   notice: entry.notice,
   dismissed: entry.dismissed,
+  words: wordsOf(entry.body),
+  thread: entry.thread ?? null,
+  machine_name: entry.machine_name ?? null,
 });
 
 const FORWARD = /^\/api\/inbox\/m\/(ibx_[0-9A-HJKMNP-TV-Z]{26})\/(.+)$/;
 const REPLY_ROUTE = /^messages\/[^/]+\/reply$/;
+/** A thread id the window names in `X-Plannotator-Thread`: kept on the outbox entry only, never sent on. */
+const THREAD_HINT = /^[A-Za-z0-9_-]{8,80}$/;
 /** Of the window's headers, the forward passes on only these (as the door does). */
 const PASS_REQUEST = ["range", "if-range", "if-none-match"];
 /** Of the far door's answer, these: its bytes' description, and its safety headers (an SVG or a page from another machine never runs on this origin). */
@@ -205,6 +256,7 @@ export function createInboxMachines(context: InboxMachinesContext) {
       address: context.door.tailnetAddress(),
       both_ways: true,
       waiting: 0,
+      list_cursor: null,
     },
     ...links.list().map((link) => {
       const peer = peers.get(link.id);
@@ -219,6 +271,7 @@ export function createInboxMachines(context: InboxMachinesContext) {
         address: openTransport(link.transport).describe(),
         both_ways: link.device_id !== null,
         waiting: outbox.list(link.id, "pending").length,
+        list_cursor: peer?.list?.cursor ?? null,
       } satisfies MachineView;
     }),
   ];
@@ -270,7 +323,7 @@ export function createInboxMachines(context: InboxMachinesContext) {
     peers.delete(id);
     const link = links.remove(id);
     if (link?.device_id) context.door.revokeDevice(link.device_id);
-    outbox.dropMachine(id);
+    outbox.dropMachine(id, link?.name ?? null);
     // The last link gone: with Phones off the tailnet door has nothing left to serve.
     if (closeDoor === "now") context.door.closeTailnetIfUnused();
     else closeDoorAfterAnswer();
@@ -326,7 +379,9 @@ export function createInboxMachines(context: InboxMachinesContext) {
     }
     if (offer.id && health.inbox_id !== offer.id) throw new InboxError("machine_mismatch", "A different Inbox answers at that address than the one that made this code.");
     if (health.inbox_id === links.selfId) throw new InboxError("link_to_self", "That is this Inbox's own link code: open the code on the other machine.");
-    const name = typeof pairedBody.computer?.name === "string" && pairedBody.computer.name ? pairedBody.computer.name : "Other machine";
+    // The other machine names itself: control characters dropped (the CLI prints the name), at most 64 characters.
+    const named = typeof pairedBody.computer?.name === "string" ? pairedBody.computer.name.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim().slice(0, 64) : "";
+    const name = named || "Other machine";
     return { token, id: health.inbox_id as string, name, transport };
   };
 
@@ -507,6 +562,12 @@ export function createInboxMachines(context: InboxMachinesContext) {
     if (route === "events" || route === "pair" || route === "link-back" || route === "unlink" || route === "revoke") {
       return json({ error: "Not a forwarded route.", code: "not_found" }, 404);
     }
+    // This machine's own thread, message, file or project never goes to a peer, whatever the window learned: a
+    // linked machine that lists or names one of this Inbox's ids cannot take its reads or writes.
+    const ownId = HELD_KINDS.has(segments[0]!) && segments[1] ? safeDecode(segments[1]) : null;
+    if (ownId && context.holds(segments[0] as HeldKind, ownId)) {
+      return json({ error: "That is on this computer, not on another machine.", code: "id_is_local", id: ownId }, 409);
+    }
     const offline = () =>
       json({ error: `${links.get(machine)?.name ?? "That machine"} cannot be reached now.`, code: "machine_offline", machine: machinesView().find((m) => m.id === machine) }, 503);
     if (req.method === "GET") {
@@ -543,6 +604,11 @@ export function createInboxMachines(context: InboxMachinesContext) {
     // Every other write is a JSON body, whatever its Content-Type says, and goes through the outbox.
     const body = await context.readBody(req);
     if (checkServerSession(body, context.serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
+    // A write that names this Inbox's thread, message, file or project in its body (a comment, a new message) is refused the same way.
+    for (const [key, held] of BODY_IDS) {
+      const id = body[key];
+      if (typeof id === "string" && id !== "" && context.holds(held, id)) return json({ error: "That is on this computer, not on another machine.", code: "id_is_local", id }, 409);
+    }
     // This Inbox's page session means nothing to the other machine's Inbox, and its drafts stay on this computer.
     delete body.serverSession;
     if (route === "messages") delete body.draft_id;
@@ -550,7 +616,9 @@ export function createInboxMachines(context: InboxMachinesContext) {
     if (REPLY_ROUTE.test(route) && (typeof body.seen_through_seq !== "number" || !Number.isSafeInteger(body.seen_through_seq))) {
       throw new InboxError("validation_error", "seen_through_seq: a reply to another machine carries the newest seq of the thread the person saw.", { field: "seen_through_seq" });
     }
-    const { entry, fresh } = outbox.submit(machine, route, body);
+    // The window names the thread a write is about, so a held answer shows even where that thread cannot open.
+    const named = req.headers.get("X-Plannotator-Thread")?.trim() ?? "";
+    const { entry, fresh } = outbox.submit(machine, route, body, THREAD_HINT.test(named) ? named : null);
     if (peer.state === "online") peer.flush();
     else peer.poke();
     const settled = (await outbox.waitSettled(entry.key, peer.state === "online" ? MACHINE_WRITE_WAIT_MS : 0)) ?? entry;
