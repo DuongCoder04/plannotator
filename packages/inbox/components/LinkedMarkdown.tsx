@@ -29,7 +29,7 @@ export function LinkedMarkdown({ page, attachmentId, onOpenLink }: {
     viewer.current?.scrollToAnchor?.(page.hash);
   }, [viewport, page.hash, page.path]);
   return (
-    <div className="ib-docscroll bg-card" data-look="clean" ref={setViewport}>
+    <div className="ib-docscroll ib-linkeddoc bg-card" data-look="clean" ref={setViewport}>
       <ScrollViewportProvider viewport={viewport}>
         <ImageResolverContext.Provider value={resolveImage}>
           <Viewer

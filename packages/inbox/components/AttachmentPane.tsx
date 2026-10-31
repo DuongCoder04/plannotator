@@ -324,7 +324,8 @@ export function unsavedComposer(pane: HTMLElement | null, savedText: (id: string
 /** The element that scrolls the open file (a document, code, or an image at its own size). */
 function scrollerOf(pane: HTMLElement | null): HTMLElement | null {
   if (!pane) return null;
-  const doc = pane.querySelector<HTMLElement>('.ib-docscroll');
+  // The file's own, never a linked Markdown document drawn over it.
+  const doc = pane.querySelector<HTMLElement>('.ib-docscroll:not(.ib-linkeddoc)');
   if (doc) return doc;
   const code = pane.querySelector('.ib-codeview diffs-container')?.shadowRoot?.querySelector<HTMLElement>('[data-code]');
   if (code) return code;
@@ -1876,7 +1877,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               </div>
               <div className="ib-linkedframe">
                 {linkedTop.html === null ? (
-                  <LinkedMarkdown page={linkedTop} attachmentId={attachment.id} onOpenLink={(href) => followLinkRef.current(href, folderOf(linkedTop.path))} />
+                  <LinkedMarkdown key={`${linkedStack.length}:${linkedTop.path}`} page={linkedTop} attachmentId={attachment.id} onOpenLink={(href) => followLinkRef.current(href, folderOf(linkedTop.path))} />
                 ) : <HtmlViewer
                   key={`${linkedStack.length}:${linkedTop.path}`}
                   rawHtml={linkedTop.html}

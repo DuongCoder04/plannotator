@@ -102,7 +102,7 @@ test('a relative .md link in an attached Markdown file opens the linked document
       '## Far section',
       '[Down to deep](sub/deep.md)',
     ].join('\n\n'));
-    writeFileSync(join(docs, 'sub', 'deep.md'), '# Deep doc\n\n[Up to peer](../peer.md)\n');
+    writeFileSync(join(docs, 'sub', 'deep.md'), ['# Deep doc', '[Up to peer](../peer.md)', ...Array.from({ length: 60 }, (_, i) => `Deep line ${i + 1}.`)].join('\n\n'));
     writeFileSync(join(docs, 'shots', 'peer.png'), png(64));
     writeFileSync(join(docs, '.private', 'secret.md'), '# Secret\n');
     writeFileSync(join(project, 'outside.md'), '# Outside\n');
@@ -153,6 +153,9 @@ test('a relative .md link in an attached Markdown file opens the linked document
     await linked.getByRole('link', { name: 'Down to deep', exact: true }).click();
     await expect(page.locator('[data-linked-page="deep.md"]')).toBeVisible();
     expect(hashParams(page).get('linked')).toBe('sub/deep.md');
+    // It opens at its own top, not at the scroll the previous document was left at.
+    await expect(linked.locator('h1')).toHaveText('Deep doc');
+    expect(await linked.locator('.ib-docscroll').evaluate((el) => el.scrollTop)).toBe(0);
     await linked.getByRole('link', { name: 'Up to peer', exact: true }).click();
     await expect(peer).toBeVisible();
     expect(hashParams(page).get('linked')).toBe('peer.md');
