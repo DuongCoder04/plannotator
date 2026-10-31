@@ -4,7 +4,7 @@
  * not the list, through the tailnet, on a short list, or before this load's other dialogs are decided.
  */
 import { describe, expect, test } from 'bun:test';
-import { LIST_INTRO_MIN_ROWS, LIST_INTRO_PREVIEW, listIntroMayAsk, listIntroWanted, type ListIntroLoad } from './listIntro';
+import { listIntroMayAsk, listIntroWanted, type ListIntroLoad } from './listIntro';
 
 const ready: ListIntroLoad = {
   due: true,
@@ -40,7 +40,6 @@ describe('the list options dialog: when a load may ask for it', () => {
   });
 
   test('a list of fewer than three rows waits for a later load', () => {
-    expect(LIST_INTRO_MIN_ROWS).toBe(3);
     expect(listIntroWanted({ ...ready, rows: 2 })).toBe(false);
     expect(listIntroWanted({ ...ready, rows: 3 })).toBe(true);
   });
@@ -53,12 +52,5 @@ describe('the list options dialog: when a load may ask for it', () => {
     expect(listIntroMayAsk(ready, { modal: false, replying: true })).toBe(false);
     // Still wanted meanwhile: the notification lines keep waiting for it.
     expect(listIntroWanted({ ...ready, page: 'settings', othersSettled: false, updating: true })).toBe(true);
-  });
-
-  test('the preview: each option on in turn, then all off together, inside 2.5 s', () => {
-    expect(LIST_INTRO_PREVIEW.map((step) => step.key)).toEqual(['highlight', 'compact', 'hideAgents', null]);
-    const times = LIST_INTRO_PREVIEW.map((step) => step.at);
-    expect([...times].sort((a, b) => a - b)).toEqual(times);
-    expect(times.at(-1)).toBeLessThanOrEqual(2500);
   });
 });

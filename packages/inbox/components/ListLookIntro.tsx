@@ -2,26 +2,30 @@
  * The one-time list options dialog (approval "inbox-list-options-intro", 2026-10-31; A-r3 with the r4 preview):
  * shaped like the Board intro. The picture is the person's own list, drawn by the real rows (InboxList's `ListRow`)
  * in a column the list's width, its bottom fading out; under it a title, one line and the three options of the list's
- * ⋮ menu as switches. It opens at the defaults (all off). Done saves the switches (every list takes them at once);
- * Keep as it is and Escape change nothing. App retires it either way (the Inbox's claim, once per machine).
+ * ⋮ menu as switches. It opens at the list's look as it stands (the defaults, all off, for someone who never opened
+ * the ⋮ menu), so Done never undoes a choice made there. Done saves the switches as shown (every list takes them at
+ * once); Keep as it is and Escape change nothing. App retires it either way (the Inbox's claim, once per machine).
  *
  * As it opens it plays a short preview (listIntro.ts `LIST_INTRO_PREVIEW`): the switches turn on one at a time and
  * the rows change, then all turn off. The switches are inert meanwhile (no pointer, no focus, out of the
  * accessibility tree, so a screen reader never hears them flip), drawn as usual. Any key, click or touch ends it at
- * once and snaps back to the defaults; the input still does its normal job. None under reduced motion.
+ * once and snaps back to where it opened; the input still does its normal job (so the first Tab reaches the
+ * switches). None under reduced motion.
  */
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import type { InboxListRow, InboxSectionId } from '@plannotator/core/inbox-types';
-import { listLookClasses, LIST_LOOK_OFF, LIST_LOOK_OPTIONS, type ListLook, type ListLookKey } from '../listLook';
+import { listLookClasses, LIST_LOOK_OPTIONS, type ListLook, type ListLookKey } from '../listLook';
 import { LIST_INTRO_PREVIEW, LIST_INTRO_SWAP_MS } from '../listIntro';
 import { ListRow } from './InboxList';
 import { Modal } from './Updates';
 import { Icon } from '../icons';
 
-/** The list's groups as drawn (Quiet folded: its band only). */
+/** The list's groups as drawn (Quiet folded: its band only). `count`: the group's threads (`rows` may be fewer). */
 export interface ListIntroGroup {
   id: InboxSectionId;
   label: string;
+  count: number;
   rows: readonly InboxListRow[];
 }
 
@@ -54,7 +58,7 @@ function PreviewList({ groups, projectNames, look, phone }: { groups: readonly L
         {groups.map((group) => (
           <div className="ib-group" data-section-id={group.id} key={group.id}>
             <div className="ib-band">
-              {group.label} <span className="ib-n">{group.rows.length}</span>
+              {group.label} <span className="ib-n">{group.count}</span>
               {group.id === 'quiet' && <Icon name="chevR" size={14} />}
             </div>
             {group.id !== 'quiet' &&
@@ -86,7 +90,8 @@ function PreviewList({ groups, projectNames, look, phone }: { groups: readonly L
 
 /**
  * The preview as the dialog opens: true while it plays. Every step goes through `set`; the end (or any key, click
- * or touch) puts the defaults back.
+ * or touch) puts back the look it opened at. A key ends it synchronously, before the key reaches the dialog, so the
+ * switches are no longer inert when a first Tab moves focus.
  */
 function usePreview(set: (key: ListLookKey, on: boolean) => void, reset: () => void): boolean {
   const [playing, setPlaying] = useState(() => !reducedMotion());
@@ -105,8 +110,10 @@ function usePreview(set: (key: ListLookKey, on: boolean) => void, reset: () => v
     );
     const stop = () => {
       for (const timer of timers) clearTimeout(timer);
-      latest.current.reset();
-      setPlaying(false);
+      flushSync(() => {
+        latest.current.reset();
+        setPlaying(false);
+      });
     };
     window.addEventListener('keydown', stop, true);
     window.addEventListener('pointerdown', stop, true);
@@ -121,6 +128,8 @@ function usePreview(set: (key: ListLookKey, on: boolean) => void, reset: () => v
 
 export interface ListLookIntroProps {
   groups: readonly ListIntroGroup[];
+  /** The list's look as it stands (the ⋮ menu's options): the switches open at it and the preview returns to it. */
+  initial: ListLook;
   projectNames?: ReadonlyMap<string, string>;
   phone: boolean;
   /** Done: the switches as they stand. */
@@ -129,10 +138,11 @@ export interface ListLookIntroProps {
   onKeep: () => void;
 }
 
-export function ListLookIntro({ groups, projectNames, phone, onDone, onKeep }: ListLookIntroProps) {
-  const [look, setLook] = useState<ListLook>(LIST_LOOK_OFF);
+export function ListLookIntro({ groups, initial, projectNames, phone, onDone, onKeep }: ListLookIntroProps) {
+  const [opened] = useState(initial);
+  const [look, setLook] = useState<ListLook>(opened);
   const set = (key: ListLookKey, on: boolean) => setLook((current) => (current[key] === on ? current : { ...current, [key]: on }));
-  const playing = usePreview(set, () => setLook(LIST_LOOK_OFF));
+  const playing = usePreview(set, () => setLook(opened));
   const base = useId();
   return (
     <Modal labelledBy="ib-lo-title" describedBy="ib-lo-desc" testId="list-look-intro" onClose={onKeep} ownKeys className={`ib-lo${phone ? ' ib-lo-phone' : ''}`}>

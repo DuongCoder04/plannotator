@@ -210,6 +210,12 @@ for (const how of ['Escape', 'Keep as it is'] as const) {
     await expect(page.locator('[data-list-intro-playing]')).toHaveCount(0);
     await page.waitForTimeout(700);
     await allOff(page);
+    // Tab stays inside the dialog and never lands on the picture's (inert) rows.
+    await expect(page.locator('[data-list-intro-done]')).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(option(page, 'highlight')).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(page.locator('[data-list-intro-done]')).toBeFocused();
     await option(page, 'compact').click();
     await option(page, 'hideAgents').click();
     if (how === 'Escape') await page.keyboard.press('Escape');
@@ -233,9 +239,11 @@ for (const how of ['a key', 'a click'] as const) {
     await page.goto(`${w.url}#thread=${w.opened}`);
     await expect(option(page, 'compact')).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
     await expect(page.locator('[data-list-intro-playing]')).toHaveCount(1);
-    if (how === 'a key') await page.keyboard.press('Shift');
+    // The key is Tab: it ends the preview and moves focus from Done (the first focus) to the first switch.
+    if (how === 'a key') await page.keyboard.press('Tab');
     else await page.locator(`${DIALOG} #ib-lo-title`).click();
     await expect(page.locator('[data-list-intro-playing]')).toHaveCount(0);
+    if (how === 'a key') await expect(option(page, 'highlight')).toBeFocused();
     await allOff(page);
     await expect(page.locator(`${DIALOG} .ib-lo-list`)).not.toHaveClass(/ib-lk-/);
     // Nothing plays on after it, and the switches answer.

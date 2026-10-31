@@ -1,8 +1,9 @@
 /**
  * The one-time list options dialog as drawn (components/ListLookIntro.tsx, approval "inbox-list-options-intro"): it
- * opens at the defaults; the preview turns the options on in turn while the switches are inert (no pointer, no focus,
- * not announced); any key ends the preview at once, back to the defaults; none under reduced motion; Done hands over
- * the switches as they stand; Escape and Keep as it is hand over nothing.
+ * opens at the list's look (the defaults when the ⋮ menu was never used); the preview turns the options on in turn
+ * while the switches are inert (no pointer, no focus, not announced); any key ends the preview at once, back to where
+ * it opened; none under reduced motion; Done hands over the switches as they stand; Escape and Keep as it is hand
+ * over nothing; Tab stays inside the dialog and never lands on the picture's rows.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
@@ -10,7 +11,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InboxListRow } from '@plannotator/core/inbox-types';
-import type { ListLook } from './listLook';
+import { LIST_LOOK_OFF, type ListLook } from './listLook';
 import type { ListIntroGroup } from './components/ListLookIntro';
 
 const hasDom = typeof document !== 'undefined';
@@ -54,21 +55,21 @@ function row(id: string): InboxListRow {
   };
 }
 
-const GROUPS: ListIntroGroup[] = [{ id: 'waiting', label: 'Waiting on you', rows: [row('a'), row('b'), row('c')] }];
+const GROUPS: ListIntroGroup[] = [{ id: 'waiting', label: 'Waiting on you', count: 3, rows: [row('a'), row('b'), row('c')] }];
 
 /** Reduced motion on or off for the next render (the dialog reads it when it opens). */
 function motion(reduce: boolean) {
   window.matchMedia = ((query: string) => ({ matches: reduce && query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, onchange: null, dispatchEvent: () => false })) as typeof window.matchMedia;
 }
 
-function render() {
+function render(initial: ListLook = LIST_LOOK_OFF) {
   const seen: (ListLook | 'keep')[] = [];
   host = document.createElement('div');
   host.className = 'pn-inbox';
   document.body.appendChild(host);
   act(() => {
     root = createRoot(host!);
-    root.render(<ListLookIntro groups={GROUPS} phone={false} onDone={(look) => seen.push(look)} onKeep={() => seen.push('keep')} />);
+    root.render(<ListLookIntro groups={GROUPS} initial={initial} phone={false} onDone={(look) => seen.push(look)} onKeep={() => seen.push('keep')} />);
   });
   const dialog = host.querySelector('dialog[data-dialog="list-look-intro"]') as HTMLDialogElement;
   return { dialog, seen };
@@ -79,6 +80,14 @@ const checked = (dialog: HTMLElement) =>
 const group = (dialog: HTMLElement) => dialog.querySelector('[role="group"][aria-label="List options"]') as HTMLElement;
 const preview = (dialog: HTMLElement) => dialog.querySelector('[data-list-intro-preview]') as HTMLElement;
 const wait = (ms: number) => act(() => new Promise((resolve) => setTimeout(resolve, ms)));
+const sw = (dialog: HTMLElement, key: string) => dialog.querySelector(`[data-list-intro-option="${key}"]`) as HTMLElement;
+const doneButton = (dialog: HTMLElement) => dialog.querySelector('[data-list-intro-done]') as HTMLElement;
+/** A Tab (or Shift+Tab) pressed on what has focus, as the browser sends it. */
+function tab(shift = false) {
+  act(() => {
+    (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: shift, bubbles: true, cancelable: true }));
+  });
+}
 
 describe.skipIf(!hasDom)('the list options dialog', () => {
   test('the preview: options on in turn, switches inert meanwhile; a key ends it at once, back to the defaults', async () => {
@@ -123,6 +132,44 @@ describe.skipIf(!hasDom)('the list options dialog', () => {
     act(() => (dialog.querySelector('[data-list-intro-option="compact"]') as HTMLElement).click());
     expect(preview(dialog).classList.contains('ib-lk-compact')).toBe(true);
     act(() => (dialog.querySelector('[data-list-intro-done]') as HTMLElement).click());
+    expect(seen).toEqual([{ highlight: false, compact: true, hideAgents: false }]);
+  });
+
+  test('Tab stays inside the dialog and skips the picture: Done to the first switch, and back with Shift+Tab', () => {
+    motion(true);
+    const { dialog } = render();
+    // The picture holds the real rows' buttons, all inert.
+    expect(dialog.querySelector('.ib-lo-frame [data-thread-id]')).not.toBeNull();
+    act(() => doneButton(dialog).focus());
+    tab();
+    expect(document.activeElement).toBe(sw(dialog, 'highlight'));
+    tab(true);
+    expect(document.activeElement).toBe(doneButton(dialog));
+  });
+
+  test('the first Tab during the preview ends it and reaches the switches', async () => {
+    motion(false);
+    const { dialog } = render();
+    await wait(450);
+    expect(group(dialog).hasAttribute('inert')).toBe(true);
+    act(() => doneButton(dialog).focus());
+    tab();
+    expect(group(dialog).hasAttribute('inert')).toBe(false);
+    expect(document.activeElement).toBe(sw(dialog, 'highlight'));
+    expect(checked(dialog)).toEqual({ highlight: false, compact: false, hideAgents: false });
+  });
+
+  test('options already set from the ⋮ menu: it opens at them, the preview returns to them, Done keeps them', async () => {
+    motion(false);
+    const { dialog, seen } = render({ highlight: false, compact: true, hideAgents: false });
+    expect(checked(dialog)).toEqual({ highlight: false, compact: true, hideAgents: false });
+    await wait(450);
+    expect(checked(dialog)).toEqual({ highlight: true, compact: true, hideAgents: false });
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true }));
+    });
+    expect(checked(dialog)).toEqual({ highlight: false, compact: true, hideAgents: false });
+    act(() => doneButton(dialog).click());
     expect(seen).toEqual([{ highlight: false, compact: true, hideAgents: false }]);
   });
 

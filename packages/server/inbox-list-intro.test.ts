@@ -1,20 +1,22 @@
 /**
  * The one-time list options dialog's claim (approval "inbox-list-options-intro") on a real Inbox: decided at the first
  * release start, due only for someone who used an Inbox before, claimed once per machine. What regresses: a fresh
- * install getting it, a dev build deciding it, the dialog showing twice (two tabs, a reload) or a claim with another
- * server session going through.
+ * install getting it, a dev build deciding it, the dialog showing twice (two tabs, a reload), a claim with another
+ * server session going through, or a claim that could not be saved showing it (it would show again on every load).
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startInboxServer, type InboxServer } from "./inbox";
+import { __setConfigSaveMergeWindowHookForTest } from "@plannotator/shared/config";
 
 const roots: string[] = [];
 const servers: InboxServer[] = [];
 const savedDataDir = process.env.PLANNOTATOR_DATA_DIR;
 
 afterEach(() => {
+  __setConfigSaveMergeWindowHookForTest(null);
   for (const server of servers.splice(0)) server.stop();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   process.env.PLANNOTATOR_DATA_DIR = savedDataDir;
@@ -55,6 +57,18 @@ describe("the list options dialog's claim", () => {
     expect(saved()?.shownAt).toMatch(/^\d{4}-/);
     expect(await due()).toBe(false);
     expect(await (await post("/api/inbox/list-intro")).json()).toEqual({ show: false, list_intro: { due: false } });
+  });
+
+  test("config.json can't be written: the claim shows nothing and it stays due for a later load", async () => {
+    const { post, due, saved } = await world({ version: "0.30.0", usedBefore: true });
+    expect(await due()).toBe(true);
+    __setConfigSaveMergeWindowHookForTest(() => {
+      throw new Error("disk full");
+    });
+    expect(await (await post("/api/inbox/list-intro")).json()).toEqual({ show: false, list_intro: { due: true } });
+    expect(saved()?.shownAt).toBeUndefined();
+    __setConfigSaveMergeWindowHookForTest(null);
+    expect(((await (await post("/api/inbox/list-intro")).json()) as { show: boolean }).show).toBe(true);
   });
 
   test("a fresh install never gets it: marked shown at its first start", async () => {
