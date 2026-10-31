@@ -2648,6 +2648,35 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
 .ib-toast.ib-toast-wrap { padding-top: 9px; padding-bottom: 9px; }
 .ib-toast-wrap .ib-tsay { overflow-wrap: anywhere; }
 .ib-toast-wrap .ib-tlead { font-weight: 400; }
+/* How a toast's words fit (design record "inbox-toasts-break-fixes", 2026-10-31; Toast.tsx useFit). A desktop toast's
+   words take at most two lines, cut with "…" (the live region said them whole; they carry them as their title). Once
+   the words wrap (`data-wrapped`, Toast.tsx useFit) the icon stays beside the first line; the actions stay centered.
+   The heights are as before: one line 40 px (an error with its × 44), two lines 54. */
+.ib-toast:not(.ib-toast-phone)[data-wrapped] > :is(.ib-ic, .ib-temoji) { align-self: flex-start; margin-top: 2px; }
+.ib-toast:not(.ib-toast-phone):not(.ib-toast-wrap) .ib-tsay { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+/* An error past its most lines (desktop 3, phone 4): what happened is cut to two lines, what to do stays whole below it. */
+.ib-toast[data-stack] .ib-thead { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.ib-toast[data-stack] .ib-taction { display: block; }
+.ib-toast.ib-toast-wrap[data-stack] .ib-tlead:not(:has(.ib-thead)) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.ib-toast.ib-toast-wrap[data-stack] .ib-tdetail { display: block; }
+.ib-toast.ib-toast-wrap[data-stack] .ib-tdetail::before { content: none; }
+/* An action's label (Open, Drafts) never squeezes the words to nothing: a long one is cut, its whole name kept. */
+.pn-inbox .ib-toast .ib-tghost { max-width: 12em; }
+.ib-toast .ib-tlabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A touch tablet (an iPad in portrait gets the desktop toast): no key hint, and 44 px targets for Undo, an action and the ×. */
+@media (pointer: coarse) and (hover: none) {
+  .ib-toast:not(.ib-toast-phone) .ib-tundo kbd { display: none; }
+  .ib-toast:not(.ib-toast-phone) .ib-tacts { gap: 8px; }
+  /* The words' first line stays level with the taller buttons, and the icon beside it. */
+  .ib-toast:not(.ib-toast-phone) { align-items: flex-start; }
+  .ib-toast:not(.ib-toast-phone) .ib-tacts { align-self: center; }
+  .pn-inbox .ib-toast:not(.ib-toast-phone) .ib-tsay { padding-top: 6px; padding-bottom: 6px; }
+  .ib-toast:not(.ib-toast-phone) > :is(.ib-ic, .ib-temoji), .ib-toast:not(.ib-toast-phone)[data-wrapped] > :is(.ib-ic, .ib-temoji) { align-self: auto; margin-top: 8px; }
+  .pn-inbox .ib-toast:not(.ib-toast-phone) :is(.ib-tundo, .ib-tghost) { position: relative; height: 32px; padding: 0 12px; }
+  .pn-inbox .ib-toast:not(.ib-toast-phone) .ib-tclose { position: relative; width: 32px; height: 32px; }
+  .pn-inbox .ib-toast:not(.ib-toast-phone) :is(.ib-tundo, .ib-tghost, .ib-tclose)::after { content: ""; position: absolute; inset: -6px -4px; }
+  .pn-inbox .ib-toast:not(.ib-toast-phone) .ib-tclose::after { inset: -6px; }
+}
 @media (prefers-reduced-motion: reduce) { .ib-toast { animation: none; } }
 /* A phone: the toast spans the window above the home indicator, and the key hints go. */
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
@@ -3052,6 +3081,20 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
      the × (the toast's 4 px end padding and its 12 px from the window's edge). */
   .pn-inbox .ib-toast-phone .ib-tclose { position: relative; margin-left: 6px; }
   .pn-inbox .ib-toast-phone .ib-tclose::after { content: ""; position: absolute; inset: -10px -16px -10px -4px; }
+  /* Words that do not fit one line (Toast.tsx useFit, design record "inbox-toasts-break-fixes"): the lead on one
+     line, the detail on a second, each cut with "…" (the live region said them whole; the thread or row they name is
+     on screen). A lead alone may take two lines. An error keeps to four, its last sentence (what to do) whole. */
+  .ib-toast.ib-toast-phone[data-stack]:not(.ib-toast-wrap) { padding-top: 4px; padding-bottom: 4px; }
+  .ib-toast-phone[data-stack]:not(.ib-toast-wrap) .ib-tsay { display: flex; flex-direction: column; }
+  .ib-toast-phone[data-stack]:not(.ib-toast-wrap) :is(.ib-tlead, .ib-tdetail) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ib-toast-phone[data-stack]:not(.ib-toast-wrap) .ib-tlead:only-child { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .ib-toast-phone[data-stack]:not(.ib-toast-wrap) .ib-tdetail { font-size: var(--ib-fs-13, 13px); line-height: 18px; }
+  .ib-toast-phone[data-stack]:not(.ib-toast-wrap) .ib-tdetail::before { content: none; }
+  .ib-toast.ib-toast-phone.ib-toast-wrap[data-stack] .ib-tlead:not(:has(.ib-thead)) { -webkit-line-clamp: 4; }
+  /* An error's icon stays beside its first line. */
+  .ib-toast.ib-toast-phone.ib-toast-wrap { align-items: flex-start; }
+  .ib-toast.ib-toast-phone.ib-toast-wrap > .ib-ic { margin-top: 2px; }
+  .ib-toast.ib-toast-phone.ib-toast-wrap .ib-tacts { align-self: center; }
   /* 44 px hit areas for small controls that keep their look: the reply's
      Keep open / Skip them, and the file's toolstrip, Global comment and Copy
      file (ui). */

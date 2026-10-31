@@ -29,7 +29,6 @@ import { DecisionPill, decideEntryShown } from './decisions/entry';
 import { threadDecisions } from './decisions/model';
 import {
   InboxApiError,
-  InboxHeldError,
   inboxApi,
   setPageSession,
   subscribeInboxEvents,
@@ -59,7 +58,7 @@ import {
   stopSettle,
   type SettleSnapshot,
 } from './settle';
-import { plural, tildePath } from './format';
+import { plural, shortAgentName, tildePath } from './format';
 import { copyMarkdown, threadMarkdown } from './copyMarkdown';
 import { inboxImageSrcResolver } from './images';
 import { shellLine, type ConnectContext } from './harnesses';
@@ -100,6 +99,7 @@ import { GuidePane } from './components/GuidePane';
 import { AboutBlock, FailedDialog, GeneralUpdateRow, RestartDialog, UpdateDialog, WhatsNewPage } from './components/Updates';
 import { leaveOnPurpose, unsentReply } from './unsent';
 import { InboxToast, type InboxToastModel, toastSpeech } from './components/Toast';
+import { errorToast } from './toastError';
 import { canToggleRead, MARK_READ_LOOK_WAIT_MS, MARK_READ_UNDO_MS, markReadToast, seenHeldInNew } from './markRead';
 import { threadLink, type RowMenuAction } from './rowMenu';
 import { movePin, unpinnedWhere } from './pins';
@@ -1967,7 +1967,7 @@ function Inbox() {
       {
         icon: 'check',
         lead: `Sent to ${hostLabel(sent.host)}`,
-        // Short enough for one line; the thread's own line says Queued / Sending / Delivered.
+        // The thread's own line says Queued / Sending / Delivered. A long project name is cut on screen (Toast.tsx), never in speech.
         detail: `in ${sent.projectName}`,
         speech: `Sent to ${hostLabel(sent.host)} in ${sent.projectName}. It takes it as its next turn.`,
         action: { label: 'Open', onPress: () => {
@@ -1991,7 +1991,9 @@ function Inbox() {
     showToast({
       icon: 'check',
       lead: 'Draft saved',
-      detail: 'It waits under Drafts and never sends itself.',
+      // Drafts (the action) says where it waits; one line on a phone too (design record "inbox-toasts-break-fixes").
+      detail: 'It never sends itself',
+      speech: 'Draft saved. It waits under Drafts and never sends itself.',
       action: { label: 'Drafts', onPress: () => {
         dismissToast();
         go({ page: 'drafts', project: null, thread: null });
@@ -2006,7 +2008,7 @@ function Inbox() {
       try {
         await inboxApi.deleteDraft(draft.id);
       } catch (cause) {
-        showToast({ icon: 'warn', lead: cause instanceof Error ? cause.message : 'The draft was not deleted.', wrap: true });
+        showToast(errorToast(cause, 'The draft was not deleted.'));
         return;
       }
     }
@@ -2187,7 +2189,8 @@ function Inbox() {
   const showToast = (next: Omit<InboxToastModel, 'id'>, ms = MARK_READ_UNDO_MS) => {
     toastLeft.current = null;
     setToast({ ...next, id: Date.now() });
-    say(toastSpeech(next, phone));
+    // A narrow desktop window (the phone layout, a mouse and keys) keeps Z, so it hears "Press Z to undo".
+    say(toastSpeech(next, isTouchPhone()));
     armToastTimer(ms);
   };
   /** A swipe in progress pauses the toast's timer; a spring-back resumes it (at least 1.5 s more, so it never vanishes on release). */
@@ -2207,11 +2210,11 @@ function Inbox() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   /**
-   * A write that failed: its message, whole (it may wrap). A write held for another machine (linked machines) did not
-   * fail: it waits in this Inbox's outbox and applies when that machine takes it, and says so, without the warning.
+   * A write that failed: the Inbox's own words, or plain ones (toastError.ts); what to do always shows whole. A write
+   * held for another machine (linked machines) did not fail: it waits in this Inbox's outbox and applies when that
+   * machine takes it, and says so, without the warning.
    */
-  const showError = (cause: unknown) =>
-    showToast({ icon: cause instanceof InboxHeldError ? 'clock' : 'warn', lead: cause instanceof Error ? cause.message : 'The thread did not change.', wrap: true });
+  const showError = (cause: unknown) => showToast(errorToast(cause, 'The thread did not change.'));
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
   }, []);
@@ -2347,8 +2350,12 @@ function Inbox() {
     showToast({
       icon: 'thumb',
       lead: 'Looks good',
-      // Short enough for one line at 520 px with Undo and its Z (a toast's words always show whole).
-      detail: `Goes to ${agent} in 10 s · Moves to Quiet`,
+      // One line at 520 px with Undo and its Z for a name up to 40 characters (longer ones are cut, shortAgentName).
+      detail: `Goes to ${shortAgentName(agent)} in 10 s · Moves to Quiet`,
+      // A phone: the news first and the name last, so a cut with "…" only ever eats the name. "Read" is the phone's word
+      // for Marked read (the thread moves to Quiet), short enough that the news fits whole at 320 px beside Undo and the ×.
+      phoneDetail: `Read · Sends in 10 s · ${shortAgentName(agent)}`,
+      speech: `Looks good. Goes to ${agent} in 10 seconds and moves to Quiet.`,
       onUndo: () => void acknowledge(threadId, messageId, false, agent),
     });
   };
@@ -2561,7 +2568,7 @@ function Inbox() {
         }
       }
     } catch (cause) {
-      showError(cause);
+      showToast(errorToast(cause, 'The project did not change.'));
       return;
     }
     await afterWrite();
@@ -2574,13 +2581,14 @@ function Inbox() {
     showToast({
       ...copy,
       // Stopped partway: the warning, and why, whole (it may wrap); Undo still covers what did apply.
-      ...(incomplete ? { icon: 'warn' as const, detail: `${incomplete} · ${name}`, speech: undefined, wrap: true } : {}),
+      // The project is on screen (its menu was just used) and in what the live region says.
+      ...(incomplete ? { icon: 'warn' as const, detail: incomplete, phoneDetail: undefined, speech: `${copy.lead} in ${name}. ${incomplete}`, wrap: true } : {}),
       onUndo: () => {
         void (async () => {
           try {
             await undo();
           } catch (cause) {
-            showToast({ icon: 'warn', lead: cause instanceof Error ? cause.message : 'The project did not change.', wrap: true });
+            showToast(errorToast(cause, 'The project did not change.'));
             return;
           }
           await afterWrite();
@@ -4566,7 +4574,7 @@ function Inbox() {
               void inboxApi
                 .editCard(sent.cardId, { op: 'link', thread_id: sent.threadId })
                 .then(() => refreshCards())
-                .catch(() => showToast({ icon: 'warn', lead: 'Sent, but not linked to the card', detail: 'Open the thread from the Inbox.' }, 7000));
+                .catch(() => showToast({ icon: 'warn', lead: 'Sent, but not linked to the card', phoneLead: 'Not linked to the card', detail: 'Open the thread from the Inbox.' }, 7000));
             }
           }}
           onSaved={composeSaved}
