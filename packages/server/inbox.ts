@@ -325,6 +325,8 @@ export interface InboxServerOptions {
   selfCommand?: readonly string[];
   /** The phone door's clock (packages/server/inbox-devices.ts): the pairing offer's expiry. Default: the wall clock. */
   now?: () => Date;
+  /** Tests: how long the tailnet door stays up for a machine unlinked while it could not be told. Default a week (`UNLINKED_REFUSAL_KEPT_MS`). */
+  unlinkedRefusalKeptMs?: number;
   /** How "Reach from my tailnet" runs the `tailscale` CLI. Default: the CLI on PATH. */
   tailscale?: TailscaleRunner;
   /** Tests: how step 1 of Pair a phone reads this computer (packages/server/inbox-pairing-checks.ts). Default: its own tools. */
@@ -1606,6 +1608,32 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     }
   }
 
+  /**
+   * The one-time list options dialog (approval "inbox-list-options-intro"): `due` while it waits for a page on this
+   * computer to claim it. Decided at the first release start that knows it, like the sound dialog: someone who used an
+   * Inbox before gets it due; a fresh install is marked shown and never sees it (the tour shows today's list).
+   */
+  const listIntroState = () => {
+    const saved = loadConfig().inboxListIntro;
+    return { due: typeof saved?.dueAt === "string" && saved.dueAt !== "" && !saved.shownAt };
+  };
+  if (normalizeStableVersion(version) !== null && loadConfig().inboxListIntro === undefined) {
+    const at = new Date().toISOString();
+    saveConfig({ inboxListIntro: usedBefore ? { dueAt: at } : { shownAt: at } });
+  }
+  /**
+   * The page that is about to show the dialog claims it: only the first claim ever gets `show: true`, so two tabs
+   * never both show it. Only on this computer (a page through the tailnet leaves it for the next page opened here).
+   * No await between the read and the write, so two claims cannot interleave.
+   */
+  const claimListIntro = (via: RequestVia): boolean => {
+    if (via !== "local" || !listIntroState().due) return false;
+    const at = new Date().toISOString();
+    saveConfig({ inboxListIntro: { ...loadConfig().inboxListIntro, shownAt: at } });
+    // Not written (a read-only data dir): showing it anyway would show it on every load.
+    return loadConfig().inboxListIntro?.shownAt === at;
+  };
+
   /** The two update switches (PLANNOTATOR_UPDATE_CHECK, PLANNOTATOR_AUTO_UPDATE): the effective value and whether the env decides. */
   const updatesState = () => {
     const config = loadConfig();
@@ -1745,6 +1773,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     notify_reach: windows.reach(notificationsState().enabled),
     /** The question sound: the Settings row, and whether the one-time dialog was shown. */
     sound: soundState(),
+    /** The one-time list options dialog: whether it waits to be claimed (POST /api/inbox/list-intro). */
+    list_intro: listIntroState(),
     /** Settings → About: update notices and automatic updates. */
     updates: updatesState(),
     /** Settings → General: "Open Plannotator at plannotator.localhost" (#2184); only for a page on this computer. */
@@ -2835,6 +2865,15 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         return json({ show, sound: soundState() });
       }
 
+      // The one-time list options dialog (approval "inbox-list-options-intro"): the first page on this computer to
+      // ask gets `show: true`, once per machine; a page reached over the tailnet never claims it.
+      if (path === "/api/inbox/list-intro") {
+        if (req.method !== "POST") return json({ error: "Use POST." }, 405);
+        const body = await readBody(req);
+        if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
+        return json({ show: claimListIntro(via), list_intro: listIntroState() });
+      }
+
       // The Board's first-visit dialog (approval "inbox-board", intro amendment): the first page on this
       // computer to open the Board claims it, once per machine (config.json `inboxBoardIntro.shownAt`);
       // a page reached over the tailnet never claims it.
@@ -3407,6 +3446,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       readBody,
       dispatch: fetch,
       now: options.now,
+      refusalKeptMs: options.unlinkedRefusalKeptMs,
       tailscale: options.tailscale,
       probes: options.pairingProbes,
       relay: { paired: async (device) => (relay ? relay.paired(device) : null), revoked: (device) => relay?.revoked(device) },

@@ -20,6 +20,7 @@ packages/ui/components/html-embed/HtmlEmbedBlock.test.tsx
 packages/ui/components/LazyBlockBoundary.test.tsx
 packages/ui/components/Viewer.vimMode.integration.test.tsx
 packages/ui/components/CodeFilePopout.lineScroll.test.tsx
+packages/ui/components/CodeFilePopout.windowsPath.test.tsx
 packages/ui/hooks/useVimSelection.test.tsx
 packages/ui/hooks/useVimSelection.selectionScope.test.tsx
 packages/ui/hooks/useModelCatalogs.dom.test.tsx
@@ -110,6 +111,7 @@ packages/inbox/compose.test.tsx
 packages/inbox/listHeaderCompose.test.tsx
 packages/inbox/tidyMenu.test.tsx
 packages/inbox/listLook.test.tsx
+packages/inbox/listIntroDialog.test.tsx
 packages/inbox/composeThread.test.tsx
 packages/inbox/sendNow.test.tsx
 packages/inbox/undelivered.test.tsx
@@ -172,6 +174,7 @@ packages/inbox/searchPalette.test.tsx
 packages/inbox/searchShortcut.test.tsx
 packages/inbox/openIn.test.tsx
 packages/inbox/htmlLinks.test.tsx
+packages/inbox/markdownLinks.test.tsx
 packages/inbox/videoAttachment.test.tsx
 packages/inbox/markupAddsToReply.test.tsx
 packages/inbox/commentSubmitKey.test.tsx
@@ -347,6 +350,7 @@ packages/editor/App.documentDrafts.test.tsx
 packages/editor/App.planLinkedDrafts.test.tsx
 packages/editor/App.bundle.test.tsx
 packages/editor/App.bundleBackScroll.test.tsx
+packages/editor/App.windowsPaths.test.tsx
 packages/editor/annotationDraftStaleRetry.test.tsx
 packages/ui/components/blocks/AlertBlock.title.test.tsx
 packages/ui/components/blocks/AlertBlock.seam.test.tsx

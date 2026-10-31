@@ -13,6 +13,7 @@ import {
 import { CodeFileView } from '@plannotator/ui/components/CodeFilePopout';
 import { getImageSrc } from '@plannotator/ui/components/ImageThumbnail';
 import { ImageResolverContext, type ImageResolver } from '@plannotator/ui/components/ImageResolverContext';
+import type { LocalLinkResolver } from '@plannotator/ui/components/LocalLinkContext';
 import { AnnotationPanel } from '@plannotator/ui/components/AnnotationPanel';
 import { AnnotationToolstrip } from '@plannotator/ui/components/AnnotationToolstrip';
 import { HtmlSurfaceControls } from '@plannotator/ui/components/HtmlSurfaceControls';
@@ -82,6 +83,7 @@ import { escapeRung, type EscapeRung } from '../escapeLadder';
 import { storage } from '@plannotator/ui/utils/storage';
 import { Tip } from './Tip';
 import { CopyFileButton } from './CopyFileButton';
+import { LinkedMarkdown } from './LinkedMarkdown';
 
 /**
  * The pane width below which the 300 px comments panel beside the thread
@@ -323,7 +325,8 @@ export function unsavedComposer(pane: HTMLElement | null, savedText: (id: string
 /** The element that scrolls the open file (a document, code, or an image at its own size). */
 function scrollerOf(pane: HTMLElement | null): HTMLElement | null {
   if (!pane) return null;
-  const doc = pane.querySelector<HTMLElement>('.ib-docscroll');
+  // The file's own, never a linked Markdown document drawn over it.
+  const doc = pane.querySelector<HTMLElement>('.ib-docscroll:not(.ib-linkeddoc)');
   if (doc) return doc;
   const code = pane.querySelector('.ib-codeview diffs-container')?.shadowRoot?.querySelector<HTMLElement>('[data-code]');
   if (code) return code;
@@ -1101,7 +1104,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     return true;
   }
 
-  // ── Links inside an attached HTML page (htmlLinks.ts) ─────────────────────
+  // ── Links inside an attached document (htmlLinks.ts) ─────────────────────
   /**
    * Pages the person followed from the attached page, not attached themselves:
    * shown read-only over it, newest last. The route holds the page on screen
@@ -1149,7 +1152,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     focusLinkedBack.current = false;
   }, [attachment.id, effectiveVersion]);
   // The page the route names: back to one already in the stack, or read and pushed.
-  const linkedRequest = isHtml ? (props.linked ?? null) : null;
+  const linkedRequest = isHtml || kind === 'markdown' ? (props.linked ?? null) : null;
   useEffect(() => {
     if (!linkedRequest) {
       setLinkedStack([]);
@@ -1196,6 +1199,10 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
     if (isEditableTarget(document.activeElement)) return;
     back.focus({ preventScroll: true });
   }, [linkedTop, view]);
+  // A fragment a link named on an attached Markdown file (`notes.md#setup`): scrolled once the file is drawn.
+  useEffect(() => {
+    if (kind === 'markdown' && view && linkFragment?.id === attachment.id && !linkedTop) viewerRef.current?.scrollToAnchor?.(linkFragment.hash);
+  }, [kind, view, linkFragment, attachment.id, linkedTop]);
   // A fragment is replayed once: cleared after the page had time to take it, so a remount does not scroll again and the same #hash works twice.
   useEffect(() => {
     if (!linkFragment || linkFragment.id !== attachment.id || !view) return;
@@ -1241,6 +1248,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
       attachments: linkables,
       assetRoute: pageAssetRoute,
       serverOrigin: window.location.origin,
+      markdown: kind === 'markdown',
     });
     switch (link.kind) {
       case 'ignored':
@@ -1278,6 +1286,15 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
   };
   const followLinkRef = useRef(followLink);
   followLinkRef.current = followLink;
+  // Stable across renders: ui's HtmlBlock redraws a raw HTML block whenever its link resolver changes.
+  const resolveFileLink = useCallback<LocalLinkResolver>(
+    (href) => ({ kind: 'open', open: () => followLinkRef.current(href, pageFolder) }),
+    [pageFolder],
+  );
+  const linkedPath = linkedTop?.path ?? null;
+  const openFromLinked = useCallback((href: string) => {
+    if (linkedPath) followLinkRef.current(href, folderOf(linkedPath));
+  }, [linkedPath]);
 
   const isText = kind === 'markdown' || kind === 'text';
   const isCode = kind === 'code';
@@ -1851,7 +1868,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
             />
             </div>
           )}
-          {view && isHtml && linkedTop && (
+          {view && linkedTop && (
             // A page the attached page links to, not attached: read-only (comments belong to attachments).
             <div className="ib-linked" data-linked-page={linkedTop.name}>
               <div className="ib-linkband" ref={linkBandRef} role="group" aria-label={`${linkedTop.name}, linked from ${attachment.name}`}>
@@ -1869,7 +1886,9 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 )}
               </div>
               <div className="ib-linkedframe">
-                <HtmlViewer
+                {linkedTop.html === null ? (
+                  <LinkedMarkdown key={`${linkedStack.length}:${linkedTop.path}`} page={linkedTop} attachmentId={attachment.id} onOpenLink={openFromLinked} />
+                ) : <HtmlViewer
                   key={`${linkedStack.length}:${linkedTop.path}`}
                   rawHtml={linkedTop.html}
                   title={linkedTop.name}
@@ -1889,17 +1908,17 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                   hideControls
                   maxAdditionalTargets={0}
                   readOnly
-                />
+                />}
               </div>
             </div>
           )}
-          {isHtml && (
+          {(isHtml || kind === 'markdown') && (
             <div className={`ib-linknote${linkNote ? ' ib-on' : ''}`} aria-hidden={linkNote ? undefined : true} data-link-note={linkNote ? 'shown' : 'hidden'}>
               <Icon name="info" size={13} />
               <span>{linkNote}</span>
             </div>
           )}
-          {view && isText && !props.readOnly && (
+          {view && isText && !linkedTop && !props.readOnly && (
             <div className="ib-toolstrip">
               <AnnotationToolstrip
                 inputMethod={inputMethod}
@@ -1912,7 +1931,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               />
             </div>
           )}
-          {view && contentsButton && (
+          {view && contentsButton && !linkedTop && (
             <ContentsPanel
               key={`contents:${docKey}`}
               mode={contentsButton}
@@ -2039,7 +2058,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
           )}
           {view && !isHtml && !isCode && (
             <div
-              className="ib-docscroll bg-card"
+              className={`ib-docscroll bg-card${linkedTop ? ' ib-covered' : ''}`}
+              inert={linkedTop ? true : undefined}
               data-look="clean"
               data-contents-gutter={railGutter ? '' : undefined}
               ref={setScrollViewport}
@@ -2052,6 +2072,7 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
                 blocks={blocks}
                 markdown={view.text}
                 imageBaseDir={imageBaseDir}
+                resolveLocalLink={kind === 'markdown' ? resolveFileLink : undefined}
                 questionDecisionLines={false}
                 annotations={annotations}
                 mentionSource={props.mentionSource}
@@ -2086,7 +2107,8 @@ export const AttachmentPane = forwardRef<AttachmentPaneHandle, AttachmentPanePro
               blocks={documentBlocks}
               scrollViewport={scrollViewport}
               contentSelector="[data-doc-text-root]"
-              hidden={!contentsShown}
+              // A linked document over the file hides the file's Contents with it.
+              hidden={!contentsShown || linkedTop !== null}
               onAvailableChange={(fits) => setRailFit({ key: docKey, fits })}
               panelAction={<ContentsHide onHide={hideContents} />}
             />
