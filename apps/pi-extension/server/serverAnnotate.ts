@@ -20,7 +20,7 @@ import type { LiveAppProxy } from "../generated/live-proxy-core.ts";
 
 import { contentHash } from "../generated/draft.ts";
 import { annotateDraftFilePath, annotateSessionHasRootlessDocuments, createAnnotateDraftSession } from "../generated/annotate-draft.ts";
-import { isDocServeAllowed } from "../generated/doc-resolve.ts";
+import { isDocServeAllowed, isPathAllowed } from "../generated/doc-resolve.ts";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "../generated/host-control.ts";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "../generated/server-session.ts";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control.ts";
@@ -102,7 +102,7 @@ import {
 	resolveHtmlAssetRoute,
 	rewriteHtmlAssetReferences,
 } from "../generated/html-assets.ts";
-import { folderSessionAssetAllowed, htmlAssetContext, inlineHtmlLocalAssets, isWithinDirectory, MAX_HTML_ASSET_BYTES } from "../generated/html-assets-node.ts";
+import { folderSessionAssetAllowed, htmlAssetContext, htmlAssetPathRefused, inlineHtmlLocalAssets, isWithinDirectory, MAX_HTML_ASSET_BYTES, outsideRootAssetAllowsCors, refusesOutsideRootHtmlAsset } from "../generated/html-assets-node.ts";
 import {
 	supportsAnnotateAgentTerminalMode,
 	type AgentTerminalCapability,
@@ -159,21 +159,31 @@ function firstHeader(value: string | string[] | undefined): string | null {
 	return value ?? null;
 }
 
-function createHtmlAssetRegistry(folderPath?: string) {
+/**
+ * `isInsideRoots`: whether an HTML file sits inside the session's roots. One
+ * that does not (#2291) gets a root that serves only render types, never
+ * hidden paths or data files, with CORS for fonts only (mirrors the Bun
+ * registry's option).
+ */
+function createHtmlAssetRegistry(folderPath?: string, isInsideRoots?: (htmlFilePath: string) => boolean) {
 	const rootsByToken = new Map<string, string>();
 	const tokensByScope = new Map<string, string>();
 	/** Folder-session tokens: one per (selected folder, document directory), as in the Bun registry. */
 	const docDirByToken = new Map<string, string>();
+	/** Tokens of roots outside the session's roots. */
+	const outsideTokens = new Set<string>();
+	const isOutside = (htmlFilePath: string) => (isInsideRoots ? !isInsideRoots(htmlFilePath) : false);
 
-	function register(baseDir: string, docDir: string | null = null): string {
+	function register(baseDir: string, docDir: string | null = null, outside = false): string {
 		const root = resolvePath(baseDir);
-		const scope = docDir ? `${root}\0${docDir}` : root;
+		const scope = `${outside ? "outside\0" : ""}${docDir ? `${root}\0${docDir}` : root}`;
 		const existing = tokensByScope.get(scope);
 		if (existing) return existing;
 		const token = randomUUID().replace(/-/g, "").slice(0, 16);
 		tokensByScope.set(scope, token);
 		rootsByToken.set(token, root);
 		if (docDir) docDirByToken.set(token, docDir);
+		if (outside) outsideTokens.add(token);
 		return token;
 	}
 
@@ -181,7 +191,7 @@ function createHtmlAssetRegistry(folderPath?: string) {
 		if (/^https?:\/\//i.test(htmlFilePath)) return htmlContent;
 		try {
 			const { root, basePath, docDir } = htmlAssetContext(htmlFilePath, folderPath);
-			const token = register(root, docDir);
+			const token = register(root, docDir, isOutside(htmlFilePath));
 			return rewriteHtmlAssetReferences(
 				htmlContent,
 				(assetPath) => `${HTML_ASSET_ROUTE_PREFIX}/${token}/${encodeHtmlAssetPath(assetPath)}`,
@@ -195,7 +205,7 @@ function createHtmlAssetRegistry(folderPath?: string) {
 	}
 
 	function inlineHtml(htmlContent: string, htmlFilePath: string): string {
-		return inlineHtmlLocalAssets(htmlContent, htmlFilePath, folderPath);
+		return inlineHtmlLocalAssets(htmlContent, htmlFilePath, folderPath, isOutside(htmlFilePath) ? refusesOutsideRootHtmlAsset : undefined);
 	}
 
 	function assetError(
@@ -237,7 +247,11 @@ function createHtmlAssetRegistry(folderPath?: string) {
 		// A folder session: the page's own directory as before, the rest of the
 		// folder minus hidden paths and the dotenv family (mirrors the Bun route).
 		const docDir = docDirByToken.get(token);
-		if (docDir && !folderSessionAssetAllowed(root, docDir, assetPath)) {
+		const outside = outsideTokens.has(token);
+		if (
+			(docDir && !folderSessionAssetAllowed(root, docDir, assetPath)) ||
+			(outside && htmlAssetPathRefused(root, assetPath, refusesOutsideRootHtmlAsset))
+		) {
 			assetError(res, 404, "Not found", asDocument, assetPath);
 			return true;
 		}
@@ -252,17 +266,19 @@ function createHtmlAssetRegistry(folderPath?: string) {
 				assetError(res, 413, "Asset too large", asDocument, assetPath);
 				return true;
 			}
+			// A root outside the session's roots: only fonts are readable by script.
+			const cors: Record<string, string> = !outside || outsideRootAssetAllowsCors(assetPath) ? { "Access-Control-Allow-Origin": "*" } : {};
 			res.writeHead(
 				200,
 				document
 					? {
 							...htmlAssetDocumentHeaders(HTML_ASSET_DOCUMENT_CSP),
-							"Access-Control-Allow-Origin": "*",
+							...cors,
 						}
 					: {
 							// Sandboxed: an SVG or XML asset opened as a document never runs script on this origin (mirrors the Bun route).
 							...htmlAssetHeaders(contentType),
-							"Access-Control-Allow-Origin": "*",
+							...cors,
 						},
 			);
 			res.end(readFileSync(resolved));
@@ -672,7 +688,10 @@ export async function startAnnotateServer(options: {
 	// Set once bound: "Ask this session" answers only a loopback Host with this port.
 	let boundPort: number | undefined;
 	const aiRuntime = resolveAIEnabled() ? await createPiAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort, ...(options.liveApp ? { localHostname: null } : {}) }) : null;
-	const htmlAssets = createHtmlAssetRegistry(options.mode === "annotate-folder" ? options.folderPath : undefined);
+	const htmlAssets = createHtmlAssetRegistry(
+		options.mode === "annotate-folder" ? options.folderPath : undefined,
+		(htmlFilePath) => isPathAllowed(htmlFilePath, getReferenceRootPaths()),
+	);
 	let agentTerminalCapability: AgentTerminalCapability = {
 		enabled: false,
 		reason: "unsupported-runtime",

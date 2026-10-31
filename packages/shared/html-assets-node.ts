@@ -33,6 +33,29 @@ export function htmlAssetContext(
   return { root, basePath, docDir: documentDirectory };
 }
 
+/** What an HTML page needs to render: images, media, styles, fonts, scripts and nested pages. */
+const RENDER_ASSET_RE = /\.(?:apng|avif|bmp|css|gif|ico|jpe?g|js|mjs|mp3|mp4|ogg|otf|png|svg|ttf|wav|webm|webp|woff2?|html?)$/i;
+
+/**
+ * The rule for an asset root outside the session's roots: an HTML document a
+ * tab on this machine opened from anywhere (#2291). Its folder may be a home
+ * folder, so it serves only render types, never a hidden path, the dotenv
+ * family or a data/config file (`.json`, `.xml`, `.webmanifest`).
+ */
+export function refusesOutsideRootHtmlAsset(relativePath: string): boolean {
+  return refusesHiddenHtmlAssetPath(relativePath) || !RENDER_ASSET_RE.test(relativePath);
+}
+
+/**
+ * Whether an asset response from a root outside the session's roots carries
+ * `Access-Control-Allow-Origin: *`: fonts only, which the browser loads in CORS
+ * mode. Everything else stays readable by the page (`<img>`, `<link>`,
+ * `<script>`) but not by its scripts (`fetch`).
+ */
+export function outsideRootAssetAllowsCors(relativePath: string): boolean {
+  return /\.(?:otf|ttf|woff2?)$/i.test(relativePath);
+}
+
 /**
  * A folder session's rule for one asset (the caller has already checked it
  * stays inside the selected folder `root`): allowed when it resolves inside
@@ -70,7 +93,12 @@ export function htmlAssetPathRefused(
   return refuse(relative(realRoot, real).split(sep).join("/"));
 }
 
-export function inlineHtmlLocalAssets(html: string, htmlFilePath: string, folderPath?: string): string {
+export function inlineHtmlLocalAssets(
+  html: string,
+  htmlFilePath: string,
+  folderPath?: string,
+  refuseAssetPath?: (relativePath: string) => boolean,
+): string {
   if (/^https?:\/\//i.test(htmlFilePath)) return html;
 
   try {
@@ -85,6 +113,7 @@ export function inlineHtmlLocalAssets(html: string, htmlFilePath: string, folder
         const resolved = resolvePath(root, assetPath);
         if (!isWithinDirectory(resolved, root)) return null;
         if (docDir && !folderSessionAssetAllowed(root, docDir, assetPath)) return null;
+        if (refuseAssetPath && htmlAssetPathRefused(root, assetPath, refuseAssetPath)) return null;
         if (!existsSync(resolved)) return null;
 
         const stat = statSync(resolved);

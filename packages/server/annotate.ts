@@ -27,7 +27,7 @@ import { closeAllFileBrowserWatchers, handleFileBrowserFilesStream } from "./ref
 import { getExtraMarkdownExtensions, isAnnotatableTextPath, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
 import { contentHash } from "./draft";
 import { annotateDraftFilePath, annotateSessionHasRootlessDocuments, createAnnotateDraftSession } from "@plannotator/shared/annotate-draft";
-import { isDocServeAllowed } from "@plannotator/shared/doc-resolve";
+import { isDocServeAllowed, isPathAllowed } from "@plannotator/shared/doc-resolve";
 import { isThisMachineRequest } from "./this-machine";
 import { getPlanVersion, getVersionCount, listVersions } from "@plannotator/shared/storage";
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "@plannotator/shared/annotate-history";
@@ -604,7 +604,11 @@ export async function startAnnotateServer(
   // Set once bound: "Ask this session" answers only a loopback Host with this port.
   let boundPort: number | undefined;
   const aiRuntime = resolveAIEnabled() ? await createAIRuntime({ sessionBridge: options.sessionBridge, getServerPort: () => boundPort, localHostname, ...(options.tailnetPublished === true ? { tailnet: sessionTailnetGate } : {}) }) : null;
-  const htmlAssets = createHtmlAssetRegistry({ folderPath: mode === "annotate-folder" ? folderPath : undefined });
+  const htmlAssets = createHtmlAssetRegistry({
+    folderPath: mode === "annotate-folder" ? folderPath : undefined,
+    // An HTML document opened outside the roots (#2291) gets a narrow asset root.
+    isInsideRoots: (htmlFilePath) => isPathAllowed(htmlFilePath, getReferenceRootPaths()),
+  });
   const agentTerminal = await createBunAgentTerminalBridge({
     enabled: supportsAnnotateAgentTerminalMode(mode),
     cwd: agentCwd ?? process.cwd(),

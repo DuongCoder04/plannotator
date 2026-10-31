@@ -10,8 +10,10 @@ import { allowServedHostname, resetServedHostnamesForTests } from "./request-hos
 
 defineDocAnyPathScenarios(
   "bun",
-  async (kind, { docPath, htmlContent }) => {
+  async (kind, { docPath, htmlContent, folderPath, rawHtml }) => {
     if (kind === "plan") return startPlannotatorServer({ plan: "# Plan\n\nSteps", origin: "claude-code", htmlContent });
+    if (folderPath) return startAnnotateServer({ markdown: "", filePath: folderPath, folderPath, htmlContent, mode: "annotate-folder" });
+    if (rawHtml) return startAnnotateServer({ markdown: "", filePath: docPath, rawHtml, renderHtml: true, htmlContent, mode: "annotate" });
     return startAnnotateServer({ markdown: "# Notes\n", filePath: docPath, htmlContent, mode: "annotate" });
   },
   {
