@@ -93,7 +93,7 @@ import { useInboxNotifications } from './notify';
 import { useInboxSound } from './sound';
 import { notificationLine, SoundIntroDialog } from './components/SoundIntro';
 import { ListLookIntro, type ListIntroGroup } from './components/ListLookIntro';
-import { listIntroMayAsk, listIntroWanted, type ListIntroLoad } from './listIntro';
+import { LIST_INTRO_LIST_MS, listIntroListAlone, listIntroMayAsk, listIntroWanted, type ListIntroLoad } from './listIntro';
 import { readListLook, writeListLook } from './listLook';
 import { GuidePane } from './components/GuidePane';
 import { AboutBlock, FailedDialog, GeneralUpdateRow, RestartDialog, UpdateDialog, WhatsNewPage } from './components/Updates';
@@ -763,12 +763,14 @@ function Inbox() {
    * Inbox gave it to this page; it opens once the page is free), open, or closed. `listIntroDecided`: this load
    * asked the Inbox and has its answer. `listIntroLatch`: what decides whether this load wants it, read once when
    * the first list and settings are in (a list that grows later never brings it up mid-session).
-   * `tourThisLoad`: the tour was on screen in this load, so the dialog never shows on it.
+   * `tourThisLoad`: the tour was on screen in this load, so the dialog never shows on it. `listIntroListLong`: the
+   * list alone (no thread open) has been on screen for `LIST_INTRO_LIST_MS` since it last came back.
    */
   const [listIntro, setListIntro] = useState<'none' | 'claimed' | 'open' | 'shown'>('none');
   const [listIntroDecided, setListIntroDecided] = useState(false);
   const listIntroAsked = useRef(false);
   const listIntroLatch = useRef<{ due: boolean; local: boolean; firstRun: boolean; rows: number } | null>(null);
+  const [listIntroListLong, setListIntroListLong] = useState(false);
   const tourThisLoad = useRef(false);
   /** Sidebar → Feedback (components/FeedbackDialog.tsx): open only on the person's click. */
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -3088,8 +3090,10 @@ function Inbox() {
   const firstRun = latest !== null && projects.length === 0;
 
   // The one-time list options dialog (listIntro.ts): after this load's sound and agent-note dialogs are decided, never
-  // on a load that showed either or the tour, only on the list page with three rows or more; it waits while a reply
-  // is typed or another dialog is open, then claims it from the Inbox (only the first claim ever shows it).
+  // on a load that showed either or the tour, only with three rows or more and only once the list alone (no thread,
+  // so no file or document either) has been on screen for a moment: a load that opens on a thread waits, unclaimed,
+  // until the person is back on the list. It waits while a reply is typed or another dialog is open, then claims it
+  // from the Inbox (only the first claim ever shows it).
   if (route.page === 'tour') tourThisLoad.current = true;
   if (listIntroLatch.current === null && settings && latest !== null && shown !== null) {
     listIntroLatch.current = {
@@ -3100,19 +3104,29 @@ function Inbox() {
     };
   }
   const listIntroAtLoad = listIntroLatch.current;
+  const listIntroAlone = listIntroListAlone(route, { search: searchOpen, compose: compose !== null });
   const listIntroLoad: ListIntroLoad = {
     due: listIntroAtLoad?.due ?? false,
     local: listIntroAtLoad?.local ?? false,
     listLoaded: listIntroAtLoad !== null,
     firstRun: listIntroAtLoad?.firstRun ?? false,
     rows: listIntroAtLoad?.rows ?? 0,
-    page: route.page,
+    // Read with the list on screen now: the wait's flag clears an effect later, never a render late.
+    listAlone: listIntroListLong && listIntroAlone,
     tourThisLoad: tourThisLoad.current,
     otherDialogThisLoad: soundDialog !== 'none' || agentNote !== 'none',
     othersSettled: soundSettled && agentNoteSettled,
     updating: updateDialog !== null || restarting,
   };
   const listIntroWant = listIntroWanted(listIntroLoad);
+  // Watched only while the dialog may still show on this load: each time the list alone comes back, the same wait.
+  const listIntroWatch = listIntroWant && (!listIntroDecided || listIntro === 'claimed');
+  useEffect(() => {
+    setListIntroListLong(false);
+    if (!listIntroWatch || !listIntroAlone) return;
+    const timer = setTimeout(() => setListIntroListLong(true), LIST_INTRO_LIST_MS);
+    return () => clearTimeout(timer);
+  }, [listIntroWatch, listIntroAlone]);
   const listIntroReady = listIntroMayAsk(listIntroLoad, { modal: false, replying: false });
   useEffect(() => {
     if (!listIntroReady || listIntroAsked.current) return;
@@ -3133,10 +3147,11 @@ function Inbox() {
     }, 700);
     return () => clearInterval(timer);
   }, [listIntroReady]);
-  // A claim answered after the person opened Settings, the Board or an update, began a reply or opened another
-  // dialog: it opens when they are back on the list with nothing open or typed (never dropped: it is spent).
+  // A claim answered after the person opened a thread, Settings, the Board or an update, began a reply or opened
+  // another dialog: it opens when they are back on the list alone for a moment with nothing open or typed (never
+  // dropped: it is spent).
   const listIntroClaimed = listIntro === 'claimed';
-  const listIntroPlaceFree = route.page === 'inbox' && !listIntroLoad.updating;
+  const listIntroPlaceFree = listIntroLoad.listAlone && !listIntroLoad.updating;
   useEffect(() => {
     if (!listIntroClaimed || !listIntroPlaceFree) return;
     const open = () => {
