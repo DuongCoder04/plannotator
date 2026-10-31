@@ -139,7 +139,8 @@ export async function resolveDataDir(
     for (const entry of DATA_DIR_MARKERS) if (await exists(`${dir}/${entry}`)) return true
     return false
   }
-  const xdgHoldsData = await holdsData(`${xdgHome.replace(/\/+$/, '')}/plannotator`)
+  const xdg = `${xdgHome.replace(/\/+$/, '')}/plannotator`
+  const xdgHoldsData = (await exists(xdg)) && (await holdsData(xdg))
   const legacyHoldsData = xdgHoldsData ? await holdsData(legacy) : true
   return dataDirOf({ ...env, legacyExists, xdgHoldsData, legacyHoldsData })
 }

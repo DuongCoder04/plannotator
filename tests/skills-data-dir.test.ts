@@ -11,8 +11,8 @@
  * against writing it); every entry must still match, so a stale one fails.
  */
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { formatTopLevelHelp, SUBCOMMAND_HELP } from "../apps/hook/server/cli";
 
 const REPO = resolve(import.meta.dir, "..");
@@ -20,29 +20,29 @@ const REPO = resolve(import.meta.dir, "..");
 /** A home-relative data-dir path: `~/.plannotator`, `$HOME/.plannotator`, `${HOME}/...`, `%USERPROFILE%\.plannotator`. */
 const HARDCODED = /(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%|\$env:USERPROFILE)[/\\]\.plannotator/;
 
-/** Where agent instructions ship from: skills, slash commands and agent definitions of every host. */
-function shippedRoots(): string[] {
-  const roots = [join(REPO, "apps", "skills"), join(REPO, ".agents")];
-  for (const app of readdirSync(join(REPO, "apps"))) {
-    for (const folder of ["skills", "commands", "agents"]) {
-      const path = join(REPO, "apps", app, folder);
-      try {
-        if (statSync(path).isDirectory()) roots.push(path);
-      } catch {
-        // No such folder for this host.
-      }
-    }
-  }
-  return roots;
-}
-
-function* walk(dir: string): Generator<string> {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === "node_modules") continue;
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) yield* walk(path);
-    else if (!/\.test\.[cm]?[jt]sx?$/.test(entry.name)) yield path;
-  }
+/**
+ * Where agent instructions ship from: skills, slash commands and agent
+ * definitions of every host. Tracked files only (`git ls-files`): builds copy
+ * the skills into gitignored folders (apps/pi-extension/skills/,
+ * apps/opencode-plugin/skills/), which are generated from these sources and
+ * may be stale in a checkout.
+ */
+function shippedFiles(): string[] {
+  const listed = Bun.spawnSync({
+    // `:(glob)`: `*` stops at a slash, so `apps/*/commands` is a host's
+    // command folder, not apps/marketing/src/content/docs/commands.
+    cmd: [
+      "git", "ls-files", "-z", "--",
+      ":(glob)apps/skills/**", ":(glob).agents/**",
+      ":(glob)apps/*/skills/**", ":(glob)apps/*/commands/**", ":(glob)apps/*/agents/**",
+    ],
+    cwd: REPO,
+  });
+  if (listed.exitCode !== 0) throw new Error(`git ls-files failed: ${listed.stderr.toString()}`);
+  return listed.stdout
+    .toString()
+    .split("\0")
+    .filter((file) => file && !/\.test\.[cm]?[jt]sx?$/.test(file));
 }
 
 /** Text that describes the default data dir, or warns against writing it. `source` is a repo path or `cli:<subcommand>`. */
@@ -85,11 +85,7 @@ function hitsIn(source: string, text: string): Hit[] {
 
 function allHits(): Hit[] {
   const hits: Hit[] = [];
-  for (const root of shippedRoots()) {
-    for (const file of walk(root)) {
-      hits.push(...hitsIn(relative(REPO, file).split("\\").join("/"), readFileSync(file, "utf8")));
-    }
-  }
+  for (const file of shippedFiles()) hits.push(...hitsIn(file, readFileSync(join(REPO, file), "utf8")));
   hits.push(...hitsIn("cli:--help", formatTopLevelHelp({ board: true })));
   for (const [sub, text] of Object.entries(SUBCOMMAND_HELP)) hits.push(...hitsIn(`cli:${sub}`, text));
   return hits;
@@ -101,9 +97,11 @@ describe("shipped agent instructions never hardcode the data directory", () => {
   test("the scan reaches the skills it guards", () => {
     // The compound skill is the one that broke installs; if the walk stops
     // reaching it, every other assertion here passes vacuously.
-    const files = shippedRoots().flatMap((root) => [...walk(root)]).map((file) => relative(REPO, file));
-    expect(files.some((file) => file.endsWith(join("plannotator-compound", "SKILL.md")))).toBe(true);
-    expect(files.some((file) => file.endsWith(join("core", "plannotator", "SKILL.md")))).toBe(true);
+    const files = shippedFiles();
+    expect(files).toContain("apps/skills/extra/plannotator-compound/SKILL.md");
+    expect(files).toContain("apps/skills/core/plannotator/SKILL.md");
+    expect(files).toContain("apps/kiro-cli/skills/plannotator-review/SKILL.md");
+    expect(files).toContain("apps/opencode-plugin/commands/plannotator-review.md");
   });
 
   test("every mention is an allowlisted description of the default", () => {

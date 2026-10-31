@@ -232,17 +232,22 @@ $installCallFlowResolved = $false
 # explicitly-set absolute XDG_DATA_HOME (rare on Windows but honored the same
 # way as the runtime, packages/shared/data-dir.ts) places the directory at
 # $XDG_DATA_HOME\plannotator; otherwise ~/.plannotator.
+# Paths under XDG_DATA_HOME are built with [System.IO.Path]::Combine, never
+# Join-Path: Join-Path throws for a drive that is not mounted, and under
+# $ErrorActionPreference = "Stop" that would abort the install for a user
+# whose ~/.plannotator was fine. Test-Path only answers false for one.
+# BEGIN data-dir resolution (tests/data-dir-mirrors.test.ts and windows.yml run this block)
 $dataDirMarkers = @("history", "sessions", "drafts", "inbox", "claude-code-mod", "install-flags.json")
 function Test-PlannotatorData([string]$dir) {
-    foreach ($marker in $dataDirMarkers) { if (Test-Path -LiteralPath (Join-Path $dir $marker)) { return $true } }
+    foreach ($marker in $dataDirMarkers) { if (Test-Path -LiteralPath ([System.IO.Path]::Combine($dir, $marker))) { return $true } }
     return $false
 }
 $configDir = if ($env:PLANNOTATOR_DATA_DIR) { $env:PLANNOTATOR_DATA_DIR.Trim() } else {
     $legacyDir = Join-Path $env:USERPROFILE ".plannotator"
     $xdgDataHome = if ($env:XDG_DATA_HOME) { $env:XDG_DATA_HOME.Trim() } else { "" }
-    $xdgDir = if ($xdgDataHome -and [System.IO.Path]::IsPathRooted($xdgDataHome)) { Join-Path $xdgDataHome "plannotator" } else { "" }
+    $xdgDir = if ($xdgDataHome -and [System.IO.Path]::IsPathRooted($xdgDataHome)) { [System.IO.Path]::Combine($xdgDataHome, "plannotator") } else { "" }
     if (Test-Path $legacyDir) {
-        if ($xdgDir -and (Test-PlannotatorData $xdgDir) -and -not (Test-PlannotatorData $legacyDir)) { $xdgDir } else { $legacyDir }
+        if ($xdgDir -and (Test-Path -LiteralPath $xdgDir) -and (Test-PlannotatorData $xdgDir) -and -not (Test-PlannotatorData $legacyDir)) { $xdgDir } else { $legacyDir }
     } elseif ($xdgDir) {
         $xdgDir
     } else {
@@ -254,6 +259,7 @@ if ($configDir -eq "~") {
 } elseif ($configDir.StartsWith("~/") -or $configDir.StartsWith('~\')) {
     $configDir = Join-Path $env:USERPROFILE ($configDir.Substring(2))
 }
+# END data-dir resolution
 
 # Remember the install-affecting choices this run took from COMMAND-LINE
 # switches (#1634), so a background auto-update re-runs this script with the

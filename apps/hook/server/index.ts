@@ -670,7 +670,13 @@ if (args[0] === "data-dir") {
   }
   console.log(getPlannotatorDataDir());
   const unused = getUnusedPlannotatorDataDir();
-  if (unused) console.error(`Note: ${unused} also exists; Plannotator does not use it.`);
+  // Worded so no agent reads it as a folder to clean up: it may hold the
+  // person's older plans and history.
+  if (unused) {
+    console.error(
+      `Note: ${unused} also exists. It may hold older Plannotator data, so leave it alone: do not delete, move or write to it. Plannotator uses the folder above.`,
+    );
+  }
   process.exit(0);
 }
 

@@ -40,7 +40,8 @@
  * (apps/hook/hooks/mod/launch.ts `dataDirOf`), the Amp plugin
  * (apps/amp-plugin/plannotator.ts) and the install scripts
  * (scripts/install.sh, install.ps1, install.cmd);
- * tests/data-dir-mirrors.test.ts runs or reads each copy.
+ * tests/data-dir-mirrors.test.ts runs each copy it can, and
+ * scripts/check-data-dir-windows.ps1 runs the Windows ones on Windows.
  */
 
 import { existsSync } from "fs";
@@ -118,7 +119,9 @@ export function getDefaultPlannotatorDataDir(home: string = homedir()): string {
 
   if (existsSync(legacyDir)) {
     // A stray ~/.plannotator never hides an XDG folder that holds the data.
-    if (xdgDir && holdsPlannotatorData(xdgDir) && !holdsPlannotatorData(legacyDir)) {
+    // The XDG folder's own existence is checked first: one call, and the
+    // markers are probed only on the rare machine where both folders exist.
+    if (xdgDir && existsSync(xdgDir) && holdsPlannotatorData(xdgDir) && !holdsPlannotatorData(legacyDir)) {
       return xdgDir;
     }
     return legacyDir;

@@ -25,27 +25,21 @@ Before starting the analysis, determine which data source is available.
    called `<data-dir>` from here on. Run:
 
    ```
-   plannotator data-dir < /dev/null
+   plannotator data-dir
    ```
 
-   It prints the folder's absolute path and creates nothing. Use what it
-   prints. If the command fails or prints no absolute path (an older
-   Plannotator, or no `plannotator` on PATH), work the folder out with
-   Plannotator's own rule. Only check folders here; do not create any:
-
-   - `$PLANNOTATOR_DATA_DIR`, if it is set (a leading `~` is the home folder).
-   - Else the home folder's `.plannotator`, if it exists. Exception: when
-     `$XDG_DATA_HOME` is an absolute path and `$XDG_DATA_HOME/plannotator`
-     holds one of `history/`, `sessions/`, `drafts/`, `inbox/`,
-     `claude-code-mod/` or `install-flags.json` while the home folder's
-     `.plannotator` holds none of them, use `$XDG_DATA_HOME/plannotator`.
-   - Else `$XDG_DATA_HOME/plannotator`, if `$XDG_DATA_HOME` is an absolute path.
-   - Else the home folder's `.plannotator`.
+   It prints the folder's absolute path and creates nothing; use what it
+   prints. If it fails (an older Plannotator), use `$PLANNOTATOR_DATA_DIR` if
+   set, else whichever of `$XDG_DATA_HOME/plannotator` and the home folder's
+   `.plannotator` holds `history/` or `sessions/` (the home one if both do),
+   and ask the user if neither does.
 
    Never write into any other folder than `<data-dir>`. In particular, do not
    create a `.plannotator` folder in the home folder unless `<data-dir>` is
    that folder: on an install that keeps its data under `$XDG_DATA_HOME`, a
    new one can make Plannotator lose sight of the person's plans and history.
+   Leave any other Plannotator folder you find alone, and do not suggest
+   deleting it: it may hold older data.
 
    Check the `plans/` subdirectory of `<data-dir>`. If it exists and contains
    `*-denied.md` files, use this mode. The entire workflow below is written for

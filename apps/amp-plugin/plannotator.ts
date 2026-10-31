@@ -1033,7 +1033,7 @@ export function getPlannotatorDataDir(): string {
   const xdgDir = xdgDataHome && isAbsolute(xdgDataHome) ? join(xdgDataHome, "plannotator") : null;
 
   if (existsSync(legacyDir)) {
-    if (xdgDir && holdsPlannotatorData(xdgDir) && !holdsPlannotatorData(legacyDir)) return xdgDir;
+    if (xdgDir && existsSync(xdgDir) && holdsPlannotatorData(xdgDir) && !holdsPlannotatorData(legacyDir)) return xdgDir;
     return legacyDir;
   }
 
