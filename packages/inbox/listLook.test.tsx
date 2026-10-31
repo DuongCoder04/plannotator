@@ -5,13 +5,15 @@
  * forgotten on the next load, or one that leaves a cookie behind when turned off; a menu item a screen reader does
  * not hear as a checkbox (role and aria-checked) or that closes the menu; a compact row that keeps the title on its
  * own line, or loses the time; a highlighted title outside its pill on any row shape; the agents' words lost to a
- * screen reader when their icons are hidden. Geometry (the project giving way first, the time never) is proved in
+ * screen reader when their icons are hidden; the onboarding tour drawing the person's saved look. Geometry (the project giving way first, the time never) is proved in
  * Chromium by tests/e2e/inbox-list-options.spec.ts.
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { act } from 'react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createRoot, type Root } from 'react-dom/client';
 import type { InboxListRow, InboxListSection } from '@plannotator/core/inbox-types';
 import type { TidyController } from './components/Tidy';
@@ -19,6 +21,8 @@ import type { TidyController } from './components/Tidy';
 const hasDom = typeof document !== 'undefined';
 const { InboxList } = (hasDom ? await import('./components/InboxList') : {}) as typeof import('./components/InboxList');
 const { SidebarProvider } = (hasDom ? await import('./shell/sidebar') : {}) as typeof import('./shell/sidebar');
+const { TourMain } = (hasDom ? await import('./tour/Tour') : {}) as typeof import('./tour/Tour');
+const { parseTourFixture, tourStateAt, TOUR_THREAD } = await import('./tour/model');
 const { LIST_LOOK_COOKIES, readListLook, writeListLookOption } = await import('./listLook');
 const { setStorageBackend, resetStorageBackend } = await import('@plannotator/ui/utils/storage');
 
@@ -184,6 +188,7 @@ describe.if(hasDom)('the ⋮ menu', () => {
     await openMenu(el);
     const popup = document.querySelector<HTMLElement>('[data-tidy-menu-popup]')!;
     const items = [...popup.querySelectorAll<HTMLElement>('[role^="menuitem"]')];
+    // The labels are the approved words (approval "inbox-list-options"): pinned on purpose.
     expect(items.map((i) => [i.getAttribute('role'), i.textContent, i.getAttribute('aria-checked')])).toEqual([
       ['menuitem', 'Tidy', null],
       ['menuitem', 'Refresh', null],
@@ -267,11 +272,45 @@ describe.if(hasDom)('the rows in each mode', () => {
     expect(phoneLines(remount('phone'), 'msg_unread').m1).toEqual(['from', 'pill(ib-keyt ib-m2:Name of msg_unread)', 'time']);
   });
 
-  test('hide agent icons: the rows keep the agents\' words for a screen reader', () => {
+  // Whether a screen reader still hears them once hidden is Chromium's accessibility tree: the e2e checks that.
+  test('hide agent icons: the rows keep the agents\' label and their layout', () => {
     stored.set(LIST_LOOK_COOKIES.hideAgents, '1');
     const el = render('narrow');
     expect(lookClasses(el)).toEqual(['ib-lk-noagents']);
     expect(el.querySelector('.ib-nrow[data-thread-id="msg_unread"] .ib-atiles')!.getAttribute('aria-label')).toBe('Claude Code');
     expect(narrowLines(el, 'msg_unread')).toEqual({ 'ib-l1': ['from', 'time'], 'ib-l2': ['title(Name of msg_unread)'], 'ib-l3': ['ib-pv', 'ib-c ib-qn'] });
+  });
+});
+
+describe.if(hasDom)('the onboarding tour', () => {
+  test("ignores the saved options: its list is today's, and the person's choice stays", () => {
+    for (const key of ['highlight', 'compact', 'hideAgents'] as const) writeListLookOption(key, true);
+    const fixture = parseTourFixture(JSON.parse(readFileSync(join(import.meta.dir, 'tour/content/fixture.json'), 'utf8')));
+    const real = fixture.threads.find((t) => t.id === TOUR_THREAD)!.real_answer!;
+    host = document.createElement('div');
+    host.className = 'pn-inbox';
+    document.body.append(host);
+    root = createRoot(host);
+    const noop = () => {};
+    act(() => {
+      root!.render(
+        <SidebarProvider>
+          <TourMain
+            fixture={fixture}
+            state={tourStateAt(1, real, fixture)}
+            dispatch={noop}
+            phone={false}
+            stacked={{ thread: false, file: false }}
+            reduced
+            say={noop}
+            onCompose={noop}
+          />
+        </SidebarProvider>,
+      );
+    });
+    expect(host.querySelector('.ib-listcol')).not.toBeNull();
+    expect(lookClasses(host)).toEqual([]);
+    expect(host.querySelector('.ib-rowkey')).toBeNull();
+    expect(readListLook()).toEqual({ highlight: true, compact: true, hideAgents: true });
   });
 });

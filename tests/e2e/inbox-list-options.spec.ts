@@ -12,6 +12,10 @@
  *  - The wide one-line list: the title in its pill, compact changes nothing, the marks go; in one project's list
  *    the title takes the agents' column.
  *  - A 390 px phone, from the ⋮ sheet: compact rows on two lines, the time never cut.
+ *  - A 320 px phone with the worst rows (a long project with a long name: unread, pinned, Sent): compact keeps
+ *    about ten characters of each name visible (the project's floor drops on a narrow phone), the time never cut.
+ *  - With the agents' icons hidden, Chromium's accessibility tree still names them on every shape (a display: none
+ *    would drop them).
  *
  * Build the binary first (see inbox.spec.ts), then
  * `bunx playwright test -c tests/e2e/playwright.config.ts inbox-list-options.spec.ts`.
@@ -34,6 +38,8 @@ const LONG_PROJECT = 'northwind-industries-reconciliation-platform';
 
 let url = '';
 let agents: SimAgent[] = [];
+let post: (path: string, body: object) => Promise<void> = async () => {};
+let say: (agent: SimAgent, name: string, thread: string, subject: string, body: string) => Promise<string> = async () => '';
 const threads = { ledger: '', token: '', rate: '', spacing: '', opened: '', csv: '', refund: '', release: '' };
 const projectIds: Record<string, string> = {};
 
@@ -55,7 +61,7 @@ test.beforeAll(async () => {
   const src = join(root, 'src');
   const project = (name: string) => scratchProject(src, name);
   const ask = (q: string) => [':::question', q, '', '- [ ] Yes', '- [ ] No', ':::'].join('\n');
-  const say = async (agent: SimAgent, name: string, thread: string, subject: string, body: string) => (await agent.send({ project_path: project(name), thread, subject, body })).thread_id;
+  say = async (agent: SimAgent, name: string, thread: string, subject: string, body: string) => (await agent.send({ project_path: project(name), thread, subject, body })).thread_id;
   // The approved pictures' rows: a long project with a long name, short projects, a long name that wraps today.
   threads.release = await say(pi!, 'plannotator', 'Release 0.28.41', 'Release notes for 0.28.41: check the contributor credits', 'Release notes are drafted.');
   threads.refund = await say(claude!, 'billing-svc', 'Refund events', 'Trust the webhook or poll Stripe every 10 minutes?', 'Webhook or poll.');
@@ -70,7 +76,7 @@ test.beforeAll(async () => {
   expect(new Set(Object.values(threads)).size, 'eight threads').toBe(8);
   // Read rows (the Quiet ones and the open thread), a Sent row (the person replied to Refund events), a pin.
   const health = (await (await fetch(new URL('/api/inbox/health', url))).json()) as { serverSession: string };
-  const post = async (path: string, body: object) => {
+  post = async (path: string, body: object) => {
     const res = await fetch(new URL(path, url), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, serverSession: health.serverSession }) });
     expect(res.ok, `${path}: ${res.status} ${await res.text()}`).toBe(true);
   };
@@ -103,6 +109,15 @@ async function lookClasses(page: Page): Promise<string[]> {
 }
 
 const option = (page: Page, key: string) => page.locator(`[data-tidy-menu-popup] [data-list-look="${key}"]`);
+
+/** The Ledger row's agents, as the accessibility tree names them (its first message and three replies). */
+const LEDGER_AGENTS = 'img "Claude Code, Codex, Pi and OpenCode"';
+
+/** With the icons hidden, a screen reader still hears who: the row's accessibility tree keeps the agents. */
+async function agentsAnnounced(page: Page, rowClass: string) {
+  const snapshot = await page.locator(`.ib-lbody .${rowClass}[data-thread-id="${threads.ledger}"]`).ariaSnapshot();
+  expect(snapshot, 'the agents are still in the accessibility tree').toContain(LEDGER_AGENTS);
+}
 
 interface Geometry {
   h: number;
@@ -227,7 +242,7 @@ test('beside a thread, by mouse: each option changes the rows at once, keeps the
       expect(Math.abs(g.h - compact[name]!.h), `${name}: same height`).toBeLessThan(0.5);
       timeWhole(g, name);
     }
-    await expect(page.locator(`.ib-nrow[data-thread-id="${threads.ledger}"] .ib-atiles`)).toHaveAttribute('aria-label', /Claude Code/);
+    await agentsAnnounced(page, 'ib-nrow');
     await page.keyboard.press('Escape');
     await expect(page.locator('[data-tidy-menu-popup]')).toHaveCount(0);
     await page.screenshot({ path: join(proofDir, 'all-three.png') });
@@ -306,6 +321,7 @@ test('the wide one-line list: the pill, compact changes nothing, the marks go; o
     await expect(page.locator(`.ib-row[data-thread-id="${threads.ledger}"] .ib-subj > .ib-rowkey > .ib-title`)).toBeVisible();
     expect((await ledger.boundingBox())!.height).toBe(before);
     expect((await page.locator(`.ib-row[data-thread-id="${threads.ledger}"] .ib-ags`).boundingBox())!.width).toBeLessThanOrEqual(1);
+    await agentsAnnounced(page, 'ib-row');
     await page.screenshot({ path: join(proofDir, 'wide-all-three.png') });
 
     // One project's list: the agents were its whole first cell; the title takes that column.
@@ -345,9 +361,69 @@ test('a 390 px phone, from the ⋮ sheet: compact rows on two lines, the time ne
     }
     expect(compact.ledger!.project!.cut).toBe(true);
     expect(compact.ledger!.project!.w).toBeGreaterThanOrEqual(135);
+    await agentsAnnounced(page, 'ib-mrow');
     await page.screenshot({ path: join(proofDir, 'phone-all-three.png') });
     await page.reload();
     await expect(page.locator(`.ib-mrow[data-thread-id="${threads.ledger}"] .ib-m1 .ib-rowkey`)).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+/** How many of a row's title characters show whole before its "…" (the title is one text node). */
+async function shownChars(page: Page, id: string): Promise<{ shown: number; length: number }> {
+  return page.locator(`.ib-lbody .ib-mrow[data-thread-id="${id}"] .ib-m2`).evaluate((el) => {
+    const text = el.firstChild as Text;
+    // The cut text's room, less the "…" (about 6 px at this size).
+    const edge = el.getBoundingClientRect().left + el.clientWidth - (el.scrollWidth > el.clientWidth + 0.5 ? 6 : 0) + 0.5;
+    const range = document.createRange();
+    let shown = 0;
+    for (; shown < text.length; shown++) {
+      range.setStart(text, shown);
+      range.setEnd(text, shown + 1);
+      if (range.getBoundingClientRect().right > edge) break;
+    }
+    return { shown, length: text.length };
+  });
+}
+
+test('a 320 px phone with the worst rows: compact keeps about ten characters of each name, the time whole', async ({ browser }) => {
+  // The worst rows: a long project with a long name, unread (Ledger), pinned, and Sent.
+  const [claude, codex] = agents;
+  const vendor = await say(claude!, LONG_PROJECT, 'Pinned vendor invoices waiting on the accounts payable sign-off', 'Vendor invoices are waiting', 'Sign off today?');
+  const audit = await say(codex!, LONG_PROJECT, 'Superseded audit trail entries from the old ledger importer', 'Old audit entries', 'Delete them?');
+  await post(`/api/inbox/threads/${vendor}/pin`, { pinned: true });
+  await post(`/api/inbox/messages/${audit}/reply`, { idempotency_key: 'list-options-sent-320', words: 'Keep them for a year.', questions: [] });
+  const hard = { ledger: threads.ledger, vendor, audit, rate: threads.rate };
+
+  const context = await browser.newContext({ viewport: { width: 320, height: 640 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, colorScheme: 'light', reducedMotion: 'reduce' });
+  try {
+    const page = await context.newPage();
+    const looks: [string, string[]][] = [
+      ['compact', ['compact']],
+      ['all-three', ['highlight', 'compact', 'hide-agents']],
+    ];
+    for (const [shot, cookies] of looks) {
+      await context.clearCookies();
+      await context.addCookies(cookies.map((c) => ({ name: `plannotator-inbox-list-${c}`, value: '1', url })));
+      await page.goto(url);
+      await expect(page.locator(`.ib-mrow[data-thread-id="${vendor}"]`)).toBeVisible();
+      await expect(page.locator(`.ib-lbody .ib-mrow[data-thread-id="${vendor}"] [data-pin-mark]`)).toBeVisible();
+      await expect(page.locator(`.ib-lbody [data-section-id="sent"] .ib-mrow[data-thread-id="${audit}"]`)).toBeVisible();
+      await page.evaluate(() => document.fonts.ready);
+      for (const [name, id] of Object.entries(hard)) {
+        const g = await geometry(page, 'ib-mrow', id);
+        expect(g.lines, `${shot} ${name}: two lines`).toEqual(['ib-m1', 'ib-m3']);
+        expect(g.title.inL1, `${shot} ${name}: the title on line 1`).toBe(true);
+        timeWhole(g, `${shot} ${name}`);
+        const { shown, length } = await shownChars(page, id);
+        expect(shown, `${shot} ${name}: about ten characters of "${length}" show`).toBeGreaterThanOrEqual(Math.min(10, length));
+        // The long project still gives way first: it is cut before the title.
+        if (name !== 'rate') expect(g.project?.cut, `${shot} ${name}: the project gives way first`).toBe(true);
+      }
+      if (cookies.includes('hide-agents')) await agentsAnnounced(page, 'ib-mrow');
+      await page.screenshot({ path: join(proofDir, `phone-320-${shot}.png`) });
+    }
   } finally {
     await context.close();
   }

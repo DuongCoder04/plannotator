@@ -104,6 +104,11 @@ export interface InboxListProps {
    * at the top of the list. Absent: no menu.
    */
   tidy?: TidyController;
+  /**
+   * The person's look options (listLook.ts) from this browser. False (the onboarding tour): today's list, every
+   * option off, whatever this browser chose, as the tour's sidebar ignores its closed sections.
+   */
+  rememberLook?: boolean;
 }
 
 /**
@@ -198,10 +203,11 @@ function titleOf(row: InboxListRow): string {
 }
 
 /**
- * A three-line or phone row's title (`titleOf`), plain, or with "Highlight thread subject" on (approval
+ * A row's title (`titleOf`), plain, or with "Highlight thread subject" on (approval
  * "inbox-list-options") in the thread chip's pill (`.ib-key`, the open thread's pill), at the title's own size and
  * cut to one line. `className` is the shape's title class (`ib-title`, `ib-m2`). `tip`: a title that can be cut
- * (in its pill, or on a compact row's line 1) shows its whole text in a tooltip while it is cut (`ClipText`).
+ * (a wide row's, one in its pill, or one on a compact row's line 1) shows its whole text in a tooltip while it is
+ * cut (`ClipText`).
  */
 function RowTitle({ row, className, pill, tip = false }: { row: InboxListRow; className: string; pill: boolean; tip?: boolean }) {
   const cls = pill ? `ib-keyt ${className}` : className;
@@ -424,13 +430,7 @@ function TitleCell({ row, pinned = false, pill = false }: { row: InboxListRow; p
   const preview = previewOf(row);
   return (
     <>
-      {pill ? (
-        <span className="ib-key ib-rowkey">
-          <ClipText className="ib-keyt ib-title" text={titleOf(row)} />
-        </span>
-      ) : (
-        <ClipText className="ib-title" text={titleOf(row)} />
-      )}
+      <RowTitle row={row} className="ib-title" pill={pill} tip />
       {preview && <ClipText className="ib-pv" text={preview} />}
       {pinned && <PinMark />}
       <GuideMark row={row} />
@@ -722,7 +722,7 @@ function PhoneRow({ row, project, filtered, lit, menu, pinned, keys, pill, compa
 export function InboxList(props: InboxListProps) {
   const [quietOpen, setQuietOpen] = useState(false);
   // The list's look options in its ⋮ menu (listLook.ts), all off by default.
-  const [look, setLook] = useListLook();
+  const [look, setLook] = useListLook(props.rememberLook !== false);
   // Another project on a phone: the list starts at its top. The list itself stays mounted (its Quiet fold and,
   // across a resize past the phone width, its scroll are kept).
   const bodyRef = useRef<HTMLDivElement>(null);

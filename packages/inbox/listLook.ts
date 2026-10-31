@@ -57,12 +57,16 @@ export function listLookClasses(look: ListLook): string {
   return `${look.highlight ? ' ib-lk-pill' : ''}${look.compact ? ' ib-lk-compact' : ''}${look.hideAgents ? ' ib-lk-noagents' : ''}`;
 }
 
-/** The list's look, read once from the cookies, and a setter that remembers each change. */
-export function useListLook(): [ListLook, (key: ListLookKey, on: boolean) => void] {
-  const [look, setLook] = useState<ListLook>(readListLook);
+/**
+ * The list's look, read once from the cookies, and a setter that remembers each change. `remember` false (the
+ * onboarding tour, as its sidebar ignores the person's closed sections): every option off, nothing read or written.
+ */
+export function useListLook(remember = true): [ListLook, (key: ListLookKey, on: boolean) => void] {
+  const [look, setLook] = useState<ListLook>(() => (remember ? readListLook() : LIST_LOOK_OFF));
   const set = useCallback((key: ListLookKey, on: boolean) => {
+    if (!remember) return;
     writeListLookOption(key, on);
     setLook((current) => (current[key] === on ? current : { ...current, [key]: on }));
-  }, []);
+  }, [remember]);
   return [look, set];
 }
