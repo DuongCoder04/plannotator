@@ -75,6 +75,7 @@ for f in agent-review-message codex-review claude-review review-findings marker-
     | sed 's|from "@plannotator/shared/external-annotation"|from "./external-annotation.ts"|' \
     | sed 's|from "@plannotator/shared/data-dir"|from "./data-dir.ts"|' \
     | sed 's|from "@plannotator/shared/review-prompt"|from "./review-prompt.ts"|' \
+    | sed 's|from "@plannotator/ai/providers/ask-ai-env"|from "./ai/providers/ask-ai-env.ts"|' \
     > "generated/$f.ts"
 done
 
@@ -89,6 +90,7 @@ for f in tour-review; do
     | sed 's|from "\.\./claude-review"|from "./claude-review.ts"|' \
     | sed 's|from "\.\./config"|from "./config.ts"|' \
     | sed 's|from "@plannotator/shared/tour"|from "./tour.ts"|' \
+    | sed 's|from "@plannotator/ai/providers/ask-ai-env"|from "./ai/providers/ask-ai-env.ts"|' \
     | sed 's|from "@plannotator/shared/data-dir"|from "./data-dir.ts"|' \
     > "generated/$f.ts"
 done
@@ -110,6 +112,7 @@ for f in guide-review; do
     | sed 's|from "@plannotator/shared/guide-format"|from "./guide-format.ts"|' \
     | sed 's|from "@plannotator/shared/data-dir"|from "./data-dir.ts"|' \
     | sed 's|from "@plannotator/shared/guide-prompt"|from "./guide-prompt.ts"|' \
+    | sed 's|from "@plannotator/ai/providers/ask-ai-env"|from "./ai/providers/ask-ai-env.ts"|' \
     > "generated/$f.ts"
 done
 
@@ -146,7 +149,7 @@ for f in index types provider session-manager endpoints context base-session ses
     > "generated/ai/$f.ts"
 done
 
-for f in claude-agent-sdk codex-app-server opencode-sdk command-path child-io pi-sdk pi-sdk-node pi-events pi-version qwen-sdk qwen-events; do
+for f in claude-agent-sdk codex-app-server opencode-sdk command-path child-io ask-ai-env pi-sdk pi-sdk-node pi-events pi-version qwen-sdk qwen-events; do
   src="../../packages/ai/providers/$f.ts"
   printf '// @generated — DO NOT EDIT. Source: packages/ai/providers/%s.ts\n' "$f" | cat - "$src" \
     | sed "s|from ['\"]@plannotator/core/model-catalog['\"]|from '../model-catalog.ts'|g" \

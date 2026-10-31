@@ -402,7 +402,7 @@ test.describe('iPhone 15 (WebKit)', () => {
         await page.screenshot({ path: join(shots, `phone-sheet-${scheme}.png`) });
         await more.tap();
         const menu = page.locator('[data-pin-menu]');
-        await expect(menu.locator('.ib-pm-title')).toHaveText('Which APNs environment should TestFlight builds use?');
+        await expect(menu.locator('.ib-pm-title')).toHaveText('relay-deploy');
         const sheet = await menu.boundingBox();
         expect(sheet!.width).toBeGreaterThan(360);
         expect(sheet!.y + sheet!.height).toBeGreaterThan(device.viewport.height - 40);

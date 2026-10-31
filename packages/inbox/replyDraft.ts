@@ -29,6 +29,7 @@
  * answer never came (a lost answer, the keepalive as the page goes) is read
  * back, so the window's base follows what landed.
  */
+import { inboxUrl, machineOf } from './inboxUrl';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { InboxReplyDraft } from '@plannotator/core/inbox-types';
 import { inboxApi, InboxApiError, pageServerSession } from './api';
@@ -233,7 +234,7 @@ export function useReplyDraft(threadId: string) {
       if (timer.current) clearTimeout(timer.current);
       if (claimed.current.has(next.threadId) || conflicts.current.has(next.threadId)) return;
       const session = pageServerSession();
-      void fetch(`/api/inbox/threads/${encodeURIComponent(next.threadId)}/draft`, {
+      void fetch(inboxUrl(`/threads/${encodeURIComponent(next.threadId)}/draft`), {
         method: 'POST',
         keepalive: true,
         headers: { 'Content-Type': 'application/json' },
@@ -268,7 +269,9 @@ export function useReplyDraft(threadId: string) {
   const save = useCallback(
     (text: string) => {
       const target = current.current;
-      if (claimed.current.has(target)) return;
+      // Another machine's thread (linked machines): its drafts live on that machine, whose door takes none, so
+      // the words stay in this box only.
+      if (claimed.current.has(target) || machineOf(target)) return;
       if (conflicts.current.has(target)) {
         // Emptied, or the same words the server holds: no conflict left. Otherwise still not
         // saved: the person chooses (Keep mine / Discard).
@@ -297,6 +300,7 @@ export function useReplyDraft(threadId: string) {
     sentWords.current.delete(target);
     learn(target, null);
     setState({ loadedFor: target, draft: null, conflict: null });
+    if (machineOf(target)) return;
     chain.current = chain.current.then(() => inboxApi.discardReplyDraft(target).then(() => undefined, () => undefined));
   }, []);
 

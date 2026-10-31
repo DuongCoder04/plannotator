@@ -220,6 +220,7 @@ We deliberately did **not** restructure the exports map in this PR (move-don't-r
 | `components/TableOfContents` | Pure — renders from `blocks`; pair with `useActiveSection` for scroll-spy. *(Blessed in 0.24.0.)* |
 | `components/ResizeHandle` + `hooks/useResizablePanel` | Layout pair for draggable panel widths; persists the width through the `storageBackend` seam. *(Blessed in 0.24.0.)* |
 | `hooks/useActiveSection` | Scroll-spy over rendered headings; no backend. *(Blessed in 0.24.0.)* |
+| `components/MarkdownContentsRail` + `components/DeferredMarkdownContentsRail` | Workspaces' document contents rail (ticks in the right gutter, the Contents panel on click), moved here; no backend. Its styles are their own sheet, `@plannotator/ui/contents-rail.css`: import it outside any CSS layer. Its scroll math is `utils/headingScrollSpy` (+ `hooks/useHeadingScrollSpy` for a list, `components/DocumentContents`). See README "Document contents rail" and "Scroll-spies: one per surface". |
 | `hooks/useScrollViewport` | Resolves the scrolling element for viewport-aware UI; no backend. *(Blessed in 0.24.0.)* |
 | `utils/annotationHelpers` | Pure annotation utilities (`getAnnotationCountBySection`, `buildTocHierarchy` + `TocItem`). *(Blessed in 0.24.0.)* |
 | `components/html-viewer` (`HtmlViewer`, `projectHostThreads`, `buildPersistedHtmlAnchor`) | The raw-HTML annotation viewer: overlay-projected placed markers, pinpoint anchors, multi-target comments. Props + validated bridge protocol; no backend of its own. See "Raw-HTML annotation viewer + syntax-highlighting migration (0.29.0)" and "HTML annotation parity seams". *(Blessed in 0.29.0.)* |
@@ -1934,8 +1935,18 @@ was rebuilt.
 The `file-tree-item` CSS was already in `theme.css`. The new pieces are the
 `DiffFileTree` component itself and its ARIA/keyboard handling.
 
+**Since the aligned sidebar (approved design record "review-sidebar-aligned"),
+the review draws its own rows.** Its Changes tree has its own folder row and
+file row (`FileTreeNode.tsx`: 12 px indent steps on the panel's edges, `+`/`−`
+in two aligned columns, `CountColumns` in `FileRowBits.tsx`); it no longer
+renders `DiffFileTreeFolderRow`, `DiffFileTreeFileRowContent` or `DiffCounts`.
+It still shares `buildDiffFileTree`, `useDiffFileTreeExpansion`,
+`ChangeTypeLetter`, and `diffFileTreeIndent` (All files keeps that indent).
+The atoms below are unchanged and stay the host's starting point for a custom
+row; they no longer show what the review's rows look like.
+
 **Review-only, and why.** The review's `FileTree` keeps its own wrapper and
-renders its rows from the shared atoms, adding: the viewed checkbox and the
+rows, adding: the viewed checkbox and the
 hide-viewed filter, stage controls and the staged/committed/untracked marks,
 the annotation badge and `has-annotations` tint, the scroll-highlight row, the
 "Copy path" context menu, the double-click handler, the panel header, view toggle,
@@ -1943,8 +1954,8 @@ diff-type / base / worktree / evolog pickers, search results, the nav rows
 (PR overview, artifacts, call flow, semantic diff, all files), and its
 **window-wide** j/k/arrow/Home/End shortcut (an app shortcut, gated on inputs,
 menus and dialogs). None of those is a host concern, so `DiffFileTree` takes no
-props for them; a host that needs any of them builds its own row from the atoms,
-as the review does. The review rows also keep their current DOM: no ARIA tree
+props for them; a host that needs any of them builds its own row from the atoms
+(the review now goes further and draws its own rows, above). The review rows also keep their current DOM: no ARIA tree
 roles were added there (that would be a behavior change to Plannotator's app,
 out of scope here).
 

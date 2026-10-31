@@ -61,6 +61,7 @@ packages/inbox/refusedImages.test.tsx
 packages/inbox/codeAttachment.test.tsx
 packages/inbox/copyFile.test.tsx
 packages/inbox/fileViewClean.test.tsx
+packages/inbox/documentContents.test.tsx
 packages/inbox/links.test.tsx
 packages/inbox/replyFileLinks.test.tsx
 packages/inbox/issueRefs.test.tsx
@@ -81,6 +82,7 @@ packages/inbox/pasteTarget.test.ts
 packages/inbox/seenOnSight.test.tsx
 packages/inbox/projectList.test.tsx
 packages/inbox/rowBadges.test.tsx
+packages/inbox/rowAgents.test.tsx
 packages/inbox/softQuietRows.test.tsx
 packages/inbox/sidebarQuiet.test.tsx
 packages/inbox/leakedSubject.test.tsx
@@ -107,6 +109,7 @@ packages/inbox/endedSession.test.tsx
 packages/inbox/compose.test.tsx
 packages/inbox/listHeaderCompose.test.tsx
 packages/inbox/tidyMenu.test.tsx
+packages/inbox/listLook.test.tsx
 packages/inbox/composeThread.test.tsx
 packages/inbox/sendNow.test.tsx
 packages/inbox/undelivered.test.tsx
@@ -133,6 +136,7 @@ packages/inbox/projectMenu.test.tsx
 packages/inbox/rowMenu.test.tsx
 packages/inbox/copyMessage.test.tsx
 packages/inbox/pinnedThreads.test.tsx
+packages/inbox/pinnedRowLabel.test.tsx
 packages/inbox/fileBack.test.tsx
 packages/inbox/archived.test.tsx
 packages/inbox/openStaysPut.test.tsx
@@ -141,6 +145,7 @@ packages/inbox/pullToRefresh.test.tsx
 packages/inbox/threadReadRetry.test.tsx
 packages/inbox/tabCountWindow.test.tsx
 packages/inbox/phoneList.test.tsx
+packages/inbox/listHeaderPath.test.tsx
 packages/inbox/listLabels.test.tsx
 packages/inbox/projectLabelRows.test.tsx
 packages/inbox/projectLabelHeld.test.tsx
@@ -189,6 +194,7 @@ packages/ui/components/RenderedMarkdown.hostSeams.test.tsx
 packages/ui/components/plan-diff/PlanCleanDiffView.seams.test.tsx
 packages/ui/components/AnnotationPanel.questions.test.tsx
 packages/ui/hooks/useActiveSection.test.tsx
+packages/ui/hooks/useActiveSection.positions.test.tsx
 packages/editor/hooks/useQuestionAnswers.test.tsx
 packages/ui/components/diagram/DiagramViewer.test.tsx
 packages/ui/utils/diagramAnchor.test.ts
@@ -362,6 +368,8 @@ packages/ui/hooks/useLinkedDoc.scrollRestore.test.tsx
 packages/ui/components/html-viewer/htmlLinkProtocol.test.tsx
 packages/editor/hooks/useAnnotationJump.test.tsx
 packages/ui/components/TableOfContents.linkedDoc.test.tsx
+packages/ui/components/MarkdownContentsRail.test.tsx
+packages/ui/components/DeferredMarkdownContentsRail.test.ts
 packages/ui/components/CommentPopover.overlayGutter.test.tsx
 packages/ui/components/CommentPopover.multiTarget.test.tsx
 packages/ui/aiProviderConfigPersistence.test.tsx
@@ -430,3 +438,5 @@ packages/review-editor/components/ReviewPanelHeader.test.tsx
 packages/review-editor/hooks/useRepoFiles.test.tsx
 packages/review-editor/components/RepoFileView.test.tsx
 packages/review-editor/components/GoToFile.test.tsx
+packages/inbox/heldPick.test.tsx
+packages/inbox/linkedMachines.test.tsx

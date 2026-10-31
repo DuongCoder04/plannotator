@@ -175,10 +175,13 @@ import { createCardMarks } from "./inbox-card-marks";
 import { isInboxBoardSeq, readInboxBoardSeen, writeInboxBoardSeen } from "@plannotator/shared/inbox/board-seen";
 import { createInboxTagsRoute } from "./inbox-tags";
 import { createInboxDevices, DOOR_PREFIX } from "./inbox-devices";
+import { createInboxMachines, type InboxMachines, type MachineFrame } from "./inbox-machines";
+import { replyIsStale } from "./inbox-outbox";
+import type { PeerLinkTimings } from "./inbox-peer-link";
 import type { PairingProbes } from "./inbox-pairing-checks";
 import { createInboxRelay } from "./inbox-relay";
 import type { TailscaleRunner } from "@plannotator/shared/tailscale";
-import { createInboxTailscale, PHONES_TAILNET_HTTPS_PORT, type InboxTailscale } from "./inbox-tailscale";
+import { createInboxTailscale, isDoorTailnetPort, type InboxTailscale } from "./inbox-tailscale";
 import { createInboxUpdates, type InboxUpdatesOptions } from "./inbox-updates";
 import { INBOX_WHATS_NEW_IMAGE_PATH, whatsNewImageRoute } from "./inbox-whats-new-images";
 import { inboxCanonicalBaseUrl, inboxCanonicalRedirect } from "./inbox-canonical";
@@ -334,6 +337,8 @@ export interface InboxServerOptions {
    * nothing listens, connects, spawns or makes a certificate.
    */
   phones?: boolean;
+  /** Tests: linked machines' clocks (packages/server/inbox-peer-link.ts): heartbeat silence, backoff. */
+  machineLinkTimings?: Partial<PeerLinkTimings>;
   /** The Board, decided here instead of config.json `inboxBoard` (tests). Absent: config.json decides on every request. */
   board?: boolean;
   /**
@@ -454,6 +459,17 @@ const ERROR_STATUS: Record<string, number> = {
   // Tidy: none of the sessions asked has anything to tidy now (asked a moment ago, or nothing left).
   nothing_to_tidy: 409,
   thread_resolved: 409,
+  // A reply held for this machine whose thread an agent wrote to after the person read it (linked machines, rule 11).
+  thread_moved_on: 409,
+  // Linking machines (inbox-machines.ts).
+  machine_not_linked: 404,
+  machine_unreachable: 502,
+  machine_needs_update: 409,
+  machine_mismatch: 409,
+  link_to_self: 409,
+  link_failed: 502,
+  no_way_back: 409,
+  offer_expired: 410,
   // 👍 Looks good: refused on a person's message, on an older agent message, and while a question is open.
   ack_not_allowed: 422,
   ack_stale: 409,
@@ -632,9 +648,9 @@ function startOnLoopback(fetch: Parameters<typeof Bun.serve>[0]["fetch"], prefer
   const serve = (port: number) =>
     Bun.serve(withPlannotatorServerHeader({ hostname: LOOPBACK, port, idleTimeout: 0, maxRequestBodySize: INBOX_MAX_REQUEST_BYTES, fetch }) as Parameters<typeof Bun.serve>[0]);
   let portChanged = false;
-  // Never remote mode's port, and never Phones' tailnet HTTPS port: the
-  // window's tailnet mapping uses the Inbox's own port, so the two never meet.
-  const forbidden = (port: number) => port === INBOX_FORBIDDEN_PORT || port === PHONES_TAILNET_HTTPS_PORT;
+  // Never remote mode's port, and never one the device door may take (8443 to 8450):
+  // the window's tailnet mapping uses the Inbox's own port, so the two never meet.
+  const forbidden = (port: number) => port === INBOX_FORBIDDEN_PORT || isDoorTailnetPort(port);
   if (preferred && !forbidden(preferred)) {
     try {
       return { server: serve(preferred), portChanged: false };
@@ -907,6 +923,9 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     event_streams: openEventStreams,
     // Additive: read_thread honours the peek mark (the session's thread list after a compaction or resume).
     peek: true,
+    // Additive (linked machines, inbox-machines.ts): this Inbox's stable id and the link protocol it speaks.
+    inbox_id: machines.selfId,
+    machine_links: 1,
   });
 
   /**
@@ -957,11 +976,18 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
    * the project as a label and an optional filter (`?project=prj_...`), which
    * keeps the sections and drops other projects' rows.
    */
-  const listModel = (projectFilter: string | null, archived: "include" | "exclude") => {
+  /**
+   * `merged` (`?machines=1`, the window only; the door refuses it to a linked
+   * machine): every linked machine's rows join this Inbox's, each row with
+   * its `machine`, plus the `machines` block. Without it, this Inbox's own.
+   */
+  const listModel = (projectFilter: string | null, archived: "include" | "exclude", merged = false) => {
     // One pass over the store feeds both the folders' counts and the sections.
     // `pinned_at` (additive) on the window's and the phone's rows only: never on anything an agent reads.
     const pinnedAt = new Map(store.pins().map((pin) => [pin.thread_id, pin.pinned_at]));
-    const rows = store.listRows().map((row) => (pinnedAt.has(row.thread_id) ? { ...row, pinned_at: pinnedAt.get(row.thread_id)! } : row));
+    const own = store.listRows().map((row) => (pinnedAt.has(row.thread_id) ? { ...row, pinned_at: pinnedAt.get(row.thread_id)! } : row));
+    // A linked machine never lists an id this store holds (archived and pinned included): its row is dropped, never merged.
+    const rows: InboxListRow[] = merged ? [...own.map((row) => ({ ...row, machine: machines.selfId })), ...machines.rows().filter((row) => !store.message(row.thread_id))] : own;
     const scoped = projectFilter ? rows.filter((row) => row.project.id === projectFilter) : rows;
     const byId = new Map(rows.map((row) => [row.thread_id, row]));
     return {
@@ -978,7 +1004,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       /** Checking for updates has failed for hours: the sidebar's quiet "Can't check for updates". Additive. */
       update_check_failing: updates.checkFailing(),
       notice: portChanged ? "The Inbox moved to a new port: allow notifications again on this page." : null,
-      projects: projectFolders(rows),
+      projects: merged ? [...projectFolders(own).map((project) => ({ ...project, machine: machines.selfId })), ...machines.projects().filter((project) => typeof project.id !== "string" || !store.project(project.id))] : projectFolders(own),
       project: projectFilter,
       // `?archived=exclude` (the window): archived threads leave every section,
       // Quiet included, and Settings lists them (GET /api/inbox/threads/archived).
@@ -993,6 +1019,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         .pins()
         .map((pin) => byId.get(pin.thread_id))
         .filter((row): row is InboxListRow => row !== undefined),
+      ...(merged ? { self: machines.selfId, machines: machines.machinesView() } : {}),
     };
   };
 
@@ -1000,6 +1027,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     const value = url.searchParams.get("project");
     if (value === null || value === "") return null;
     if (!isInboxId("prj", value)) throw new InboxError("validation_error", "project: a prj_ id.", { field: "project" });
+    // In the merged view a project may be another machine's.
+    if (url.searchParams.get("machines") === "1" && machines.projectOwner(value)) return value;
     if (!store.project(value)) throw new InboxError("project_not_found", `No project ${value}.`);
     return value;
   };
@@ -1864,6 +1893,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         // A row's delivery moved with the live sessions (no store line): windows only, like `reach`.
         const sendDeliveries = () => send(`event: deliveries\ndata: {}\n\n`);
         if (windowId) deliveryListeners.add(sendDeliveries);
+        // Linked machines (`machines=1`, the window only; the door refuses it to a machine): their records, states and
+        // the outbox, each in its own frame and never with an `id:`, so the local seq and Last-Event-ID stay this Inbox's.
+        // A `machines` snapshot opens every stream: a resync, never a notification.
+        const sendMachine = (frame: MachineFrame) => send(`event: ${frame.event}\ndata: ${JSON.stringify(frame.data)}\n\n`);
+        const stopMachines = url.searchParams.get("machines") === "1" ? machines.subscribe(sendMachine) : () => {};
+        if (url.searchParams.get("machines") === "1") sendMachine({ event: "machines", data: { machines: machines.machinesView() } });
         const heartbeat = setInterval(() => send(": ping\n\n"), SSE_HEARTBEAT_MS);
         cleanup = () => {
           if (counted) {
@@ -1877,6 +1912,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
           draftListeners.delete(onDraft);
           pinListeners.delete(onPins);
           deliveryListeners.delete(sendDeliveries);
+          stopMachines();
           leave();
         };
         req.signal.addEventListener("abort", () => {
@@ -2340,6 +2376,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     readBody: (req) => readBody(req),
     json,
     boardOn,
+    machine: () => machines.selfId,
   });
   compose.sweep();
   // Reply drafts: the words typed in a thread's reply box, kept per thread (packages/server/inbox-reply-drafts.ts).
@@ -2367,8 +2404,11 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
   let stopRequested = false;
   let server: ReturnType<typeof Bun.serve>;
   let attachmentRoutes: ReturnType<typeof createInboxAttachmentRoutes>;
-  // Null while phones are off (the default): no door, no window routes, no listeners, no relay.
+  // The device door: always made (linked machines use it with Phones off); with Phones off it serves machines only,
+  // and pairing a phone, the Wi-Fi listener, the relay and the phone routes do not exist.
   let phones: ReturnType<typeof createInboxDevices> | null = null;
+  // Linked machines (inbox-machines.ts): made with the door, once the port is known.
+  let machines: InboxMachines;
   let relay: ReturnType<typeof createInboxRelay> | null = null;
   // Over your tailnet (packages/server/inbox-tailscale.ts), made once the port is known.
   let tailscale: InboxTailscale;
@@ -2437,7 +2477,8 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     // Off, the door's paths fall through to the unknown-route 404 below.
     if (path === "/api/inbox/device" || path.startsWith(DOOR_PREFIX)) {
       if (via === "tailnet") return localOnly();
-      if (phones) return phones.door(req, url);
+      const answer = phones ? await phones.door(req, url) : null;
+      if (answer) return answer;
     }
 
     if (path === "/mcp") {
@@ -2506,6 +2547,15 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
         return json({ connect: await connectAgents() });
       }
+      // `plannotator inbox link`: offer, link, unlink and list linked machines (inbox-machines.ts).
+      if (path.startsWith("/api/inbox/control/machines")) {
+        try {
+          const answer = await machines.control(req, path);
+          if (answer) return answer;
+        } catch (error) {
+          return errorResponse(error);
+        }
+      }
       if (path === INBOX_BRIDGE_POLL_PATH || path === INBOX_BRIDGE_EVENT_PATH) {
         if (req.method !== "POST") return json({ error: "Use POST." }, 405);
         try {
@@ -2539,7 +2589,12 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
 
     try {
       if (path === "/api/inbox/health" && req.method === "GET") return json(health());
-      if (path === "/api/inbox/threads" && req.method === "GET") return json(listModel(projectFilterOf(url), archivedModeOf(url)));
+      if (path === "/api/inbox/threads" && req.method === "GET") return json(listModel(projectFilterOf(url), archivedModeOf(url), url.searchParams.get("machines") === "1"));
+      // Linked machines (inbox-machines.ts): the forward /api/inbox/m/<machine>/<route>, the machines and the outbox.
+      if (path.startsWith("/api/inbox/m/") || path.startsWith("/api/inbox/machines") || path.startsWith("/api/inbox/outbox")) {
+        const answer = await machines.route(req, url, via);
+        if (answer) return answer;
+      }
       if (path === "/api/inbox/threads/archived" && req.method === "GET") return json(archivedModel(url));
       // Decision mode (experimental, approval "inbox-decision-mode"): a read-only projection of every
       // decision waiting on the person. Off (the default), the route does not exist.
@@ -2652,7 +2707,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
         const body = await readBody(req);
         if (checkServerSession(body, serverSession) === "mismatch") return json(serverSessionMismatchBody(INBOX_SERVER_SESSION_MISMATCH_ERROR), 409);
         if (path === "/api/inbox/update") {
-          const result = updates.updateNow();
+          const result = await updates.updateNow();
           if (result.outcome === "launched") return json({ ok: true, version: result.version, update: updates.current() });
           const refused: Record<string, string> = {
             locked: "An update is already running.",
@@ -3112,6 +3167,20 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
             return json({ message_id: messageId, questions, reply: null });
           }
           case "reply": {
+            // Rule 11 (linked machines): a reply held on another machine says the newest seq of the thread the person
+            // saw; when an agent wrote to the thread after it, the late words are refused, never put on the new question.
+            // A replay answers what it wrote.
+            if (body.seen_through_seq !== undefined) {
+              if (typeof body.seen_through_seq !== "number" || !Number.isSafeInteger(body.seen_through_seq) || body.seen_through_seq < 0) {
+                throw new InboxError("validation_error", "seen_through_seq: a whole number.", { field: "seen_through_seq" });
+              }
+              const key = typeof body.idempotency_key === "string" ? body.idempotency_key.trim() : "";
+              const target = store.message(messageId);
+              const thread = target ? store.thread(target.thread_id) : null;
+              if (thread && !(key && store.replyByKey(messageId, key)) && replyIsStale(thread.messages, body.seen_through_seq, (id) => store.messageCursor(id))) {
+                throw new InboxError("thread_moved_on", "The agent wrote again after you read this thread; your reply was not sent. Read it again, then reply.");
+              }
+            }
             // The session that asked has ended and the person picked another
             // live session to take the reply: checked here as New message
             // checks its session (null: not live, 409 and nothing written).
@@ -3329,7 +3398,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     },
   });
   tailscale.start();
-  if (phonesOn) {
+  {
     const devices = createInboxDevices({
       dataDir,
       serverSession,
@@ -3341,14 +3410,31 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       tailscale: options.tailscale,
       probes: options.pairingProbes,
       relay: { paired: async (device) => (relay ? relay.paired(device) : null), revoked: (device) => relay?.revoked(device) },
+      phones: phonesOn,
+      machines: () => machines ?? null,
     });
     phones = devices;
-    // The relay (packages/server/inbox-relay.ts): the mailbox socket while a phone is paired, the pushes, and the
-    // carriage: store lines down as the event stream writes them, commands up through the door in-process.
-    relay = createInboxRelay({ dataDir, store, devices: devices.devices, payload: eventPayload, apply: devices.asDevice });
-    relay.start();
+    machines = createInboxMachines({
+      dataDir,
+      serverSession,
+      computerName: devices.machineDoor.computerName,
+      door: devices.machineDoor,
+      readBody,
+      json,
+      holds: (kind, id) =>
+        kind === "projects" ? store.project(id) !== null : kind === "attachments" ? store.attachment(id) !== null : kind === "annotations" ? store.annotation(id) !== null : store.message(id) !== null,
+      timings: options.machineLinkTimings,
+    });
+    if (phonesOn) {
+      // The relay (packages/server/inbox-relay.ts): the mailbox socket while a phone is paired, the pushes, and the
+      // carriage: store lines down as the event stream writes them, commands up through the door in-process.
+      relay = createInboxRelay({ dataDir, store, devices: devices.devices, payload: eventPayload, apply: devices.asDevice });
+      relay.start();
+    }
+    // With Phones off, only while a machine is linked.
     devices.startTailnet();
-    devices.startLan();
+    if (phonesOn) devices.startLan();
+    machines.start();
   }
 
   updates.start();
@@ -3424,6 +3510,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
     server.stop(true);
     // The tailnet mapping and the door listener, the Wi-Fi listener and its
     // Bonjour record, before a restart starts the new run.
+    machines?.stop();
     phones?.stopTailnet();
     phones?.stopLan();
     relay?.stop();

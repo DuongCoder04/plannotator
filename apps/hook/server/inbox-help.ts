@@ -31,7 +31,7 @@ import { INBOX_CONTRACT_EXAMPLE, INBOX_DEFAULT_SERVED_TOOLS, INBOX_MCP_TOOLS, IN
 import { INBOX_BODY_CUT_BYTES, INBOX_EARLIER_PERSON_BYTES, INBOX_THREAD_WINDOW, sizeText } from "@plannotator/server/inbox-mcp-read";
 import { INBOX_AGENT_SEARCH_LIMIT } from "@plannotator/server/inbox-mcp-search";
 import { INBOX_TOOL_DEFAULTS, INBOX_TOOL_HOSTS } from "@plannotator/shared/config";
-import { INBOX_FILLED_ARGUMENTS, INBOX_FOLLOW_THROUGH_RULE, INBOX_REF_LINK_RULE, INBOX_REPLY_TO_CHECK, INBOX_SUBAGENT_RULE, INBOX_TAGGED_INSTRUCTION, INBOX_TOOL_NAME, inboxReaskInstruction } from "@plannotator/shared/inbox/connection";
+import { INBOX_FILLED_ARGUMENTS, INBOX_FOLLOW_THROUGH_RULE, INBOX_REF_LINK_RULE, INBOX_REPLY_TO_CHECK, INBOX_SUBAGENT_RULE, INBOX_TAGGED_INSTRUCTION, INBOX_THREAD_RULE, INBOX_TOOL_NAME, inboxReaskInstruction } from "@plannotator/shared/inbox/connection";
 import { INBOX_COMMAND_USAGE } from "./cli";
 import { createAgentEnvironment, displayPath, type AgentEnvironment } from "@plannotator/server/inbox-agents";
 import { noteTarget } from "@plannotator/server/inbox-agent-notes";
@@ -298,6 +298,8 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     "- A checklist, a status update or a decision written as `:::action` blocks: an action item is only for something the person must go and do before you can go on.",
     "- A sign-off on this plan, document or diff before you go on: use a Plannotator review (plan review, `plannotator annotate`, `plannotator review`).",
     "",
+    INBOX_THREAD_RULE,
+    "",
     INBOX_FOLLOW_THROUGH_RULE,
     "",
     INBOX_SUBAGENT_RULE,
@@ -312,7 +314,7 @@ export function formatInboxHelp(options: InboxHelpOptions): string {
     `2. Otherwise use the stdio MCP server: ${code(mcp)}. "Connecting other agents" below shows how to register it.`,
     `3. Only as a fallback: Streamable HTTP at ${code(INBOX_HELP_MCP_URL)}. The port can change when the Inbox restarts; ${code(`${self} inbox --background`)} prints the current URL. A request that carries an \`Origin\` header is refused.`,
     "",
-    `The \`${INBOX_TOOL_NAME}\` tool fills ${INBOX_FILLED_ARGUMENTS.map(code).join(", ")} for you. Pass \`project_path\` to it yourself only when the message is about another repository or folder than your working folder (absolute, or relative to your working folder; it must be an existing folder): it then lands in that project, and relative \`attachments\` resolve against it. The stdio server fills \`project_path\` (its working folder, or \`PLANNOTATOR_CWD\`) and \`agent_session\`: the session's own id when a Claude Code or Pi session started it (a command your session runs); in Codex, your thread (Codex names it on every tool call, and in \`CODEX_THREAD_ID\` for the commands its shell runs), so the person's reply comes back into that thread; else one id per process, so pass \`agent_session\` yourself to keep your threads across restarts. Over HTTP, pass \`project_path\` (the absolute path of the repository or folder you work in) and \`agent_session\` yourself.`,
+    `The \`${INBOX_TOOL_NAME}\` tool fills ${INBOX_FILLED_ARGUMENTS.map(code).join(", ")} for you. It files your messages under the folder your session started in. Pass \`project_path\` to it yourself only when the message is about another repository or folder (absolute, or relative to your working folder; it must be an existing folder): it then lands in that project, and relative \`attachments\` resolve against it. The stdio server fills \`project_path\` (its working folder, or \`PLANNOTATOR_CWD\`) and \`agent_session\`: the session's own id when a Claude Code or Pi session started it (a command your session runs); in Codex, your thread (Codex names it on every tool call, and in \`CODEX_THREAD_ID\` for the commands its shell runs), so the person's reply comes back into that thread; else one id per process, so pass \`agent_session\` yourself to keep your threads across restarts. Over HTTP, pass \`project_path\` (the absolute path of the repository or folder you work in) and \`agent_session\` yourself.`,
     "",
     "Every call starts a stopped Inbox in the background, without a browser tab, so never run `plannotator inbox` just to send. Bare `plannotator inbox` is for the person: it opens the window.",
     "",

@@ -40,7 +40,7 @@
   /* Colours (the blind rounds; the rows' lines since asked away, see above). */
   --ib-soft-ground: initial;     /* Soft's tinted ground under the panes (today's: the palette's background, the colour today's sidebar paints) */
   --ib-soft-selection: initial;  /* the open row: a neutral fill (today's: the accent's tint) */
-  --ib-soft-rows: ;              /* inbox items part by space, no line between them, as the prototype draws them: the list's rows, the two-line rows, a phone's rows (today's: hairlines) */
+  --ib-soft-rows: ;              /* inbox items part by space, no line between them, as the prototype draws them: the list's rows, the three-line rows, a phone's rows (today's: hairlines) */
   --ib-soft-lines: initial;      /* every other line (the thread header's, the foot's, between messages, Settings' rows, the file view, What's new) the faint fill (today's: the palette's hairlines and rules, the owner's ruling) */
   --ib-soft-band: initial;       /* section bands on the raised surface (today's: the muted band) */
   --ib-soft-badges: ;            /* Stopped and Holds up: tinted pills (today's: outlined badges) */
@@ -552,7 +552,7 @@ button.ib-mut { border-radius: 6px; }
 .ib-pinrow:hover .ib-pin, .ib-pinrow:has(:focus-visible) .ib-pin, .ib-pinrow[data-menu] .ib-pin { padding-right: 32px; }
 .ib-pinrow:hover .ib-pin > :is(.ib-n, .ib-spill, .ib-pdot, .ib-parch), .ib-pinrow:has(:focus-visible) .ib-pin > :is(.ib-n, .ib-spill, .ib-pdot, .ib-parch), .ib-pinrow[data-menu] .ib-pin > :is(.ib-n, .ib-spill, .ib-pdot, .ib-parch) { visibility: hidden; position: absolute; }
 .ib-pinrow[data-menu] .ib-pmore { color: var(--foreground); }
-/* A pinned thread's row in the list: a small pin after the subject (wide, two-line), before the time (a phone's row). */
+/* A pinned thread's row in the list: a small pin after the subject (wide, three-line), before the time (a phone's row). */
 .ib-pinmark { display: inline-flex; flex: none; color: var(--muted-foreground); }
 .pn-inbox .ib-pinmark svg.ib-ic { width: 13px; height: 13px; stroke-width: 1.8; }
 .ib-m1 .ib-pinmark { margin-left: auto; }
@@ -745,7 +745,6 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
   .pn-inbox .ib-lhead-title:hover svg.ib-ic-refresh { opacity: 1; }
 }
 .pn-inbox .ib-lhead-title:focus-visible svg.ib-ic-refresh, .pn-inbox .ib-lhead-title[data-refreshing] svg.ib-ic-refresh { opacity: 1; }
-.ib-lhead .ib-path { font-family: var(--font-mono); font-size: var(--ib-fs-12, 12px); color: var(--muted-foreground); min-width: 0; flex: 0 1000000 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ib-lbody { padding: 0 10px 10px; overflow-y: auto; flex: 1; min-height: 0; position: relative; }
 /* A row that left the rows on screen when the list settled (settle.ts): a copy drawn where it was, fading
    out under the rows sliding past it (they are opaque and sit above it while they move). */
@@ -753,41 +752,41 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-lbody > .ib-group > .ib-rw { background: var(--card); }
 /* Rows off screen skip style, layout and paint (every row stays in the DOM: find in page, focus, the
    accessibility tree and the scrollbar are unchanged). `auto` keeps the size a row last rendered at, so
-   only a row never on screen uses the estimate: a wide row is 50px, a two-line row about 65px, a phone's about
-   70px (the estimate is the content box: the phone row's 24px of padding and border are added to its 46px).
+   only a row never on screen uses the estimate: a wide row is 50px, a three-line row about 84px, a phone's about
+   90px (the estimate is the content box: the phone row's 24px of padding and border are added to its 66px).
    The containment is on the row's wrapper: everything a row draws (its pill, focus ring, hover action) is
    inside its box, and its tooltips are portaled. Containment clips painting to the row's box, so the clip
    reaches 48px past it: the hover Mark read's floating shadow (Soft's 0 16px 40px -10px, 46px below the button)
    still paints whole on the last row of a section. */
 .ib-lbody > .ib-group > .ib-rw { content-visibility: auto; contain-intrinsic-size: auto none auto 50px; overflow-clip-margin: 48px; }
-.ib-lbody > .ib-group > .ib-rw:has(> .ib-nrow) { contain-intrinsic-size: auto none auto 65px; }
-.ib-lbody > .ib-group > .ib-mrow { content-visibility: auto; contain-intrinsic-size: auto none auto 46px; overflow-clip-margin: 48px; }
+.ib-lbody > .ib-group > .ib-rw:has(> .ib-nrow) { contain-intrinsic-size: auto none auto 84px; }
+.ib-lbody > .ib-group > .ib-mrow { content-visibility: auto; contain-intrinsic-size: auto none auto 66px; overflow-clip-margin: 48px; }
 .ib-band { position: relative; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px; border-radius: 8px; background: var(--ib-band); font-size: var(--ib-fs-13, 13px); font-weight: 600; width: 100%; text-align: left; }
 .ib-group + .ib-group { margin-top: 12px; }
 .ib-band .ib-n { font-weight: 500; color: var(--muted-foreground); }
 .ib-band .ib-ic { margin-left: auto; color: var(--muted-foreground); }
-/* The one-line row (approval "inbox-row-byline", 2026-10-29): the project, the subject cell (the thread pill, the
-   subject), then right-aligned the count in words, the agents' marks, the badge, the open counts and the time, each
-   in a column of its own so they line up down the list in every row, and every subject has the same room. Every
-   row's tracks depend only on the list's width (no row's content sizes them), so they line up though each row is its
-   own grid. The owner's call of 2026-10-29: full-width rows (a list of 1150px or more, `.ib-fullw`) say the full
-   words. The words column is 14% of the row, from 148px to 160px (1440 and wider), where "Draft · Your reply, 2 picks"
-   and "Undelivered 23 hours" fit; longer words end in "…" with the full words in the tooltip. The project column
-   gives way the same way, 15% from 120px to 170px. The badge column (110px) fits the triangle and "Holds up 12". The
-   open counts (approval "inbox-row-action-icon", 2026-10-29) get 84px, as the approved variant drew them: the action
-   pill and `?N` side by side, each drawn at most "99+" (`shownCount`). A wide row in a list under 1150px (no
-   `.ib-fullw`) keeps option A: the short words in 124px and the bare triangle in 52px. */
-.ib-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) 124px 64px 52px 84px 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
-.ib-fullw .ib-row { grid-template-columns: clamp(120px, 15%, 170px) minmax(0, 1fr) clamp(148px, 14%, 160px) 64px 110px 84px 76px; }
-/* One project's list: no project column (InboxList's WideRow). */
-.ib-noproj .ib-row { grid-template-columns: minmax(0, 1fr) 124px 64px 52px 84px 76px; }
-.ib-noproj.ib-fullw .ib-row { grid-template-columns: minmax(0, 1fr) clamp(148px, 14%, 160px) 64px 110px 84px 76px; }
-/* The words, the agents' marks, the badge and the open counts, each right-aligned in its column, so every subject
-   starts on one left edge; up to three agents' marks overlap within theirs, past that two and "+N". Open counts
-   wider than their column (two-digit pairs and up, "[□ 99+] ?99+" is 108px at 14px text) run out to the left, never
-   into the time; past the gap they slide under the badge, which paints above them on an opaque ground, so the
-   alert is always whole (the exact counts are in the row's name and the tooltips). */
-.ib-row :is(.ib-cw, .ib-mcol, .ib-bcol, .ib-cq) { display: inline-flex; justify-content: flex-end; align-items: center; min-width: 0; }
+/* The one-line row (approval "inbox-row-byline", 2026-10-29; its cells by approval "list-rows-mail-icons",
+   2026-10-30): the project with the agents' marks after it, the title cell (the thread's name, then the grey
+   subject), then right-aligned the count in words, the badge, the open counts and the time, each in a column of its
+   own so they line up down the list in every row, and every title has the same room. Every row's tracks depend only
+   on the list's width (no row's content sizes them), so they line up though each row is its own grid. The owner's
+   call of 2026-10-29: full-width rows (a list of 1150px or more, `.ib-fullw`) say the full words. The words column
+   is 14% of the row, from 148px to 160px (1440 and wider), where "Draft · Your reply, 2 picks" and "Undelivered 23
+   hours" fit; longer words end in "…" with the full words in the tooltip. The project column holds the marks the
+   old marks column held: 260px at full width, 220px below. The badge column (110px) fits the triangle and "Holds up
+   12". The open counts (approval "inbox-row-action-icon", 2026-10-29) get 84px, as the approved variant drew them:
+   the action pill and `?N` side by side, each drawn at most "99+" (`shownCount`). A wide row in a list under 1150px
+   (no `.ib-fullw`) keeps option A: the short words in 124px and the bare triangle in 52px. */
+.ib-row { display: grid; grid-template-columns: 220px minmax(0, 1fr) 124px 52px 84px 76px; align-items: center; gap: 0 10px; height: 50px; padding: 0 12px; border-bottom: 1px solid var(--ib-hair); font-size: var(--ib-fs-14, 14px); width: 100%; text-align: left; }
+.ib-fullw .ib-row { grid-template-columns: 260px minmax(0, 1fr) clamp(148px, 14%, 160px) 110px 84px 76px; }
+/* One project's list: the first column holds the agents' marks alone (InboxList's WideRow). */
+.ib-noproj .ib-row { grid-template-columns: clamp(80px, 10%, 112px) minmax(0, 1fr) 124px 52px 84px 76px; }
+.ib-noproj.ib-fullw .ib-row { grid-template-columns: clamp(80px, 10%, 112px) minmax(0, 1fr) clamp(148px, 14%, 160px) 110px 84px 76px; }
+/* The words, the badge and the open counts, each right-aligned in its column, so every title starts on one left
+   edge. Open counts wider than their column (two-digit pairs and up, "[□ 99+] ?99+" is 108px at 14px text) run out
+   to the left, never into the time; past the gap they slide under the badge, which paints above them on an opaque
+   ground, so the alert is always whole (the exact counts are in the row's name and the tooltips). */
+.ib-row :is(.ib-cw, .ib-bcol, .ib-cq) { display: inline-flex; justify-content: flex-end; align-items: center; min-width: 0; }
 .ib-row .ib-cq { gap: 8px; }
 .ib-row .ib-bcol { position: relative; z-index: 1; }
 /* The badge's ground: its tint over what the row shows under it (the card, the hover or the selected fill), so it
@@ -799,34 +798,35 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-row .ib-bcol .ib-badge.ib-b-stop { background: linear-gradient(var(--ib-badge-stop-bg), var(--ib-badge-stop-bg)), linear-gradient(var(--ib-row-fill), var(--ib-row-fill)) var(--card); }
 .ib-row .ib-bcol .ib-badge.ib-b-hold { background: linear-gradient(var(--ib-badge-hold-bg), var(--ib-badge-hold-bg)), linear-gradient(var(--ib-row-fill), var(--ib-row-fill)) var(--card); }
 .ib-row .ib-c.ib-qn { justify-content: flex-end; }
-.ib-row .ib-p { font-weight: 400; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ib-row.ib-u .ib-s { font-weight: 600; }
+/* The project cell: the project, cut first with "…", then the agents' marks, never cut. In one project's list the
+   marks alone, in a column of 10% of the row, from 80px to 112px (a fixed 112px squeezes the title out of a narrow
+   one-project list). At 112px (a list of about 1120px or more) three hosts with "×N" each fit on one line; narrower,
+   the run wraps between marks inside the column, never over the title: at 80px or more two "×N" marks share a
+   line, so the widest run (three marks) takes two lines, which the 50px row holds. */
+.ib-row .ib-from { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ib-noproj .ib-row .ib-ags { flex: 0 1 auto; flex-wrap: wrap; height: auto; min-height: 16px; row-gap: 2px; max-width: 100%; }
+.ib-row .ib-p { flex: 0 1 auto; min-width: 0; font-weight: 400; font-size: var(--ib-fs-14, 14px); color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ib-row.ib-u .ib-title { font-weight: 600; }
 /* The thread chip: it can shrink to its border (flex), and its name keeps its
    own 166px cap and ellipsis (the inner span), so the chip is as wide as before
    until the line runs short. */
 .ib-key { font-family: var(--font-mono); font-size: var(--ib-fs-11-5, 11.5px); color: var(--muted-foreground); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; white-space: nowrap; display: inline-flex; flex: 0 1 auto; min-width: 0; }
 .ib-key > .ib-keyt { min-width: 0; max-width: 166px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* A subject line (a wide row's subject cell, a two-line row's second line)
-   never spills: when it runs short the subject gives way first, but only down
-   to min(45%, 220px) or its own width, whichever is less (its width sets the
-   floor through the automatic minimum while flex-basis: content keeps its
-   natural size); then the chip shrinks; the line clips the rest. The guided
-   review mark keeps only its icon when the cell is narrow (under 300px).
-   The subject's shrink factor is a million, not a thousand: flex shares a
-   shortfall by factor times width, so at a thousand a chip still lost a
-   fraction of a pixel whenever the subject shrank, and Chrome drew an
-   ellipsis on a chip that fit (a 0.06 px cut). */
-.ib-row .ib-subj { display: flex; align-items: center; gap: 9px; min-width: 0; overflow: hidden; container-type: inline-size; }
-.ib-row .ib-s { flex: 0 1000000 content; width: min(45%, 220px); white-space: nowrap; }
-.ib-row .ib-s > .ib-st, .ib-nrow .ib-l2 .ib-s > .ib-st { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The title cell (approval "list-rows-mail-icons"): the title, then the grey preview, the pin and the guided review
+   mark, on one line that never spills. Short of room the preview gives way first, all the way, then the title; each
+   ends in "…" (its tooltip shows it whole). The preview's shrink factor is a million, not a thousand: flex shares a
+   shortfall by factor times width, so at a thousand the title still lost a fraction of a pixel whenever the preview
+   shrank, and Chrome drew an ellipsis on a title that fit (a 0.06 px cut). The guided review mark keeps only its
+   icon when the cell is narrow (under 300px). */
+.ib-row .ib-subj { display: flex; align-items: center; gap: 12px; min-width: 0; overflow: hidden; container-type: inline-size; }
+.ib-row .ib-title { flex: 0 1 auto; min-width: 0; font-size: var(--ib-fs-14-5, 14.5px); line-height: 1.35; letter-spacing: -0.006em; color: var(--foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-row .ib-pv { flex: 0 1000000 auto; min-width: 0; font-size: var(--ib-fs-14, 14px); line-height: 1.35; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-row .ib-subj > :is(.ib-att, .ib-pinmark) { flex: none; }
 @container (max-width: 300px) { .ib-row .ib-att .ib-att-l { display: none; } }
-/* Where the chip would be squeezed to its bare border it is left out: a cell
-   under 160px (after the subject's floor and the gaps nothing is left for it). */
-@container (max-width: 160px) { .ib-row .ib-key { display: none; } }
 .ib-nrow .ib-att .ib-att-l { display: none; }
 .ib-row .ib-c { color: var(--muted-foreground); font-size: var(--ib-fs-13, 13px); text-align: right; white-space: nowrap; }
 .ib-row .ib-t { color: var(--muted-foreground); font-size: var(--ib-fs-13, 13px); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.ib-row.ib-sent .ib-p, .ib-row.ib-sent .ib-s { color: var(--muted-foreground); font-weight: 400; }
+.ib-row.ib-sent .ib-p, .ib-row.ib-sent .ib-title { color: var(--muted-foreground); font-weight: 400; }
 /*
  * The delivery glyph before a row's time (DeliveryTick.tsx, approval "inbox-row-delivery", "Ticks"):
  * clock queued, dots sending, ✓ saved, ✓✓ delivered, a triangle not delivered. The shape tells the
@@ -860,21 +860,33 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
    exclamation-triangle, outline) in the badge's tint, Holds up with its count; the words stay for a screen reader. */
 .ib-badge.ib-bicon { padding: 0 6px; gap: 4px; font-variant-numeric: tabular-nums; }
 .ib-tri { display: block; flex: none; }
-.ib-nrow { padding: 10px 12px; border-bottom: 1px solid var(--ib-hair); display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; }
-.ib-nrow .ib-l1 { display: flex; align-items: center; gap: 8px; font-size: var(--ib-fs-14, 14px); }
-/* Line 1 (approval "inbox-row-byline", 2026-10-29): the project, the thread's pill, the time at the right. Short of
-   room the project gives way first, down to min(45%, 160px) or its own width (the wrapper's automatic minimum, as
-   the wide row's subject), then the pill; the time is never cut. */
-.ib-nrow .ib-l1 .ib-pw { flex: 0 1000000 content; width: min(45%, 160px); white-space: nowrap; }
-.ib-nrow .ib-l1 .ib-p { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); }
-.ib-nrow .ib-l2 .ib-c, .ib-nrow .ib-l1 .ib-t { color: var(--muted-foreground); font-size: var(--ib-fs-12-5, 12.5px); white-space: nowrap; }
-.ib-nrow .ib-l1 .ib-t { flex: none; margin-left: auto; }
-/* Line 2: the subject, then at its right end the agents' marks, the badge (when there is one) and the count (when
-   there is one), in that order. Only the subject is cut, all the way down if it must: the marks, the badge and the
-   count never are. The marks are not a column: they sit just left of what follows them. */
-.ib-nrow .ib-l2 .ib-s { flex: 0 1 auto; min-width: 0; white-space: nowrap; }
-.ib-nrow .ib-l2 .ib-mcol { display: inline-flex; flex: none; align-items: center; margin-left: auto; }
-.ib-nrow .ib-l2 > :is(.ib-badge, .ib-c) { flex: none; }
+/* The three-line row beside a thread (approval "list-rows-mail-icons", 2026-10-30). Line 1 sits 2px further from
+   the title than the lines below part, so the hover action (no taller than line 1, below) never reaches the title. */
+.ib-nrow { padding: 10px 12px; border-bottom: 1px solid var(--ib-hair); display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; }
+.ib-nrow .ib-l1 { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; font-size: var(--ib-fs-14, 14px); }
+/* Line 1 (approval "inbox-list-row-v2", 2026-10-30): the agents' tiles, the project hugging them (`.ib-lead`), the
+   time at the right. One 17px line (13px x 1.3) that never wraps: the project ends in "…". Unread, it is dark. */
+.ib-nrow .ib-l1 .ib-from { flex: 1 1 auto; min-width: 0; }
+.ib-nrow .ib-l1 .ib-p { font-size: var(--ib-fs-13, 13px); font-weight: 500; line-height: 17px; color: var(--muted-foreground); }
+.ib-nrow.ib-u:not(.ib-sent) .ib-l1 .ib-p { color: var(--foreground); font-weight: 550; }
+.ib-nrow .ib-l3 .ib-c, .ib-nrow .ib-l1 .ib-t { color: var(--muted-foreground); font-size: var(--ib-fs-12-5, 12.5px); white-space: nowrap; }
+.ib-nrow .ib-l1 .ib-t { flex: none; margin-left: auto; line-height: 17px; }
+/* Line 2: the title, never cut: a long one wraps, a word longer than the line breaks. Read, it is at the row's text
+   size and weight, darker than the preview. Unread (approval "inbox-row-unread-bigger", 2026-10-30), it is bigger
+   and main's weight, 15px 600, and drops back once read; a name that fit one line may wrap while unread. A Sent
+   row keeps the read look (`.ib-u` never reaches Sent or Quiet today: inboxRowUnread). */
+.ib-nrow .ib-l2 { min-width: 0; }
+.ib-nrow .ib-title { display: block; font-size: var(--ib-fs-13-5, 13.5px); line-height: 1.35; letter-spacing: 0; font-weight: 400; color: var(--foreground); overflow-wrap: anywhere; }
+.ib-nrow.ib-u:not(.ib-sent) .ib-title { font-size: var(--ib-fs-15, 15px); font-weight: 600; letter-spacing: -0.006em; }
+/* Line 3: the grey preview, cut first, all the way if it must, then the pin and the guided review mark after it,
+   and at the right end the badge (when there is one) and the count (when there is one). The badge and the count
+   never are cut. A row with none of these has no line 3. */
+.ib-nrow .ib-l3 { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; font-size: var(--ib-fs-13-5, 13.5px); overflow: hidden; }
+.ib-nrow .ib-l3:empty { display: none; }
+.ib-nrow .ib-l3 > .ib-pv { flex: 0 1 auto; min-width: 0; margin-right: auto; color: var(--muted-foreground); line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ib-nrow .ib-l3 > .ib-pv:has(~ :is(.ib-pinmark, .ib-att)) { margin-right: 0; }
+.ib-nrow .ib-l3 > :is(.ib-pinmark, .ib-att):not(:has(~ :is(.ib-pinmark, .ib-att))) { margin-right: auto; }
+.ib-nrow .ib-l3 > :is(.ib-badge, .ib-c, .ib-pinmark, .ib-att) { flex: none; }
 /* The count in words (`CountWords`; approval "inbox-row-byline", option A, 2026-10-29): the short form, "Draft",
    "Undelivered 14m", "Read", in a slot of at most 124px (a wide row's column) on every row, so it never takes the
    subject's room. Longer words ("To Claude Code (another session)") end in "…"; the full words are the tooltip's
@@ -901,12 +913,32 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
    outlined, and so is this one. */
 .ib-badge.ib-bicon.ib-b-act { padding: 0 7px 0 6px; background: var(--ib-badge-act-bg); color: var(--foreground); }
 .pn-inbox .ib-b-act svg.ib-ic { stroke-width: 2; }
-/* Several agents in that box (any list row, the one-line row too): the scale's 20 px tiles, overlapping 2 px rather than the stack's 5, so the second
-   tile never covers the first one's glyph (13 px, 3.5 px inside its tile): both marks read whole. */
-:is(.ib-row, .ib-nrow, .ib-mrow) .ib-mcol .ib-tg-stack .ib-mk + .ib-mk { margin-left: -2px; }
-.ib-nrow .ib-l2 { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--ib-fs-13-5, 13.5px); overflow: hidden; }
-.ib-nrow .ib-l2 .ib-s { color: var(--muted-foreground); }
-.ib-nrow.ib-u .ib-l2 .ib-s { color: var(--foreground); font-weight: 600; }
+/* A wide row's agents' marks after the project (approval "list-rows-mail-icons", `RowAgents`): one bare 16 px mark
+   per host (the scale's row size, no tile), 5px apart; a host's "×N" right after its mark; past three hosts two
+   marks and a "+N" pill. The marks take the line's quiet colour (OpenCode's mark is `currentColor`). */
+.ib-ags { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 16px; white-space: nowrap; color: var(--muted-foreground); }
+/* A three-line or phone row's line 1 (approval "inbox-list-row-v2", 2026-10-30, `RowAgentTiles`): the agents, then
+   the project, like a sidebar row. The tiles' run is bounded (at most two tiles, one per agent, and a "+N" tile for
+   the other agents) and never shrinks; the project takes the rest of the line on one line, cut with "…". The
+   project comes first in the DOM, so a screen reader reads it before the agents, as on a wide row; `order` draws
+   the tiles first. The tiles are the thread head's overlapping
+   tiles (`.ib-tg-stack`: the scale's 20, its 13px glyph, 5px under each other). A tile's fill already pads its
+   glyph, so the project sits 6px from the tile's edge. In place of the head's ring, each tile under another is cut
+   1.5px short of it (a mask), so the cut shows the row's own ground on hover, selection and dark alike. A negative
+   block margin keeps the 20px tiles from making the 17px line taller. */
+.ib-from.ib-lead { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
+.ib-lead > .ib-p { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ib-atiles { display: inline-flex; align-items: center; flex: none; height: 20px; margin: -1.5px 0; }
+.ib-lead > .ib-atiles { order: -1; }
+.ib-atile { display: inline-flex; align-items: center; justify-content: center; flex: none; width: var(--ib-mark-20); height: var(--ib-mark-20); border-radius: var(--ib-mark-20-r); background: var(--muted); position: relative; }
+.ib-atile:has(+ .ib-atile) { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 6.5px), transparent calc(100% - 6.5px)); mask-image: linear-gradient(to right, #000 calc(100% - 6.5px), transparent calc(100% - 6.5px)); }
+.ib-atile + .ib-atile { margin-left: -5px; }
+.ib-atile > .ib-mk, .ib-atile > .ib-mk > svg, .ib-atile > .ib-mk > img { width: var(--ib-mark-20-g); height: var(--ib-mark-20-g); }
+.ib-atile.ib-atmore { font-size: var(--ib-fs-10-5, 10.5px); font-weight: 650; color: var(--muted-foreground); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; min-width: var(--ib-mark-20); width: auto; padding: 0 3px; }
+.ib-ag { display: inline-flex; align-items: center; gap: 2px; }
+.ib-agx { position: relative; top: 2px; font-size: var(--ib-fs-12, 12px); font-weight: 600; line-height: 1; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.ib-row .ib-agx { top: 1px; }
+.ib-agplus { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: 999px; font-size: var(--ib-fs-10-5, 10.5px); font-weight: 600; color: var(--muted-foreground); background: var(--muted); font-variant-numeric: tabular-nums; }
 /* Hover and the selected row (design record "inbox-polish", item 1, variant A · Inset): a pill 3 px inside
    the row (its ::before, radius 8, no border), so the separators run on unbroken and never touch it, and the
    first row under a band keeps a gap, as the sidebar's active row sits inside its column. Keyboard focus is a
@@ -927,7 +959,7 @@ dialog.ib-dlg::backdrop { background: oklch(0 0 0 / 0.45); }
    focus ring stays on top. Only a colour fades, so reduced motion keeps it. */
 @keyframes ib-lit { 0%, 40% { background-color: var(--ib-lit); } 100% { background-color: transparent; } }
 :is(.ib-row, .ib-nrow)[data-lit]::before { animation: ib-lit 3000ms ease-in-out both; }
-.ib-nrow.ib-sent .ib-p, .ib-nrow.ib-sent .ib-l2 .ib-s { color: var(--muted-foreground); font-weight: 400; }
+.ib-nrow.ib-sent .ib-p, .ib-nrow.ib-sent .ib-title { color: var(--muted-foreground); font-weight: 400; }
 /* The Soft paint on the list (owner, 2026-10-16: Soft modernizes today's Inbox, it does not relayout it). Every
    rule here changes colour, surface, radius or face only: rows, bands, chips and badges keep today's sizes,
    columns and places. A border that goes keeps its width in a transparent colour, so no box moves. */
@@ -953,10 +985,10 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .ib-rw[data-menu] :is(.ib-row, .ib-nrow)::before { background: var(--ib-hover) !important; }
 .ib-rw[data-menu] :is(.ib-row, .ib-nrow).ib-sel::before { background: var(--ib-sel-hover) !important; }
 .ib-mrow[data-menu] { background: var(--ib-hover-s, color-mix(in oklch, var(--muted) 50%, transparent)); }
-/* Rows that wait on nobody (Sent, Quiet): the subject steps back. Off, each row keeps today's colour: a wide
-   row's subject takes its row's, a narrow row's is quiet text (`.ib-nrow .ib-l2 .ib-s`). */
-.ib-row[data-section="quiet"] .ib-s { color: var(--ib-quiet-dim, currentcolor); }
-.ib-nrow[data-section="quiet"] .ib-l2 .ib-s { color: var(--ib-quiet-dim, var(--muted-foreground)); }
+/* Rows that wait on nobody (Sent, Quiet): the title steps back. Off, a wide row's title takes its row's colour and
+   a three-line row's is quiet text. */
+.ib-row[data-section="quiet"] .ib-title { color: var(--ib-quiet-dim, currentcolor); }
+.ib-nrow[data-section="quiet"] .ib-title { color: var(--ib-quiet-dim, var(--muted-foreground)); }
 /* The thread chip (switch --ib-soft-chip): a quiet pill in the window's own face (a name, not code; audit 4), or
    today's outlined monospace tag. Its weight and fill have no today's declaration, so off they fall back to none. */
 .pn-inbox {
@@ -1024,6 +1056,8 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 .ib-pwait-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; max-width: 520px; text-align: center; color: var(--muted-foreground); font-size: var(--ib-fs-13, 13px); animation: ib-fade-in 160ms ease-out 600ms both; }
 /* Reduced motion: the same wait, then no fade. */
 @media (prefers-reduced-motion: reduce) { .ib-pwait-line { animation-duration: 1ms; } }
+/* Answers held for an asleep machine, under the line, as the thread draws them. */
+.ib-pwait-held { width: 100%; max-width: 640px; margin-top: 20px; text-align: left; }
 /* A full-screen file covers the window: no card of its own. */
 .ib-main > .ib-view.ib-full { border-radius: 0; box-shadow: none; }
 .ib-phead { height: 46px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--ib-hair); }
@@ -1423,6 +1457,26 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
 }
 .ib-prow .ib-paired { display: inline-flex; align-items: center; gap: 5px; color: var(--foreground); }
 .ib-prow .ib-paired .ib-ic { color: var(--success, var(--primary)); }
+/* Settings → Machines: the link form and this machine's link code, inside the card, ruled like its rows. */
+/* Settings → Machines: what was waiting for a machine no longer linked, under its own line, words kept whole. */
+.ib-sgroup > p.ib-mnote { margin-top: 18px; }
+.ib-prow .ib-desc.ib-held-words { color: var(--foreground); }
+.ib-mform { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--ib-hair); }
+.ib-mform:last-child { border-bottom: 0; }
+.ib-mform .ib-l { font-size: var(--ib-fs-14, 14px); font-weight: 500; color: var(--foreground); }
+.ib-mfield { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ib-mfield .ib-fbk-contact { flex: none; width: 100%; }
+.ib-mor { font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
+.ib-mpair { display: flex; gap: 8px; }
+.ib-mpair > .ib-mfield { flex: 1 1 auto; }
+.ib-mpair > .ib-mdigits { flex: 0 0 116px; }
+.ib-mform .ib-callout { margin: 0; }
+.ib-mform-f { display: flex; justify-content: flex-end; gap: 8px; }
+.ib-prow:has(+ .ib-mcode) { border-bottom: 0; }
+.ib-mcode { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 14px; border-bottom: 1px solid var(--ib-hair); }
+.ib-mcode:last-child { border-bottom: 0; }
+.ib-mcode .ib-callout { margin: 0; }
+.ib-mcode-digits { letter-spacing: 0.08em; }
 .ib-sfp { font-family: var(--font-mono); font-size: var(--ib-fs-11-5, 11.5px); letter-spacing: 0.02em; color: var(--foreground); }
 .ib-tile { width: 30px; height: 30px; border-radius: 8px; background: var(--muted); display: inline-flex; align-items: center; justify-content: center; flex: none; color: var(--muted-foreground); }
 .pn-inbox .ib-tile svg.ib-ic { width: 16px; height: 16px; }
@@ -1603,7 +1657,53 @@ button.ib-band:hover { background: var(--ib-band-hover-s, var(--ib-band)); }
    toolstrip and the bar like a dialog should. */
 .ib-docscroll, .ib-codeview { isolation: isolate; }
 .ib-docscroll:has([data-popout]) { z-index: 7; }
+/* The file area is a stacking context of its own in Side by side too (fold, full screen and phones set their
+   own below), so the contents rail (z 20 inside it) stays under the pane's stepping bar and its list. While a
+   popout is open the rail is hidden, in every layout; in Side by side only, the area also rises with the popout
+   above the bar (fold's and full screen's own rules below keep their area at z 0, as before). */
+.ib-view .ib-docarea { isolation: isolate; z-index: 0; }
+.ib-view .ib-docarea:has([data-popout]) { z-index: 7; }
+.ib-docarea:has([data-popout]) .pn-contents-rail { visibility: hidden; }
+/* Side by side with the contents rail (the owner's pick, 2026-10-30; AttachmentPane sets `data-contents-gutter`):
+   the column (the Viewer's root, 640 px at most) keeps the left edge it has today, centred or at the page's
+   24 px padding, and stops 68 px short of the page's right edge (24 px padding + 44 px; one more for rounding),
+   so the rail's dock fits beside it. A page wide enough to centre 640 px with that gutter is unchanged. 100% is
+   the page's content box (its padding and scrollbar excluded). */
+.ib-docscroll[data-contents-gutter] > :has(> [data-doc-text-root]) {
+  align-self: flex-start;
+  margin-left: max(0px, (100% - 640px) / 2);
+  max-width: min(640px, 100% - max(0px, (100% - 640px) / 2) - 45px);
+}
 .ib-toolstrip { position: absolute; top: 14px; left: 16px; z-index: 3; padding: 3px; border-radius: 9px; background: var(--card); box-shadow: var(--card-shadow); }
+/* An open document's Contents. On a desktop: ui's contents rail (MarkdownContentsRail, its rules in ui's
+   contents-rail.css, imported by apps/inbox/index.css), the ticks in the page's right gutter; its floating panel
+   takes the Inbox's float shadow. Where the rail yields, until it has measured, when it is hidden, and on a
+   phone: a Contents button over the file (ContentsPanel.tsx), which shows the rail again or opens the rail's
+   headings (ui's DocumentContents) as a sheet. */
+/* The labels inherit their size, 14 px in Workspaces (its body text). */
+.pn-inbox .pn-contents-rail { --shadow-menu: var(--ib-float-shadow); font-size: var(--ib-fs-14, 14px); }
+.pn-inbox .pn-contents-rail .ib-contents-hide { width: 24px; height: 24px; }
+.ib-contents { display: flex; flex-direction: column; min-height: 0; background: var(--card); }
+.ib-contents-h { display: flex; align-items: center; gap: 6px; flex: none; height: 40px; padding: 0 8px 0 12px; font-size: var(--ib-fs-12, 12px); font-weight: 500; color: var(--foreground); }
+.ib-contents-t { flex: 1; text-align: left; }
+.ib-contents-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 4px 10px; }
+/* The Contents button: under the toolstrip in a desktop's full screen, else at the file's top right (beside the
+   thread, the floating bar is at the top only in full screen). */
+.pn-inbox .ib-contents-open { position: absolute; z-index: 3; top: 14px; right: 16px; background: var(--card); box-shadow: var(--card-shadow); }
+.pn-inbox .ib-view.ib-fullview:not(.ib-phone) .ib-contents-open { top: 62px; right: auto; left: 16px; }
+.pn-inbox .ib-view.ib-fullview:not(.ib-phone):has([data-full-view-changed]) .ib-contents-open { top: 104px; }
+.pn-inbox .ib-view.ib-phone .ib-contents-open { top: 10px; right: 10px; }
+.pn-inbox .ib-view.ib-fullview.ib-phone .ib-contents-open { top: calc(10px + env(safe-area-inset-top)); }
+.pn-inbox .ib-view.ib-fullview.ib-phone:has([data-full-view-changed]) .ib-contents-open { top: calc(56px + env(safe-area-inset-top)); }
+.ib-contents-scrim { position: fixed; inset: 0; z-index: 59; border: 0; padding: 0; background: color-mix(in oklab, var(--foreground) 16%, transparent); }
+.ib-contents-sheet { position: fixed; z-index: 60; top: 0; bottom: 0; left: 0; width: min(300px, 84vw); padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); border-right: 1px solid var(--border); box-shadow: var(--card-shadow); }
+.ib-contents-sheet:focus { outline: none; }
+/* A phone's sheet (portaled out of .ib-phone, so it carries its own class): readable rows and 44 px targets, as the
+   phone surface draws the same list (surface.css). */
+.pn-inbox .ib-contents-phone .ib-contents-h { height: 52px; padding: 0 4px 0 16px; font-size: var(--ib-fs-15, 15px); font-weight: 600; }
+.pn-inbox .ib-contents-phone .ib-contents-h .ib-iconbtn { width: 44px; height: 44px; }
+.ib-contents-phone .ib-contents-list { padding: 0 6px 16px; }
+.ib-contents-phone nav button { min-height: 44px; font-size: var(--ib-fs-15, 15px); padding-top: 10px; padding-bottom: 10px; }
 .ib-htmlframe { position: absolute; inset: 0; }
 /* A page the attached page links to, not attached: read-only over the attached page, which stays mounted under it (htmlLinks.ts). */
 .ib-htmlframe.ib-covered, .ib-docscroll.ib-covered { visibility: hidden; }
@@ -2002,6 +2102,13 @@ pre code.pn-code[data-keep-layout] {
 .ib-opt .ib-d { display: block; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); }
 .ib-opt[data-ended] { cursor: default; opacity: 0.55; }
 .ib-opt[data-ended]:hover { background: none; }
+/* A linked machine that is away (asleep, or needing an update): its rows greyed as an ended session's option is, and one
+   quiet line above them, read like a thread's meta line. No colour of its own. */
+.ib-row[data-away] > *, .ib-nrow[data-away] > *, .ib-mrow[data-away] > * { opacity: 0.55; }
+.ib-away { display: flex; align-items: center; gap: 6px; margin: 0; padding: 8px 12px 6px; font-size: var(--ib-fs-12-5, 12.5px); line-height: 1.45; color: var(--muted-foreground); }
+.ib-away > .ib-ic { flex: none; }
+/* An answer held for another machine: the words as they will land, then its "Sending to …" line. */
+.ib-held-words { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ib-route hr { border: 0; border-top: 1px solid var(--ib-hair); margin: 6px 4px; }
 .pn-inbox .ib-route .ib-more { display: block; margin: 2px 4px 4px 33px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--primary); font-weight: 550; }
 .ib-route-error { margin: -2px 0 10px; }
@@ -2491,12 +2598,12 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
 .ib-rw:hover .ib-ract, .ib-rw:has(:focus-visible) .ib-ract, .ib-rw[data-action-focus] .ib-ract { display: inline-flex; }
 /* The action covers a one-line row's time and `?N` columns only: the words, the marks and the badge stay. */
 .ib-rw:hover:has(.ib-ract) .ib-row :is(.ib-t, .ib-cq), .ib-rw:has(:focus-visible):has(.ib-ract) .ib-row :is(.ib-t, .ib-cq) { visibility: hidden; }
-/* On a two-line row the action covers line 1's right end. The hidden time holds the action's width (its padding,
-   border, icon and gap, 41px, and its label, at the same text size as the time), so the project and then the pill
-   give way and end with "…" before it, never cut mid-word under it. */
-.ib-rw:hover:has(.ib-ract) .ib-nrow .ib-l1 .ib-t, .ib-rw:has(:focus-visible):has(.ib-ract) .ib-nrow .ib-l1 .ib-t { visibility: hidden; min-width: calc(41px + 5.6em); }
+/* On a three-line row the action covers line 1's right end, over the hidden time. It holds no width there: line 1
+   wraps like text (approval "list-rows-mail-icons"), so a wider time would re-wrap the project and change the row's
+   height under the pointer. A long project's end, or its marks, may sit under the action while it shows. */
+.ib-rw:hover:has(.ib-ract) .ib-nrow .ib-l1 .ib-t, .ib-rw:has(:focus-visible):has(.ib-ract) .ib-nrow .ib-l1 .ib-t { visibility: hidden; }
 /* Beside a thread the action sits on line 1, no taller than that line (14 px text at its normal leading, plus
-   the 6 px between the action's top and line 2's), so at any text size it never reaches line 2's marks and count. */
+   the 6 px between the action's top and the title's), so at any text size it never reaches the title. */
 .pn-inbox .ib-rw .ib-nrow ~ .ib-ract { top: 8px; transform: none; height: min(26px, calc(var(--ib-fs-14, 14px) * 1.2 + 6px)); }
 /* Quiet rows say why they are there: Read, Archived. */
 .ib-c.ib-qlabel { color: var(--muted-foreground); }
@@ -2599,6 +2706,11 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
    16 px, so iOS never zooms the page when one takes focus. */
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
   .pn-inbox { height: var(--ib-vvh, 100%); background: var(--card); -webkit-tap-highlight-color: transparent; }
+  /* The page canvas: Safari paints it past the visual viewport, under its bars and between the window and the
+     keyboard (iOS 26: about 100 px above the keyboard's ˄ ˅ ✓ bar, the owner's probe). The surface that meets the
+     keyboard is the card (the reply foot, the compose and search sheets), so the canvas is the card too, and no
+     dark band shows there. theme.css's `body` paints --background; the desktop keeps it. */
+  html:has(.pn-inbox), body:has(.pn-inbox) { background-color: var(--card); }
   .ib-main { padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left); gap: 0; position: relative; overflow: hidden; }
   /* One screen at a time: the pane is the screen, edge to edge, with no card around it. */
   .ib-main > :is(.ib-listcol, .ib-pane, .ib-view, .ib-spage, .ib-dpage, .ib-wn, .ib-bpage) { border-radius: 0; box-shadow: none; }
@@ -2619,7 +2731,6 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   /* the list: a compact header, sticky section bands, mail rows */
   .ib-lhead { height: calc(52px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 12px 0 4px; gap: 4px; border-bottom: 1px solid var(--ib-hair); }
   .ib-lhead h1 { font-size: var(--ib-fs-22, 22px); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ib-lhead .ib-path { display: none; }
   .pn-inbox .ib-sb-trigger { width: 44px; height: 44px; }
   .ib-sb-trigger-dot { top: 11px; right: 11px; }
   .ib-lbody { padding: 0 0 calc(24px + env(safe-area-inset-bottom)); }
@@ -2634,22 +2745,28 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-portline { margin: 10px 12px; }
   .ib-mrow { display: flex; flex-direction: column; gap: 3px; width: 100%; min-height: 64px; padding: 11px 16px 12px; border-bottom: 1px solid var(--ib-hair); text-align: left; }
   .ib-mrow:active { background: color-mix(in oklch, var(--muted) 50%, transparent); }
+  .ib-mrow { gap: 2px; }
   .ib-m1 { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--ib-fs-13-5, 13.5px); color: var(--muted-foreground); }
-  /* Line 1 (approval "inbox-row-byline", 2026-10-29): the project, the thread's pill, the time at the right; the
-     project gives way first, down to a floor (as on the two-line row), then the pill. */
-  .ib-m1 .ib-pw { flex: 0 1000000 content; width: min(45%, 160px); white-space: nowrap; }
-  .ib-m1 .ib-p { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ib-m1 .ib-t { flex: none; margin-left: auto; font-size: var(--ib-fs-13, 13px); font-variant-numeric: tabular-nums; }
-  /* Line 2: the subject on one line, cut first, then the guided review book, the agents' marks, the badge and the
-     count at the right end, never cut. */
-  .ib-ml2 { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 22px; }
-  .ib-m2 { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--ib-fs-15, 15px); line-height: 1.35; color: var(--foreground); }
-  .ib-ml2 > .ib-mcol { display: inline-flex; flex: none; align-items: center; margin-left: auto; }
-  .ib-ml2 > :is(.ib-badge, .ib-c, .ib-att) { flex: none; }
-  .ib-ml2 .ib-c { font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); white-space: nowrap; }
+  /* Three lines (approval "inbox-list-row-v2", 2026-10-30), as beside a thread. Line 1: the agents' tiles and the
+     project hugging them, one 17px line that never wraps (the project ends in "…"), then the pin and the time at
+     the right. */
+  .ib-m1 .ib-from { flex: 1 1 auto; min-width: 0; }
+  .ib-m1 .ib-p { font-size: var(--ib-fs-13, 13px); font-weight: 500; line-height: 17px; }
+  .ib-m1 .ib-t { flex: none; margin-left: auto; font-size: var(--ib-fs-13, 13px); line-height: 17px; font-variant-numeric: tabular-nums; }
+  /* Line 2: the title, never cut, at the row's text size and weight. Line 3: the preview, cut first, then the guided
+     review book, the badge and the count at the right end, never cut; a row with none of these has no line 3. */
+  .ib-m2 { display: block; min-width: 0; font-size: var(--ib-fs-14, 14px); line-height: 1.35; letter-spacing: 0; font-weight: 400; color: var(--foreground); overflow-wrap: anywhere; }
+  .ib-m3 { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; min-height: 22px; }
+  .ib-m3:empty { display: none; }
+  .ib-m3 > .ib-pv { flex: 0 1 auto; min-width: 0; margin-right: auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--ib-fs-14, 14px); line-height: 1.35; color: var(--muted-foreground); }
+  .ib-m3 > .ib-pv:has(+ .ib-att) { margin-right: 0; }
+  .ib-m3 > .ib-att { margin-right: auto; }
+  .ib-m3 > :is(.ib-badge, .ib-c, .ib-att) { flex: none; }
+  .ib-m3 .ib-c { font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); white-space: nowrap; }
   .ib-mrow.ib-u .ib-m1 .ib-p { color: var(--foreground); font-weight: 550; }
   .ib-mrow.ib-u .ib-m1 .ib-t { color: var(--primary); font-weight: 550; }
-  .ib-mrow.ib-u .ib-m2 { font-weight: 600; }
+  /* Unread, the title is bigger, as beside a thread (approval "inbox-row-unread-bigger"): 16px 600, 14px 400 once read. */
+  .ib-mrow.ib-u:not(.ib-sent) .ib-m2 { font-size: var(--ib-fs-16, 16px); font-weight: 600; letter-spacing: -0.006em; }
   .ib-mrow.ib-sent .ib-m2 { color: var(--muted-foreground); }
   .ib-mrow[data-lit] { animation: ib-lit 3000ms ease-in-out both; }
 
@@ -2735,9 +2852,11 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-sentanswers .ib-ranswer-a { flex: 0 0 100%; max-width: 100%; padding-inline-start: 2.1em; }
   .ib-route { padding: 10px 6px 8px; }
   .ib-opt { min-height: 44px; }
-  /* menus are sheets from the bottom edge: New message's sessions, the annotations list */
+  /* menus are sheets from the bottom edge: New message's sessions, the annotations list. Fixed boxes keep the
+     layout viewport's height when the keyboard comes up, so each one that holds a field ends where `--ib-vvh`
+     ends (the top of the keyboard) instead of at the window's bottom edge. */
   .ib-nmpop, .ib-menu.ib-nmpop, .ib-state.ib-nmpop, .ib-annpop {
-    position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: auto; max-height: 72%; overflow-y: auto; z-index: 60;
+    position: fixed; left: 0; right: 0; bottom: calc(100% - var(--ib-vvh, 100%)); top: auto; width: auto; max-height: calc(var(--ib-vvh, 100%) * 0.72); overflow-y: auto; z-index: 60;
     border-radius: var(--ib-sheet-corner, 12px) var(--ib-sheet-corner, 12px) 0 0; border-bottom: 0; padding-bottom: calc(10px + env(safe-area-inset-bottom));
     box-shadow: 0 -16px 48px rgba(0, 0, 0, 0.28);
   }
@@ -2747,7 +2866,9 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .pn-inbox .ib-arow .ib-aa { min-height: 36px; }
 
   /* a file: always full screen (its toolbar leads with Back to the thread), the comments as a sheet */
-  .ib-view.ib-full { z-index: 40; padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+  /* Its bottom is the keyboard's top (`--ib-vvh`): the composer, the comment row and the toolbar ride on the
+     keyboard, and the image or the page shrinks above them. */
+  .ib-view.ib-full { z-index: 40; bottom: calc(100% - var(--ib-vvh, 100%)); padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
   .ib-vhead { gap: 4px; padding: env(safe-area-inset-top) 6px 0 0; }
   .ib-vhead .ib-fn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--ib-fs-15, 15px); }
   .ib-vhead .ib-from, .ib-vhead .ib-sp { display: none; }
@@ -2822,6 +2943,10 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
   .ib-spg > h1 { font-size: var(--ib-fs-24, 24px); margin-top: 4px; }
   .ib-prow { flex-wrap: wrap; min-height: 56px; }
   .ib-prow .ib-txt { flex-basis: 60%; }
+  .ib-mpair { flex-direction: column; }
+  .ib-mpair > .ib-mdigits { flex: none; }
+  .ib-mfield .ib-fbk-contact { height: 44px; font-size: var(--ib-fs-16-in, 16px); }
+  .ib-away { padding-inline: 14px; }
   .ib-ways { grid-template-columns: minmax(0, 1fr); }
   .ib-scan { flex-direction: column; align-items: center; }
   .ib-scan-t { width: 100%; }
@@ -3236,7 +3361,7 @@ details.ib-wn-skipped[open] > summary { margin-bottom: 6px; }
 }
 /* A phone on its side: the comments sheet covers the file view (it shared it, and left room for one line). */
 @media (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
-  .ib-phone.ib-panel-open .ib-apanel { position: fixed; top: env(safe-area-inset-top); left: 0; right: 0; bottom: 0; height: auto; z-index: 8; border-radius: 0; }
+  .ib-phone.ib-panel-open .ib-apanel { position: fixed; top: env(safe-area-inset-top); left: 0; right: 0; bottom: calc(100% - var(--ib-vvh, 100%)); height: auto; z-index: 8; border-radius: 0; }
 }
 
 /* ───────────── Search (the approved "inbox-search" design; the palette after Workspaces' ui/command.tsx) ───────────── */
@@ -3410,19 +3535,32 @@ dialog.ib-cp::backdrop { background: oklch(0 0 0 / 0.45); }
   dialog.ib-cp[open] { animation: ib-sp-in 150ms cubic-bezier(0.2, 0.8, 0.2, 1); }
   dialog.ib-cp[open]::backdrop { animation: ib-sp-fade 150ms ease-out; }
 }
-.ib-cp-to { position: relative; display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 6px 14px 6px 16px; border-bottom: 1px solid var(--ib-line); flex: none; }
+/* The To row: its label and the agent's name share one baseline (the button exports its text's baseline). */
+.ib-cp-to { position: relative; display: flex; align-items: baseline; gap: 10px; min-height: 48px; padding: 7px 14px 7px 16px; border-bottom: 1px solid var(--ib-line); flex: none; --ib-cp-tdlh: 20px; }
+.ib-cp-to .ib-cp-tol { line-height: var(--ib-cp-tdlh); }
 /* Create thread from a Board card: which card the new thread is for. */
 .ib-cp-card { display: flex; align-items: center; gap: 8px; margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--ib-line); font-size: var(--ib-fs-13, 13px); color: var(--muted-foreground); flex: none; }
 .ib-cp-card b { color: var(--foreground); font-weight: 600; }
 .ib-cp-tol { color: var(--muted-foreground); font-size: var(--ib-fs-13-5, 13.5px); flex: none; }
-.pn-inbox .ib-cp-tobtn { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%; height: 34px; padding: 0 8px; border-radius: 7px; border: 0; background: transparent; color: var(--foreground); font-size: var(--ib-fs-14, 14px); text-align: left; }
+.pn-inbox .ib-cp-tobtn { display: inline-flex; align-items: baseline; gap: 7px; min-width: 0; max-width: 100%; height: 34px; padding: 7px 8px; border-radius: 7px; border: 0; background: transparent; color: var(--foreground); font-size: var(--ib-fs-14, 14px); line-height: var(--ib-cp-tdlh, 20px); text-align: left; }
+.ib-cp-tobtn > .ib-mk, .ib-cp-tobtn > svg.ib-ic, .ib-cp-none-to > svg.ib-ic { align-self: center; }
 .pn-inbox .ib-cp-tobtn:hover:not(:disabled), .pn-inbox .ib-cp-tobtn[aria-expanded="true"] { background: color-mix(in oklch, var(--muted) 70%, transparent); }
 .pn-inbox .ib-cp-tobtn:disabled { color: var(--muted-foreground); }
-.ib-cp-tobtn b { font-weight: 650; white-space: nowrap; }
+/* To is one line at every width: the mark, the agent's name and the chevron never shrink; the detail takes the rest. */
+.ib-cp-tobtn b, .ib-cp-tobtn s { flex: none; white-space: nowrap; }
+.ib-cp-tobtn b { font-weight: 650; }
 .ib-cp-tobtn s { font-weight: 600; color: var(--muted-foreground); }
 .ib-cp-tod { color: var(--muted-foreground); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The session's detail (SessionDetail): "· main · workspaces/worktrees". The folder's own name stays whole while it
+   fits; the parents shrink first with "…". Once fewer than ~4 em of them would show they wrap onto a second line
+   the one-line box hides, and the folder name then takes its own "…". Never two lines, never a cut glyph. */
+.ib-cp-tod[data-compose-detail] { display: flex; align-items: baseline; gap: 0.3em; flex: 0 1 auto; }
+.ib-cp-tdsep, .ib-cp-tdsuf { flex: none; }
+.ib-cp-tdw { display: flex; flex-wrap: wrap; column-gap: 0.3em; min-width: 0; height: var(--ib-cp-tdlh, 20px); overflow: hidden; }
+.ib-cp-tdf { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-cp-tdp { flex: 1 1 4em; max-width: max-content; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ib-cp-tobtn > svg.ib-ic { color: var(--muted-foreground); flex: none; }
-.ib-cp-none-to { display: inline-flex; align-items: center; gap: 7px; color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); padding: 0 8px; }
+.ib-cp-none-to { display: inline-flex; align-items: baseline; gap: 7px; color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); line-height: var(--ib-cp-tdlh, 20px); padding: 7px 8px; }
 .ib-cp-dsaved { margin-left: auto; flex: none; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); white-space: nowrap; }
 
 /* The To picker: anchored under the To line, over the message. */
@@ -3482,7 +3620,7 @@ dialog.ib-cp::backdrop { background: oklch(0 0 0 / 0.45); }
 .ib-key.ib-cp-tname[data-empty] { border-style: dashed; }
 .ib-key.ib-cp-tname:focus-within { border-color: var(--ring); border-style: solid; box-shadow: 0 0 0 1px var(--ring); }
 .ib-key.ib-cp-tname[data-invalid] { border-color: var(--destructive); border-style: solid; }
-.pn-inbox .ib-cp-tname-in { min-width: 0; max-width: 100%; border: 0; outline: none; background: transparent; color: inherit; font: inherit; font-size: var(--ib-fs-12, 12px); padding: 0; }
+.pn-inbox .ib-cp-tname-in { min-width: 0; max-width: 100%; border: 0; outline: none; background: transparent; color: inherit; font: inherit; font-size: var(--ib-fs-12, 12px); padding: 0; text-overflow: ellipsis; }
 .pn-inbox .ib-cp-tname-in::placeholder { color: var(--muted-foreground); opacity: 0.8; }
 /* While it follows the message: muted words and a small "auto" (aria-describedby says the same). */
 .ib-key.ib-cp-tname[data-auto] .ib-cp-tname-in { font-style: italic; }
@@ -3580,9 +3718,9 @@ dialog.ib-cp::backdrop { background: oklch(0 0 0 / 0.45); }
   .pn-inbox .ib-cp-barb { min-width: 44px; height: 44px; padding: 0 10px; border: 0; background: none; color: var(--primary); font-size: var(--ib-fs-16-in, 16px); }
   .pn-inbox .ib-cp-barb.ib-strong { font-weight: 650; }
   .pn-inbox .ib-cp-barb.ib-dis { opacity: 0.5; }
-  .ib-cp-to { min-height: 56px; }
-  .pn-inbox .ib-cp-tobtn { height: 44px; font-size: var(--ib-fs-16-in, 16px); }
-  .ib-cp-tod { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .ib-cp-to { min-height: 56px; padding-top: 6px; padding-bottom: 6px; --ib-cp-tdlh: 22px; }
+  .pn-inbox .ib-cp-tobtn { height: 44px; padding-top: 11px; padding-bottom: 11px; font-size: var(--ib-fs-16-in, 16px); }
+  .ib-cp-none-to { padding-top: 11px; padding-bottom: 11px; }
   .ib-cp-body { flex: 1; }
   .pn-inbox .ib-cp-field .ib-rtext, .pn-inbox .ib-cp-field .ib-rmirror { font-size: var(--ib-fs-16-in, 16px); min-height: 200px; max-height: none; }
   .ib-cp-files { grid-template-columns: 1fr; }
@@ -3609,9 +3747,16 @@ dialog.ib-cp::backdrop { background: oklch(0 0 0 / 0.45); }
   .ib-cp-picker[data-phone] .ib-cp-list { flex: 1; }
   .ib-cp-opt { min-height: 44px; font-size: var(--ib-fs-15, 15px); }
   .ib-cp-os { font-size: var(--ib-fs-13-5, 13.5px); }
-  /* A phone shows the agent and the project only; the folder stays in the option's accessible name. */
-  /* The project keeps a floor; on a narrow phone the start time gives way first (whole in the option's name and title). */
-  .ib-cp-picker[data-phone] .ib-cp-list { grid-template-columns: auto max-content minmax(min(11ch, 100%), max-content) minmax(0, 1fr) 16px; column-gap: 8px; }
+  /* A phone: two lines per session, so the detail To cuts shows whole here. The agent and, where its project has two
+     live sessions, when it started; under them the project's whole name, muted, wrapping only if it must. The folder
+     stays in the option's accessible name. */
+  .ib-cp-picker[data-phone] .ib-cp-list { display: flex; flex-direction: column; gap: 2px; }
+  .ib-cp-picker[data-phone] .ib-cp-opt { grid-template-columns: auto max-content minmax(0, 1fr) 16px; grid-template-areas: "mark agent time check" ". proj proj ."; column-gap: 8px; row-gap: 1px; padding: 8px; }
+  .ib-cp-picker[data-phone] .ib-cp-opt > .ib-mk { grid-area: mark; }
+  .ib-cp-picker[data-phone] .ib-cp-oa { grid-area: agent; }
+  .ib-cp-picker[data-phone] .ib-cp-os { grid-area: time; }
+  .ib-cp-picker[data-phone] .ib-cp-check { grid-area: check; }
+  .ib-cp-picker[data-phone] .ib-cp-op { grid-area: proj; white-space: normal; overflow-wrap: anywhere; color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); line-height: 1.4; }
   .ib-cp-picker[data-phone] .ib-cp-of { display: none; }
   .ib-draft-open { grid-template-columns: 36px minmax(0, 1fr); }
   .pn-inbox .ib-draft-open { padding: 14px 0 14px 12px; align-items: start; }
@@ -4377,6 +4522,9 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .pn-inbox .ib-chk-why :is(a, code) { overflow-wrap: anywhere; word-break: break-word; }
 .pn-inbox .ib-chk-why :not(pre) > code { font-size: 0.92em; padding: 0 4px; }
 .pn-inbox .ib-chk-why pre { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+/* A command in the why: its copy button always shows (not on hover only), and the text runs clear of it. */
+.pn-inbox .ib-chk-why [data-block-id] > button[title] { opacity: 1; }
+.pn-inbox .ib-chk-why [data-block-id] > button[title] + pre > code { padding-right: 40px; }
 .pn-inbox .ib-chk-do code { font-size: 0.88em; padding: 0 4px; overflow-wrap: anywhere; word-break: break-word; }
 .pn-inbox .ib-chk-holds { margin: 0 0 8px; font-size: var(--ib-fs-13, 13px); line-height: 1.45; color: var(--ib-badge-hold-fg, var(--foreground)); overflow-wrap: anywhere; }
 .pn-inbox .ib-chk-holds b { font-weight: 600; }
@@ -4450,7 +4598,7 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .pn-inbox .ib-badge.ib-b-wait { background: var(--ib-wait-bg); color: var(--ib-wait-fg); border-color: transparent; font-variant-numeric: tabular-nums; }
 .pn-inbox .ib-badge.ib-b-wait[data-stuck] { background: color-mix(in oklch, var(--foreground) 7%, transparent); color: var(--muted-foreground); }
 .ib-row .ib-c:has(.ib-b-wait) { display: flex; justify-content: flex-end; align-items: center; }
-.ib-nrow .ib-l2 .ib-c:has(.ib-b-wait) { display: inline-flex; align-items: center; }
+.ib-nrow .ib-l3 .ib-c:has(.ib-b-wait) { display: inline-flex; align-items: center; }
 .pn-inbox .ib-ract[data-row-send-now] svg { color: var(--ib-wait-fg); }
 /* The band under the reply. */
 .pn-inbox .ib-delivered.ib-undl { width: fit-content; max-width: 100%; margin-top: 12px; padding: 6px 6px 6px 11px; gap: 12px; border-radius: var(--ib-lr-sm, 8px); background: var(--ib-wait-band); border: 1px solid color-mix(in oklab, var(--primary) 22%, var(--border)); color: var(--foreground); font-size: var(--ib-fs-13, 13px); }
@@ -4514,6 +4662,8 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
 .ib-oq-row[data-highlighted] { background: var(--ib-hover-s, var(--ib-hover)); }
 .ib-oq-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 .ib-oq-n { width: 20px; height: 20px; border-radius: 999px; display: grid; place-items: center; align-self: start; margin-top: 1px; font-size: var(--ib-fs-11-5, 11.5px); font-weight: 600; font-variant-numeric: tabular-nums; background: var(--ib-fill); color: var(--muted-foreground); }
+/* An open action item's row: its box (the list row's action badge icon) where a question has its number. */
+.ib-oq-n.ib-oq-act { background: transparent; }
 .ib-oq-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .ib-oq-p { font-size: var(--ib-fs-13-5, 13.5px); color: var(--foreground); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .ib-oq-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; font-size: var(--ib-fs-12, 12px); }
@@ -4658,19 +4808,20 @@ ol.ib-rl-two .ib-rw-cmd { font-weight: 400; margin-top: 6px; }
   .ib-art-top { margin-bottom: 12px; }
   .ib-art-who { display: none; }
   .pn-inbox .ib-iconbtn.ib-artbtn { min-width: 44px; height: 44px; }
-  /* The header's icons keep their 44 px; the way back's label gives way first. */
+  /* The header's icons keep their 44 px. Short of room it gives way (headFit.ts, `data-fit`): Mark read and the
+     way back tighten, the Artifacts count leaves the button (its name keeps it), Mark read shows its icon alone
+     (its words kept as its name, visually hidden), then the way back shows its chevron alone (its name says where). */
   .ib-phead > .ib-iconbtn, .ib-phead > .ib-artbtn { flex: none; }
-}
-/* A phone narrower than 360 px: the Artifacts count leaves the button (its name keeps it), so Mark read keeps its label. */
-@media (max-width: 359px) {
-  .ib-artbtn-n { display: none; }
-  .pn-inbox .ib-iconbtn.ib-artbtn { width: 44px; padding: 0; }
-  /* With ⋯ More and the Artifacts button there a 320 px row has no room for the words: Mark read
-     shows its icon alone, its words kept as its name (visually hidden, still read). */
-  .ib-phead:has([data-thread-more]) .ib-hbtn[data-mark-read] .ib-hbtn-l { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .pn-inbox .ib-phead:has([data-thread-more]) .ib-hbtn[data-mark-read] { width: 44px; min-width: 44px; padding: 0; justify-content: center; }
-  /* With ⋯ More after Archive (design record "inbox-copy-message") the row is 2 px short at 320 px: Mark read's side margins go. */
-  .pn-inbox .ib-phead:has([data-thread-more]) .ib-hbtn[data-mark-read] { margin: 0; }
+  .pn-inbox .ib-phead[data-fit~="tight"] .ib-hbtn[data-mark-read] { padding: 0 7px; margin: 0; }
+  .pn-inbox .ib-phead[data-fit~="tight"] .ib-pback { padding-right: 6px; }
+  .ib-phead[data-fit~="count"] .ib-artbtn-n { display: none; }
+  .pn-inbox .ib-phead[data-fit~="count"] .ib-iconbtn.ib-artbtn { width: 44px; padding: 0; }
+  .ib-phead[data-fit~="mark"] .ib-hbtn[data-mark-read] .ib-hbtn-l { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .pn-inbox .ib-phead[data-fit~="mark"] .ib-hbtn[data-mark-read] { width: 44px; min-width: 44px; padding: 0; margin: 0; justify-content: center; }
+  .ib-phead[data-fit~="back"] .ib-pback-l { display: none; }
+  .pn-inbox .ib-phead[data-fit~="back"] .ib-pback { width: 44px; padding: 0; justify-content: center; }
+  /* The scrolled-away subject with no room to be read: a sliver of it is a stray glyph. */
+  .ib-phead[data-subject-off] .ib-phsubj { visibility: hidden; }
 }
 
 /* ───────────── Decision mode (approval "inbox-decision-mode", Queue; experimental) ─────────────
@@ -4854,7 +5005,8 @@ dialog.ib-dm::backdrop { background: oklch(0 0 0 / 0.45); }
   .ib-dm-dots i, .ib-dm-choice { transition: none; }
 }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
-  dialog.ib-dm { width: 100vw; height: 100dvh; border-radius: 0; }
+  /* Full screen down to the keyboard's top while it is up (`--ib-vvh`), so a note or an answer is never under it. */
+  dialog.ib-dm { width: 100vw; height: var(--ib-vvh, 100dvh); bottom: calc(100% - var(--ib-vvh, 100%)); border-radius: 0; }
   .ib-dm-head { padding: max(14px, env(safe-area-inset-top)) 16px 4px; }
   /* No room beside the count on a phone; the card names the thread under it. */
   .ib-dm-scope { display: none; }
@@ -5449,8 +5601,11 @@ dialog.ib-dlg.ib-ncd { width: min(760px, calc(100vw - 32px)); overflow: visible;
 .ib-ncd-links input { flex: 1; min-width: 0; border: 0; border-bottom: 1px dashed color-mix(in oklch, var(--border) 90%, transparent); background: none; color: var(--foreground); font: inherit; font-size: var(--ib-fs-13-5, 13.5px); padding: 4px 0; outline: none; }
 .ib-ncd-row { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 6px 16px 6px 22px; border-top: 1px solid var(--ib-hair); }
 .ib-ncd-l { color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); min-width: 34px; }
-.ib-ncd-none, .ib-ncd-proj { display: inline-flex; align-items: center; gap: 7px; color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); }
+.ib-ncd-none, .ib-ncd-proj { display: inline-flex; align-items: center; gap: 7px; min-width: 0; color: var(--muted-foreground); font-size: var(--ib-fs-14, 14px); }
 .ib-ncd-proj b { color: var(--foreground); }
+/* The "In" row's project: one line; its folder gives way first, then the name takes a "…". */
+.ib-ncd-row .ib-ncd-pname { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-ncd-row .ib-ncd-pname + .ib-cp-tod { flex: 0 1000 auto; }
 .ib-ncd-pick { position: relative; }
 .ib-ncd-pick .ib-cp-picker { top: auto; bottom: 54px; left: 72px; }
 .ib-ncd-err { margin: 0 22px 8px; }
@@ -5529,8 +5684,8 @@ dialog.ib-dlg.ib-bi { width: min(560px, calc(100vw - 32px)); }
   .ib-crdp-phone .ib-crdp-foot { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
   .pn-inbox .ib-crdp-phone .ib-crdp-foot .ib-btn { min-height: 44px; }
   .ib-crdp-notesform textarea, .ib-crdp-link input, .ib-crdp-drop input, .ib-ncd-title, .ib-ncd-notes, .ib-ncd-links input { font-size: var(--ib-fs-16-in, 16px); }
-  dialog.ib-dlg.ib-ncd.ib-ncd-phone { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; margin: 0; }
-  .ib-ncd-phone .ib-ncd-form { height: 100dvh; }
+  dialog.ib-dlg.ib-ncd.ib-ncd-phone { width: 100vw; height: var(--ib-vvh, 100dvh); max-height: none; border-radius: 0; margin: 0; }
+  .ib-ncd-phone .ib-ncd-form { height: var(--ib-vvh, 100dvh); }
   .ib-ncd-phone .ib-ncd-body { flex: 1; }
   .ib-ncd-phone .ib-ncd-modes { flex: 1; justify-content: space-around; }
   .ib-ncd-phone .ib-ncd-mode { min-height: 44px; flex: 1; justify-content: center; }
@@ -5710,7 +5865,7 @@ dialog.ib-dlg.ib-fbk { width: min(540px, calc(100vw - 32px)); }
 .ib-fbk-sent .ib-acts-row { justify-content: center; align-self: stretch; }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
   .pn-inbox dialog.ib-dlg.ib-fbk.ib-fbk-phone, dialog.ib-dlg.ib-fbk.ib-fbk-phone {
-    inset: auto 0 0 0; margin: 0; width: 100vw; max-width: 100vw; max-height: calc(var(--ib-vvh, 100dvh) - 24px);
+    inset: auto 0 calc(100% - var(--ib-vvh, 100%)) 0; margin: 0; width: 100vw; max-width: 100vw; max-height: calc(var(--ib-vvh, 100dvh) - 24px);
     border-radius: var(--ib-sheet-corner, 12px) var(--ib-sheet-corner, 12px) 0 0; border-bottom: 0;
   }
   .ib-fbk-phone .ib-dlg-in { padding: 18px calc(16px + env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
@@ -5866,6 +6021,8 @@ dialog.ib-dlg.ib-fbk { width: min(540px, calc(100vw - 32px)); }
 /* Phone: the card spans the width above the home bar and the toolbar sits above it (the pane measures the card as the
    foot); the tabs read Comment and Reply, Send is the icon. Minimized, the pill shares the toolbar's row at its left. */
 .ib-fcomp.ib-phone { left: 8px; right: 8px; width: auto; transform: none; bottom: calc(8px + env(safe-area-inset-bottom)); }
+/* With the keyboard up the full view ends at its top (`--ib-vvh`) and the home bar is under it: the card sits on the keyboard. */
+:root[data-ib-keyboard] .ib-fcomp.ib-phone { bottom: 8px; }
 .pn-inbox .ib-fcomp.ib-phone .ib-fcomp-tabs button { height: 32px; font-size: var(--ib-fs-13, 13px); }
 .pn-inbox .ib-fcomp.ib-phone .ib-fcomp-min, .pn-inbox .ib-fcomp.ib-phone .ib-fcomp-clip { width: 36px; height: 36px; }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
@@ -5879,4 +6036,49 @@ dialog.ib-dlg.ib-fbk { width: min(540px, calc(100vw - 32px)); }
 .pn-inbox .ib-fcomp-pillwrap.ib-phone .ib-fcomp-pill { height: 52px; min-width: 52px; justify-content: center; border-radius: 14px; padding: 0 14px; gap: 7px; font-size: var(--ib-fs-14, 14px); }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
   .pn-inbox:has(.ib-fcomp) .ib-toast { bottom: calc(148px + env(safe-area-inset-bottom)); }
+}
+
+/* The list's look options (approval "inbox-list-options", 2026-10-30; listLook.ts): three checkboxes in the list's
+   ⋮ menu, all off by default. Every rule here needs its option's class on the list column (.ib-lk-pill,
+   .ib-lk-compact, .ib-lk-noagents), so with all three off none applies. */
+/* Highlight thread subject: the row's title in the thread chip's pill (.ib-key: the open thread's pill, its face,
+   fill and radius), its text at the title's own size, one line, cut with "…". The text takes the pill's weight and
+   colour (500, the chip's grey) only where the row sets none of its own, which is a read row; an unread row keeps its
+   600 and its bigger size, a Sent or Quiet row its quieter colour (their rules are more specific). `:where` keeps
+   the text rule at (0,2,0) so those rules still win. */
+:where(.ib-lk-pill) .ib-rowkey { max-width: 100%; padding: 1px 8px; align-items: center; }
+:where(.ib-lk-pill) .ib-rowkey > .ib-keyt { display: block; max-width: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; color: inherit; font-weight: inherit; line-height: 1.35; }
+.ib-lk-pill .ib-nrow .ib-l2 > .ib-rowkey { display: inline-flex; vertical-align: top; }
+/* Hide agent icons: the marks leave the row, the run's words stay for a screen reader (the .ib-sr technique). In one
+   project's list the agents were the whole first cell: it goes, and a wide row's title takes its column. */
+.ib-listcol.ib-lk-noagents :is(.ib-atiles, .ib-ags) { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.ib-noproj.ib-lk-noagents .ib-from { display: contents; }
+.ib-noproj.ib-lk-noagents .ib-row { grid-template-columns: minmax(0, 1fr) 124px 52px 84px 76px; }
+.ib-noproj.ib-lk-noagents.ib-fullw .ib-row { grid-template-columns: minmax(0, 1fr) clamp(148px, 14%, 160px) 110px 84px 76px; }
+/* Compact rows: line 1 is the agents, the project, the title and the time; line 2 the preview. The project (with its
+   agents) gives way first, down to a floor of min(its width, --ib-lk-floor), then the title, cut with "…"; the time
+   never. flex-basis: content with the floor as its width is that floor (min-width: auto takes the smaller of the
+   content and the width); the project is overflow: clip, not hidden, so its whole width still counts as the run's
+   content. The floor is 136px; on a phone 360px wide or less it is 72px, so a long title next to a long project
+   still shows about ten characters (the title matters more than the rest of the project's name). */
+.ib-lk-compact { --ib-lk-floor: 136px; }
+.ib-lk-compact :is(.ib-nrow .ib-l1, .ib-m1) > .ib-from { flex: 0 1000000 content; width: var(--ib-lk-floor); min-width: auto; }
+.ib-lk-compact :is(.ib-nrow .ib-l1, .ib-m1) > .ib-from > .ib-p { flex: 0 1 auto; min-width: 0; overflow: clip; }
+.ib-lk-compact .ib-nrow .ib-l1 > .ib-title { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+.ib-lk-pill.ib-lk-compact .ib-nrow .ib-l1 > .ib-rowkey { flex: 0 1 auto; min-width: 0; }
+.ib-lk-compact .ib-nrow .ib-l1 { margin-bottom: 1px; }
+/* The height of a row not drawn yet, as its content box (as the three-line rows' estimates are): a compact row is
+   62px in all, 43px inside its padding and rule. */
+.ib-lk-compact .ib-lbody > .ib-group > .ib-rw:has(> .ib-nrow) { contain-intrinsic-size: auto none auto 43px; }
+@media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
+  /* A phone's title in its pill hugs the pill, as beside a thread. */
+  .ib-lk-pill .ib-mrow > .ib-rowkey { align-self: flex-start; }
+  .ib-lk-compact .ib-m1 > .ib-m2 { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+  .ib-lk-pill.ib-lk-compact .ib-m1 > .ib-rowkey { flex: 0 1 auto; min-width: 0; }
+  .ib-lk-compact .ib-mrow { min-height: 0; }
+  /* A compact phone row is 70px in all, 47px inside its padding and rule. */
+  .ib-lk-compact .ib-lbody > .ib-group > .ib-mrow { contain-intrinsic-size: auto none auto 47px; }
+}
+@media (max-width: 360px) {
+  .ib-lk-compact { --ib-lk-floor: 72px; }
 }
