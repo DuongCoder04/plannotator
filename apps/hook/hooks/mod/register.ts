@@ -84,7 +84,10 @@ import {
   inboxReminderEnvValue,
   inboxReminderWithThreads,
   pluginVersionOf,
+  readReminderSessions,
   readSessionThreads,
+  STORE_INBOX_REMINDER_SESSIONS,
+  withReminderSession,
 } from './inbox'
 import { inboxAgentTool, inboxReminderFor, type InboxToolInfo } from './inbox-contract'
 import { INBOX_DEFAULT_TOOLS } from './inbox-default-tools'
@@ -359,22 +362,26 @@ async function withinMs<T>($: Engine, ms: number, work: () => Promise<T>): Promi
 
 /**
  * Per conversation (session id), in this process: `delivered`, its first
- * prompt went in with the reminder (or, resumed, with its thread list), so
- * no later prompt carries either; `resumed`, whether it already had a model
- * turn when this process first saw it (conversationResumed), read once at
- * its first `prompt.submit` or main-loop `turn.start` here.
+ * prompt here went in with its context, so no later prompt carries it;
+ * `resumed`, whether it already had a model turn when this process first saw
+ * it (conversationResumed), read once at its first `prompt.submit` or
+ * main-loop `turn.start` here, whatever session.start has decided by then.
  */
 interface ReminderConversation {
   delivered: boolean
   resumed: Promise<boolean> | null
 }
 const reminderConversations = new Map<string, ReminderConversation>()
+/** The conversation the main loop was last seen in: coming back to an earlier one is an in-process `/resume`. */
+let lastConversationId: string | null = null
 function reminderConversation(sessionId: string): ReminderConversation {
   let state = reminderConversations.get(sessionId)
-  if (!state) {
-    state = { delivered: false, resumed: null }
+  if (!state || (lastConversationId !== null && lastConversationId !== sessionId)) {
+    // A session this process already saw, back again (`/resume` to it): a resumed conversation, its threads again.
+    state = state ? { delivered: false, resumed: Promise.resolve(true) } : { delivered: false, resumed: null }
     reminderConversations.set(sessionId, state)
   }
+  lastConversationId = sessionId
   return state
 }
 
@@ -384,6 +391,19 @@ function noteConversationStart($: Engine, state: ReminderConversation): Promise<
     .then(() => $.session.messages())
     .then(conversationResumed, () => false)
   return state.resumed
+}
+
+/** Whether this session id's first prompt got the reminder, in any process (`$.store` STORE_INBOX_REMINDER_SESSIONS), read when asked. */
+async function reminderRecorded($: Engine, sessionId: string): Promise<boolean> {
+  const stored = await Promise.resolve($.store.get(STORE_INBOX_REMINDER_SESSIONS)).catch(() => undefined)
+  return Object.hasOwn(readReminderSessions(stored), sessionId)
+}
+
+/** Records that this session id's first prompt got the reminder (read again before the write: another process may have added one). */
+async function recordReminder($: Engine, sessionId: string): Promise<void> {
+  const stored = await Promise.resolve($.store.get(STORE_INBOX_REMINDER_SESSIONS)).catch(() => undefined)
+  const now = Number(await Promise.resolve($.clock.now()).catch(() => Date.now()))
+  await $.store.set(STORE_INBOX_REMINDER_SESSIONS, withReminderSession(readReminderSessions(stored), sessionId, now))
 }
 
 /**
@@ -721,35 +741,48 @@ export function register(on: On) {
       ...(origin && typeof origin.kind === 'string' ? { originKind: origin.kind } : {}),
     }
     if (live) instance.onPromptSubmitting(ref)
-    // The Inbox reminder (#2243): the conversation's first prompt carries it
-    // as context, a resumed conversation's first prompt the session's open
-    // Inbox threads instead (it holds the reminder already). Only once per
-    // conversation in this process, counted once the prompt entered.
+    // The Inbox reminder (#2243): the conversation's first prompt here carries
+    // it as context; a resumed conversation's first prompt carries the
+    // session's open Inbox threads, plus the reminder when no record says its
+    // first prompt had it. Once per conversation in this process, counted once
+    // the prompt entered.
     let entering = e
     let reminderFor: ReminderConversation | null = null
+    let recordFor: string | null = null
+    // Classified at first sight, whatever session.start has decided yet: a
+    // first prompt that outwaits the gate must not leave the conversation to
+    // be read as resumed once its first answer exists.
+    const sightId = !ref.fromUs && reminderGateValue !== false ? await Promise.resolve($.session.id()).then(String, () => null) : null
+    const sight = sightId ? reminderConversation(sightId) : null
+    const sightResumed = sight ? noteConversationStart($, sight) : null
     // A prompt typed while session.start is still deciding waits for it (bounded).
-    if (!ref.fromUs && (await reminderGateDecided($)) === true && inboxToolName && allowed) {
+    if (sight && sightId && sightResumed && (await reminderGateDecided($)) === true && inboxToolName && allowed) {
       try {
-        const sessionId = String(await $.session.id())
-        const state = reminderConversation(sessionId)
-        // Read at this process's first sight of the conversation, a command or a meta prompt included.
-        const resumed = await noteConversationStart($, state)
-        const carries = inboxFirstPromptContext({ delivered: state.delivered, resumed, isMeta: e.isMeta === true, command: !!e.command })
+        const sessionId = sightId
+        const state = sight
+        const resumed = await sightResumed
         const settings = allowed
         const toolName = inboxToolName
-        const text =
-          carries === 'reminder'
-            ? inboxReminderFor(settings.inboxReminderCustom, toolName)
-            : carries === 'threads'
-              ? await withinMs($, SESSION_THREADS_RESUME_MS, async () =>
-                  readSessionThreads(hostOf($, settings.debugPath), settings.dataDir, sessionId, await inboxProjectFolderOf($), toolName),
-                )
-              : null
+        const isMeta = e.isMeta === true
+        const command = !!e.command
+        // The store is read only for a resumed conversation's first prompt here.
+        const recorded = resumed && !state.delivered && !isMeta && !command ? await reminderRecorded($, sessionId) : false
+        const carries = inboxFirstPromptContext({ delivered: state.delivered, resumed, recorded, isMeta, command })
+        const texts: string[] = []
+        if (carries?.reminder) texts.push(inboxReminderFor(settings.inboxReminderCustom, toolName))
+        if (carries?.threads) {
+          const threads = await withinMs($, SESSION_THREADS_RESUME_MS, async () =>
+            readSessionThreads(hostOf($, settings.debugPath), settings.dataDir, sessionId, await inboxProjectFolderOf($), toolName),
+          )
+          if (threads) texts.push(threads)
+        }
         if (carries) reminderFor = state
-        if (text) entering = { ...e, context: [...(Array.isArray(e.context) ? e.context : []), text] }
+        if (carries?.reminder) recordFor = sessionId
+        if (texts.length > 0) entering = { ...e, context: [...(Array.isArray(e.context) ? e.context : []), ...texts] }
       } catch {
         entering = e
         reminderFor = null
+        recordFor = null
       }
     }
     let result
@@ -760,7 +793,10 @@ export function register(on: On) {
       throw error
     }
     // Entered: the conversation has its first prompt's context now (a dropped prompt does not), or, resumed with no open thread, needs none.
-    if (reminderFor && result && typeof result.text === 'string') reminderFor.delivered = true
+    if (reminderFor && result && typeof result.text === 'string') {
+      reminderFor.delivered = true
+      if (recordFor) await recordReminder($, recordFor).catch(() => undefined)
+    }
     if (!live || instance.isDisposed) return result
     if (result && typeof result.text === 'string') {
       // Every prompt seen here is someone else's (the engine skips our hooks
@@ -775,8 +811,9 @@ export function register(on: On) {
   on('turn.start', async ($: Engine, e: any, next: Next) => {
     if (!e.agentId) await plainReminderAgain($)
     // A main turn no prompt.submit of ours saw start (our own plugin turns):
-    // the conversation is classified here, before its first answer exists.
-    if (!e.agentId && reminderGateValue === true) {
+    // the conversation is classified here, before its first answer exists,
+    // whatever session.start has decided yet.
+    if (!e.agentId && reminderGateValue !== false) {
       await Promise.resolve($.session.id())
         .then((id: unknown) => noteConversationStart($, reminderConversation(String(id))))
         .catch(() => undefined)

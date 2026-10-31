@@ -138,17 +138,43 @@ export function conversationResumed(messages: unknown): boolean {
 }
 
 /**
- * What the conversation's first prompt carries as `prompt.submit` `context`
- * (#2243): `reminder` for a conversation that started in this process,
- * `threads` (the session's open Inbox threads) for a resumed one, which holds
- * the reminder from its own first prompt (or a compaction's line) already.
- * Null: nothing, because the conversation had its first prompt already, or
- * this one is a meta prompt or a slash command (a command may run no model
- * turn, and the copy would be counted for nothing).
+ * What the conversation's first prompt in this process carries as
+ * `prompt.submit` `context` (#2243): the reminder for a conversation that
+ * starts here, or a resumed one whose session id has no record that its first
+ * prompt got the reminder (a conversation from before this mod: the old
+ * `prompt.context` block was rebuilt per process and never stored in the
+ * transcript; or from before the Inbox ran here); the session's open Inbox
+ * threads for any resumed one. Nothing on a prompt after the first, a meta
+ * prompt or a slash command (a command may run no model turn, and the copy
+ * would be counted for nothing).
  */
-export function inboxFirstPromptContext(input: { delivered: boolean; resumed: boolean; isMeta: boolean; command: boolean }): 'reminder' | 'threads' | null {
+export function inboxFirstPromptContext(input: { delivered: boolean; resumed: boolean; recorded: boolean; isMeta: boolean; command: boolean }): { reminder: boolean; threads: boolean } | null {
   if (input.delivered || input.isMeta || input.command) return null
-  return input.resumed ? 'threads' : 'reminder'
+  return { reminder: !input.resumed || !input.recorded, threads: input.resumed }
+}
+
+/**
+ * `$.store` key: the session ids whose first prompt carried the reminder,
+ * each with when (`$.clock.now()` ms), so a resumed conversation that has it
+ * gets only its threads. Kept to the newest INBOX_REMINDER_SESSIONS_MAX.
+ */
+export const STORE_INBOX_REMINDER_SESSIONS = 'inboxReminderSessions'
+export const INBOX_REMINDER_SESSIONS_MAX = 500
+
+/** The stored record: session id → when, anything else dropped. */
+export function readReminderSessions(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const out: Record<string, number> = {}
+  for (const [id, at] of Object.entries(value as Record<string, unknown>)) {
+    if (id && typeof at === 'number' && Number.isFinite(at)) out[id] = at
+  }
+  return out
+}
+
+/** The record with `sessionId` added at `now`, the oldest beyond INBOX_REMINDER_SESSIONS_MAX dropped. */
+export function withReminderSession(record: Record<string, number>, sessionId: string, now: number): Record<string, number> {
+  const entries = Object.entries({ ...record, [sessionId]: now }).sort((a, b) => b[1] - a[1])
+  return Object.fromEntries(entries.slice(0, INBOX_REMINDER_SESSIONS_MAX))
 }
 
 /**

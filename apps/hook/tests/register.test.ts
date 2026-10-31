@@ -32,13 +32,18 @@ function world(
     store?: Record<string, unknown>
     /** Prompts the bottom drops (as a settings hook's block would), by their text. */
     dropPrompt?: (text: string) => boolean
+    /** Holds the engine's own session start (the mod decides after it) until it settles. */
+    sessionStarted?: Promise<void>
   } = {},
 ) {
   const files = options.files ?? new Map<string, string>()
   const runs: string[][] = []
   const submits: string[] = []
   const logs: string[] = []
-  on('session.start', ($: any, e: any) => ({ cwd: e.cwd }))
+  on('session.start', async ($: any, e: any) => {
+    await options.sessionStarted
+    return { cwd: e.cwd }
+  })
   on('session.id', () => ({ value: options.sessionId?.() ?? 'session-1' }))
   on('session.cwd', () => ({ value: '/work' }))
   on('session.end', ($: any, e: any) => ({ sessionId: e.sessionId }))
@@ -660,6 +665,8 @@ describe('register', () => {
     // What the SessionStart compact command hook prints: the one copy after a compaction.
     expect(w.env.get('PLANNOTATOR_INBOX_REMINDER')).toBe(REMINDER)
     expect(w.store.has('inboxReminderContextWorks')).toBe(false)
+    // The record a resume reads: this session's first prompt had the reminder.
+    expect(Object.keys(w.store.get('inboxReminderSessions') as object)).toEqual(['session-1'])
   })
 
   test('a guarded machine: the same, the reminder once per conversation, again after /clear, and the plain reminder for the compact hook', { plugins: [GUARD] }, async ($: any, on: any) => {
@@ -784,6 +791,31 @@ describe('register', () => {
     expect(w.contexts).toEqual([[REMINDER]])
   })
 
+  // A session.start slower than the first prompt's wait: that prompt goes on
+  // without context, but the conversation is classed then, as fresh. Its
+  // first answer must not make the next prompt think it resumed one.
+  test('a session.start slower than the wait: the first prompt goes on bare, and the next one carries the reminder', async ($: any, on: any) => {
+    let release: () => void = () => undefined
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let rows: unknown[] = []
+    const w = world(on, { files: withRegistry(), fetch: inbox(TOOLS, []), sessionStarted: held })
+    on('session.messages', () => ({ value: rows }))
+
+    const starting = $.session.start(SESSION)
+    const submitted = $.prompt.submit({ text: 'Refactor the handler.' })
+    await w.clock.settle()
+    await w.clock.advance(2_500)
+    await submitted
+    release()
+    await starting
+    rows = [{ role: 'user', text: 'Refactor the handler.' }, { role: 'assistant', text: 'Done.' }]
+    await $.prompt.submit({ text: 'And the tests.' })
+
+    expect(w.contexts).toEqual([null, [REMINDER]])
+  })
+
   test('a dropped prompt is not counted as reached: the next prompt carries the reminder again', { plugins: [GUARD] }, async ($: any, on: any) => {
     const w = world(on, { files: withRegistry(), fetch: inbox(TOOLS, []), dropPrompt: (text) => text === 'refused' })
     await $.session.start(SESSION)
@@ -867,6 +899,8 @@ describe('register', () => {
     },
   }
   const THREADS = `Your open Plannotator Inbox threads in this project (1). Before reply_to into a thread you have not read in this context window, call ${INBOX_TOOL} read_thread with no id and match the subject. Their decisions stay in these threads: when the person writes in the chat, say what waits and link the thread, but never also ask it in the chat with a blocking question tool (AskUserQuestion or similar).\n- ${THREAD_ID} · "ML team journey" · 2 open questions · the person wrote something you have not read · last the person 2026-10-27 06:24Z\nMore: read_thread with no id lists every thread (asked_by "anyone", include_resolved); search finds older ones by words (all_projects).`
+  /** The mod's record that session-1's first prompt had the reminder. */
+  const RECORDED = { inboxReminderSessions: { 'session-1': 1 } }
   /** What `$.session.messages()` holds for a resumed conversation before its first prompt here. */
   const RESUMED_ROWS = [
     { role: 'user', text: 'Ship the journey fixes.' },
@@ -956,7 +990,7 @@ describe('register', () => {
 
   test('an Inbox from before the peek mark (no peek in its health): the list is never asked for, so it makes no project', async ($: any, on: any) => {
     const peeks: any[] = []
-    const w = world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks, { listed: true, up: true, old: true }) })
+    const w = world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks, { listed: true, up: true, old: true }), store: RECORDED })
     on('session.compact', () => ({ messages: SUMMARY }))
     on('session.messages', () => ({ value: RESUMED_ROWS }))
     await $.session.start(SESSION)
@@ -981,11 +1015,11 @@ describe('register', () => {
 
   // A resumed conversation (`--resume`, `--continue`, an in-process
   // `/resume`): its history is there before its first prompt here. That
-  // prompt carries the session's open threads, never the reminder again (the
-  // conversation holds it from its own first prompt, or a compaction's line).
-  test("a resumed conversation's first prompt carries the session's open threads once, and no second reminder", async ($: any, on: any) => {
+  // prompt carries the session's open threads, and the reminder only when no
+  // record says the session's first prompt had it.
+  test("a resumed conversation whose first prompt had the reminder: its first prompt here carries the open threads once, no second reminder", async ($: any, on: any) => {
     const peeks: any[] = []
-    const w = world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks) })
+    const w = world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks), store: RECORDED })
     on('session.messages', () => ({ value: RESUMED_ROWS }))
     await $.session.start(SESSION)
 
@@ -998,9 +1032,47 @@ describe('register', () => {
     expect(peeks[0]).toEqual({ name: 'read_thread', arguments: { project_path: '/work', agent_session: 'session-1', limit: 5 }, _meta: { 'ai.plannotator/inbox-peek': true } })
   })
 
-  test('under the guard, a resumed conversation gets its threads too, and the guard has nothing of ours to skip', { plugins: [GUARD] }, async ($: any, on: any) => {
+  // An unguarded machine's old reminder was a prompt.context block, rebuilt
+  // per process and never in the transcript: a conversation from before this
+  // mod, resumed, has no reminder unless its first prompt here brings one.
+  test('a conversation from before the record (assistant rows, no record), resumed: the reminder once, with its threads, and recorded from then on', async ($: any, on: any) => {
     const peeks: any[] = []
     const w = world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks) })
+    on('session.messages', () => ({ value: RESUMED_ROWS }))
+    await $.session.start(SESSION)
+
+    await $.prompt.submit({ text: 'Where were we?' })
+    await $.prompt.submit({ text: 'Go on.' })
+
+    expect(w.contexts).toEqual([[REMINDER, THREADS], null])
+    expect(Object.keys(w.store.get('inboxReminderSessions') as object)).toEqual(['session-1'])
+  })
+
+  test('a recorded conversation resumed with no open thread: no reminder and nothing else', async ($: any, on: any) => {
+    const w = world(on, { files: withRegistry(), fetch: inbox(TOOLS, []), store: RECORDED })
+    on('session.messages', () => ({ value: RESUMED_ROWS }))
+    await $.session.start(SESSION)
+
+    await $.prompt.submit({ text: 'Where were we?' })
+    await $.prompt.submit({ text: 'Go on.' })
+
+    expect(w.contexts).toEqual([null, null])
+  })
+
+  test('an unrecorded conversation resumed with no open thread: the reminder alone, once', async ($: any, on: any) => {
+    const w = world(on, { files: withRegistry(), fetch: inbox(TOOLS, []) })
+    on('session.messages', () => ({ value: RESUMED_ROWS }))
+    await $.session.start(SESSION)
+
+    await $.prompt.submit({ text: 'Where were we?' })
+    await $.prompt.submit({ text: 'Go on.' })
+
+    expect(w.contexts).toEqual([[REMINDER], null])
+  })
+
+  test('under the guard, a resumed conversation gets its threads too, and the guard has nothing of ours to skip', { plugins: [GUARD] }, async ($: any, on: any) => {
+    const peeks: any[] = []
+    const w = world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks), store: RECORDED })
     on('session.messages', () => ({ value: RESUMED_ROWS }))
     on('classic.SessionStart', () => ({}))
     await $.session.start(SESSION)
@@ -1013,11 +1085,11 @@ describe('register', () => {
     expect(skippedOf(w.logs)).toEqual([])
   })
 
-  test('an in-process /resume: the new id\'s first prompt carries that session\'s threads; a /clear gets the reminder', async ($: any, on: any) => {
+  test("an in-process /resume: the new id's first prompt carries that session's threads; a /clear gets the reminder; back to an earlier session, its threads again", async ($: any, on: any) => {
     const peeks: any[] = []
     let sessionId = 'session-1'
     let rows: unknown[] = []
-    const w = world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks), sessionId: () => sessionId })
+    const w = world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks), sessionId: () => sessionId, store: { inboxReminderSessions: { 'session-9': 1 } } })
     on('session.messages', () => ({ value: rows }))
     await $.session.start(SESSION)
 
@@ -1028,15 +1100,20 @@ describe('register', () => {
     sessionId = 'session-10'
     rows = []
     await $.prompt.submit({ text: 'Something new.' })
+    // /resume back to session-9, which this process already saw.
+    sessionId = 'session-9'
+    rows = RESUMED_ROWS
+    await $.prompt.submit({ text: 'And the journey again.' })
+    await $.prompt.submit({ text: 'Go on.' })
 
-    expect(w.contexts).toEqual([[REMINDER], [THREADS], [REMINDER]])
-    expect(peeks.map((peek) => peek.arguments.agent_session)).toEqual(['session-9'])
+    expect(w.contexts).toEqual([[REMINDER], [THREADS], [REMINDER], [THREADS], null])
+    expect(peeks.map((peek) => peek.arguments.agent_session)).toEqual(['session-9', 'session-9'])
   })
 
-  test('a resumed conversation with no open thread, or no Inbox running: no context, and the Inbox is asked once, not on every prompt', async ($: any, on: any) => {
+  test('a recorded conversation resumed with no open thread: the Inbox is asked once, not on every prompt', async ($: any, on: any) => {
     const peeks: any[] = []
     const state = { listed: false, up: true }
-    const w = world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks, state) })
+    const w = world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks, state), store: RECORDED })
     on('session.messages', () => ({ value: RESUMED_ROWS }))
     await $.session.start(SESSION)
     await $.prompt.submit({ text: 'Where were we?' })
@@ -1044,6 +1121,16 @@ describe('register', () => {
     await $.prompt.submit({ text: 'Go on.' })
     expect(w.contexts).toEqual([null, null])
     expect(peeks).toHaveLength(1)
+  })
+
+  test('a recorded conversation resumed while the Inbox is not running: no context, and the prompt goes on', async ($: any, on: any) => {
+    const peeks: any[] = []
+    const w = world(on, { files: withRegistry(), fetch: inboxWithThreads(peeks, { listed: true, up: false }), store: RECORDED })
+    on('session.messages', () => ({ value: RESUMED_ROWS }))
+    await $.session.start(SESSION)
+    await $.prompt.submit({ text: 'Where were we?' })
+    expect(w.contexts).toEqual([null])
+    expect(peeks).toEqual([])
   })
 
   test('an Inbox found: plannotator_inbox carries exactly the tools its /mcp offers, filled arguments left out', async ($: any, on: any) => {

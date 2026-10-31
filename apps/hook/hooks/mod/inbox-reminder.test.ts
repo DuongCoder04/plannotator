@@ -1,12 +1,12 @@
-// The Inbox reminder (#2243): what a conversation's first prompt carries
-// (pure rules), and the plugin's SessionStart `compact` command hook, run for
+// The Inbox reminder (#2243): the record of sessions it reached, telling a
+// resumed conversation apart, and the plugin's SessionStart `compact` command hook, run for
 // real under sh and bash (and PowerShell when it is installed) from the
 // command hooks.json ships.
 import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { conversationResumed, INBOX_REMINDER_ENV, inboxFirstPromptContext, inboxReminderEnvValue } from './inbox'
+import { conversationResumed, INBOX_REMINDER_ENV, INBOX_REMINDER_SESSIONS_MAX, inboxReminderEnvValue, readReminderSessions, withReminderSession } from './inbox'
 import { inboxReminderText } from './inbox-contract'
 
 const TOOL = 'mcp__plugin_plannotator_tools__plannotator_inbox'
@@ -18,27 +18,21 @@ const TOOL = 'mcp__plugin_plannotator_tools__plannotator_inbox'
 const MARKER = `/tmp/plannotator-reminder-pwned-${process.pid}`
 const HOSTILE = `-n Ask first. a\\b \\c\\n 100% %s %d "double" 'single' $(touch ${MARKER}-1) \`touch ${MARKER}-2\` \${HOME} $HOME\nsecond line\n\tthird \\ end\n`
 
-describe("the first prompt's context", () => {
-  // Every row: delivered × resumed × meta × command.
-  const rows: Array<[delivered: boolean, resumed: boolean, isMeta: boolean, command: boolean, carries: 'reminder' | 'threads' | null]> = [
-    // A conversation that started in this process: the reminder.
-    [false, false, false, false, 'reminder'],
-    // A resumed one holds the reminder already: its open threads instead, never a second reminder.
-    [false, true, false, false, 'threads'],
-    // Its first prompt went in already: nothing more, resumed or not.
-    [true, false, false, false, null],
-    [true, true, false, false, null],
-    // A meta prompt or a slash command never carries either.
-    [false, false, true, false, null],
-    [false, true, true, false, null],
-    [false, false, false, true, null],
-    [false, true, false, true, null],
-  ]
-  for (const [delivered, resumed, isMeta, command, carries] of rows) {
-    test(`delivered=${delivered} resumed=${resumed} isMeta=${isMeta} command=${command} → ${carries}`, () => {
-      expect(inboxFirstPromptContext({ delivered, resumed, isMeta, command })).toBe(carries)
-    })
-  }
+describe("the record of sessions whose first prompt had the reminder", () => {
+  test('a resumed session over the limit: the newest are kept, the oldest go, and a fresh one is always in', () => {
+    let record: Record<string, number> = {}
+    for (let i = 0; i < INBOX_REMINDER_SESSIONS_MAX; i++) record = withReminderSession(record, `s-${i}`, 1_000 + i)
+    record = withReminderSession(record, 'newest', 5_000)
+    expect(Object.keys(record)).toHaveLength(INBOX_REMINDER_SESSIONS_MAX)
+    expect(record.newest).toBe(5_000)
+    expect('s-0' in record).toBe(false)
+    expect(record[`s-${INBOX_REMINDER_SESSIONS_MAX - 1}`]).toBe(1_000 + INBOX_REMINDER_SESSIONS_MAX - 1)
+  })
+  test('a stored value someone else wrote: only id-to-time entries count', () => {
+    expect(readReminderSessions(['session-1'])).toEqual({})
+    expect(readReminderSessions('session-1')).toEqual({})
+    expect(readReminderSessions({ 'session-1': 1, 'session-2': 'yes', '': 3, 'session-3': Number.NaN })).toEqual({ 'session-1': 1 })
+  })
 })
 
 describe('telling a resumed conversation from one that starts here', () => {
