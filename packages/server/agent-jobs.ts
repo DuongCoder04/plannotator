@@ -10,6 +10,7 @@
 
 import { childEnv } from "@plannotator/shared/child-env";
 import { askAiChildEnv } from "@plannotator/ai/providers/ask-ai-env";
+import { planAgentJobSpawn } from "@plannotator/ai/providers/command-path";
 import { resolve as resolvePath } from "node:path";
 import { allowedToolsOf, CLAUDE_SHELL_BLOCKED_WARNING, detectClaudeShellBlocked, disallowedToolsOf, formatClaudeLogEvent } from "./claude-review";
 import {
@@ -170,6 +171,17 @@ export interface AgentJobHandlerOptions {
 
 
 /**
+ * Where `name` is on the live `process.env.PATH`, which the job spawn inherits.
+ * (`Bun.which` without the option consults the PATH captured at process start.)
+ */
+const whichOnPath = (name: string): string | null => Bun.which(name, { PATH: process.env.PATH }) ?? null;
+
+/** The marker engine a job runs: its provider's, or the one a guide job carries. */
+function jobMarkerEngine(provider: string, engine: string | undefined): MarkerEngine | undefined {
+  return MARKER_ENGINES[provider as MarkerEngineId] ?? (engine ? MARKER_ENGINES[engine as MarkerEngineId] : undefined);
+}
+
+/**
  * Best-effort model catalog for a marker engine, spawned once. The spawn lives
  * HERE (per-runtime — Bun.spawn) rather than in marker-review.ts, which must stay
  * Bun-free for the Pi vendor build. ASYNC so it never blocks the event loop on
@@ -180,7 +192,10 @@ export interface AgentJobHandlerOptions {
  */
 async function discoverMarkerModels(engine: MarkerEngine, program: string): Promise<MarkerModel[]> {
   try {
-    const proc = Bun.spawn([program, ...engine.modelsArgv], {
+    // A Windows .cmd shim starts through cmd.exe, as a job does (#2372).
+    const launch = planAgentJobSpawn([program, ...engine.modelsArgv], { which: whichOnPath });
+    const proc = Bun.spawn(launch.command, {
+      windowsVerbatimArguments: launch.verbatim,
       env: childEnv(),
       stdout: "pipe",
       stderr: "ignore",
@@ -319,10 +334,21 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
       const spawnCwd = spawnOptions?.cwd ?? getCwd();
       const captureStdout = spawnOptions?.captureStdout ?? false;
 
-      const hasStdinPrompt = !!spawnOptions?.stdinPrompt;
+      // On Windows a CLI installed as a .cmd shim (Pi's pi.cmd) starts
+      // through cmd.exe, as Ask AI starts it (#2372). Elsewhere, and for
+      // arguments cmd.exe would misread (`unsafeScript`), this is the command
+      // as built, which Bun starts as before.
+      const launch = planAgentJobSpawn(command, {
+        which: whichOnPath,
+        stdinPrompt: spawnOptions?.stdinPrompt,
+        promptOnStdin: jobMarkerEngine(provider, spawnOptions?.engine)?.promptOnStdin,
+      });
+      const stdinPrompt = launch.stdinPrompt;
+      const hasStdinPrompt = !!stdinPrompt;
 
-      proc = Bun.spawn(command, {
+      proc = Bun.spawn(launch.command, {
         cwd: spawnCwd,
+        windowsVerbatimArguments: launch.verbatim,
         stdin: hasStdinPrompt ? "pipe" : undefined,
         stdout: captureStdout ? "pipe" : "ignore",
         stderr: "pipe",
@@ -352,7 +378,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
       // Write prompt to stdin and close (for providers that read prompt from stdin)
       if (hasStdinPrompt && proc.stdin) {
         const sink = proc.stdin as import("bun").FileSink;
-        sink.write(spawnOptions!.stdinPrompt!);
+        sink.write(stdinPrompt!);
         sink.end();
       }
 

@@ -27,6 +27,7 @@ import {
 import { resolveGuideLaunchInstructions } from "../generated/guide-instructions-store.ts";
 import { gitColorFreeEnvironment } from "../generated/review-core.ts";
 import { askAiChildEnv } from "../generated/ai/providers/ask-ai-env.ts";
+import { planAgentJobSpawn } from "../generated/ai/providers/command-path.ts";
 import { ghAccountEnvForPRUrl } from "../generated/pr-github-account.ts";
 import type { GuideLaunchReview } from "../generated/guide-format.ts";
 import { allowedToolsOf, CLAUDE_SHELL_BLOCKED_WARNING, detectClaudeShellBlocked, disallowedToolsOf, formatClaudeLogEvent } from "../generated/claude-review.ts";
@@ -93,6 +94,11 @@ export function whichCmd(cmd: string): boolean {
  * `agent`, such as Grok Build's).
  */
 const markerBinary = (engine: MarkerEngine) => resolveMarkerBinary(engine, whichPath);
+
+/** The marker engine a job runs: its provider's, or the one a guide job carries. */
+function jobMarkerEngine(provider: string, engine: string | undefined): MarkerEngine | undefined {
+	return MARKER_ENGINES[provider as MarkerEngineId] ?? (engine ? MARKER_ENGINES[engine as MarkerEngineId] : undefined);
+}
 // The check of a second name may run its `--version` (asynchronously, 2 s at
 // most, once per file), so marker availability settles a moment after the
 // handler is made: every reader awaits `capabilitiesReady`.
@@ -178,9 +184,13 @@ export interface AgentJobHandlerOptions {
  */
 async function discoverMarkerModels(engine: MarkerEngine, program: string): Promise<MarkerModel[]> {
 	try {
-		const { stdout } = await execFileAsync(program, engine.modelsArgv, {
+		// A Windows .cmd shim starts through cmd.exe, as a job does (#2372).
+		const launch = planAgentJobSpawn([program, ...engine.modelsArgv], { which: whichPath });
+		if (launch.unsafeScript) return [];
+		const { stdout } = await execFileAsync(launch.command[0]!, launch.command.slice(1), {
 			timeout: 5000,
 			encoding: "utf8",
+			windowsVerbatimArguments: launch.verbatim,
 		});
 		return engine.parseModels(stdout);
 	} catch {
@@ -303,10 +313,21 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 		try {
 			const spawnCwd = spawnOptions?.cwd ?? getCwd();
 			const captureStdout = spawnOptions?.captureStdout ?? false;
-			const hasStdinPrompt = !!spawnOptions?.stdinPrompt;
+			// On Windows a CLI installed as a .cmd shim (Pi's pi.cmd) starts
+			// through cmd.exe, as Ask AI starts it (#2372); Node cannot spawn
+			// one by its bare name. Elsewhere this is the command as built.
+			const launch = planAgentJobSpawn(command, {
+				which: whichPath,
+				stdinPrompt: spawnOptions?.stdinPrompt,
+				promptOnStdin: jobMarkerEngine(provider, spawnOptions?.engine)?.promptOnStdin,
+			});
+			if (launch.unsafeScript) throw new Error(launch.unsafeScript);
+			const stdinPrompt = launch.stdinPrompt;
+			const hasStdinPrompt = !!stdinPrompt;
 
-			proc = spawn(command[0], command.slice(1), {
+			proc = spawn(launch.command[0]!, launch.command.slice(1), {
 				cwd: spawnCwd,
+				windowsVerbatimArguments: launch.verbatim,
 				stdio: [
 					hasStdinPrompt ? "pipe" : "ignore",
 					captureStdout ? "pipe" : "ignore",
@@ -337,7 +358,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 
 			// Write prompt to stdin and close (for providers that read prompt from stdin)
 			if (hasStdinPrompt && proc.stdin) {
-				proc.stdin.write(spawnOptions!.stdinPrompt!);
+				proc.stdin.write(stdinPrompt);
 				proc.stdin.end();
 			}
 

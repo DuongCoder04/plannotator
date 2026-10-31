@@ -36,6 +36,24 @@ returned byte for byte. A new git/jj spawn that bypasses these runners must add
 the same options. `packages/server/review-git-color-config.test.ts` runs both
 servers against a sandboxed config that forces color on.
 
+### Agent jobs on Windows: `.cmd` shims (#2372)
+
+Both runtimes' `agent-jobs.ts` start a job's CLI (code review, Code Tour,
+Guided Review) and a marker engine's model listing through `planAgentJobSpawn`
+(`packages/ai/providers/command-path.ts`, vendored into Pi). On Windows, a CLI
+found on PATH as a `.cmd`/`.bat` (Pi's `~\.pi\agent\bin\pi.cmd`, npm's shims)
+is resolved as Ask AI resolves it (`resolveWindowsCommandShim`). It is then
+started as `cmd.exe /d /s /c ""<script>" "<arg>" …"` with
+`windowsVerbatimArguments`. Node cannot spawn it by its bare name: that failed
+with `spawn pi ENOENT`. A prompt cannot cross cmd.exe (line breaks, quotes,
+`%`), so the engine's `promptOnStdin` (Pi only: `pi … -p` reads the prompt from
+piped stdin) moves it to stdin. When an argument still holds a character that
+cmd.exe reads (`"`, `%`, `!`, `^`, control characters), the Pi server fails the
+job and names the script. The Bun server spawns the command as built, as it did
+before. An `.exe`, a program not on PATH, and other platforms keep the command
+as built. Tests: `planAgentJobSpawn` in `packages/ai/ai.test.ts`, and Pi's
+argv in `packages/server/marker-review.test.ts`. Both simulate win32.
+
 ### Review directory targets
 
 `plannotator review [DIRECTORY | PR_URL]` (and `/plannotator-review` on OpenCode
