@@ -295,14 +295,15 @@ test('a 390 px phone: a bottom sheet with the phone rows', async ({ browser }) =
   const page = await (await context(browser, { phone: true, reduce: true })).newPage();
   await page.goto(w.url);
   await settledDialog(page);
+  await shot(page, 'phone-390');
   const box = (await page.locator(DIALOG).boundingBox())!;
+  const why = await page.locator(DIALOG).evaluate((el) => JSON.stringify({ vw: innerWidth, cw: document.documentElement.clientWidth, width: getComputedStyle(el).width, margin: getComputedStyle(el).margin }));
   // A sheet: 8 px from each side and the bottom.
-  expect(Math.round(box.x)).toBe(8);
-  expect(Math.round(390 - box.x - box.width)).toBe(8);
+  expect(Math.round(box.x), why).toBe(8);
+  expect(Math.round(390 - box.x - box.width), why).toBe(8);
   expect(Math.round(844 - box.y - box.height)).toBeLessThanOrEqual(9);
   await expect(page.locator(`${DIALOG} .ib-mrow`).first()).toBeVisible();
   for (const button of await page.locator(`${DIALOG} .ib-lo-acts .ib-btn`).all()) expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-  await shot(page, 'phone-390');
   await option(page, 'highlight').click();
   await option(page, 'compact').click();
   await shot(page, 'phone-390-options-on');

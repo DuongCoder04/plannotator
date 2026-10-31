@@ -6071,7 +6071,7 @@ dialog.ib-dlg.ib-lo { width: min(560px, calc(100vw - 32px)); }
 .ib-lo-acts { display: flex; align-items: center; gap: 8px; padding: 18px 18px 18px 22px; }
 @media (max-width: 767px), (max-height: 500px) and (max-width: 1023px) and (pointer: coarse) {
   /* A phone: a bottom sheet, the phone's rows (no list header), 44 px targets, Done full width above Keep as it is. */
-  dialog.ib-dlg.ib-lo.ib-lo-phone { margin: auto 8px calc(8px + env(safe-area-inset-bottom)); width: calc(100vw - 16px); }
+  dialog.ib-dlg.ib-lo.ib-lo-phone { margin: auto 8px calc(8px + env(safe-area-inset-bottom)); width: calc(100vw - 16px); max-width: none; }
   .ib-lo-phone .ib-lo-art { padding: 14px 14px 0; }
   .ib-lo-phone .ib-lo-frame { width: auto; height: 300px; }
   .ib-lo-phone .ib-lo-frame .ib-lbody { padding-top: 8px; }
