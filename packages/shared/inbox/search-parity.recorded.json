@@ -137,7 +137,7 @@
         {
           "type": "message",
           "thread_id": "videos 1",
-          "section": "new",
+          "section": "quiet",
           "archived": false,
           "author": {
             "kind": "agent",
@@ -162,7 +162,7 @@
         {
           "type": "message",
           "thread_id": "videos 1",
-          "section": "new",
+          "section": "quiet",
           "archived": false,
           "author": {
             "kind": "agent",
@@ -1842,7 +1842,7 @@
         {
           "type": "thread",
           "thread_id": "rate limit",
-          "section": "new",
+          "section": "quiet",
           "archived": false,
           "title": "Relay: rate limit on mailbox creation",
           "title_marks": [
@@ -1894,7 +1894,7 @@
         {
           "type": "message",
           "thread_id": "rate limit",
-          "section": "new",
+          "section": "quiet",
           "archived": false,
           "author": {
             "kind": "agent",
@@ -2093,7 +2093,7 @@
         {
           "type": "thread",
           "thread_id": "rate limit",
-          "section": "new",
+          "section": "quiet",
           "archived": false,
           "title": "Relay: rate limit on mailbox creation",
           "title_marks": [],
@@ -2323,7 +2323,7 @@
         {
           "type": "thread",
           "thread_id": "videos 1",
-          "section": "new",
+          "section": "quiet",
           "archived": false,
           "title": "Lab launch videos",
           "title_marks": [],
@@ -2346,6 +2346,18 @@
     "recent": [
       {
         "type": "thread",
+        "thread_id": "rate limit",
+        "title": "Relay: rate limit on mailbox creation",
+        "title_marks": [],
+        "thread_name": "relay",
+        "section": "quiet",
+        "archived": false,
+        "id": "rate limit",
+        "project": "plannotator",
+        "at": "2026-10-20T09:28:00.000Z"
+      },
+      {
+        "type": "thread",
         "thread_id": "deploy log",
         "title": "Deploy log",
         "title_marks": [],
@@ -2355,6 +2367,30 @@
         "id": "deploy log",
         "project": "api",
         "at": "2026-10-20T09:19:00.000Z"
+      },
+      {
+        "type": "thread",
+        "thread_id": "videos 1",
+        "title": "Lab launch videos",
+        "title_marks": [],
+        "thread_name": "videos",
+        "section": "quiet",
+        "archived": false,
+        "id": "videos 1",
+        "project": "content-studio",
+        "at": "2026-10-20T09:13:00.000Z"
+      },
+      {
+        "type": "thread",
+        "thread_id": "thorsten",
+        "title": "Bookmark: @thorstenball",
+        "title_marks": [],
+        "thread_name": "thorsten",
+        "section": "waiting",
+        "archived": false,
+        "id": "thorsten",
+        "project": "experiments",
+        "at": "2026-10-20T09:11:00.000Z"
       }
     ]
   },

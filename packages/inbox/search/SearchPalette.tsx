@@ -16,7 +16,7 @@
  * dimmed while the next are on their way.
  */
 
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { middleCutInboxName, type InboxSearchGroupId, type InboxSearchRow } from '@plannotator/core/inbox-search';
 import { saveRecentSearch, searchInbox, type SearchModel } from '../api';
 
@@ -234,6 +234,17 @@ function KeyFooter() {
     </div>
   );
 }
+
+/** A result's mark and lines. Memoized: moving the highlight re-renders the option elements, not what they hold
+ *  (the row is the answer's own object, so it stays the same until a new answer lands). */
+const ResultContent = memo(function ResultContent({ row, phone, projectName }: { row: InboxSearchRow; phone: boolean; projectName: string }) {
+  return (
+    <>
+      <RowMark row={row} />
+      <RowBody row={row} phone={phone} projectName={projectName} />
+    </>
+  );
+});
 
 function RowBody({ row, phone, projectName }: { row: InboxSearchRow; phone: boolean; projectName: string }) {
   const chip = rowThreadChip(row);
@@ -884,8 +895,7 @@ export default function SearchPalette(props: SearchPaletteProps) {
             const row = option.row;
             return (
               <div key={`${row.type}-${row.id}`} className="ib-sp-row" {...common} data-result={row.type} data-result-id={row.id}>
-                <RowMark row={row} />
-                <RowBody row={row} phone={phone} projectName={projectName(row.project.id)} />
+                <ResultContent row={row} phone={phone} projectName={projectName(row.project.id)} />
               </div>
             );
           })}

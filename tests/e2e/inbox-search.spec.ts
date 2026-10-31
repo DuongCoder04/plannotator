@@ -74,6 +74,14 @@ async function settled(p: Page): Promise<void> {
   await expect(palette(p).locator('[data-search-indexing]')).toHaveCount(0);
 }
 
+/** The answer to the words just typed is the one drawn: the recent view (or the last query's answer) can still show,
+ *  undimmed, before the new one lands, so wait for a message row with this query's matched word, then settle. */
+async function answered(p: Page, word: string): Promise<void> {
+  await expect(palette(p).locator('[data-search-group="recent"]')).toHaveCount(0);
+  await expect(palette(p).locator('[data-search-group="messages"] [data-result="message"] .ib-sp-m').filter({ hasText: new RegExp(`^${word}$`, 'i') }).first()).toBeVisible();
+  await settled(p);
+}
+
 test.describe.configure({ mode: 'serial' });
 
 test.beforeAll(async ({ browser }: { browser: Browser }) => {
@@ -494,7 +502,7 @@ async function contrastOf(p: Page, fg: string, bg: string, under?: string): Prom
 test('every result starts with its mark; the selected row stands apart from the panel; text keeps AA; the key footer’s keys work', async () => {
   await openFromSidebar(page);
   await input(page).fill('retry');
-  await settled(page);
+  await answered(page, 'retry');
   const rows = palette(page).locator('[role="option"][data-result]');
   await expect(rows.first()).toBeVisible();
   // Each result's first child is its mark, drawn (a visible icon), and hidden from a screen reader.
@@ -560,7 +568,7 @@ test('every result starts with its mark; the selected row stands apart from the 
     }
     // The thread's name keeps the chip form, the box the rest of the Inbox draws (owner request 2026-10-16), in each theme.
     const chip = await chipBoxes(page);
-        expect(chip.boxed, `${scheme}: the thread chip is drawn as a box`).toBe(true);
+    expect(chip.boxed, `${scheme}: the thread chip is drawn as a box`).toBe(true);
     expect(chip.search, `${scheme}: the thread chip is the Inbox's chip`).toBe(chip.list);
     await page.screenshot({ path: join(proofDir, `10-marks-${scheme}.png`) });
   }
@@ -631,7 +639,7 @@ test('a phone: the list header opens a full-screen sheet; a result opens the thr
     await expect(palette(p).locator('[data-search-keys]')).toHaveCount(0);
     // A phone draws the thread chip with the Inbox's box too.
     await input(p).fill('retry');
-    await settled(p);
+    await answered(p, 'retry');
     const chip = await chipBoxes(p);
     expect(chip.boxed, 'phone: the thread chip is drawn as a box').toBe(true);
     expect(chip.search, "phone: the thread chip is the Inbox's chip").toBe(chip.list);

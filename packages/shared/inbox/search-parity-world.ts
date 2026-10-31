@@ -82,8 +82,8 @@ export async function searchParityAnswers(): Promise<Record<string, unknown>> {
     ] as const) {
       send(`bookmark ${who}`, { project_id: exp.id, author: CODEX, thread: "bookmarks", body: `You bookmarked a post by ${who}: "${words}". Saved to the reading list.` });
     }
-    send("thorsten", { project_id: exp.id, author: CLAUDE, subject: "Bookmark: @thorstenball", thread: "thorsten", body: `A long post on agent-first editors.${ask("Add it to the weekly digest?", ["Add it", "Skip"])}` });
-    send("videos 1", { project_id: studio.id, author: PI, subject: "Lab launch videos", thread: "videos", body: 'The cut runs on your real saves. A bookmark from last night opens the video.' });
+    const thorsten = send("thorsten", { project_id: exp.id, author: CLAUDE, subject: "Bookmark: @thorstenball", thread: "thorsten", body: `A long post on agent-first editors.${ask("Add it to the weekly digest?", ["Add it", "Skip"])}` });
+    const videos = send("videos 1", { project_id: studio.id, author: PI, subject: "Lab launch videos", thread: "videos", body: 'The cut runs on your real saves. A bookmark from last night opens the video.' });
     send("videos 2", { project_id: studio.id, author: PI, thread: "videos", body: 'The hero: your "delete all your wikis" bookmark came back in 56 s.' });
     send("import plan", {
       project_id: pn.id,
@@ -112,12 +112,18 @@ export async function searchParityAnswers(): Promise<Record<string, unknown>> {
     const q = store.questionsOf(storm.id)[0]!;
     store.savePicks(storm.id, [{ key: q.key, revision: 0, answer: { v: 1, key: q.key, kind: q.kind, prompt: q.prompt, selected: ["Yes"] } as never }]);
     labels.set(store.sendReply(storm.id, { idempotency_key: "parity-2", words: "Spread the first retry over five seconds.", questions: [{ key: q.key, revision: 1 }] }).reply.id, "reply spread");
-    send("rate limit", { project_id: pn.id, author: CLAUDE, subject: "Relay: rate limit on mailbox creation", thread: "relay", body: "The relay rate limits mailbox creation to 20 a minute." });
+    const rateLimit = send("rate limit", { project_id: pn.id, author: CLAUDE, subject: "Relay: rate limit on mailbox creation", thread: "relay", body: "The relay rate limits mailbox creation to 20 a minute." });
     send("rate limiter", { project_id: api.id, author: PI, subject: "Limiter", thread: "limiter", body: "The rate limiter now counts per key." });
 
     // Other scripts.
     send("russian", { project_id: api.id, author: CODEX, subject: "Отчёт о миграции", thread: "ru", body: "Отчёт готов: миграция прошла без ошибок." });
     send("japanese", { project_id: api.id, author: PI, subject: "請求サービスの更新", thread: "ja", body: "請求サービスを更新しました。" });
+
+    // Three more threads looked at, so the recent view holds four (with the deploy log) and its order, newest
+    // message looked at first (`person_seen_seq`), is guarded: rate limit, deploy log, videos, thorsten.
+    store.markSeen(rateLimit.id);
+    store.markSeen(thorsten.id);
+    store.markSeen(videos.id);
 
     const index = new InboxSearchIndex(store);
     await index.ensureBuilt();
