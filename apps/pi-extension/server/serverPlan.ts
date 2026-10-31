@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 
 import { contentHash, deleteDraft, loadDraft } from "../generated/draft.ts";
 import { createDocumentDraftStore, documentDraftIndexKey, loadSessionDraftWithDocuments } from "../generated/annotate-draft.ts";
-import { getAllowedRootPaths, isPathAllowed } from "../generated/doc-resolve.ts";
+import { getAllowedRootPaths, isDocServeAllowed } from "../generated/doc-resolve.ts";
 import { countUnsentDraftComments, hostSessionClosedEvent, type HostCloseOutcome } from "../generated/host-control.ts";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "../generated/server-session.ts";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control.ts";
@@ -305,7 +305,7 @@ export async function startPlanReviewServer(options: {
 	// server's /api/doc serves it: inside the project.
 	const planDocumentDrafts = options.mode !== "archive"
 		? createDocumentDraftStore({
-				isAllowed: (path) => isPathAllowed(path, getAllowedRootPaths()),
+				isAllowed: (path, anyPath) => isDocServeAllowed(path, null, getAllowedRootPaths(), anyPath),
 				indexKey: documentDraftIndexKey(draftKey),
 			})
 		: null;
@@ -524,7 +524,7 @@ export async function startPlanReviewServer(options: {
 					json(res, crossOriginRefusalBody(), 403);
 					return;
 				}
-				const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"));
+				const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"), readsAnyPath(req));
 				json(res, result.body, result.status);
 			} else if (req.method === "POST") {
 				let body: unknown;
@@ -534,7 +534,7 @@ export async function startPlanReviewServer(options: {
 					json(res, { ok: false, error: "Invalid JSON" }, 400);
 					return;
 				}
-				const result = planDocumentDrafts.saveDocuments(body);
+				const result = planDocumentDrafts.saveDocuments(body, readsAnyPath(req));
 				json(res, result.body, result.status);
 			} else {
 				json(res, { error: "Method not allowed" }, 405);

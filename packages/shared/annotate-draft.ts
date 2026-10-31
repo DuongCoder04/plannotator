@@ -80,7 +80,7 @@ export interface AnnotateDraftSessionOptions {
    * serve). Absent: the session has no document copies.
    */
   documents?: {
-    isAllowed: (absolutePath: string) => boolean;
+    isAllowed: (absolutePath: string, anyPath: boolean) => boolean;
     /**
      * The session's root has no file of its own (a URL, the last message):
      * keep an index so the session draft offers every document's comments
@@ -137,8 +137,13 @@ function parseDocumentWrites(body: unknown): DocumentWrite[] | string {
 }
 
 export interface DocumentDraftStoreOptions {
-  /** Which absolute paths this session may read or write a copy for (the paths its /api/doc may serve). */
-  isAllowed: (absolutePath: string) => boolean;
+  /**
+   * Which absolute paths this session may read or write a copy for (the paths
+   * its /api/doc may serve). `anyPath` is the requesting reader's /api/doc
+   * access (`docReaderMayReadAnyPath`); the index and the decision's cleanup
+   * pass false, so they stay on the session's own roots.
+   */
+  isAllowed: (absolutePath: string, anyPath: boolean) => boolean;
   /** A single-file session's own file: refused, the session draft carries it. */
   rootPath?: string | null;
   /**
@@ -165,13 +170,13 @@ export function createDocumentDraftStore(options: DocumentDraftStoreOptions) {
   /** The reviewer decided: document writes are refused. */
   let settled = false;
 
-  const resolveDocumentPath = (raw: unknown): { path: string } | { status: 400 | 403; error: string } => {
+  const resolveDocumentPath = (raw: unknown, anyPath: boolean): { path: string } | { status: 400 | 403; error: string } => {
     if (typeof raw !== "string" || raw.length === 0) return { status: 400, error: "Missing path" };
     const path = canonicalDocumentPath(raw);
     if (!path) return { status: 400, error: "Not an existing file" };
     // The root file's own path key is the session draft itself (one writer).
     if (rootPath && path === rootPath) return { status: 403, error: "The session's own file is saved with the session draft" };
-    if (!options.isAllowed(path)) return { status: 403, error: "Path not allowed" };
+    if (!options.isAllowed(path, anyPath)) return { status: 403, error: "Path not allowed" };
     return { path };
   };
 
@@ -184,7 +189,7 @@ export function createDocumentDraftStore(options: DocumentDraftStoreOptions) {
   const servable = (canonical: string): boolean =>
     canonicalDocumentPath(canonical) === canonical &&
     !(rootPath && canonical === rootPath) &&
-    options.isAllowed(canonical);
+    options.isAllowed(canonical, false);
 
   const clearDocumentCopy = (path: string) => {
     const key = annotateFileDraftKey(path);
@@ -260,9 +265,9 @@ export function createDocumentDraftStore(options: DocumentDraftStoreOptions) {
       return { documents, ts };
     },
 
-    /** GET one document's copy (`?path=`). */
-    loadDocument(rawPath: unknown): DocumentDraftResult {
-      const resolved = resolveDocumentPath(rawPath);
+    /** GET one document's copy (`?path=`). `anyPath`: the reader's /api/doc access. */
+    loadDocument(rawPath: unknown, anyPath = false): DocumentDraftResult {
+      const resolved = resolveDocumentPath(rawPath, anyPath);
       if ("error" in resolved) return { status: resolved.status, body: { error: resolved.error } };
       const content = storedContent(resolved.path);
       if (!content) return { status: 404, body: { found: false, error: "No draft" } };
@@ -280,7 +285,7 @@ export function createDocumentDraftStore(options: DocumentDraftStoreOptions) {
     },
 
     /** POST `{ documents: [{ path, annotations, globalAttachments? }] }`. */
-    saveDocuments(body: unknown): DocumentDraftResult {
+    saveDocuments(body: unknown, anyPath = false): DocumentDraftResult {
       if (settled) return { status: 409, body: { ok: false, error: "The review is already decided" } };
       const writes = parseDocumentWrites(body);
       if (typeof writes === "string") return { status: 400, body: { ok: false, error: writes } };
@@ -289,7 +294,7 @@ export function createDocumentDraftStore(options: DocumentDraftStoreOptions) {
       const resolvedWrites: (DocumentWrite & { clientPath: string })[] = [];
       const rejected: string[] = [];
       for (const write of writes) {
-        const resolved = resolveDocumentPath(write.path);
+        const resolved = resolveDocumentPath(write.path, anyPath);
         if ("error" in resolved) rejected.push(write.path);
         else resolvedWrites.push({ ...write, path: resolved.path, clientPath: write.path });
       }
@@ -523,16 +528,16 @@ export function createAnnotateDraftSession(options: AnnotateDraftSessionOptions)
       return total + (store ? store.countUnsent(count) : 0);
     },
 
-    /** GET one document's copy (`?path=`). */
-    loadDocument(rawPath: unknown): DocumentDraftResult {
+    /** GET one document's copy (`?path=`). `anyPath`: the reader's `/api/doc` access. */
+    loadDocument(rawPath: unknown, anyPath = false): DocumentDraftResult {
       if (!store) return { status: 404, body: { error: "Not available" } };
-      return store.loadDocument(rawPath);
+      return store.loadDocument(rawPath, anyPath);
     },
 
-    /** POST `{ documents: [{ path, annotations, globalAttachments? }] }`. */
-    saveDocuments(body: unknown): DocumentDraftResult {
+    /** POST `{ documents: [{ path, annotations, globalAttachments? }] }`. `anyPath` as above. */
+    saveDocuments(body: unknown, anyPath = false): DocumentDraftResult {
       if (!store) return { status: 404, body: { error: "Not available" } };
-      return store.saveDocuments(body);
+      return store.saveDocuments(body, anyPath);
     },
   };
 }

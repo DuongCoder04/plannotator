@@ -74,7 +74,7 @@ import { handleHostControl, resolveHostControlToken, type HostControl } from "./
 import { countUnsentDraftComments } from "@plannotator/shared/host-control";
 import { isAIEndpointPath, isLongLivedAIEndpointPath, type AIEndpoints, type SessionBridge } from "@plannotator/ai";
 import { isArchiveDocumentMutation } from "@plannotator/shared/archive-mode";
-import { docReaderMayReadAnyPath, getAllowedRootPaths, isPathAllowed, isPlanLinkedDocPath, readPlanFile } from "@plannotator/shared/doc-resolve";
+import { docReaderMayReadAnyPath, getAllowedRootPaths, isDocServeAllowed, isPlanLinkedDocPath, readPlanFile } from "@plannotator/shared/doc-resolve";
 import { createDocumentDraftStore, documentDraftIndexKey, loadSessionDraftWithDocuments } from "@plannotator/shared/annotate-draft";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "@plannotator/shared/server-session";
 
@@ -309,7 +309,7 @@ export async function startPlannotatorServer(
   // project, or a file the plan links beside its own plan file.
   const planDocumentDrafts = mode !== "archive"
     ? createDocumentDraftStore({
-        isAllowed: (path) => isPathAllowed(path, getAllowedRootPaths()) || isPlanLinkedDocPath(path, planFile),
+        isAllowed: (path, anyPath) => isDocServeAllowed(path, null, getAllowedRootPaths(), anyPath) || isPlanLinkedDocPath(path, planFile),
         indexKey: documentDraftIndexKey(draftKey),
       })
     : null;
@@ -551,7 +551,7 @@ export async function startPlannotatorServer(
             if (!isSameOriginRequest(req)) return Response.json(crossOriginRefusalBody(), { status: 403 });
             return handleDoc(req, {
               planFile,
-              anyPath: docReaderMayReadAnyPath(isRemote, req.headers.get("host"), req.headers.get("x-forwarded-for")),
+              anyPath: docReaderMayReadAnyPath(isRemote, req.headers),
             });
           }
 
@@ -736,7 +736,7 @@ export async function startPlannotatorServer(
               if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
                 return Response.json(crossOriginRefusalBody(), { status: 403 });
               }
-              const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"));
+              const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"), docReaderMayReadAnyPath(isRemote, req.headers));
               return Response.json(result.body, { status: result.status });
             }
             if (req.method === "POST") {
@@ -746,7 +746,7 @@ export async function startPlannotatorServer(
               } catch {
                 return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
               }
-              const result = planDocumentDrafts.saveDocuments(body);
+              const result = planDocumentDrafts.saveDocuments(body, docReaderMayReadAnyPath(isRemote, req.headers));
               return Response.json(result.body, { status: result.status });
             }
             return Response.json({ error: "Method not allowed" }, { status: 405 });

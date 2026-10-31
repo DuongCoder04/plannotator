@@ -20,7 +20,7 @@ import type { LiveAppProxy } from "../generated/live-proxy-core.ts";
 
 import { contentHash } from "../generated/draft.ts";
 import { annotateDraftFilePath, annotateSessionHasRootlessDocuments, createAnnotateDraftSession } from "../generated/annotate-draft.ts";
-import { isPathAllowed } from "../generated/doc-resolve.ts";
+import { isDocServeAllowed } from "../generated/doc-resolve.ts";
 import { countUnsentDraftComments, hostSessionClosedEvent } from "../generated/host-control.ts";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "../generated/server-session.ts";
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control.ts";
@@ -453,7 +453,7 @@ export async function startAnnotateServer(options: {
 		documents:
 			draftFilePath !== null || (options.mode === "annotate-folder" && options.folderPath) || bundleFiles || rootlessDocuments
 				? {
-						isAllowed: (path) => isPathAllowed(path, getReferenceRootPaths()),
+						isAllowed: (path, anyPath) => isDocServeAllowed(path, null, getReferenceRootPaths(), anyPath),
 						...(rootlessDocuments ? { indexed: true } : {}),
 					}
 				: null,
@@ -1048,6 +1048,11 @@ export async function startAnnotateServer(options: {
 				},
 			});
 		} else if (url.pathname === "/api/plan/version" && req.method === "GET") {
+			// Reads a stored copy of any document /api/doc serves, so the same site rule.
+			if (!isSameOriginRequest(req)) {
+				json(res, crossOriginRefusalBody(), 403);
+				return;
+			}
 			// fetch a specific version of the annotated file (version diff base picker)
 			//
 			// Folder sessions pass `?path=` (optionally `&base=`) to identify which
@@ -1092,6 +1097,10 @@ export async function startAnnotateServer(options: {
 			}
 			json(res, { plan: content, version: v });
 		} else if (url.pathname === "/api/plan/versions" && req.method === "GET") {
+			if (!isSameOriginRequest(req)) {
+				json(res, crossOriginRefusalBody(), 403);
+				return;
+			}
 			// list all stored versions of the annotated file (Version Browser)
 			// Same `?path=`/`&base=` parameterization as /api/plan/version above.
 			const pathParam = url.searchParams.get("path");
@@ -1219,7 +1228,7 @@ export async function startAnnotateServer(options: {
 					json(res, crossOriginRefusalBody(), 403);
 					return;
 				}
-				const result = annotateDrafts.loadDocument(url.searchParams.get("path"));
+				const result = annotateDrafts.loadDocument(url.searchParams.get("path"), readsAnyPath(req));
 				json(res, result.body, result.status);
 			} else if (req.method === "POST") {
 				let body: unknown;
@@ -1229,7 +1238,7 @@ export async function startAnnotateServer(options: {
 					json(res, { ok: false, error: "Invalid JSON" }, 400);
 					return;
 				}
-				const result = annotateDrafts.saveDocuments(body);
+				const result = annotateDrafts.saveDocuments(body, readsAnyPath(req));
 				json(res, result.body, result.status);
 			} else {
 				json(res, { error: "Method not allowed" }, 405);

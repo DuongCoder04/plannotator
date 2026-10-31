@@ -4,7 +4,7 @@
  *
  * Resolving which file a path names is separated from reading it so
  * authorization sits on one seam: every reachable path comes from
- * `resolveDocTarget`, and `isDocPathAllowed` alone decides whether it is served.
+ * `resolveDocTarget`, and `isDocServeAllowed` alone decides whether it is served.
  * Resolution may `stat`; it never reads contents (`readPlanFile` reads the
  * plan file once, at server start).
  *
@@ -15,11 +15,11 @@
  * an allowed root, and a named file there shadows a project document of the
  * same relative name. That base is not used for root resolution.
  *
- * A reader on this machine may read any path (`anyPath`, #2291): a folder
- * added in Settings → Files, or a file the current document links outside
- * the project. The roots then only seed the bare-filename search. A reader
- * that may be on another machine keeps the roots as the gate
- * (`docReaderMayReadAnyPath`).
+ * A reader on this machine (`docReaderMayReadAnyPath`) may open a document
+ * anywhere (`anyPath`, #2291): one in a folder added in Settings → Files, or
+ * one the current document links outside the project. Only document types
+ * (`isAnyPathDocument`); code files and data formats keep the roots, and so
+ * does every reader that may be on another machine (`isDocServeAllowed`).
  */
 
 import { readFileSync, realpathSync, statSync } from "fs";
@@ -37,7 +37,9 @@ import {
 	resolveMarkdownFile,
 	resolveUserPath,
 } from "./resolve-file";
-import { isLocalhostSubdomain, isLoopbackForwardedFor, isLoopbackHostname } from "./loopback-host";
+import { isLocalhostSubdomain, isLoopbackHostname } from "./loopback-host";
+import { ALLOWED_HOSTS_ENV } from "./request-host";
+import { cameThroughTailscaleServe } from "./tailnet-audience";
 
 /** How a resolved file is rendered: an annotatable document, or a code-file popout. */
 export type DocRender = "document" | "code";
@@ -57,7 +59,7 @@ export interface DocResolveOptions {
 	/** `?doc=1`. Renders annotatable plain text for extensions that overlap code files. */
 	forceDoc?: boolean;
 	roots: string[];
-	/** The reader may read any path (`docReaderMayReadAnyPath`): no root containment. */
+	/** A reader on this machine (`docReaderMayReadAnyPath`): documents may be anywhere (`isAnyPathDocument`). */
 	anyPath?: boolean;
 }
 
@@ -143,30 +145,79 @@ export function getTrustedBaseDir(base: string | null | undefined, roots: string
 	return isDocPathAllowed(resolvedBase, roots, anyPath) ? resolvedBase : null;
 }
 
-/** The `/api/doc` gate: `isPathAllowed`, or any path for a reader that may read any. */
+/** The containment half of the gate: `isPathAllowed`, or any path when `anyPath`. */
 export function isDocPathAllowed(candidate: string, roots: string[], anyPath = false): boolean {
 	return anyPath ? !!candidate : isPathAllowed(candidate, roots);
 }
 
+// What a reader on this machine may open outside the roots: the documents the
+// viewer renders (Markdown, MDX, HTML, AsciiDoc, diagram sources) and the
+// user's own markdown extensions. Never plain text, data or config formats,
+// and never a code file: those keep the roots for every reader.
+const ANY_PATH_DOCUMENT_RE = /\.(?:mdx?|html?|adoc|asciidoc|mmd|mermaid|dot|gv)$/i;
+
+/** Whether `path` is a document type a reader on this machine may open anywhere (#2291). */
+export function isAnyPathDocument(path: string): boolean {
+	const trimmed = path.trim();
+	if (ANY_PATH_DOCUMENT_RE.test(trimmed)) return true;
+	const lower = trimmed.toLowerCase();
+	return getExtraMarkdownExtensions().some((ext) => lower.endsWith(ext));
+}
+
 /**
- * Whether a `/api/doc` reader may read any path on this machine rather than
- * only the session's roots (#2291). True for a page on this machine: the
- * session is not in remote mode (which binds every interface), the Host is a
- * loopback name (`localhost`, `127.x.y.z`, `[::1]`, a `*.localhost` name),
- * and any `X-Forwarded-For` names only loopback. A `--tailscale` peer (served
- * Host, tailnet address) and a reverse proxy forwarding another machine keep
- * the roots. The routes refuse a cross-site page before this.
+ * The `/api/doc` gate for a resolved path. `render` is how it would be
+ * served (null for a name that does not exist).
+ *  - A document a reader on this machine asked for (`anyPath`) may be
+ *    anywhere when both its name and its real path are `isAnyPathDocument`.
+ *    Anything else (code files, config and text formats, every reader that
+ *    keeps the roots) must be inside the roots, as written and as resolved.
+ *  - For every reader, the real file must be of the type its name was served
+ *    as, so `key.md -> ~/.ssh/id_ed25519` is refused inside the roots too.
  */
-export function docReaderMayReadAnyPath(
-	remote: boolean,
-	hostHeader: string | null | undefined,
-	forwardedFor: string | null | undefined,
+export function isDocServeAllowed(
+	candidate: string,
+	render: DocRender | null,
+	roots: string[],
+	anyPath = false,
 ): boolean {
-	if (remote) return false;
+	if (!candidate) return false;
+	const real = realpathAllowingMissingLeaf(candidate);
+	if (!real) return false;
+	const anywhere = anyPath && render !== "code" && isAnyPathDocument(candidate) && isAnyPathDocument(real);
+	if (!isDocPathAllowed(candidate, roots, anywhere)) return false;
+	if (render === "code") return isCodeFilePath(real);
+	if (render === "document") return getAnnotatableDocRegex().test(real);
+	return true;
+}
+
+/** The `X-Forwarded-Host` shape this machine sends: a loopback or `*.localhost` name. */
+function isLocalHostName(hostHeader: string | null): boolean {
 	const host = (hostHeader ?? "").trim().toLowerCase();
 	const name = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.replace(/:\d*$/, "");
-	if (!isLoopbackHostname(name) && !isLocalhostSubdomain(name)) return false;
-	return forwardedFor == null || isLoopbackForwardedFor(forwardedFor);
+	return isLoopbackHostname(name) || isLocalhostSubdomain(name);
+}
+
+/**
+ * Whether a `/api/doc` reader may open documents outside the session's roots
+ * (#2291): a page on this machine. All of these must hold:
+ *  - the session is not in remote mode (which binds every interface);
+ *  - `PLANNOTATOR_ALLOWED_HOSTS` is unset (it exists to put a proxy in front);
+ *  - the Host is a loopback or `*.localhost` name, and so is any
+ *    `X-Forwarded-Host`;
+ *  - no `Forwarded` or `X-Real-IP` header, no `tailscale serve` header, and
+ *    any `X-Forwarded-For` lists only loopback (`cameThroughTailscaleServe`).
+ * Every other reader keeps the roots. A raw TCP forwarder or a proxy that
+ * rewrites Host to loopback and adds none of these headers looks local; the
+ * guide says so and points remote setups at remote mode. The routes refuse a
+ * cross-site page before this.
+ */
+export function docReaderMayReadAnyPath(remote: boolean, headers: Headers): boolean {
+	if (remote) return false;
+	if (process.env[ALLOWED_HOSTS_ENV]?.trim()) return false;
+	if (!isLocalHostName(headers.get("host"))) return false;
+	if (headers.has("x-forwarded-host") && !isLocalHostName(headers.get("x-forwarded-host"))) return false;
+	if (headers.has("forwarded") || headers.has("x-real-ip")) return false;
+	return !cameThroughTailscaleServe(headers);
 }
 
 /**
@@ -335,7 +386,7 @@ export function resolveAllowedDocPath(
 	const anyPath = options?.anyPath === true;
 	const resolvedBase = getTrustedBaseDir(base, allowedRoots, anyPath);
 	const candidate = resolveUserPath(requestedPath, resolvedBase ?? undefined);
-	return isDocPathAllowed(candidate, allowedRoots, anyPath)
+	return isDocServeAllowed(candidate, null, allowedRoots, anyPath)
 		? { kind: "resolved", path: candidate }
 		: { kind: "denied" };
 }
@@ -446,7 +497,7 @@ export async function resolveDocTarget(
 	if (base && !isAbsoluteUserPath(requestedPath) && wantsDocRender(requestedPath)) {
 		const fromBase = resolveUserPath(requestedPath, base);
 		// An escaping name means only itself, so it never falls through.
-		if (!options.anyPath && !roots.some((root) => isWithinProjectRoot(fromBase, root))) {
+		if (!(options.anyPath && isAnyPathDocument(fromBase)) && !roots.some((root) => isWithinProjectRoot(fromBase, root))) {
 			return { kind: "not_found", input: requestedPath, path: fromBase };
 		}
 		if (isReadableFile(fromBase)) {
@@ -468,7 +519,7 @@ export async function resolveDocTarget(
 		const parsed = parseCodePath(requestedPath);
 		const cleanPath = parsed.filePath;
 		const literalPath = resolveUserPath(cleanPath, base || projectRoot);
-		if ((options.anyPath || roots.some((root) => isWithinProjectRoot(literalPath, root))) && isReadableFile(literalPath)) {
+		if (roots.some((root) => isWithinProjectRoot(literalPath, root)) && isReadableFile(literalPath)) {
 			return { kind: "file", path: literalPath, render: "code", code: parsed };
 		}
 		if (isAbsoluteUserPath(cleanPath)) {

@@ -31,7 +31,7 @@ import {
 	docResolutionError,
 	getAllowedRootPaths,
 	getTrustedBaseDir,
-	isDocPathAllowed,
+	isDocServeAllowed,
 	isPathAllowed,
 	isPlanDirBase,
 	relativizeToAllowedRoots,
@@ -82,7 +82,7 @@ export interface HandleDocOptions {
 	sourceSaveBundlePaths?: ReadonlySet<string>;
 	onSourceDocumentServed?: (path: string) => void;
 	rootPaths?: string[];
-	/** A reader on this machine (`docReaderMayReadAnyPath`): any path is served, not only the roots. */
+	/** A reader on this machine (`docReaderMayReadAnyPath`): documents are served from anywhere, code files keep the roots (`isDocServeAllowed`). */
 	anyPath?: boolean;
 	/** Plan review: the plan file on disk, whose directory serves the documents the plan links. */
 	planFile?: PlanFile | null;
@@ -321,7 +321,7 @@ export async function handleDoc(req: Request, options: HandleDocOptions = {}): P
 	// The one authorization site. A named path is gated whether or not it
 	// exists, so an escaping name is denied rather than reported absent.
 	const named = resolution.kind === "file" || resolution.kind === "not_found" ? resolution.path : undefined;
-	if (named !== undefined && !isDocPathAllowed(named, allowedRoots, anyPath)) {
+	if (named !== undefined && !isDocServeAllowed(named, resolution.kind === "file" ? resolution.render : null, allowedRoots, anyPath)) {
 		return errorResponse(DOC_ACCESS_DENIED);
 	}
 	if (resolution.kind !== "file") {

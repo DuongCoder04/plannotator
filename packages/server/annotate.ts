@@ -27,7 +27,7 @@ import { closeAllFileBrowserWatchers, handleFileBrowserFilesStream } from "./ref
 import { getExtraMarkdownExtensions, isAnnotatableTextPath, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
 import { contentHash } from "./draft";
 import { annotateDraftFilePath, annotateSessionHasRootlessDocuments, createAnnotateDraftSession } from "@plannotator/shared/annotate-draft";
-import { docReaderMayReadAnyPath, isPathAllowed } from "@plannotator/shared/doc-resolve";
+import { docReaderMayReadAnyPath, isDocServeAllowed } from "@plannotator/shared/doc-resolve";
 import { getPlanVersion, getVersionCount, listVersions } from "@plannotator/shared/storage";
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "@plannotator/shared/annotate-history";
 import { ANNOTATE_LIVE_VERSION_PATH, annotateLiveVersionFilePath, saveAnnotateLiveVersion } from "@plannotator/shared/annotate-live-version";
@@ -482,7 +482,7 @@ export async function startAnnotateServer(
     documents:
       draftFilePath !== null || (mode === "annotate-folder" && folderPath) || bundleFiles || rootlessDocuments
         ? {
-            isAllowed: (path) => isPathAllowed(path, getReferenceRootPaths()),
+            isAllowed: (path, anyPath) => isDocServeAllowed(path, null, getReferenceRootPaths(), anyPath),
             ...(rootlessDocuments ? { indexed: true } : {}),
           }
         : null,
@@ -783,10 +783,10 @@ export async function startAnnotateServer(
     initialSingleFileSourcePath,
     bundlePaths,
   });
-  // A tab on this machine may open any document (#2291); a remote-mode or
-  // tailnet reader keeps the reference roots.
+  // A tab on this machine may open a document anywhere (#2291); every other
+  // reader, and every code file, keeps the reference roots.
   const readsAnyPath = (req: Request) =>
-    docReaderMayReadAnyPath(isRemote, req.headers.get("host"), req.headers.get("x-forwarded-for"));
+    docReaderMayReadAnyPath(isRemote, req.headers);
 
   // Detect repo info (cached for this session)
   const repoInfo = await getRepoInfo();
@@ -1063,6 +1063,8 @@ export async function startAnnotateServer(
           // joins it into a filesystem path unsanitized. Without `path`, behavior
           // is unchanged: the single session's own history is used.
           if (url.pathname === "/api/plan/version" && req.method === "GET") {
+            // Reads a stored copy of any document /api/doc serves, so the same site rule.
+            if (!isSameOriginRequest(req)) return Response.json(crossOriginRefusalBody(), { status: 403 });
             const pathParam = url.searchParams.get("path");
             let slug: string;
             if (pathParam !== null) {
@@ -1098,6 +1100,7 @@ export async function startAnnotateServer(
           // API: list all stored versions of the annotated file (Version Browser)
           // Same `?path=`/`&base=` parameterization as /api/plan/version above.
           if (url.pathname === "/api/plan/versions" && req.method === "GET") {
+            if (!isSameOriginRequest(req)) return Response.json(crossOriginRefusalBody(), { status: 403 });
             const pathParam = url.searchParams.get("path");
             if (pathParam !== null) {
               const resolved = resolveAllowedDocPath(pathParam, url.searchParams.get("base"), {
@@ -1436,7 +1439,7 @@ export async function startAnnotateServer(
               if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
                 return Response.json(crossOriginRefusalBody(), { status: 403 });
               }
-              const result = annotateDrafts.loadDocument(url.searchParams.get("path"));
+              const result = annotateDrafts.loadDocument(url.searchParams.get("path"), readsAnyPath(req));
               return Response.json(result.body, { status: result.status });
             }
             if (req.method === "POST") {
@@ -1446,7 +1449,7 @@ export async function startAnnotateServer(
               } catch {
                 return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
               }
-              const result = annotateDrafts.saveDocuments(body);
+              const result = annotateDrafts.saveDocuments(body, readsAnyPath(req));
               return Response.json(result.body, { status: result.status });
             }
             return Response.json({ error: "Method not allowed" }, { status: 405 });

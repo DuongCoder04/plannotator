@@ -46,7 +46,7 @@ import {
 	docResolutionError,
 	getAllowedRootPaths,
 	getTrustedBaseDir,
-	isDocPathAllowed,
+	isDocServeAllowed,
 	isPathAllowed,
 	relativizeToAllowedRoots,
 	resolveAllowedDocPath,
@@ -96,7 +96,7 @@ export interface HandleDocOptions {
 	sourceSaveBundlePaths?: ReadonlySet<string>;
 	onSourceDocumentServed?: (path: string) => void;
 	rootPaths?: string[];
-	/** A reader on this machine (`docReaderMayReadAnyPath`): any path is served, not only the roots. */
+	/** A reader on this machine (`docReaderMayReadAnyPath`): documents are served from anywhere, code files keep the roots (`isDocServeAllowed`). */
 	anyPath?: boolean;
 	/**
 	 * When set, /api/doc runs annotate's per-file version-history pipeline for
@@ -324,14 +324,15 @@ async function readCodeFile(res: Res, path: string, input: string, parsed: Parse
 	}
 }
 
-/** A tab on this machine may open any document (#2291); a remote-mode reader keeps the roots. */
+/** A tab on this machine may open a document anywhere (#2291); every other reader keeps the roots. */
 export function readsAnyPath(req: IncomingMessage): boolean {
-	const forwarded = req.headers["x-forwarded-for"];
-	return docReaderMayReadAnyPath(
-		isRemoteSession(),
-		req.headers.host,
-		Array.isArray(forwarded) ? forwarded.join(",") : forwarded,
-	);
+	const headers = new Headers();
+	for (const [key, value] of Object.entries(req.headers)) {
+		if (value === undefined) continue;
+		if (Array.isArray(value)) for (const item of value) headers.append(key, item);
+		else headers.set(key, value);
+	}
+	return docReaderMayReadAnyPath(isRemoteSession(), headers);
 }
 
 /** Uses the shared doc resolver for parity with the Bun server. */
@@ -367,7 +368,7 @@ export async function handleDocRequest(res: Res, url: URL, options: HandleDocOpt
 	// The one authorization site. A named path is gated whether or not it
 	// exists, so an escaping name is denied rather than reported absent.
 	const named = resolution.kind === "file" || resolution.kind === "not_found" ? resolution.path : undefined;
-	if (named !== undefined && !isDocPathAllowed(named, allowedRoots, anyPath)) {
+	if (named !== undefined && !isDocServeAllowed(named, resolution.kind === "file" ? resolution.render : null, allowedRoots, anyPath)) {
 		sendDocError(res, DOC_ACCESS_DENIED);
 		return;
 	}
