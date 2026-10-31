@@ -10,7 +10,7 @@
  * sidebar, the list width, the file view): a cookie ignores the port, so it holds when the Inbox comes back on
  * another one. Nothing is synced to the server.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { storage } from '@plannotator/ui/utils/storage';
 import type { IconName } from './icons';
 
@@ -46,10 +46,27 @@ export function readListLook(): ListLook {
   };
 }
 
-/** Remember one option; off removes its cookie, so an untouched browser carries none. */
-export function writeListLookOption(key: ListLookKey, on: boolean): void {
+/** The lists showing the remembered look, told when it changes (the one-time list options dialog's Done). */
+const lookListeners = new Set<() => void>();
+
+function writeCookie(key: ListLookKey, on: boolean): void {
   if (on) storage.setItem(LIST_LOOK_COOKIES[key], '1');
   else storage.removeItem(LIST_LOOK_COOKIES[key]);
+}
+
+/** Remember one option; off removes its cookie, so an untouched browser carries none. */
+export function writeListLookOption(key: ListLookKey, on: boolean): void {
+  writeCookie(key, on);
+  for (const listener of lookListeners) listener();
+}
+
+/**
+ * Remember the whole look at once (the one-time list options dialog's Done, approval "inbox-list-options-intro"):
+ * every list on screen takes it at once, no reload.
+ */
+export function writeListLook(look: ListLook): void {
+  for (const option of LIST_LOOK_OPTIONS) writeCookie(option.key, look[option.key]);
+  for (const listener of lookListeners) listener();
 }
 
 /** The list column's classes for the look: none when every option is off. */
@@ -63,6 +80,18 @@ export function listLookClasses(look: ListLook): string {
  */
 export function useListLook(remember = true): [ListLook, (key: ListLookKey, on: boolean) => void] {
   const [look, setLook] = useState<ListLook>(() => (remember ? readListLook() : LIST_LOOK_OFF));
+  // A look written elsewhere (the one-time dialog's Done) reaches this list at once.
+  useEffect(() => {
+    if (!remember) return;
+    const reread = () => setLook((current) => {
+      const next = readListLook();
+      return current.highlight === next.highlight && current.compact === next.compact && current.hideAgents === next.hideAgents ? current : next;
+    });
+    lookListeners.add(reread);
+    return () => {
+      lookListeners.delete(reread);
+    };
+  }, [remember]);
   const set = useCallback((key: ListLookKey, on: boolean) => {
     if (!remember) return;
     writeListLookOption(key, on);
