@@ -1111,16 +1111,14 @@ export function createInboxDevices(context: InboxDevicesContext) {
    * listener before anything else uses it. If that fails, a mapping the last
    * run left (a crash, kill -9) is taken down, so it never points at a dead
    * port for longer than this start. With Phones off and no machine linked,
-   * nothing is published, and such a leftover is taken down too.
+   * the tailnet is not this Inbox's business: `tailscale` never runs (a
+   * leftover waits for a link, Phones, or `uninstall --purge`).
    */
   const startTailnet = () => {
     const kept = context.registry().tailnet;
     if (!kept) return;
     // Phones off: the door is published only for linked machines.
-    if (!phonesOn && !context.machines?.()?.hasLinks()) {
-      takeDownInboxTailnet(context.dataDir, tailscale, kept);
-      return;
-    }
+    if (!phonesOn && !context.machines?.()?.hasLinks()) return;
     tailnet.on = true;
     if (publish().ok) saveSwitch(true);
     else takeDownInboxTailnet(context.dataDir, tailscale, kept);
