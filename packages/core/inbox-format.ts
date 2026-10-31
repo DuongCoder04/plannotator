@@ -5,6 +5,29 @@ import { inboxAgentName } from './inbox-types';
 /** How the person sees an agent: the name it gave, else its host's name, else "An agent" (core's rule, shared with the server's drafts). */
 export const agentName = inboxAgentName;
 
+/** The longest agent name a toast shows; the thread, its rows and the live region say it whole. */
+export const INBOX_AGENT_NAME_SHORT_MAX = 40;
+
+let graphemes: Intl.Segmenter | null | undefined;
+
+/**
+ * An agent's name for a one-line place: whole up to `max` characters (user-perceived
+ * characters, so an emoji or an accent is never split), else cut to `max` with "…" at
+ * its end, at the last space when one is near (design record "inbox-toasts-break-fixes").
+ * "Claude Code (worktree agent-a0316994da8440ab5)" -> "Claude Code (worktree agent-a0316994da8…".
+ */
+export function shortAgentName(name: string, max = INBOX_AGENT_NAME_SHORT_MAX): string {
+  const text = name.trim().replace(/\s+/g, ' ');
+  if (graphemes === undefined) graphemes = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter('en', { granularity: 'grapheme' }) : null;
+  const parts = graphemes ? Array.from(graphemes.segment(text), (s) => s.segment) : Array.from(text);
+  if (parts.length <= max) return text;
+  const kept = parts.slice(0, max - 1);
+  // A word boundary within the last fifth of what is kept reads better than a cut mid-word.
+  const space = kept.lastIndexOf(' ');
+  const cut = space >= Math.floor((max - 1) * 0.8) ? kept.slice(0, space) : kept;
+  return `${cut.join('').replace(/[\s([{\-–—,:;.]+$/u, '')}…`;
+}
+
 const TIME = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' });
 const DAY = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
 const DAY_YEAR = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
