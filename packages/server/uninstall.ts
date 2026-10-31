@@ -697,14 +697,14 @@ function reportHostCleanupFailure(
  */
 function reportUnreadableConfig(
   owner: string,
-  { file, reason, next }: Unreadable,
+  { file, reason }: Unreadable,
   request: UninstallRequest,
   state: MutableUninstallResult,
 ): void {
   if (state.unreadable.has(file)) return;
   state.unreadable.add(file);
   state.errors.push(
-    `Could not read ${owner}'s ${file}: ${reason}. Plannotator did not change it. ${next ?? "To continue, fix that (or put back a working copy of the file)"}, then run \`${formatUninstallRetryCommand(request)}\` again.`,
+    `Could not read ${owner}'s ${file}: ${reason}. Plannotator did not change it. To continue, fix that (or put back a working copy of the file), then run \`${formatUninstallRetryCommand(request)}\` again.`,
   );
 }
 
@@ -889,12 +889,6 @@ async function removeHostPlugins(
         ? `; to remove it, run \`${action.command} plugin uninstall ${pluginId} --scope ${other.scope}\` in ${other.project}`
         : "";
       state.warnings.push(`Skipped: ${action.label} installed in ${other.scope} scope${where} (${other.field}), which uninstall leaves. Its hooks need the plannotator command${how}.`);
-    }
-    if (scan.enabledOnly) {
-      const clear = action.command === "claude"
-        ? `run \`claude plugin disable ${pluginId} --scope user\``
-        : "remove that key by hand";
-      state.warnings.push(`Skipped: ${scan.enabledOnly} turns on ${action.label}, but it is not installed for your user, so there is nothing for \`${action.command} plugin uninstall --scope user\` to remove and the key alone runs nothing. To clear it, ${clear}.`);
     }
     const references = scan.references;
     if (references.length === 0) continue;

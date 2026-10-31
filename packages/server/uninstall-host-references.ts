@@ -3,15 +3,13 @@ import { join } from "node:path";
 import { describeFsError } from "./agent-files";
 
 /** A file uninstall must read to finish, and why it could not. Nothing is written to it. */
-export type Unreadable = { file: string; reason: string; /** What to do, when not "fix that". */ next?: string };
+export type Unreadable = { file: string; reason: string };
 
 export type HostReferences = {
   /** What the host's own remove command takes away. While any is left, the CLI stays. */
   references: string[];
   /** Installs in another scope (a project's), which that command leaves. Named in a warning only. */
   otherScopes: OtherScope[];
-  /** The user's `enabledPlugins` key while only another scope has it installed: the host refuses a user-scope uninstall then. */
-  enabledOnly?: string;
   unreadable: Unreadable[];
 };
 
@@ -89,13 +87,9 @@ export function pluginReferences(directory: string, id: string): HostReferences 
       otherScopes.push({ field, scope, project: typeof project === "string" ? project : null });
     });
   }
-  const unreadable = [...enabled.unreadable, ...installed.unreadable];
-  // The record lists no user install (installed only for a project, or a settings.json synced from another
-  // computer): the host refuses a user-scope uninstall, and the key alone runs nothing.
-  if (installed.value !== null && installs.length === 0 && enabled.references.length > 0) {
-    return { references: [], otherScopes, enabledOnly: enabled.references[0], unreadable };
-  }
-  return { references: [...enabled.references, ...installs], otherScopes, unreadable };
+  // A user enabledPlugins key counts even with no user install: Claude Code installs (or rescopes) the plugin
+  // for the user from it at its next start.
+  return { references: [...enabled.references, ...installs], otherScopes, unreadable: [...enabled.unreadable, ...installed.unreadable] };
 }
 
 export function piPackageReferences(file: string): HostReferences {

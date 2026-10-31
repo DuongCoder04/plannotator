@@ -13,7 +13,6 @@ import {
   rmSync,
   statSync,
   symlinkSync,
-  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2748,8 +2747,9 @@ describe("host plugin managers", () => {
     expect(existsSync(binary)).toBe(false);
   });
 
-  test("a user enabledPlugins key with no user install never asks the host, and says how to clear it", async () => {
-    const fixture = createFixture({ which: (command) => (command === "claude" ? "/fake/claude" : null) });
+  // Claude Code installs (or rescopes) the plugin for the user from that key at its next start, so it keeps the CLI.
+  test("a user enabledPlugins key the host refuses to uninstall keeps the CLI, and names the key to remove by hand", async () => {
+    const fixture = createFixture();
     const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
     const settings = join(fixture.homeDir, ".claude", "settings.json");
     writeText(binary);
@@ -2758,12 +2758,25 @@ describe("host plugin managers", () => {
       version: 2,
       plugins: { "plannotator@plannotator": [{ scope: "project", projectPath: "/work/app", installPath: "/cache/plannotator" }] },
     });
-    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
-    expect(result.ok).toBe(true);
-    expect(fixture.commandCalls).toEqual([]);
+    const environment = {
+      ...fixture.environment,
+      which: (command: string) => (command === "claude" ? "/fake/claude" : null),
+      runCommand: async (command: string, args: string[]) => {
+        fixture.commandCalls.push({ command, args });
+        return { exitCode: 1, timedOut: false };
+      },
+    };
+    const blocked = await runPlannotatorUninstall({ purge: false, dryRun: false }, environment);
+    expect(blocked.ok).toBe(false);
+    expect(fixture.commandCalls).toHaveLength(1);
+    expect(existsSync(binary)).toBe(true);
+    expect(blocked.errors.join("\n")).toContain(`remove only these Plannotator entries by hand: ${settings}, enabledPlugins["plannotator@plannotator"]`);
+
+    writeJson(settings, { enabledPlugins: {} });
+    const retry = await runPlannotatorUninstall({ purge: false, dryRun: false }, environment);
+    expect(retry.ok).toBe(true);
+    expect(fixture.commandCalls).toHaveLength(1);
     expect(existsSync(binary)).toBe(false);
-    expect(result.warnings.join("\n")).toContain(`${settings}, enabledPlugins["plannotator@plannotator"] turns on Claude Code plugin plannotator@plannotator, but it is not installed for your user`);
-    expect(result.warnings.join("\n")).toContain("run `claude plugin disable plannotator@plannotator --scope user`");
   });
 
   test("a user-scope entry still there after the host reported success keeps the CLI, and says what to remove", async () => {
@@ -2871,13 +2884,12 @@ describe("configs uninstall cannot read keep the CLI", () => {
     const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
     const file = join(fixture.homeDir, ".claude.json");
     writeText(binary);
-    writeText(file, "");
-    truncateSync(file, 33 * 1024 * 1024);
-    const sparse = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
-    expect(sparse.ok).toBe(true);
-    expect(sparse.errors).toEqual([]);
-
     const history = "x".repeat(33 * 1024 * 1024);
+    writeText(file, JSON.stringify({ projects: { "/work": { history } } }));
+    const none = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
+    expect(none.ok).toBe(true);
+    expect(none.errors).toEqual([]);
+
     writeText(file, JSON.stringify({ mcpServers: { "plannotator-inbox": { command: binary, args: ["inbox", "mcp"] } }, projects: { "/work": { history } } }));
     const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
     expect(result.ok).toBe(true);
@@ -2886,14 +2898,14 @@ describe("configs uninstall cannot read keep the CLI", () => {
     expect(result.warnings.join("\n")).toContain("run `claude mcp remove plannotator-inbox -s user`");
   });
 
-  test("another agent's file over the size cap that names the entry says how to remove it", async () => {
+  test("another agent's file over the Inbox's 1 MiB cap is read and checked like any other", async () => {
     const fixture = createFixture();
     const file = join(fixture.homeDir, ".cursor", "mcp.json");
     writeText(file, JSON.stringify({ mcpServers: { "plannotator-inbox": { command: "plannotator", args: ["inbox", "mcp"] } }, pad: "x".repeat(1024 * 1024) }));
     const result = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
-    expect(result.ok).toBe(false);
-    expect(result.errors).toEqual([
-      `Could not read Cursor's ${file}: it is larger than 1 MiB, the most Plannotator reads, and it mentions "plannotator-inbox". Plannotator did not change it. To continue, remove that entry yourself (delete that entry by hand), then run \`plannotator uninstall\` again.`,
+    expect(result.ok).toBe(true);
+    expect(result.warnings.filter((warning) => warning.includes("plannotator-inbox"))).toEqual([
+      `Skipped: Cursor's "plannotator-inbox" in ${join("~", ".cursor", "mcp.json")} runs Plannotator and will fail to start once it is gone, but no record says Plannotator added it, so it is left (to remove it, delete that entry by hand).`,
     ]);
   });
 

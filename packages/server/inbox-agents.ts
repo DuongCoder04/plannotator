@@ -425,8 +425,8 @@ function rawJsonEntry(path: string, keys: readonly string[], jsonc: boolean, max
 }
 
 /** Codex's config.toml, parsed as TOML (every form: tables, inline tables, dotted keys, quoted parts). */
-function rawCodexEntry(path: string): RawEntry {
-  const read = readAgentFile(path);
+function rawCodexEntry(path: string, maxBytes?: number): RawEntry {
+  const read = readAgentFile(path, maxBytes);
   if (read.kind === "missing") return { kind: "absent" };
   if (read.kind === "refused") return { kind: "unreadable", reason: read.reason };
   let parsed: unknown;
@@ -479,7 +479,7 @@ interface AgentSpec {
   /** Where its `plannotator-inbox` entry lives (null: unknown, or not a file). */
   file(e: AgentEnvironment): string | null;
   /** The raw entry, read only. Null: the agent's file is not known; the record decides. */
-  raw(e: AgentEnvironment): RawEntry | null;
+  raw(e: AgentEnvironment, maxBytes?: number): RawEntry | null;
   /** How uninstall removes it, when not a JSON key. */
   remove?: { bin: string; args: string[] };
 }
@@ -838,7 +838,7 @@ export const AGENT_SPECS: readonly AgentSpec[] = [
     detect: (e) => !!e.which("codex") || codexHomeHasUserConfig(e),
     way: (e, probe) => cliWay(e, "codex", (cmd) => ["mcp", "add", NAME, "--", ...cmd], ["mcp", "remove", NAME], INBOX_CONNECT_AGENT_TIMEOUT_MS, probe === true),
     file: (e) => join(codexHome(e), "config.toml"),
-    raw: (e) => rawCodexEntry(join(codexHome(e), "config.toml")),
+    raw: (e, max) => rawCodexEntry(join(codexHome(e), "config.toml"), max),
     remove: { bin: "codex", args: ["mcp", "remove", NAME] },
   },
   {
@@ -846,7 +846,7 @@ export const AGENT_SPECS: readonly AgentSpec[] = [
     detect: (e) => !!e.which("gemini") || isDir(geminiDir(e)),
     way: (e, probe) => cliWay(e, "gemini", (cmd) => ["mcp", "add", "-s", "user", NAME, ...cmd], ["mcp", "remove", "-s", "user", NAME], INBOX_CONNECT_AGENT_TIMEOUT_MS, probe === true),
     file: (e) => join(geminiDir(e), "settings.json"),
-    raw: (e) => rawJsonEntry(join(geminiDir(e), "settings.json"), ["mcpServers"], true),
+    raw: (e, max) => rawJsonEntry(join(geminiDir(e), "settings.json"), ["mcpServers"], true, max),
     remove: { bin: "gemini", args: ["mcp", "remove", "-s", "user", NAME] },
   },
   {
@@ -854,21 +854,21 @@ export const AGENT_SPECS: readonly AgentSpec[] = [
     detect: (e) => !!e.which("qwen") || isDir(qwenDir(e)),
     way: (e, probe) => qwenWay(e, probe === true),
     file: (e) => join(qwenDir(e), "settings.json"),
-    raw: (e) => rawJsonEntry(join(qwenDir(e), "settings.json"), ["mcpServers"], true),
+    raw: (e, max) => rawJsonEntry(join(qwenDir(e), "settings.json"), ["mcpServers"], true, max),
   },
   {
     id: "cursor",
     detect: (e) => isDir(join(e.homeDir, ".cursor")) || !!e.which("cursor") || !!e.which("cursor-agent"),
     way: async () => ({ kind: "json", keys: ["mcpServers"] }),
     file: (e) => join(e.homeDir, ".cursor", "mcp.json"),
-    raw: (e) => rawJsonEntry(join(e.homeDir, ".cursor", "mcp.json"), ["mcpServers"], false),
+    raw: (e, max) => rawJsonEntry(join(e.homeDir, ".cursor", "mcp.json"), ["mcpServers"], false, max),
   },
   {
     id: "windsurf",
     detect: (e) => !!e.which("devin"),
     way: (e, probe) => cliWay(e, "devin", (cmd) => ["mcp", "add", "-s", "user", NAME, "--", ...cmd], ["mcp", "remove", "-s", "user", NAME], INBOX_CONNECT_AGENT_TIMEOUT_MS, probe === true),
     file: (e) => join(xdgConfigHome(e), "devin", "config.json"),
-    raw: (e) => rawJsonEntry(join(xdgConfigHome(e), "devin", "config.json"), ["mcpServers"], true),
+    raw: (e, max) => rawJsonEntry(join(xdgConfigHome(e), "devin", "config.json"), ["mcpServers"], true, max),
     remove: { bin: "devin", args: ["mcp", "remove", "-s", "user", NAME] },
   },
   {
@@ -876,7 +876,7 @@ export const AGENT_SPECS: readonly AgentSpec[] = [
     detect: (e) => !!e.which("amp"),
     way: (e, probe) => cliWay(e, "amp", (cmd) => ["mcp", "add", NAME, "--", ...cmd], ["mcp", "remove", NAME], INBOX_CONNECT_AGENT_TIMEOUT_MS, probe === true),
     file: (e) => join(xdgConfigHome(e), "amp", "settings.json"),
-    raw: (e) => rawJsonEntry(join(xdgConfigHome(e), "amp", "settings.json"), ["amp.mcpServers"], true),
+    raw: (e, max) => rawJsonEntry(join(xdgConfigHome(e), "amp", "settings.json"), ["amp.mcpServers"], true, max),
     remove: { bin: "amp", args: ["mcp", "remove", NAME] },
   },
   {
@@ -892,7 +892,7 @@ export const AGENT_SPECS: readonly AgentSpec[] = [
     detect: (e) => !!e.which("kiro-cli") || isDir(join(e.homeDir, ".kiro")),
     way: async () => ({ kind: "json", keys: ["mcpServers"] }),
     file: (e) => join(e.homeDir, ".kiro", "settings", "mcp.json"),
-    raw: (e) => rawJsonEntry(join(e.homeDir, ".kiro", "settings", "mcp.json"), ["mcpServers"], false),
+    raw: (e, max) => rawJsonEntry(join(e.homeDir, ".kiro", "settings", "mcp.json"), ["mcpServers"], false, max),
   },
   {
     id: "pi",
@@ -902,7 +902,7 @@ export const AGENT_SPECS: readonly AgentSpec[] = [
         ? Promise.resolve({ kind: "tool", host: "pi" } as ConnectWay)
         : cliWay(e, "pi", (cmd) => ["mcp", "add", NAME, "--", ...cmd], ["mcp", "remove", NAME], INBOX_CONNECT_AGENT_TIMEOUT_MS, probe === true),
     file: (e) => join(piAgentDir(e), "mcp.json"),
-    raw: (e) => rawJsonEntry(join(piAgentDir(e), "mcp.json"), ["mcpServers"], true),
+    raw: (e, max) => rawJsonEntry(join(piAgentDir(e), "mcp.json"), ["mcpServers"], true, max),
     remove: { bin: "pi", args: ["mcp", "remove", NAME] },
   },
   {
@@ -918,7 +918,7 @@ export const AGENT_SPECS: readonly AgentSpec[] = [
     detect: (e) => isDir(claudeAppDir(e)),
     way: async () => ({ kind: "json", keys: ["mcpServers"] }),
     file: (e) => join(claudeAppDir(e), "claude_desktop_config.json"),
-    raw: (e) => rawJsonEntry(join(claudeAppDir(e), "claude_desktop_config.json"), ["mcpServers"], false),
+    raw: (e, max) => rawJsonEntry(join(claudeAppDir(e), "claude_desktop_config.json"), ["mcpServers"], false, max),
   },
 ];
 
@@ -1643,9 +1643,9 @@ export function claudeCodeMcpPath(e: AgentEnvironment): string {
   return join(envDir(e, "CLAUDE_CONFIG_DIR") ?? e.homeDir, ".claude.json");
 }
 
-export function claudeCodeMcpEntry(e: AgentEnvironment, ours: readonly (readonly string[])[]): InboxEntryRead {
+export function claudeCodeMcpEntry(e: AgentEnvironment, ours: readonly (readonly string[])[], maxBytes = CLAUDE_JSON_MAX_BYTES): InboxEntryRead {
   // .claude.json holds Claude Code's per-project history and often passes 1 MiB; this read only looks.
-  return classify(rawJsonEntry(claudeCodeMcpPath(e), ["mcpServers"], false, CLAUDE_JSON_MAX_BYTES), ours, true);
+  return classify(rawJsonEntry(claudeCodeMcpPath(e), ["mcpServers"], false, maxBytes), ours, true);
 }
 
 /** The most `.claude.json` the read-only MCP lookup reads. */
