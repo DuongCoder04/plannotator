@@ -244,6 +244,32 @@ export function defineLinkedDocumentDraftScenarios(runtime: string, start: Linke
           expect((await fetch(`${reopened.url}/api/draft/document?path=${encodeURIComponent(path)}`)).status).toBe(404);
         }
       });
+
+      test(`${name} from a reloaded page clears only that page's copies`, async () => {
+        const plan = planText();
+        const server = await openPlan(plan);
+        // An earlier page load commented on both documents.
+        await post(server, "/api/draft/document?client=page-1", {
+          documents: [
+            { path: design, annotations: [comment("on-design")] },
+            { path: notes, annotations: [comment("on-notes")] },
+          ],
+        });
+        // The reloaded page is offered both, and restores only the design.
+        expect((await loadDraft(server)).body.documents?.map((d) => d.path).sort()).toEqual([design, notes].sort());
+        const claim = await fetch(`${server.url}/api/draft/document?path=${encodeURIComponent(design)}&client=page-2`);
+        expect(claim.status).toBe(200);
+        expect((await post(server, `${decision.path}?client=page-2`, decision.body)).status).toBe(200);
+        await close(server);
+
+        // The restored copy was sent and is gone; the unrestored one was not
+        // sent, so it is offered again.
+        const reopened = await openPlan(plan);
+        expect((await fetch(`${reopened.url}/api/draft/document?path=${encodeURIComponent(design)}`)).status).toBe(404);
+        expect((await loadDraft(reopened)).body.documents?.map((d) => [d.path, idsOf(d.annotations)])).toEqual([
+          [notes, ["on-notes"]],
+        ]);
+      });
     }
 
     /**
