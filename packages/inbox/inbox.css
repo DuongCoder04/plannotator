@@ -2649,13 +2649,11 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
 .ib-toast-wrap .ib-tsay { overflow-wrap: anywhere; }
 .ib-toast-wrap .ib-tlead { font-weight: 400; }
 /* How a toast's words fit (design record "inbox-toasts-break-fixes", 2026-10-31; Toast.tsx useFit). A desktop toast's
-   words take at most two lines, cut with "…" (the live region said them whole; they carry them as their title). The
-   icon stays beside the first line once the words wrap; the actions stay centered. One line looks as before (40 px). */
-.ib-toast:not(.ib-toast-phone) { align-items: flex-start; }
-.ib-toast:not(.ib-toast-phone) > .ib-ic, .ib-toast:not(.ib-toast-phone) > .ib-temoji { margin-top: 5px; }
-.ib-toast:not(.ib-toast-phone).ib-toast-wrap .ib-tsay { padding: 3px 0; }
-.ib-toast:not(.ib-toast-phone) .ib-tacts { align-self: center; }
-.ib-toast:not(.ib-toast-phone):not(.ib-toast-wrap) .ib-tsay { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; padding: 3px 0; }
+   words take at most two lines, cut with "…" (the live region said them whole; they carry them as their title). Once
+   the words wrap (`data-wrapped`, Toast.tsx useFit) the icon stays beside the first line; the actions stay centered.
+   The heights are as before: one line 40 px (an error with its × 44), two lines 54. */
+.ib-toast:not(.ib-toast-phone)[data-wrapped] > :is(.ib-ic, .ib-temoji) { align-self: flex-start; margin-top: 2px; }
+.ib-toast:not(.ib-toast-phone):not(.ib-toast-wrap) .ib-tsay { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 /* An error past its most lines (desktop 3, phone 4): what happened is cut to two lines, what to do stays whole below it. */
 .ib-toast[data-stack] .ib-thead { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .ib-toast[data-stack] .ib-taction { display: block; }
@@ -2669,9 +2667,11 @@ button.ib-vtime:hover { background: color-mix(in oklch, var(--primary) 22%, tran
 @media (pointer: coarse) and (hover: none) {
   .ib-toast:not(.ib-toast-phone) .ib-tundo kbd { display: none; }
   .ib-toast:not(.ib-toast-phone) .ib-tacts { gap: 8px; }
-  /* The words' first line stays level with the taller buttons. */
+  /* The words' first line stays level with the taller buttons, and the icon beside it. */
+  .ib-toast:not(.ib-toast-phone) { align-items: flex-start; }
+  .ib-toast:not(.ib-toast-phone) .ib-tacts { align-self: center; }
   .pn-inbox .ib-toast:not(.ib-toast-phone) .ib-tsay { padding-top: 6px; padding-bottom: 6px; }
-  .ib-toast:not(.ib-toast-phone) > :is(.ib-ic, .ib-temoji) { margin-top: 8px; }
+  .ib-toast:not(.ib-toast-phone) > :is(.ib-ic, .ib-temoji), .ib-toast:not(.ib-toast-phone)[data-wrapped] > :is(.ib-ic, .ib-temoji) { align-self: auto; margin-top: 8px; }
   .pn-inbox .ib-toast:not(.ib-toast-phone) :is(.ib-tundo, .ib-tghost) { position: relative; height: 32px; padding: 0 12px; }
   .pn-inbox .ib-toast:not(.ib-toast-phone) .ib-tclose { position: relative; width: 32px; height: 32px; }
   .pn-inbox .ib-toast:not(.ib-toast-phone) :is(.ib-tundo, .ib-tghost, .ib-tclose)::after { content: ""; position: absolute; inset: -6px -4px; }

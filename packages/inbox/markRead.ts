@@ -67,6 +67,8 @@ export interface MarkReadToast {
   phoneLead?: string;
   /** The muted rest of the line, cut with "…" where it does not fit (Toast.tsx; the live region says it whole). */
   detail: string;
+  /** A phone's detail: what happened first, the agent's name last, so a cut only ever eats the name. */
+  phoneDetail?: string;
   /** An agent was stopped or held up on the thread: the toast warns and offers Reply. */
   warn: boolean;
   /** What the live region says instead, when the detail cut the agent's name (shortAgentName). */
@@ -100,7 +102,14 @@ export function markReadToast(
   if (before.questions.stopped) {
     const name = agentName(before.author);
     const short = shortAgentName(name);
-    return { lead: 'Marked read', phoneLead: 'Read', detail: `${short} was stopped`, warn: true, ...(short !== name ? { speech: `Marked read. ${name} was stopped.` } : {}) };
+    return {
+      lead: 'Marked read',
+      phoneLead: 'Read',
+      detail: `${short} was stopped`,
+      phoneDetail: `Stopped · ${short}`,
+      warn: true,
+      ...(short !== name ? { speech: `Marked read. ${name} was stopped.` } : {}),
+    };
   }
   if (before.questions.holds_up.length > 0) {
     return { lead: 'Marked read', phoneLead: 'Read', detail: `Held up ${plural(before.questions.holds_up.length, 'thing')}`, warn: true };

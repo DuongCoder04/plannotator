@@ -44,6 +44,8 @@ describe('markReadToast: the approved words', () => {
       lead: 'Marked read',
       phoneLead: 'Read',
       detail: 'Claude Code (worktree agent-a0316994da8… was stopped',
+      // A phone: what happened first, so the line's "…" only ever cuts the name.
+      phoneDetail: 'Stopped · Claude Code (worktree agent-a0316994da8…',
       warn: true,
       speech: 'Marked read. Claude Code (worktree agent-a0316994da8440ab5) was stopped.',
     });
@@ -51,7 +53,7 @@ describe('markReadToast: the approved words', () => {
 
   test('an agent stopped or held up on it: a warning, in the open thread or from a row', () => {
     for (const place of ['open', 'list'] as const) {
-      expect(markReadToast(row({ questions: questions({ stopped: true }) }), place)).toEqual({ lead: 'Marked read', phoneLead: 'Read', detail: 'Claude Code was stopped', warn: true });
+      expect(markReadToast(row({ questions: questions({ stopped: true }) }), place)).toEqual({ lead: 'Marked read', phoneLead: 'Read', detail: 'Claude Code was stopped', phoneDetail: 'Stopped · Claude Code', warn: true });
       const held = markReadToast(row({ questions: questions({ holds_up: ['the deploy', 'the release'] }) }), place);
       expect(held).toEqual({ lead: 'Marked read', phoneLead: 'Read', detail: 'Held up 2 things', warn: true });
     }
@@ -307,7 +309,7 @@ test.skipIf(!hasDom)('a phone: "Read" for "Marked read", no Reply and no Z hint,
   const toast = show({ ...copy, icon: warn ? 'warn' : 'check', onUndo: () => undone++, onReply: () => {} }, true, undefined, () => {});
   expect(toast.classList.contains('ib-toast-phone')).toBe(true);
   expect(toast.querySelector('.ib-tlead')?.textContent).toBe('Read');
-  expect(toast.querySelector('.ib-tdetail')?.textContent).toBe('Claude Code was stopped');
+  expect(toast.querySelector('.ib-tdetail')?.textContent).toBe('Stopped · Claude Code');
   expect(buttons(toast)).toEqual(['Undo', '']);
   expect(toast.querySelector('[data-toast-dismiss]')?.getAttribute('aria-label')).toBe('Dismiss');
   expect(toast.querySelector('kbd')).toBeNull();
@@ -315,12 +317,15 @@ test.skipIf(!hasDom)('a phone: "Read" for "Marked read", no Reply and no Z hint,
   expect(undone).toBe(1);
 });
 
-test.skipIf(!hasDom)('a narrow desktop window (the phone layout, a mouse) keeps Reply: no foot holds it there', () => {
+test.skipIf(!hasDom)('a narrow desktop window (the phone layout, a mouse) keeps Reply and Undo\'s Z: no foot holds Reply there, and the keys work', () => {
   phoneWindow(false);
   let replied = 0;
   const toast = show({ icon: 'check', lead: 'Marked read', phoneLead: 'Read', detail: 'Moves to Quiet', onUndo: () => {}, onReply: () => replied++ }, true, undefined, () => {});
   expect(toast.classList.contains('ib-toast-phone')).toBe(true);
   expect(buttons(toast)).toEqual(['Reply', 'Undo', '']);
+  const undo = toast.querySelector('[data-toast-undo]')!;
+  expect(undo.querySelector('kbd')?.getAttribute('data-keycap')).toBe('Z');
+  expect(undo.getAttribute('aria-keyshortcuts')).toBe('Z');
   act(() => ([...toast.querySelectorAll('button')].find((b) => b.textContent === 'Reply') as HTMLButtonElement).click());
   expect(replied).toBe(1);
 });

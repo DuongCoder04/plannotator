@@ -2174,7 +2174,8 @@ function Inbox() {
   const showToast = (next: Omit<InboxToastModel, 'id'>, ms = MARK_READ_UNDO_MS) => {
     toastLeft.current = null;
     setToast({ ...next, id: Date.now() });
-    say(toastSpeech(next, phone));
+    // A narrow desktop window (the phone layout, a mouse and keys) keeps Z, so it hears "Press Z to undo".
+    say(toastSpeech(next, isTouchPhone()));
     armToastTimer(ms);
   };
   /** A swipe in progress pauses the toast's timer; a spring-back resumes it (at least 1.5 s more, so it never vanishes on release). */
@@ -2336,6 +2337,9 @@ function Inbox() {
       lead: 'Looks good',
       // One line at 520 px with Undo and its Z for a name up to 40 characters (longer ones are cut, shortAgentName).
       detail: `Goes to ${shortAgentName(agent)} in 10 s · Moves to Quiet`,
+      // A phone: the news first and the name last, so a cut with "…" only ever eats the name. "Read" is the phone's word
+      // for Marked read (the thread moves to Quiet), short enough that the news fits whole at 320 px beside Undo and the ×.
+      phoneDetail: `Read · Sends in 10 s · ${shortAgentName(agent)}`,
       speech: `Looks good. Goes to ${agent} in 10 seconds and moves to Quiet.`,
       onUndo: () => void acknowledge(threadId, messageId, false, agent),
     });
@@ -2563,7 +2567,7 @@ function Inbox() {
       ...copy,
       // Stopped partway: the warning, and why, whole (it may wrap); Undo still covers what did apply.
       // The project is on screen (its menu was just used) and in what the live region says.
-      ...(incomplete ? { icon: 'warn' as const, detail: incomplete, speech: `${copy.lead} in ${name}. ${incomplete}`, wrap: true } : {}),
+      ...(incomplete ? { icon: 'warn' as const, detail: incomplete, phoneDetail: undefined, speech: `${copy.lead} in ${name}. ${incomplete}`, wrap: true } : {}),
       onUndo: () => {
         void (async () => {
           try {

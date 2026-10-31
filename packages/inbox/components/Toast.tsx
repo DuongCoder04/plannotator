@@ -20,6 +20,11 @@ export interface InboxToastModel {
   phoneLead?: string;
   /** The muted rest of the line; it may wrap to a second line, and is cut with "…" past it (a phone: its own line). */
   detail?: string;
+  /**
+   * What a phone's detail says instead: the same news, what happened first and a name last ("Stopped · Claude Code"),
+   * so where the line is cut with "…" it only ever cuts the name. The live region still says `speech` or the detail.
+   */
+  phoneDetail?: string;
   /** An error: its message may wrap (three lines, four on a phone); past that, its last sentence (what to do) stays whole. */
   wrap?: boolean;
   onUndo?: () => void;
@@ -110,7 +115,8 @@ function ToastBody({ toast, phone, onDismiss }: { toast: InboxToastModel; phone:
   const reply = !(phone && touchPhone) && toast.onReply;
   const undoKeys = useShortcutAria({ scope: inboxThreadShortcuts, action: 'undo' });
   const lead = phone ? (toast.phoneLead ?? toast.lead) : toast.lead;
-  const error = toast.wrap && !toast.detail ? splitErrorAction(lead) : null;
+  const detail = phone ? (toast.phoneDetail ?? toast.detail) : toast.detail;
+  const error = toast.wrap && !detail ? splitErrorAction(lead) : null;
   return (
     <>
       {toast.icon === 'thumb' ? (
@@ -133,7 +139,7 @@ function ToastBody({ toast, phone, onDismiss }: { toast: InboxToastModel; phone:
               lead
             )}
           </span>
-          {toast.detail && <span className="ib-tdetail">{toast.detail}</span>}
+          {detail && <span className="ib-tdetail">{detail}</span>}
         </span>
       </Tip>
       {(reply || toast.onUndo || toast.action || onDismiss) && (
@@ -151,9 +157,10 @@ function ToastBody({ toast, phone, onDismiss }: { toast: InboxToastModel; phone:
             </button>
           )}
           {toast.onUndo && (
-            <button type="button" className="ib-tundo" onClick={toast.onUndo} data-toast-undo="" aria-keyshortcuts={phone ? undefined : undoKeys}>
+            <button type="button" className="ib-tundo" onClick={toast.onUndo} data-toast-undo="" aria-keyshortcuts={phone && touchPhone ? undefined : undoKeys}>
               Undo
-              {!phone && <ShortcutHint scope={inboxThreadShortcuts} action="undo" className="" />}
+              {/* A narrow desktop window (the phone layout, a mouse and keys) keeps Z, as it keeps Reply. */}
+              {!(phone && touchPhone) && <ShortcutHint scope={inboxThreadShortcuts} action="undo" className="" touchOnly />}
             </button>
           )}
           {onDismiss && (
@@ -196,6 +203,8 @@ const MOST_LINES = { desktop: { error: 3, other: 2 }, phone: { error: 4, other: 
  * - `data-tight` (desktop, Undo and the ×): the words would wrap with Undo's
  *   `Z` hint beside the ×, so the hint is not drawn (`Z` still undoes, and
  *   Undo still says its key).
+ * - `data-wrapped` (desktop): the words take more than one line, so the icon
+ *   keeps beside the first (inbox.css).
  * - `data-stack`: the words would take more lines than MOST_LINES. A phone's
  *   toast then shows its lead on one line and its detail on a second, each
  *   cut with "…"; an error keeps its last sentence (what to do) whole and
@@ -214,19 +223,21 @@ function useFit(ref: RefObject<HTMLDivElement | null>, toast: InboxToastModel, p
     const fit = () => {
       el.removeAttribute('data-tight');
       el.removeAttribute('data-stack');
+      el.removeAttribute('data-wrapped');
       const say = el.querySelector<HTMLElement>('.ib-tsay');
       if (!say) return;
       const style = getComputedStyle(say);
       const line = parseFloat(style.lineHeight) || 20;
       const lines = () => (say.getBoundingClientRect().height - (parseFloat(style.paddingTop) || 0) - (parseFloat(style.paddingBottom) || 0)) / line;
       if (!phone && !wrap && closableUndo && lines() > 1.5) el.setAttribute('data-tight', '');
+      if (!phone && lines() > 1.5) el.setAttribute('data-wrapped', '');
       const most = MOST_LINES[phone ? 'phone' : 'desktop'][wrap ? 'error' : 'other'];
       if (lines() > most + 0.5) el.setAttribute('data-stack', '');
     };
     fit();
     window.addEventListener('resize', fit);
     return () => window.removeEventListener('resize', fit);
-  }, [ref, phone, wrap, closableUndo, toast.lead, toast.phoneLead, toast.detail]);
+  }, [ref, phone, wrap, closableUndo, toast.lead, toast.phoneLead, toast.detail, toast.phoneDetail]);
 }
 
 /**

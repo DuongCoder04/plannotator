@@ -16,16 +16,32 @@ let graphemes: Intl.Segmenter | null | undefined;
  * its end, at the last space when one is near (design record "inbox-toasts-break-fixes").
  * "Claude Code (worktree agent-a0316994da8440ab5)" -> "Claude Code (worktree agent-a0316994da8…".
  */
+function graphemesOf(text: string): string[] {
+  if (graphemes === undefined) graphemes = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter('en', { granularity: 'grapheme' }) : null;
+  return graphemes ? Array.from(graphemes.segment(text), (s) => s.segment) : Array.from(text);
+}
+
 export function shortAgentName(name: string, max = INBOX_AGENT_NAME_SHORT_MAX): string {
   const text = name.trim().replace(/\s+/g, ' ');
-  if (graphemes === undefined) graphemes = typeof Intl !== 'undefined' && 'Segmenter' in Intl ? new Intl.Segmenter('en', { granularity: 'grapheme' }) : null;
-  const parts = graphemes ? Array.from(graphemes.segment(text), (s) => s.segment) : Array.from(text);
+  const parts = graphemesOf(text);
   if (parts.length <= max) return text;
   const kept = parts.slice(0, max - 1);
   // A word boundary within the last fifth of what is kept reads better than a cut mid-word.
   const space = kept.lastIndexOf(' ');
   const cut = space >= Math.floor((max - 1) * 0.8) ? kept.slice(0, space) : kept;
   return `${cut.join('').replace(/[\s([{\-–—,:;.]+$/u, '')}…`;
+}
+
+/**
+ * The agent name the Inbox stores (send_message's and card's `agent_name`, the tag list's MCP rows): trimmed, and
+ * past INBOX_AGENT_NAME_SHORT_MAX characters cut by shortAgentName's rule (design record "inbox-toasts-break-fixes":
+ * names are capped in the server and the UI). A name is only ever shown and searched: sessions, never names, decide
+ * a thread's owner, where a reply goes and what a tag names, so two names cut alike stay two agents. Null: none given.
+ */
+export function inboxStoredAgentName(raw: string | null | undefined): string | null {
+  const name = raw?.trim();
+  if (!name) return null;
+  return graphemesOf(name).length <= INBOX_AGENT_NAME_SHORT_MAX ? name : shortAgentName(name);
 }
 
 const TIME = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' });
