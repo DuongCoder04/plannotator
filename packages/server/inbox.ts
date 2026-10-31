@@ -325,6 +325,8 @@ export interface InboxServerOptions {
   selfCommand?: readonly string[];
   /** The phone door's clock (packages/server/inbox-devices.ts): the pairing offer's expiry. Default: the wall clock. */
   now?: () => Date;
+  /** Tests: how long the tailnet door stays up for a machine unlinked while it could not be told. Default a week (`UNLINKED_REFUSAL_KEPT_MS`). */
+  unlinkedRefusalKeptMs?: number;
   /** How "Reach from my tailnet" runs the `tailscale` CLI. Default: the CLI on PATH. */
   tailscale?: TailscaleRunner;
   /** Tests: how step 1 of Pair a phone reads this computer (packages/server/inbox-pairing-checks.ts). Default: its own tools. */
@@ -3407,6 +3409,7 @@ export async function startInboxServer(options: InboxServerOptions = {}): Promis
       readBody,
       dispatch: fetch,
       now: options.now,
+      refusalKeptMs: options.unlinkedRefusalKeptMs,
       tailscale: options.tailscale,
       probes: options.pairingProbes,
       relay: { paired: async (device) => (relay ? relay.paired(device) : null), revoked: (device) => relay?.revoked(device) },
