@@ -21,7 +21,7 @@ import { middleCutInboxName, type InboxSearchGroupId, type InboxSearchRow } from
 import { saveRecentSearch, searchInbox, type SearchModel } from '../api';
 
 import { HostMark, Icon } from '../icons';
-import { formatShortcutBindingTokens, getShortcutPlatform } from '@plannotator/ui/shortcuts';
+import { KeyCaps } from '../shortcuts/hint';
 import { isTextCut, ProjectTipText, Tip } from '../components/Tip';
 import { actionLabel, busyWord, namesActionWord, startedLine, type ComposeAction } from '../compose/model';
 import {
@@ -215,21 +215,19 @@ function TimeColumn({ at }: { at: string | null }) {
 
 /** The palette's key footer (desktop): only keys the palette already handles, the new-tab chord in the platform's own modifier. */
 function KeyFooter() {
-  const mod = formatShortcutBindingTokens('Mod+Enter', getShortcutPlatform())[0] ?? 'Ctrl';
   return (
     <div className="ib-sp-foot" data-search-keys="" aria-hidden="true">
       <span>
-        <kbd>↑</kbd>
-        <kbd>↓</kbd> Move
+        <KeyCaps bindings={['ArrowUp', 'ArrowDown']} /> Move
       </span>
       <span>
-        <kbd>Enter</kbd> Open
+        <KeyCaps bindings={['Enter']} /> Open
       </span>
       <span>
-        <kbd>{mod} Enter</kbd> Open in new tab
+        <KeyCaps bindings={['Mod+Enter']} /> Open in new tab
       </span>
       <span className="ib-sp-foot-end">
-        <kbd>Esc</kbd> Close
+        <KeyCaps bindings={['Escape']} /> Close
       </span>
     </div>
   );

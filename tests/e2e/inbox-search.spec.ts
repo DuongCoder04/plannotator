@@ -579,9 +579,12 @@ test('every result starts with its mark; the selected row stands apart from the 
   // The footer names only keys the palette handles, and each does what it says.
   const foot = palette(page).locator('[data-search-keys]');
   await expect(foot).toBeVisible();
-  const caps = await foot.locator('kbd').allTextContents();
-  expect(caps.slice(0, 3)).toEqual(['↑', '↓', 'Enter']);
-  expect(caps[3]).toMatch(/^(⌘|Ctrl) Enter$/);
+  // Each keycap names its binding and is spelled by the registry (as Send's ⌘↵ / Ctrl ↵ is); each binding is pressed below.
+  const keys = await foot.locator('kbd').evaluateAll((all) => all.map((k) => [k.getAttribute('data-keycap-binding'), k.textContent]));
+  expect(keys.map(([binding]) => binding)).toEqual(['ArrowUp', 'ArrowDown', 'Enter', 'Mod+Enter', 'Escape']);
+  const caps = keys.map(([, text]) => text!);
+  expect(caps.slice(0, 3)).toEqual(['↑', '↓', '↵']);
+  expect(caps[3]).toMatch(/^(⌘↵|Ctrl ↵)$/);
   expect(caps[4]).toBe('Esc');
   await expect(foot).toContainText('Move');
   await expect(foot).toContainText('Open in new tab');

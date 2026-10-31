@@ -134,6 +134,24 @@ export function ShortcutHint({ className = 'ib-kbd', touchOnly = false, ...ref }
   );
 }
 
+/**
+ * Keycaps for keys a surface handles itself, outside the registry's scopes (the search palette's ↑ ↓ ↵ ⌘↵ Esc): one
+ * `<kbd>` per binding, spelled by the registry's formatter as every other keycap is (⌘↵ on macOS, Ctrl ↵ elsewhere, as
+ * Send reads). Always drawn: these keys act whatever the settings say. `data-keycap-binding` names the binding.
+ */
+export function KeyCaps({ bindings, className }: { bindings: readonly string[]; className?: string }) {
+  const platform = getShortcutPlatform();
+  return (
+    <>
+      {bindings.map((binding, i) => (
+        <kbd key={`${binding}-${i}`} className={className} data-keycap-binding={binding}>
+          {bindingText(binding, platform)}
+        </kbd>
+      ))}
+    </>
+  );
+}
+
 const TIP_KBD = 'inline-flex h-[18px] min-w-[18px] items-center justify-center rounded border border-border/60 bg-muted px-1 font-mono text-[10px] leading-none text-foreground/80';
 
 /** A tooltip's keycaps, one per key of the binding (⌘ ⇧ X), from the registry. */

@@ -3495,7 +3495,9 @@ dialog.ib-sp::backdrop { background: oklch(0.1 0.012 260 / 0.72); }
 .ib-sp-row[aria-selected="true"] .ib-sp-mark { color: var(--foreground); }
 /* The row's leading mark: the agent's for a message, an outline for what the row is otherwise. */
 .ib-sp-mark { width: 20px; flex: none; display: inline-flex; justify-content: center; align-self: flex-start; margin-top: 2px; color: var(--ib-sp-quiet); }
-.pn-inbox .ib-sp-mark svg.ib-ic, .ib-sp-mark .ib-mk, .ib-sp-mark .ib-mk > :is(svg, img) { width: 18px; height: 18px; }
+/* An agent's mark and the plain icons in one 20 px column, from the mark scale (ruling q12). */
+.ib-sp-mark .ib-mk, .ib-sp-mark .ib-mk > :is(svg, img) { width: var(--ib-mark-20); height: var(--ib-mark-20); }
+.pn-inbox .ib-sp-mark svg.ib-ic { width: var(--ib-mark-20); height: var(--ib-mark-20); }
 /* The time in its own right-hand column (desktop). */
 .ib-sp-time { flex: none; align-self: flex-start; margin-top: 2px; font-size: var(--ib-fs-12-5, 12.5px); color: var(--muted-foreground); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ib-sp-rs { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
