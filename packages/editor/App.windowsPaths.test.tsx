@@ -116,9 +116,7 @@ async function clickLink(text: string): Promise<void> {
   await settle();
 }
 
-const describeDom = hasDom ? describe : describe.skip;
-
-describeDom("annotate: relative references resolve from the document's folder", () => {
+describe.if(hasDom)("annotate: relative references resolve from the document's folder", () => {
   afterEach(async () => {
     await act(async () => { root?.unmount(); });
     root = null;
