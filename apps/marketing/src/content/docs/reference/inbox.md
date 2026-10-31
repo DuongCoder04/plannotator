@@ -161,7 +161,7 @@ Holds up: staging deploy; release notes
 
 Agents are told to write `Stopped:` only when they truly cannot continue. A negative value (`no`, `none`, `n/a`, a dash) means no stop, so `Stopped: no` is read as if the line were not there, and a `Holds up:` entry `none` holds nothing up. `plannotator inbox --help` and the `send_message` tool's `body` field teach agents both lines.
 
-An action item is an Inbox-only `:::action` block. Its first line is what to do; the other lines say why, except these: `Where:` (a link becomes an **Open** button, or a place in words), `Run:` (a command to copy), `Stopped:` and `Holds up:` (as for questions), and `Watching:` (what the agent watches to notice it done by itself).
+An action item is an Inbox-only `:::action` block. Its first line is what to do; the other lines say why, except these: `Where:` (a link becomes an **Open** button, or a place in words), `Stopped:` and `Holds up:` (as for questions), and `Watching:` (what the agent watches to notice it done by itself). Agents are told to put each command you must run in its own fenced code block, one per command in the order to run them; each block gets a copy button. An older `Run: <command>` line still works: one becomes the item's command with **Copy**, several become one code block each, in order. A line that is only inline code, or "Run in Terminal …: <command>", also becomes a code block with a copy button. Selecting text in an action item or a question card keeps the selection, so you can copy any part of it.
 
 ```markdown
 :::action
@@ -427,7 +427,7 @@ Browsers grant notifications per address (scheme, name and port). The Inbox alwa
 
 ### Update
 
-When a newer Plannotator release is out, the sidebar shows an **Update** button above **Settings**. The machine checks GitHub every few minutes and when the Inbox starts or the page is reloaded (never your browser), so a new release shows within minutes; turn this off in **Settings → About** ("Tell me when a new version is out"), with `{ "updateCheck": false }` in `~/.plannotator/config.json`, or `PLANNOTATOR_UPDATE_CHECK=0`.
+When a newer Plannotator release is out, the sidebar shows an **Update** button above **Settings**. The machine checks GitHub every few minutes and when the Inbox starts or the page is reloaded (never your browser), so a new release shows within minutes; turn this off in **Settings → About** ("Tell me when a new version is out"), with `{ "updateCheck": false }` in `~/.plannotator/config.json`, or `PLANNOTATOR_UPDATE_CHECK=0`. Off stops only the automatic checks: **Check now** still asks, a release already known still shows **Update to X**, and clicking it checks GitHub once more so you get the newest release (or, offline, the one already known). **Settings → General** says when checks are off and how to turn them back on.
 
 Click **Update to X** to see what's new and what will happen, then **Update now**: the install script runs for that version with the choices from your last install, the button reads **Updating…**, and when the new binary is in, the Inbox restarts on it and the page reloads. Open reviews keep running on the old version until you finish them. **Remind me tomorrow** hides the button for that version for a day. Tick **Install new versions automatically** to let Plannotator do this by itself from then on.
 
