@@ -21,6 +21,7 @@ import { middleCutInboxName, type InboxSearchGroupId, type InboxSearchRow } from
 import { saveRecentSearch, searchInbox, type SearchModel } from '../api';
 
 import { HostMark, Icon } from '../icons';
+import { formatShortcutBindingTokens, getShortcutPlatform } from '@plannotator/ui/shortcuts';
 import { isTextCut, ProjectTipText, Tip } from '../components/Tip';
 import { actionLabel, busyWord, namesActionWord, startedLine, type ComposeAction } from '../compose/model';
 import {
@@ -39,6 +40,7 @@ import {
   scopeWords,
   searchTime,
   searchGroups,
+  searchRowMark,
   sectionLabel,
   type SearchFilters,
   type SearchGroupView,
@@ -186,8 +188,58 @@ function MetaLine({ chip, lead, project, section, at }: { chip: RowThreadChip | 
   );
 }
 
+/**
+ * The mark a result row starts with (`searchRowMark`): the agent's mark for a
+ * message, an outline for what the row is otherwise. Decorative: the row's
+ * words say the same, so it is hidden from a screen reader.
+ */
+function RowMark({ row }: { row: InboxSearchRow }) {
+  const mark = searchRowMark(row);
+  return (
+    <span className="ib-sp-mark" data-row-mark={mark.kind === 'agent' ? `agent:${mark.host ?? ''}` : mark.icon} aria-hidden="true">
+      {mark.kind === 'agent' ? <HostMark host={mark.host} /> : <Icon name={mark.icon} />}
+    </span>
+  );
+}
+
+/** A row's time in its own right-hand column (desktop; a phone keeps it at the end of the meta line). */
+function TimeColumn({ at }: { at: string | null }) {
+  if (!at) return null;
+  return (
+    <span className="ib-sp-time" data-result-time="">
+      <span className="ib-sr">, </span>
+      {at}
+    </span>
+  );
+}
+
+/** The palette's key footer (desktop): only keys the palette already handles, the new-tab chord in the platform's own modifier. */
+function KeyFooter() {
+  const mod = formatShortcutBindingTokens('Mod+Enter', getShortcutPlatform())[0] ?? 'Ctrl';
+  return (
+    <div className="ib-sp-foot" data-search-keys="" aria-hidden="true">
+      <span>
+        <kbd>↑</kbd>
+        <kbd>↓</kbd> Move
+      </span>
+      <span>
+        <kbd>Enter</kbd> Open
+      </span>
+      <span>
+        <kbd>{mod} Enter</kbd> Open in new tab
+      </span>
+      <span className="ib-sp-foot-end">
+        <kbd>Esc</kbd> Close
+      </span>
+    </div>
+  );
+}
+
 function RowBody({ row, phone, projectName }: { row: InboxSearchRow; phone: boolean; projectName: string }) {
   const chip = rowThreadChip(row);
+  // The time: in its own column on a desktop, at the end of the meta line on a phone (a column would take the title's width).
+  const time = row.type === 'project' ? null : searchTime(row.at);
+  const metaAt = phone ? time : null;
   switch (row.type) {
     case 'thread': {
       const label = row.archived || row.section === 'stopped' ? null : sectionLabel(row.section);
@@ -199,9 +251,10 @@ function RowBody({ row, phone, projectName }: { row: InboxSearchRow; phone: bool
                 <Marked text={row.title} marks={row.title_marks} />
               </span>
             </Tip>
-            <MetaLine chip={chip} project={projectName} section={label} at={searchTime(row.at)} />
+            <MetaLine chip={chip} project={projectName} section={label} at={metaAt} />
           </span>
           {row.archived ? <span className="ib-sp-chip">Archived</span> : row.section === 'stopped' ? <span className="ib-sp-chip ib-sp-warn">Stopped</span> : null}
+          {!phone && <TimeColumn at={time} />}
         </>
       );
     }
@@ -214,12 +267,13 @@ function RowBody({ row, phone, projectName }: { row: InboxSearchRow; phone: bool
                 <Marked text={row.snippet.text} marks={row.snippet.marks} />
               </span>
             </Tip>
-            <MetaLine chip={chip} lead={row.author.kind === 'me' ? 'You' : <bdi dir="auto">{row.author.name}</bdi>} project={projectName} at={searchTime(row.at)} />
+            <MetaLine chip={chip} lead={row.author.kind === 'me' ? 'You' : <bdi dir="auto">{row.author.name}</bdi>} project={projectName} at={metaAt} />
           </span>
           {/* An action item (an Inbox `:::action`, key `a-…`) reads "Action item", not "Question". */}
           {row.question && <span className="ib-sp-chip">{row.question.key.startsWith('a-') ? 'Action item' : 'Question'}</span>}
           {row.question?.replaced && <span className="ib-sp-chip">Replaced</span>}
           {row.archived && <span className="ib-sp-chip">Archived</span>}
+          {!phone && <TimeColumn at={time} />}
         </>
       );
     case 'file':
@@ -786,7 +840,9 @@ export default function SearchPalette(props: SearchPaletteProps) {
             if (option.kind === 'recent-q') {
               return (
                 <div key={`q-${option.q}`} className="ib-sp-row" {...common} data-recent-search="">
-                  <Icon name="clock" className="ib-sp-mk" />
+                  <span className="ib-sp-mark" aria-hidden="true">
+                    <Icon name="clock" className="ib-sp-mk" />
+                  </span>
                   <span className="ib-sp-rs">
                     <Tip content={option.q} cut>
                       <span className="ib-sp-p" dir="auto">
@@ -801,7 +857,9 @@ export default function SearchPalette(props: SearchPaletteProps) {
               const action = option.action;
               return (
                 <div key={action.kind === 'new' ? 'action-new' : `action-${action.target.session}`} className="ib-sp-row" {...common} data-compose-action={action.kind}>
-                  {action.kind === 'new' ? <Icon name="compose" className="ib-sp-mk" /> : <HostMark host={action.target.host} />}
+                  <span className="ib-sp-mark" aria-hidden="true">
+                    {action.kind === 'new' ? <Icon name="compose" className="ib-sp-mk" /> : <HostMark host={action.target.host} />}
+                  </span>
                   <span className="ib-sp-rs">
                     <span className="ib-sp-p">{actionLabel(action)}</span>
                     <span className="ib-sp-s">
@@ -814,7 +872,9 @@ export default function SearchPalette(props: SearchPaletteProps) {
             if (option.kind === 'more') {
               return (
                 <div key={`more-${option.group}`} className="ib-sp-row ib-sp-more" {...common} data-show-more={option.group}>
-                  <Icon name="chevD" className="ib-sp-mk" />
+                  <span className="ib-sp-mark" aria-hidden="true">
+                    <Icon name="chevD" className="ib-sp-mk" />
+                  </span>
                   <span className="ib-sp-rs">
                     <span className="ib-sp-p">{moreLabel(option)}</span>
                   </span>
@@ -824,6 +884,7 @@ export default function SearchPalette(props: SearchPaletteProps) {
             const row = option.row;
             return (
               <div key={`${row.type}-${row.id}`} className="ib-sp-row" {...common} data-result={row.type} data-result-id={row.id}>
+                <RowMark row={row} />
                 <RowBody row={row} phone={phone} projectName={projectName(row.project.id)} />
               </div>
             );
@@ -923,6 +984,7 @@ export default function SearchPalette(props: SearchPaletteProps) {
         </div>
         <div className="ib-sp-fade ib-sp-bot" data-on={fades.bottom ? '' : undefined} />
       </div>
+      {!phone && <KeyFooter />}
       <div className="ib-sr" role="status" aria-live="polite" data-search-live="">
         {live}
       </div>

@@ -20,7 +20,9 @@
  * - the route failing: "Search isn't answering" and Try again;
  * - recent searches: a click runs one; Clear forgets them; opening a
  *   result remembers its query;
- * - the landing highlight finds the words in the message's text nodes.
+ * - the landing highlight finds the words in the message's text nodes;
+ * - each result's leading mark, the time column and the key footer
+ *   (desktop), the time in the meta line and no footer (phone).
  *
  * DOM-gated: runs under DOM_TESTS=1 (happy-dom), from tests/dom-test-list.txt.
  */
@@ -111,12 +113,12 @@ afterEach(() => {
   globalThis.fetch = savedFetch;
 });
 
-async function render(props: { currentProject?: string | null } = {}): Promise<void> {
+async function render(props: { currentProject?: string | null; phone?: boolean } = {}): Promise<void> {
   await act(async () => {
     root!.render(
       <SearchPalette
         open
-        phone={false}
+        phone={props.phone ?? false}
         currentProject={props.currentProject ?? null}
         projects={[{ ...project, root: '/src/plannotator' }, { id: 'prj_01M4V7JERHR0Y3XQERK1MR604B', name: 'api', root: '/w/api' }]}
         onClose={(reason) => closed.push(reason)}
@@ -488,8 +490,8 @@ test.skipIf(!hasDom)('every result in a thread draws the list’s thread chip: i
   expect(named.querySelector('.ib-keyt')!.getAttribute('dir')).toBe('auto');
   expect(named.hasAttribute('title')).toBe(false);
   expect(await tooltipOf(named)).toBe(`Thread: nightly-deploy: ${longSubject}`);
-  // A screen reader hears the thread, then ", " where each "·" is drawn.
-  expect(row('message', 'msg_a').textContent).toContain(`Thread: nightly-deploy, ${longSubject}, Claude Code·, plannotator·, `);
+  // A screen reader hears the thread, then ", " where each "·" is drawn, and before the time (its own column on a desktop).
+  expect(row('message', 'msg_a').textContent).toContain(`Thread: nightly-deploy, ${longSubject}, Claude Code·, plannotator, `);
   // No name: the subject in the chip, even a short one met inside the text.
   expect(chip('message', 'msg_b')!.getAttribute('data-result-thread')).toBe('subject');
   expect(chip('message', 'msg_b')!.querySelector('.ib-keyt')!.textContent).toBe('Deploy');
@@ -548,4 +550,67 @@ test.skipIf(!hasDom)('an action item hit (key a-…) is labelled "Action item", 
   expect(chips[0]).toContain('Action item');
   expect(chips[0]).not.toContain('Question');
   expect(chips[1]).toContain('Question');
+});
+
+const markedResults = (q: string): Answer =>
+  answer({
+    q,
+    terms: [q],
+    totals: totals({ threads: 1, messages: 3, files: 1 }),
+    groups: {
+      threads: [threadRow('msg_t1', 'Bookmarks sidebar syncs', { title_marks: [[0, 6]] })],
+      messages: [
+        { ...(messageRow('msg_c', 'msg_t1', 'saved from codex') as Extract<InboxSearchRow, { type: 'message' }>), author: { kind: 'agent', name: 'Codex', host: 'codex' } },
+        // An older Inbox sends no host: the generic agent mark.
+        messageRow('msg_o', 'msg_t1', 'saved by an older inbox'),
+        { ...(messageRow('msg_y', 'msg_t1', 'saved by me') as Extract<InboxSearchRow, { type: 'message' }>), author: { kind: 'me', name: 'You', host: null } },
+      ],
+      files: [{ type: 'file', id: 'att_1', thread_id: 'msg_t1', message_id: 'msg_c', project, section: 'quiet', archived: false, at: '2026-10-09T14:03:00Z', name: 'saved.md', name_marks: [[0, 5]], folder: 'docs', kind: 'md', title: 'Bookmarks sidebar syncs' }],
+    },
+    recent: null,
+  });
+const resultRows = () => [...host!.querySelectorAll<HTMLElement>('[role="option"][data-result]')];
+const markOf = (row: HTMLElement) => row.querySelector(':scope > .ib-sp-mark')?.getAttribute('data-row-mark') ?? null;
+
+test.skipIf(!hasDom)('every result starts with its mark: the agent for a message, an outline for a thread, a reply and a file; hidden from a screen reader', async () => {
+  respond = async (call) => (call.url.searchParams.get('q') ? markedResults(call.url.searchParams.get('q')!) : answer({}));
+  await render();
+  await type('saved');
+  await waitFor(() => resultRows().length === 5);
+  expect(resultRows().map((r) => [r.dataset.resultId, markOf(r)])).toEqual([
+    ['msg_t1', 'comment'],
+    ['msg_c', 'agent:codex'],
+    ['msg_o', 'agent:'],
+    ['msg_y', 'user'],
+    ['att_1', 'doc'],
+  ]);
+  for (const row of resultRows()) expect(row.querySelector(':scope > .ib-sp-mark')!.getAttribute('aria-hidden')).toBe('true');
+  // The mark comes first in the row, before its words.
+  expect(resultRows()[0]!.firstElementChild!.classList.contains('ib-sp-mark')).toBe(true);
+});
+
+test.skipIf(!hasDom)('desktop: the time in its own column and a footer of the keys the palette handles; a phone: the time in the meta line, no footer', async () => {
+  respond = async (call) => (call.url.searchParams.get('q') ? markedResults(call.url.searchParams.get('q')!) : answer({}));
+  await render();
+  await type('saved');
+  await waitFor(() => resultRows().length === 5);
+  const thread = resultRows()[0]!;
+  expect(thread.querySelector(':scope > [data-result-time]')!.textContent).toBe(', Oct 9');
+  expect(thread.querySelector('.ib-sp-at')).toBeNull();
+  // A file row shows no time, as before.
+  expect(resultRows()[4]!.querySelector('[data-result-time]')).toBeNull();
+  const foot = host!.querySelector('[data-search-keys]')!;
+  expect([...foot.children].map((c) => c.textContent!.replace(/^.*?(Move|Open in new tab|Open|Close)$/, '$1'))).toEqual(['Move', 'Open', 'Open in new tab', 'Close']);
+  expect([...foot.querySelectorAll('kbd')].map((k) => k.textContent)).toEqual(['↑', '↓', 'Enter', expect.stringMatching(/^(⌘|Ctrl) Enter$/), 'Esc']);
+
+  act(() => root!.unmount());
+  root = createRoot(host!);
+  await render({ phone: true });
+  await type('saved');
+  await waitFor(() => resultRows().length === 5);
+  const phoneThread = resultRows()[0]!;
+  expect(phoneThread.querySelector('[data-result-time]')).toBeNull();
+  expect(phoneThread.querySelector('.ib-sp-at')!.textContent).toContain('Oct 9');
+  expect(markOf(phoneThread)).toBe('comment');
+  expect(host!.querySelector('[data-search-keys]')).toBeNull();
 });

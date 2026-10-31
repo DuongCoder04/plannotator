@@ -216,6 +216,31 @@ export interface RowThreadChip {
 }
 
 /**
+ * The mark a result row starts with: who wrote it or what it is (approval
+ * "inbox-search-contrast", option B). A message: its agent's mark (the host,
+ * null when unknown or from an older Inbox, which draws the generic agent
+ * mark as the list does), or the person's outline for a reply; a thread: a
+ * speech bubble; a file: a document; a guided review: a book; a project: a
+ * folder. Purely visual: the row's words say the same.
+ */
+export type SearchRowMark = { kind: 'agent'; host: string | null } | { kind: 'icon'; icon: 'user' | 'comment' | 'doc' | 'book' | 'folder' };
+
+export function searchRowMark(row: InboxSearchRow): SearchRowMark {
+  switch (row.type) {
+    case 'message':
+      return row.author.kind === 'me' ? { kind: 'icon', icon: 'user' } : { kind: 'agent', host: row.author.host ?? null };
+    case 'thread':
+      return { kind: 'icon', icon: 'comment' };
+    case 'file':
+      return { kind: 'icon', icon: 'doc' };
+    case 'guide':
+      return { kind: 'icon', icon: 'book' };
+    case 'project':
+      return { kind: 'icon', icon: 'folder' };
+  }
+}
+
+/**
  * The one thread chip a result draws, in the form the list uses for a thread.
  *
  * - A thread row: the list's own rule (`threadChipName`): its name, unless its
