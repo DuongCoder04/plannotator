@@ -695,7 +695,7 @@ export async function startPlannotatorServer(
 
           // API: Read an Obsidian vault document
           if (url.pathname === "/api/reference/obsidian/doc" && req.method === "GET") {
-            return handleObsidianDoc(req);
+            return handleObsidianDoc(req, isThisMachineRequest(req));
           }
 
           // API: List markdown files in a directory as a tree

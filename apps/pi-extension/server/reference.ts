@@ -462,7 +462,8 @@ export function handleObsidianFilesRequest(res: Res, url: URL): void {
 	}
 }
 
-export function handleObsidianDocRequest(res: Res, url: URL): void {
+/** `thisMachine`: the reader is a page on this machine (`vaultDocRefusal`). */
+export function handleObsidianDocRequest(res: Res, url: URL, thisMachine = false): void {
 	const vaultPath = url.searchParams.get("vaultPath");
 	const filePath = url.searchParams.get("path");
 	if (!vaultPath || !filePath) {
@@ -498,8 +499,8 @@ export function handleObsidianDocRequest(res: Res, url: URL): void {
 		}
 	}
 
-	// Inside the vault after symlinks, Markdown by its real path, within 2MB.
-	const refusal = vaultDocRefusal(resolvedFile, resolvedVault);
+	// Inside the vault (after symlinks too, off this machine), a regular Markdown file, within 2MB.
+	const refusal = vaultDocRefusal(resolvedFile, resolvedVault, thisMachine);
 	if (refusal) {
 		json(res, { error: refusal.error }, refusal.status);
 		return;

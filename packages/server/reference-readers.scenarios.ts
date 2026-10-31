@@ -18,6 +18,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
@@ -97,6 +98,7 @@ export function defineReferenceReaderScenarios(runtime: string, start: StartRefe
       "PLANNOTATOR_URL_HOST",
       "PLANNOTATOR_PUBLIC_URL",
       "PLANNOTATOR_ALLOWED_HOSTS",
+      "CODESPACES",
       "SSH_TTY",
       "SSH_CONNECTION",
     ],
@@ -114,7 +116,7 @@ export function defineReferenceReaderScenarios(runtime: string, start: StartRefe
   let stranger = "";
   const servers: ReferenceScenarioServer[] = [];
 
-  async function isolate(options: { remote?: boolean } = {}): Promise<void> {
+  async function isolate(options: { remote?: boolean; codespace?: boolean } = {}): Promise<void> {
     environment.reset();
     const dir = realpathSync(environment.makeTempDir());
     home = join(dir, "home");
@@ -123,6 +125,8 @@ export function defineReferenceReaderScenarios(runtime: string, start: StartRefe
     process.env.PLANNOTATOR_AI = "disabled";
     process.env.PLANNOTATOR_INBOX_CONNECT = "0";
     process.env.PLANNOTATOR_REMOTE = options.remote ? "1" : "0";
+    if (options.codespace) process.env.CODESPACES = "true";
+    else delete process.env.CODESPACES;
     if (options.remote) {
       // Remote mode would otherwise bind the fixed 19432.
       const { start: port, servers: held } = await occupyConsecutivePorts(1);
@@ -213,9 +217,9 @@ export function defineReferenceReaderScenarios(runtime: string, start: StartRefe
         expect((await get(server, `/api/reference/files/stream?dirPath=${q(elsewhere)}`)).status).toBe(200);
       });
 
-      for (const mode of ["forwarded", "remote"] as const) {
+      for (const mode of ["forwarded", "remote", "codespace"] as const) {
         test(`a ${mode} reader lists only the session's roots and the vaults Obsidian lists`, async () => {
-          await isolate({ remote: mode === "remote" });
+          await isolate({ remote: mode === "remote", codespace: mode === "codespace" });
           const server = await open(kind);
           const headers = mode === "forwarded" ? FORWARDED : {};
           for (const path of [
@@ -247,12 +251,11 @@ export function defineReferenceReaderScenarios(runtime: string, start: StartRefe
         });
       }
 
-      test("a vault document must be Markdown inside the vault, after symlinks, and fit 2MB", async () => {
+      test("a vault document must be a Markdown file inside the vault and fit 2MB", async () => {
         await isolate();
         const server = await open(kind);
         for (const [path, status] of [
           ["key.md", 403],
-          ["diary.md", 403],
           ["creds.md", 403],
           ["../home/private/diary.md", 403],
           ["big.md", 413],
@@ -266,6 +269,31 @@ export function defineReferenceReaderScenarios(runtime: string, start: StartRefe
         const forwarded = await get(server, `/api/reference/obsidian/doc?vaultPath=${q(vault)}&path=key.md`, FORWARDED);
         expect(forwarded.status).toBe(403);
         expect(SECRET.test(forwarded.text)).toBe(false);
+      });
+
+      test("a symlink out of the vault opens for a page on this machine only", async () => {
+        await isolate();
+        const server = await open(kind);
+        const url = `/api/reference/obsidian/doc?vaultPath=${q(vault)}&path=diary.md`;
+        const local = await get(server, url);
+        expect(local.status).toBe(200);
+        expect(String(local.body?.markdown)).toContain("SECRET-DIARY");
+        const forwarded = await get(server, url, FORWARDED);
+        expect(forwarded.status).toBe(403);
+        expect(SECRET.test(forwarded.text)).toBe(false);
+      });
+
+      test("a FIFO named .md in a vault is refused without blocking the server", async () => {
+        await isolate();
+        execFileSync("mkfifo", [join(vault, "fifo.md")]);
+        const server = await open(kind);
+        for (const headers of [{}, FORWARDED]) {
+          const answer = await get(server, `/api/reference/obsidian/doc?vaultPath=${q(vault)}&path=fifo.md`, headers);
+          expect(answer.status).toBe(403);
+        }
+        // The server still answers the next request.
+        const next = await get(server, `/api/reference/obsidian/doc?vaultPath=${q(vault)}&path=${q("notes/idea.md")}`);
+        expect(next.status).toBe(200);
       });
     });
   }

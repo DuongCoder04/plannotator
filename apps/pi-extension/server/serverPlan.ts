@@ -64,6 +64,7 @@ import { isFaviconStyle, type FaviconStyle } from "../generated/favicon.ts";
 import { readImprovementHook, getImprovementHookExpectedPath } from "../generated/improvement-hooks.ts";
 import { composeImproveContext } from "../generated/pfm-reminder.ts";
 import { detectProjectName, getRepoInfo } from "./project.ts";
+import { isThisMachineRequest } from "./this-machine.ts";
 import {
 	refuseReferenceRead,
 	handleDocRequest,
@@ -559,7 +560,7 @@ export async function startPlanReviewServer(options: {
 		} else if (url.pathname === "/api/reference/obsidian/files" && req.method === "GET") {
 			handleObsidianFilesRequest(res, url);
 		} else if (url.pathname === "/api/reference/obsidian/doc" && req.method === "GET") {
-			handleObsidianDocRequest(res, url);
+			handleObsidianDocRequest(res, url, isThisMachineRequest(req));
 		} else if (url.pathname === "/api/reference/files" && req.method === "GET") {
 			await handleFileBrowserRequest(res, url);
 		} else if (url.pathname === "/api/reference/files/stream" && req.method === "GET") {

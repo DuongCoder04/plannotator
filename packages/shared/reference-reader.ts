@@ -9,14 +9,15 @@
  * (remote mode, tailnet peers, proxies) lists only folders inside the
  * session's roots and only the vaults Obsidian itself lists on this machine
  * (`detectObsidianVaults`): `referenceReadRefusal`. For every reader, a vault
- * document must be inside the vault after symlink resolution, be Markdown by
- * its real path, and fit the 2MB cap: `vaultDocRefusal`.
+ * document must be inside the vault as written, be a regular Markdown file by
+ * its real path, and fit the 2MB cap; a reader off this machine must also stay
+ * inside the vault after symlink resolution: `vaultDocRefusal`.
  */
 
 import { realpathSync, statSync } from "fs";
 import { DOC_TOO_LARGE, isPathAllowed } from "./doc-resolve";
 import { detectObsidianVaults } from "./integrations-common";
-import { MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath } from "./resolve-file";
+import { isWithinProjectRoot, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath } from "./resolve-file";
 
 const REFERENCE_READ_PATHS = new Set([
 	"/api/obsidian/vaults",
@@ -76,13 +77,15 @@ export function referenceReadRefusal(url: URL, reader: ReferenceReader): Referen
 }
 
 /**
- * Why a vault document may not be read, for any reader, or null when it may.
- * A missing file passes, so the route still answers 404 for it.
+ * Why a vault document may not be read, or null when it may. A missing file
+ * passes, so the route still answers 404 for it. A page on this machine may
+ * follow a symlink out of the vault (a folder shared between vaults, a wiki
+ * link to it); it could name that folder as the vault anyway. Every other
+ * reader stays inside the vault by real path too.
  */
-export function vaultDocRefusal(file: string, vault: string): ReferenceRefusal | null {
-	if (!isPathAllowed(file, vaultRoots(vault))) {
-		return { status: 403, error: "Access denied: path is outside vault" };
-	}
+export function vaultDocRefusal(file: string, vault: string, thisMachine = false): ReferenceRefusal | null {
+	const inside = thisMachine ? isWithinProjectRoot(file, vault) : isPathAllowed(file, vaultRoots(vault));
+	if (!inside) return { status: 403, error: "Access denied: path is outside vault" };
 	let real: string;
 	try {
 		real = realpathSync(file);
@@ -91,7 +94,10 @@ export function vaultDocRefusal(file: string, vault: string): ReferenceRefusal |
 	}
 	if (!/\.mdx?$/i.test(real)) return { status: 403, error: "Only markdown files are supported" };
 	try {
-		if (statSync(real).size > MAX_ANNOTATABLE_FILE_BYTES) {
+		const stat = statSync(real);
+		// A FIFO or device named *.md would block the read (and Pi's whole server).
+		if (!stat.isFile()) return { status: 403, error: "Not a regular file" };
+		if (stat.size > MAX_ANNOTATABLE_FILE_BYTES) {
 			return { status: DOC_TOO_LARGE.status, error: String(DOC_TOO_LARGE.body.error) };
 		}
 	} catch {
