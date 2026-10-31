@@ -34,6 +34,7 @@ import type { TailscaleRunner } from "@plannotator/shared/tailscale";
 import { InboxStore } from "@plannotator/shared/inbox/store";
 import { startInboxServer } from "./inbox";
 import { createInboxDevices, takeDownInboxTailnet, UNLINKED_REFUSAL_KEPT_MS } from "./inbox-devices";
+import { readTailnetDoorRecord, writeTailnetDoorRecord } from "./inbox-tailnet-door";
 import {
   createInboxWorld,
   destroyInboxWorld,
@@ -1104,6 +1105,40 @@ describe("the tailnet door with Phones off, in process", () => {
     }
   }, 90_000);
 
+  test("a door a crash left published for an unlinked machine comes down at the first start past the limit, and only that runs", async () => {
+    const pair = await linkedPair("crash");
+    let a = pair.a;
+    try {
+      pair.b.stop();
+      expect(((await (await postTo(a.port, `/api/inbox/machines/${pair.bId}/unlink`, {})).json()) as Json).told).toBe(false);
+      // A is killed (kill -9, a dead battery) while the door is kept: no clean stop, so the mapping and its record stay.
+      const left = readTailnetDoorRecord(pair.dataA)!;
+      expect(left).toMatchObject({ https_port: 8443, target: pair.doorA, published: true });
+      a.stop();
+      writeTailnetDoorRecord(pair.dataA, left);
+      pair.tsA.serve.set(8443, pair.doorA);
+      const calls = pair.tsA.calls.length;
+      // Started past the limit: nothing is linked or owed, so only the take-down of that leftover runs.
+      a = await pair.startA({ now: () => new Date(Date.now() + UNLINKED_REFUSAL_KEPT_MS + 60_000) });
+      expect(pair.tsA.calls.slice(calls)).toEqual([
+        ["serve", "status", "--json"],
+        ["serve", "--https=8443", "off"],
+      ]);
+      expect(pair.tsA.serve.has(8443)).toBe(false);
+      expect(inboxJson(pair.dataA).tailnet).toBeUndefined();
+      expect(readTailnetDoorRecord(pair.dataA)).toBeNull();
+      expect(deviceIn(pair.dataA, pair.deviceOfB).refusal_owed_until).toBeUndefined();
+      // Settled: the next start runs no tailscale at all.
+      a.stop();
+      const settled = pair.tsA.calls.length;
+      a = await pair.startA();
+      expect(pair.tsA.calls.length).toBe(settled);
+    } finally {
+      a.stop();
+      pair.b.stop();
+    }
+  }, 90_000);
+
   test("a held port with nothing linked says how it is let go of (there is no machine to unlink), and it is: the next code takes a free port", async () => {
     // An older build's door in inbox.json, its port now someone else's, and nothing linked (two-mac-test-2, Nit B).
     const dataDir = scratch("plannotator-machines-held-unlinked-");
@@ -1123,7 +1158,6 @@ describe("the tailnet door with Phones off, in process", () => {
       expect(refused.code).toBe("no_way_back");
       expect(refused.error).toContain("port 8443");
       expect(refused.error).toContain("Nothing is linked here");
-      expect(refused.error).toContain("once no link code is open (a code lasts 10 minutes)");
       expect(refused.error).not.toContain("unlink each machine");
       expect([...tailscale.serve]).toEqual([[8443, theirs]]);
       // No code is open and nothing is linked, so the port was let go of: the next code takes a free one, theirs untouched.

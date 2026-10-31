@@ -1210,19 +1210,43 @@ export function createInboxDevices(context: InboxDevicesContext) {
   };
 
   /**
+   * At start, Phones off, nothing linked or owed, the switch kept, and a
+   * refusal whose limit passed while the Inbox was down. After a clean stop
+   * the record says the mapping is down, and nothing runs (the next link
+   * publishes the same port). After a crash during that week (kill -9, a
+   * panic, a dead battery) the record still says published, and no later
+   * start would take that mapping to a dead loopback port down: it comes
+   * down now, the switch is cleared and the lapsed refusals are forgotten. A
+   * take-down that failed changes nothing, so the next start tries again.
+   */
+  const settleLapsedRefusals = (kept: InboxRegistryEntry["tailnet"]) => {
+    // Nothing is owed now, so every refusal still recorded has lapsed.
+    const lapsed = devices.owedRefusals(Number.NEGATIVE_INFINITY);
+    if (lapsed.length === 0 || !readTailnetDoorRecord(context.dataDir)?.published) return;
+    if (takeDownInboxTailnet(context.dataDir, tailscale, kept) === "failed") return;
+    saveSwitch(false);
+    for (const device of lapsed) devices.oweRefusal(device.id, null, now().toISOString());
+  };
+
+  /**
    * At start: the switch was on, so point the mapping at a fresh door
    * listener before anything else uses it. If that fails, a mapping the last
    * run left (a crash, kill -9) is taken down, so it never points at a dead
    * port for longer than this start. With Phones off, no machine linked and
    * no refusal owed, the tailnet is not this Inbox's business: `tailscale`
-   * never runs (a leftover waits for a link, Phones, or `uninstall --purge`).
+   * never runs (a leftover waits for a link, Phones, or `uninstall --purge`),
+   * except for a door kept for a refusal whose limit passed while the Inbox
+   * was down (`settleLapsedRefusals`).
    */
   const startTailnet = () => {
     watchOwed();
     const kept = context.registry().tailnet;
     if (!kept) return;
     // Phones off: the door is published only for linked machines, and for one unlinked while it could not be told.
-    if (!phonesOn && !context.machines?.()?.hasLinks() && !owesRefusal()) return;
+    if (!phonesOn && !context.machines?.()?.hasLinks() && !owesRefusal()) {
+      settleLapsedRefusals(kept);
+      return;
+    }
     tailnet.on = true;
     if (publish().ok) saveSwitch(true);
     else takeDownInboxTailnet(context.dataDir, tailscale, kept);
