@@ -320,8 +320,8 @@ type MutableUninstallResult = {
   preserved: string[];
   warnings: string[];
   errors: string[];
-  /** Files already reported as unreadable, so each is said once. */
-  unreadable: Set<string>;
+  /** Files already named in an error (unreadable, or not rewritten), so each is said once. */
+  reported: Set<string>;
 };
 
 type HookCleanupSpec = ManagedHookSpec;
@@ -397,7 +397,7 @@ export async function runPlannotatorUninstall(
     preserved: [],
     warnings: [],
     errors: [],
-    unreadable: new Set(),
+    reported: new Set(),
   };
 
   const initialDataDirIdentity = readPathIdentity(state.dataDir);
@@ -410,7 +410,7 @@ export async function runPlannotatorUninstall(
     ) ?? inspectDataDir(state.dataDir);
 
   if (request.purge && dataDirSafetyIssue) {
-    const { unreadable: _unreadable, ...result } = state;
+    const { reported: _reported, ...result } = state;
     return {
       ...result,
       ok: false,
@@ -520,7 +520,8 @@ export async function runPlannotatorUninstall(
   }
 
   // A dry run checked each file as it planned it; a real run checks what the cleanup left.
-  if (!request.dryRun && state.errors.length === 0) {
+  // It only reads, and runs even after another error, so one run names every blocker.
+  if (!request.dryRun) {
     for (const [owner, filePath, allowRelocatedBinary] of [
       ["Claude Code", join(paths.claudeDir, "settings.json"), false],
       ["Codex", join(paths.codexDir, "hooks.json"), true],
@@ -530,7 +531,7 @@ export async function runPlannotatorUninstall(
       const config = filePath.endsWith(".toml")
         ? readVibeHooks(filePath, request, state)
         : readJsonRecord(
-          filePath, "remaining host hooks",
+          owner, filePath, "remaining host hooks",
           { manualCleanup: `Make ${filePath} a readable, writable strict JSON object and remove only hooks that invoke Plannotator; preserve unrelated settings.` },
           request, state,
         );
@@ -552,7 +553,7 @@ export async function runPlannotatorUninstall(
     }
   }
 
-  const { unreadable: _unreadable, ...result } = state;
+  const { reported: _reported, ...result } = state;
   return {
     ...result,
     ok: state.errors.length === 0,
@@ -701,8 +702,8 @@ function reportUnreadableConfig(
   request: UninstallRequest,
   state: MutableUninstallResult,
 ): void {
-  if (state.unreadable.has(file)) return;
-  state.unreadable.add(file);
+  if (state.reported.has(file)) return;
+  state.reported.add(file);
   state.errors.push(
     `Could not read ${owner}'s ${file}: ${reason}. Plannotator did not change it. To continue, fix that (or put back a working copy of the file), then run \`${formatUninstallRetryCommand(request)}\` again.`,
   );
@@ -730,6 +731,7 @@ function reportRemainingHookReferences(
 
 /** Vibe's hooks.toml, parsed; null when missing or unreadable (said). */
 function readVibeHooks(filePath: string, request: UninstallRequest, state: MutableUninstallResult): unknown {
+  if (state.reported.has(filePath)) return null;
   let content: string;
   try {
     content = readFileSync(filePath, "utf8");
@@ -824,7 +826,8 @@ async function removeHostPlugins(
       label: "GitHub Copilot CLI plugin plannotator-copilot@plannotator",
       owner: "GitHub Copilot CLI",
       command: "copilot",
-      args: ["plugins", "remove", "plannotator-copilot@plannotator", "--plugin"],
+      // Copilot CLI 1.0.68: `copilot plugin uninstall <name>` (`plugins remove … --plugin` is refused).
+      args: ["plugin", "uninstall", "plannotator-copilot@plannotator"],
       references: () => {
         const enabled = enabledPluginReferences(join(paths.copilotDir, "settings.json"), "plannotator-copilot@plannotator");
         const installed = directoryReferences(join(paths.copilotDir, "installed-plugins", "plannotator"), "plannotator-copilot");
@@ -1482,6 +1485,7 @@ function cleanupHooksJson(
 ): void {
   const recovery = { manualCleanup };
   const parsed = readJsonRecord(
+    policy.owner,
     filePath,
     label,
     recovery,
@@ -1578,14 +1582,7 @@ function cleanupCodexConfig(
     content = readFileSync(filePath, "utf8");
   } catch (error) {
     // The Inbox check reads this file too: said once.
-    state.unreadable.add(filePath);
-    reportHostCleanupFailure(
-      `Could not inspect ${filePath}`,
-      formatError(error),
-      recovery,
-      request,
-      state,
-    );
+    reportUnreadableConfig("Codex", { file: filePath, reason: describeFsError(error) }, request, state);
     return;
   }
 
@@ -1661,7 +1658,7 @@ function cleanupVibeHooks(
 
   // Parsed before anything is written: a file it cannot read as TOML is left exactly as it was.
   const original = parseVibeHooks(filePath, content, request, state);
-  if (state.unreadable.has(filePath)) return;
+  if (state.reported.has(filePath)) return;
   if (request.dryRun) {
     reportRemainingHookReferences("Mistral Vibe", original, filePath, binaryPaths, platform, false, request, state, [], removedHookIndices);
   }
@@ -1688,6 +1685,7 @@ function cleanupVibeHooks(
     );
     state.removed.push(`${label} in ${filePath}`);
   } catch (error) {
+    state.reported.add(filePath);
     reportHostCleanupFailure(
       `Could not rewrite ${filePath}`,
       formatError(error),
@@ -1709,6 +1707,7 @@ function cleanupGeminiSettings(
     manualCleanup: `Make ${filePath} a readable, writable strict JSON object. Remove only Plannotator command hooks from hooks.BeforeTool entries whose matcher is "exit_plan_mode", then save the file.`,
   };
   const parsed = readJsonRecord(
+    "Gemini CLI",
     filePath,
     "managed Gemini hooks",
     recovery,
@@ -1799,13 +1798,7 @@ function cleanupOpenCodeConfig(
   try {
     content = readFileSync(filePath, "utf8");
   } catch (error) {
-    reportHostCleanupFailure(
-      `Could not inspect ${filePath}`,
-      formatError(error),
-      recovery,
-      request,
-      state,
-    );
+    reportUnreadableConfig("OpenCode", { file: filePath, reason: describeFsError(error) }, request, state);
     return;
   }
 
@@ -1924,6 +1917,7 @@ function cleanupRecognizableKiroAgent(
     manualCleanup: `Make ${filePath} a readable, writable strict JSON object without changing its intent. If it is the installer-provided Plannotator Kiro agent, delete it; otherwise keep the repaired custom agent at that path.`,
   };
   const parsed = readJsonRecord(
+    "Kiro",
     filePath,
     "the Plannotator Kiro agent",
     recovery,
@@ -1960,13 +1954,7 @@ function cleanupRecognizableAmpPlugin(
   try {
     content = readFileSync(filePath, "utf8");
   } catch (error) {
-    reportHostCleanupFailure(
-      `Could not inspect ${filePath}`,
-      formatError(error),
-      recovery,
-      request,
-      state,
-    );
+    reportUnreadableConfig("Amp", { file: filePath, reason: describeFsError(error) }, request, state);
     return;
   }
 
@@ -1983,6 +1971,7 @@ function cleanupRecognizableAmpPlugin(
 }
 
 function readJsonRecord(
+  owner: string,
   filePath: string,
   integration: string,
   recovery: HostCleanupRecovery,
@@ -1990,20 +1979,13 @@ function readJsonRecord(
   state: MutableUninstallResult,
 ): JsonRecord | null {
   // Already said this run (a host's plugin check reads the same settings.json): once is enough.
-  if (state.unreadable.has(filePath)) return null;
+  if (state.reported.has(filePath)) return null;
   let content: string;
   try {
     content = readFileSync(filePath, "utf8");
   } catch (error) {
     if (isMissingPathError(error)) return null;
-    state.unreadable.add(filePath);
-    reportHostCleanupFailure(
-      `Could not inspect ${filePath}`,
-      formatError(error),
-      recovery,
-      request,
-      state,
-    );
+    reportUnreadableConfig(owner, { file: filePath, reason: describeFsError(error) }, request, state);
     return null;
   }
 
@@ -2043,7 +2025,7 @@ function reportMalformedSharedConfig(
   request: UninstallRequest,
   state: MutableUninstallResult,
 ): void {
-  state.unreadable.add(filePath);
+  state.reported.add(filePath);
   reportHostCleanupFailure(
     `Preserved ${filePath}`,
     `${reason}, so ${integration} cannot be classified safely`,
@@ -2075,6 +2057,7 @@ function writeJson(
     );
     state.removed.push(`${label} in ${filePath}`);
   } catch (error) {
+    state.reported.add(filePath);
     reportHostCleanupFailure(
       `Could not update ${filePath}`,
       formatError(error),
@@ -2097,6 +2080,7 @@ function writeTextUpdate(
     writeFileSync(filePath, content, "utf8");
     state.removed.push(`${label} in ${filePath}`);
   } catch (error) {
+    state.reported.add(filePath);
     reportHostCleanupFailure(
       `Could not update ${filePath}`,
       formatError(error),
@@ -2226,6 +2210,7 @@ function removePath(
     stat = lstatSync(path);
   } catch (error) {
     if (isMissingPathError(error)) return;
+    state.reported.add(path);
     if (recovery) {
       reportHostCleanupFailure(
         `Could not inspect ${path}`,
@@ -2255,6 +2240,7 @@ function removePath(
     }
     state.removed.push(path);
   } catch (error) {
+    state.reported.add(path);
     if (recovery) {
       reportHostCleanupFailure(
         `Could not remove ${path}`,
