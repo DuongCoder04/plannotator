@@ -13,6 +13,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -441,7 +442,7 @@ describe("default uninstall", () => {
         'name = "plannotator-exit-plan-mode"',
         'type = "pre_tool"',
         'match = "exit_plan_mode"',
-        `command = "${join(homeDir, ".local", "bin", "plannotator")}"`,
+        `command = ${JSON.stringify(join(homeDir, ".local", "bin", "plannotator"))}`,
         "timeout = 345600",
         'description = "Plannotator plan review (managed)"',
         "# <<< plannotator-managed-vibe-hooks <<<",
@@ -831,7 +832,8 @@ describe("default uninstall", () => {
         "# >>> plannotator-managed-vibe-hooks (managed; do not edit) >>>",
         "[[hooks]]",
         'name = "plannotator-exit-plan-mode"',
-        `command = "${binary}"`,
+        // A TOML string: a Windows path's backslashes are escapes there.
+        `command = ${JSON.stringify(binary)}`,
         "# <<< plannotator-managed-vibe-hooks <<<",
         "",
       ].join("\n"),
@@ -2486,15 +2488,20 @@ describe("the Inbox's agent connections (inbox-agents.ts)", () => {
     expect(readFileSync(join(fixture.homeDir, ".codex", "AGENTS.md"), "utf8")).toBe("Mine.\n");
   });
 
-  test("with no record (agents.json lost), an entry that runs this binary is named and left, never removed", async () => {
+  test("with no record (agents.json lost), an entry that runs this binary is named once and left, never removed, and the binary still goes", async () => {
+    // A real install runs from the path it is uninstalling.
     const fixture = createFixture();
-    const entry = { command: fixture.environment.execPath, args: ["inbox", "mcp"] };
+    const installed = join(fixture.homeDir, ".local", "bin", "plannotator");
+    writeText(installed);
+    const entry = { command: installed, args: ["inbox", "mcp"] };
     writeJson(cursorFile(fixture), { mcpServers: { "plannotator-inbox": entry } });
-    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
-    expect(result.warnings).toContain(
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, { ...fixture.environment, execPath: installed });
+    expect(result.ok).toBe(true);
+    expect(result.warnings.filter((warning) => warning.includes("plannotator-inbox"))).toEqual([
       `Skipped: Cursor's "plannotator-inbox" in ${join("~", ".cursor", "mcp.json")} runs this Plannotator, but no record says Plannotator added it, so it may be yours (to remove it, delete that entry by hand).`,
-    );
+    ]);
     expect(readJson(cursorFile(fixture)).mcpServers).toEqual({ "plannotator-inbox": entry });
+    expect(existsSync(installed)).toBe(false);
   });
 
   test("an entry that runs something else now is named and left", async () => {
@@ -2507,7 +2514,7 @@ describe("the Inbox's agent connections (inbox-agents.ts)", () => {
   });
 });
 
-describe("uninstall review regressions", () => {
+describe("hooks that still run Plannotator keep the CLI", () => {
   test.each([
     "plannotator\nimprove-context",
     "plannotator\rimprove-context",
@@ -2551,6 +2558,84 @@ describe("uninstall review regressions", () => {
     expect(readJson(file)).toEqual(config);
   });
 
+  test.each(["plannotator review", "plannotator --custom-option"])("dry-run reports preserved hook blocker: %s", async (command) => {
+    const fixture = createFixture();
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    const file = join(fixture.homeDir, ".gemini", "settings.json");
+    writeText(binary);
+    writeJson(file, { hooks: { BeforeTool: [{ matcher: "exit_plan_mode", hooks: [
+      { type: "command", command: "plannotator --browser Safari" },
+      { type: "command", command },
+    ] }] } });
+    const before = snapshotTree(fixture.homeDir);
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
+    expect(result.ok).toBe(false);
+    expect(result.errors.join("\n")).toContain(file);
+    expect(result.errors.join("\n")).toContain("hooks.BeforeTool[0].hooks[1].command");
+    expect(result.planned).not.toContain(binary);
+    expect(snapshotTree(fixture.homeDir)).toEqual(before);
+  });
+
+  test("dry-run reports original entry indices after other matcher entries are removed", async () => {
+    const fixture = createFixture();
+    const file = join(fixture.homeDir, ".claude", "settings.json");
+    const config = { hooks: { PreToolUse: [
+      { matcher: "EnterPlanMode", hooks: [{ type: "command", command: "plannotator improve-context" }] },
+      { matcher: "Bash", hooks: [{ type: "command", command: "plannotator review" }] },
+    ] } };
+    writeJson(file, config);
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
+    expect(result.ok).toBe(false);
+    expect(result.errors.join("\n")).toContain("hooks.PreToolUse[1].hooks[0].command");
+    expect(readJson(file)).toEqual(config);
+  });
+
+  test("Vibe dry-run reports original index of a surviving hook beside the managed block", async () => {
+    const fixture = createFixture();
+    const file = join(fixture.homeDir, ".vibe", "hooks.toml");
+    const content = '# >>> plannotator-managed-vibe-hooks\n[[hooks]]\ncommand = "plannotator"\n# <<< plannotator-managed-vibe-hooks\n[[hooks]]\ncommand = "plannotator review"\n';
+    writeText(file, content);
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
+    expect(result.ok).toBe(false);
+    expect(result.errors.join("\n")).toContain("hooks[1].command");
+    expect(readFileSync(file, "utf8")).toBe(content);
+  });
+
+  test("two surviving hooks in one file are one error naming both", async () => {
+    const fixture = createFixture();
+    const file = join(fixture.homeDir, ".claude", "settings.json");
+    writeJson(file, { hooks: { PreToolUse: [{ matcher: "Bash", hooks: [
+      { type: "command", command: "plannotator review" },
+      { type: "command", command: "plannotator annotate" },
+    ] }] } });
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    const about = result.errors.filter((error) => error.includes(file));
+    expect(about).toHaveLength(1);
+    expect(about[0]).toContain("hooks.PreToolUse[0].hooks[0].command, hooks.PreToolUse[0].hooks[1].command");
+  });
+
+  // install.sh writes the Codex hook as `"command": "${PLANNOTATOR_BIN}"`: unquoted, spaces and all.
+  test("an unquoted install path with spaces is still Plannotator's own hook", async () => {
+    const fixture = createFixture();
+    const homeDir = join(fixture.root, "my home");
+    const binary = join(homeDir, ".local", "bin", "plannotator");
+    const file = join(homeDir, ".codex", "hooks.json");
+    writeText(binary);
+    writeJson(file, { hooks: { Stop: [{ hooks: [{ type: "command", command: binary }] }] } });
+    const environment = { ...fixture.environment, homeDir };
+
+    const dry = await runPlannotatorUninstall({ purge: false, dryRun: true }, environment);
+    expect(dry.ok).toBe(true);
+    expect(dry.planned).toContain(`managed Codex Stop hook in ${file}`);
+
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, environment);
+    expect(result.ok).toBe(true);
+    expect(existsSync(file)).toBe(false);
+    expect(existsSync(binary)).toBe(false);
+  });
+});
+
+describe("host plugin managers", () => {
   test("rejects a successful host cleanup whose formerly detected config is now malformed", async () => {
     const fixture = createFixture({ which: () => "/fake/droid" });
     const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
@@ -2566,8 +2651,9 @@ describe("uninstall review regressions", () => {
     });
     expect(result.ok).toBe(false);
     expect(existsSync(binary)).toBe(true);
-    expect(result.errors.join("\n")).toContain(file);
-    expect(result.errors.join("\n")).toContain("enabledPlugins");
+    expect(result.errors).toEqual([
+      `Could not read Droid's ${file}: it is not valid JSON. Plannotator did not change it. To continue, fix that (or put back a working copy of the file), then run \`plannotator uninstall\` again.`,
+    ]);
     expect(readFileSync(file, "utf8")).toBe("{broken");
   });
 
@@ -2609,79 +2695,6 @@ describe("uninstall review regressions", () => {
     expect(existsSync(join(parent, name))).toBe(true);
   });
 
-  test.each(["plannotator review", "plannotator --custom-option"])("dry-run reports preserved hook blocker: %s", async (command) => {
-    const fixture = createFixture();
-    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
-    const file = join(fixture.homeDir, ".gemini", "settings.json");
-    writeText(binary);
-    writeJson(file, { hooks: { BeforeTool: [{ matcher: "exit_plan_mode", hooks: [
-      { type: "command", command: "plannotator --browser Safari" },
-      { type: "command", command },
-    ] }] } });
-    const before = snapshotTree(fixture.homeDir);
-    const result = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
-    expect(result.ok).toBe(false);
-    expect(result.errors.join("\n")).toContain(file);
-    expect(result.errors.join("\n")).toContain("hooks.BeforeTool[0].hooks[1].command");
-    expect(result.planned).not.toContain(binary);
-    expect(snapshotTree(fixture.homeDir)).toEqual(before);
-  });
-
-  test.each([true, false])("unrecorded MCP reference blocks binary removal, dryRun=%s", async (dryRun) => {
-    const fixture = createFixture();
-    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
-    const file = join(fixture.homeDir, ".cursor", "mcp.json");
-    const entry = { command: binary, args: ["inbox", "mcp"] };
-    writeText(binary);
-    writeJson(file, { mcpServers: { "plannotator-inbox": entry, mine: { command: "user-server" } } });
-    const result = await runPlannotatorUninstall({ purge: false, dryRun }, fixture.environment);
-    expect(result.ok).toBe(false);
-    expect(existsSync(binary)).toBe(true);
-    expect(result.errors.join("\n")).toContain(file);
-    expect(result.errors.join("\n")).toContain('mcpServers["plannotator-inbox"].command');
-    expect(readJson(file)).toEqual({ mcpServers: { "plannotator-inbox": entry, mine: { command: "user-server" } } });
-    writeJson(file, { mcpServers: { mine: { command: "user-server" } } });
-    const retry = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
-    expect(retry.ok).toBe(true);
-    expect(existsSync(binary)).toBe(false);
-    expect(readJson(file)).toEqual({ mcpServers: { mine: { command: "user-server" } } });
-  });
-});
-
-describe("uninstall second-review regressions", () => {
-  test.each([false, true])("Claude user MCP entry blocks removal with config override=%s", async (override) => {
-    const fixture = createFixture();
-    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
-    const directory = override ? join(fixture.root, "claude-custom") : fixture.homeDir;
-    const file = join(directory, ".claude.json");
-    const entry = { command: binary, args: ["inbox", "mcp"] };
-    const config = { mcpServers: { "plannotator-inbox": entry }, projects: { mine: {} } };
-    writeText(binary); writeJson(file, config);
-    const environment = { ...fixture.environment, env: override ? { CLAUDE_CONFIG_DIR: directory } : {} };
-    for (const dryRun of [true, false]) {
-      const result = await runPlannotatorUninstall({ purge: false, dryRun }, environment);
-      expect(result.ok).toBe(false);
-      expect(existsSync(binary)).toBe(true);
-      expect(result.errors.join("\n")).toContain(file);
-      expect(result.errors.join("\n")).toContain('mcpServers["plannotator-inbox"].command');
-      expect(readJson(file)).toEqual(config);
-    }
-    writeJson(file, { mcpServers: {}, projects: { mine: {} } });
-    const retry = await runPlannotatorUninstall({ purge: false, dryRun: false }, environment);
-    expect(retry.ok).toBe(true); expect(existsSync(binary)).toBe(false);
-  });
-
-  test("source-run uninstall does not claim a user-owned Bun MCP entry", async () => {
-    const fixture = createFixture({ execPath: process.execPath });
-    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
-    const file = join(fixture.homeDir, ".cursor", "mcp.json");
-    const config = { mcpServers: { "plannotator-inbox": { command: process.execPath, args: ["unrelated-server.ts"] } } };
-    writeText(binary); writeJson(file, config);
-    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
-    expect(result.ok).toBe(true); expect(existsSync(binary)).toBe(false);
-    expect(readJson(file)).toEqual(config);
-  });
-
   test("dry-run reports missing Droid CLI with exact recovery entries", async () => {
     const fixture = createFixture();
     const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
@@ -2697,28 +2710,167 @@ describe("uninstall second-review regressions", () => {
     expect(snapshotTree(fixture.homeDir)).toEqual(before);
   });
 
-  test("dry-run reports original entry indices after other matcher entries are removed", async () => {
+  // `--scope user` removes only the user's install; a project's stays in installed_plugins.json.
+  test.each([
+    { host: "claude", dir: ".claude" },
+    { host: "droid", dir: ".factory" },
+  ])("$host: a project-scope install that survives the user-scope uninstall is named, and the CLI still goes", async ({ host, dir }) => {
     const fixture = createFixture();
-    const file = join(fixture.homeDir, ".claude", "settings.json");
-    const config = { hooks: { PreToolUse: [
-      { matcher: "EnterPlanMode", hooks: [{ type: "command", command: "plannotator improve-context" }] },
-      { matcher: "Bash", hooks: [{ type: "command", command: "plannotator review" }] },
-    ] } };
-    writeJson(file, config);
-    const result = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    const record = join(fixture.homeDir, dir, "plugins", "installed_plugins.json");
+    const project = { scope: "project", projectPath: "/work/app", installPath: "/cache/plannotator" };
+    writeText(binary);
+    writeJson(record, { version: 2, plugins: { "plannotator@plannotator": [{ scope: "user", installPath: "/cache/plannotator" }, project] } });
+    const environment = {
+      ...fixture.environment,
+      which: (command: string) => (command === host ? `/fake/${host}` : null),
+      runCommand: async (command: string, args: string[]) => {
+        fixture.commandCalls.push({ command, args });
+        // As the host does: only the user-scope entry goes.
+        writeJson(record, { version: 2, plugins: { "plannotator@plannotator": [project] } });
+        return { exitCode: 0, timedOut: false };
+      },
+    };
+
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, environment);
+    expect(result.ok).toBe(true);
+    expect(existsSync(binary)).toBe(false);
+    expect(fixture.commandCalls).toHaveLength(1);
+    const named = result.warnings.filter((warning) => warning.includes("project scope"));
+    expect(named).toHaveLength(1);
+    expect(named[0]).toContain(`\`${host} plugin uninstall plannotator@plannotator --scope project\` in /work/app`);
+
+    // A retry with only the project's install left never asks the host to remove a user install that is gone.
+    writeText(binary);
+    const retry = await runPlannotatorUninstall({ purge: false, dryRun: false }, environment);
+    expect(retry.ok).toBe(true);
+    expect(fixture.commandCalls).toHaveLength(1);
+    expect(existsSync(binary)).toBe(false);
+  });
+
+  test("a user-scope entry still there after the host reported success keeps the CLI, and says what to remove", async () => {
+    const fixture = createFixture({ which: (command) => (command === "claude" ? "/fake/claude" : null) });
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    const record = join(fixture.homeDir, ".claude", "plugins", "installed_plugins.json");
+    writeText(binary);
+    writeJson(record, { version: 2, plugins: { "plannotator@plannotator": [{ scope: "user", installPath: "/cache/plannotator" }] } });
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
     expect(result.ok).toBe(false);
-    expect(result.errors.join("\n")).toContain("hooks.PreToolUse[1].hooks[0].command");
+    expect(existsSync(binary)).toBe(true);
+    expect(result.errors.join("\n")).toContain(`${record}, plugins["plannotator@plannotator"][0]`);
+  });
+});
+
+describe("plannotator-inbox entries no record says Plannotator added", () => {
+  test.each([true, false])("one that runs the installed CLI is named with how to remove it, and never keeps the CLI, dryRun=%s", async (dryRun) => {
+    const fixture = createFixture();
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    const file = join(fixture.homeDir, ".cursor", "mcp.json");
+    const entry = { command: binary, args: ["inbox", "mcp"] };
+    const config = { mcpServers: { "plannotator-inbox": entry, mine: { command: "user-server" } } };
+    writeText(binary);
+    writeJson(file, config);
+    const result = await runPlannotatorUninstall({ purge: false, dryRun }, fixture.environment);
+    expect(result.ok).toBe(true);
+    expect(result.warnings.filter((warning) => warning.includes("plannotator-inbox"))).toEqual([
+      `Skipped: Cursor's "plannotator-inbox" in ${join("~", ".cursor", "mcp.json")} runs Plannotator and will fail to start once it is gone, but no record says Plannotator added it, so it is left (to remove it, delete that entry by hand).`,
+    ]);
+    expect(existsSync(binary)).toBe(dryRun);
     expect(readJson(file)).toEqual(config);
   });
 
-  test("Vibe dry-run reports original index of a surviving hook beside the managed block", async () => {
+  test.each([false, true])("Claude Code's in ~/.claude.json points to `claude mcp remove`, config override=%s", async (override) => {
+    const fixture = createFixture();
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    const directory = override ? join(fixture.root, "claude-custom") : fixture.homeDir;
+    const file = join(directory, ".claude.json");
+    const config = { mcpServers: { "plannotator-inbox": { command: binary, args: ["inbox", "mcp"] } }, projects: { mine: {} } };
+    writeText(binary); writeJson(file, config);
+    const environment = { ...fixture.environment, env: override ? { CLAUDE_CONFIG_DIR: directory } : {} };
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, environment);
+    expect(result.ok).toBe(true);
+    expect(existsSync(binary)).toBe(false);
+    const named = result.warnings.filter((warning) => warning.includes("plannotator-inbox"));
+    expect(named).toHaveLength(1);
+    expect(named[0]).toContain("Claude Code's");
+    expect(named[0]).toContain("run `claude mcp remove plannotator-inbox -s user`");
+    expect(readJson(file)).toEqual(config);
+  });
+
+  test("source-run uninstall does not claim a user-owned Bun MCP entry", async () => {
+    const fixture = createFixture({ execPath: process.execPath });
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    const file = join(fixture.homeDir, ".cursor", "mcp.json");
+    const config = { mcpServers: { "plannotator-inbox": { command: process.execPath, args: ["unrelated-server.ts"] } } };
+    writeText(binary); writeJson(file, config);
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(result.ok).toBe(true); expect(existsSync(binary)).toBe(false);
+    expect(result.warnings.filter((warning) => warning.includes("plannotator-inbox"))).toEqual([]);
+    expect(readJson(file)).toEqual(config);
+  });
+});
+
+describe("configs uninstall cannot read keep the CLI", () => {
+  test("a malformed Claude Code settings.json is reported once, with what to do", async () => {
+    const fixture = createFixture({ which: () => "/fake/claude" });
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    const file = join(fixture.homeDir, ".claude", "settings.json");
+    writeText(binary);
+    writeText(file, '{ "enabledPlugins": ');
+    for (const dryRun of [true, false]) {
+      const result = await runPlannotatorUninstall({ purge: false, dryRun }, fixture.environment);
+      expect(result.ok).toBe(false);
+      expect(result.errors.filter((error) => error.includes(file))).toEqual([
+        `Could not read Claude Code's ${file}: it is not valid JSON. Plannotator did not change it. To continue, fix that (or put back a working copy of the file), then run \`plannotator uninstall\` again.`,
+      ]);
+      expect(fixture.commandCalls).toEqual([]);
+      expect(existsSync(binary)).toBe(true);
+      expect(readFileSync(file, "utf8")).toBe('{ "enabledPlugins": ');
+    }
+  });
+
+  test("an agent's MCP config that cannot be read is named with its tool, and a fixed one lets the CLI go", async () => {
+    const fixture = createFixture();
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    const file = join(fixture.homeDir, ".cursor", "mcp.json");
+    writeText(binary);
+    writeText(file, "{ mcpServers: {} }");
+    const blocked = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(blocked.ok).toBe(false);
+    expect(existsSync(binary)).toBe(true);
+    expect(blocked.errors).toEqual([
+      `Could not read Cursor's ${file}: it is not plain JSON. Plannotator did not change it. To continue, fix that (or put back a working copy of the file), then run \`plannotator uninstall\` again.`,
+    ]);
+    writeJson(file, { mcpServers: {} });
+    const retry = await runPlannotatorUninstall({ purge: false, dryRun: false }, fixture.environment);
+    expect(retry.ok).toBe(true);
+    expect(existsSync(binary)).toBe(false);
+  });
+
+  test("~/.claude.json over the size cap says so plainly, and how to get past it", async () => {
+    const fixture = createFixture();
+    const binary = join(fixture.homeDir, ".local", "bin", "plannotator");
+    const file = join(fixture.homeDir, ".claude.json");
+    writeText(binary);
+    writeText(file, "");
+    truncateSync(file, 33 * 1024 * 1024);
+    const result = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual([
+      `Could not read Claude Code's ${file}: it is larger than 32 MiB, the most Plannotator reads. Plannotator did not change it. To continue, quit Claude Code, move the file aside, run \`plannotator uninstall\`, then move the file back.`,
+    ]);
+  });
+
+  test("a Vibe hooks.toml that is not valid TOML says what is wrong", async () => {
     const fixture = createFixture();
     const file = join(fixture.homeDir, ".vibe", "hooks.toml");
-    const content = '# >>> plannotator-managed-vibe-hooks\n[[hooks]]\ncommand = "plannotator"\n# <<< plannotator-managed-vibe-hooks\n[[hooks]]\ncommand = "plannotator review"\n';
+    const content = '[[hooks]]\nname = "mine"\ncommand = "unterminated\n';
     writeText(file, content);
     const result = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
     expect(result.ok).toBe(false);
-    expect(result.errors.join("\n")).toContain("hooks[1].command");
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toStartWith(`Could not read Mistral Vibe's ${file}: it is not valid TOML (Unterminated string`);
+    expect(result.errors[0]).toContain("Plannotator did not change it. To continue, fix that");
     expect(readFileSync(file, "utf8")).toBe(content);
   });
 
@@ -2737,7 +2889,9 @@ describe("uninstall second-review regressions", () => {
         const result = await runPlannotatorUninstall({ purge: false, dryRun }, fixture.environment);
         expect(result.ok).toBe(false);
         expect(existsSync(binary)).toBe(true);
-        expect(result.errors.join("\n")).toContain(file);
+        expect(result.errors).toEqual([
+          `Could not read Mistral Vibe's ${file}: permission denied. Plannotator did not change it. To continue, fix that (or put back a working copy of the file), then run \`plannotator uninstall\` again.`,
+        ]);
         expect(result.planned).not.toContain(binary);
       }
     } finally { chmodSync(targetDirectory, 0o755); }

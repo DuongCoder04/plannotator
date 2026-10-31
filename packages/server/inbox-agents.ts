@@ -1470,6 +1470,16 @@ export interface RemovalPlan {
   items: RemovalPlanItem[];
   /** Entries left with a reason: one Plannotator added that runs something else now, or one no record says it added. */
   skipped: string[];
+  /** The agents whose own entry `skipped` names. */
+  named: InboxAgentId[];
+}
+
+/** How the person removes an agent's `plannotator-inbox` entry themselves. */
+export function inboxEntryRemovalHint(id: InboxAgentId): string {
+  // Claude Code's user scope is in ~/.claude.json, which Claude Code rewrites while it runs.
+  if (id === "claude-code") return `run \`claude mcp remove ${NAME} -s user\``;
+  const remove = agentSpec(id).remove;
+  return jsonFileFor(id) ? "delete that entry by hand" : remove ? `run \`${remove.bin} ${remove.args.join(" ")}\`` : "remove it in the agent's settings";
 }
 
 /**
@@ -1488,7 +1498,8 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
   /** After every agent's own entry, so a caller looking for an agent's item finds that one first. */
   const strays: RemovalPlanItem[] = [];
   const skipped: string[] = [];
-  if (!agentHomeAllowed(e)) return { items, skipped };
+  const named: InboxAgentId[] = [];
+  if (!agentHomeAllowed(e)) return { items, skipped, named };
   for (const spec of AGENT_SPECS) {
     const record = file.agents[spec.id];
     const label = INBOX_AGENT_LABELS[spec.id];
@@ -1524,8 +1535,8 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
       const unrecorded = raw === null ? null : classify(raw, [[...ourCommand]], false);
       if (unrecorded?.kind === "ours") {
         const at = displayPath(spec.file(e), e);
-        const how = jsonFileFor(spec.id) ? "delete that entry by hand" : spec.remove ? `run \`${spec.remove.bin} ${spec.remove.args.join(" ")}\`` : "remove it in the agent's settings";
-        skipped.push(`${label}'s "${NAME}"${at ? ` in ${at}` : ""} runs this Plannotator, but no record says Plannotator added it, so it may be yours (to remove it, ${how})`);
+        skipped.push(`${label}'s "${NAME}"${at ? ` in ${at}` : ""} runs this Plannotator, but no record says Plannotator added it, so it may be yours (to remove it, ${inboxEntryRemovalHint(spec.id)})`);
+        named.push(spec.id);
       }
       continue;
     }
@@ -1533,6 +1544,7 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
     const read = raw === null ? null : classify(raw, ours, false);
     if (read?.kind === "other") {
       skipped.push(`${label}'s "${NAME}" now runs something else (changed by hand), so it is yours`);
+      named.push(spec.id);
       continue;
     }
     if (read && read.kind !== "ours") continue;
@@ -1556,6 +1568,7 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
     const bin = e.which(remove.bin);
     if (!bin) {
       skipped.push(`${label}'s "${NAME}"${shown ? ` in ${shown}` : ""}: ${remove.bin} is not on PATH; run \`${remove.bin} ${remove.args.join(" ")}\``);
+      named.push(spec.id);
       continue;
     }
     items.push({
@@ -1569,7 +1582,7 @@ export function planInboxAgentRemoval(dataDir: string, e: AgentEnvironment, ourC
       },
     });
   }
-  return { items: [...items, ...strays], skipped };
+  return { items: [...items, ...strays], skipped, named };
 }
 
 /** The agents whose JSON file Plannotator edits itself: where their entry is and how the file is edited. */

@@ -44,6 +44,12 @@ function isPlannotatorExecutable(
   return name === "plannotator" || name === "plannotator.exe";
 }
 
+/** The whole command is an install path, as written: install.sh writes the Codex hook unquoted, so a path with spaces is one word there. */
+function isBinaryPathCommand(command: string, binaryPaths: readonly string[], tail: string, platform: NodeJS.Platform): boolean {
+  const trimmed = command.trim();
+  return binaryPaths.some((path) => sameCommand(trimmed, `${path}${tail}`, platform));
+}
+
 /** Only supported hook arguments are safe to remove automatically. */
 export function isManagedHook(
   value: unknown,
@@ -58,6 +64,7 @@ export function isManagedHook(
     const parsed = parseT3HookCommand(hook.command);
     return parsed !== undefined && isPlannotatorExecutable(parsed.executable, binaryPaths, platform, false);
   }
+  if (isBinaryPathCommand(hook.command, binaryPaths, suffix ? ` ${suffix}` : "", platform)) return true;
   const parsed = commandParts(hook.command);
   if (!parsed || !parsed.args || !isPlannotatorExecutable(parsed.executable, binaryPaths, platform, allowRelocatedBinary)) return false;
 
@@ -148,6 +155,9 @@ export function remainingHookReferences(
   const root = asRecord(config);
   const invokesPlannotator = (command: unknown): boolean => {
     if (typeof command !== "string") return false;
+    // An install path written unquoted, spaces and all, as its first word.
+    const trimmed = command.trim();
+    if (binaryPaths.some((path) => sameCommand(trimmed.slice(0, path.length), path, platform) && /^(?:\s|$)/.test(trimmed.slice(path.length)))) return true;
     const gated = parseT3HookCommand(command)?.executable;
     if (gated && isPlannotatorExecutable(gated, binaryPaths, platform, allowRelocatedBinary)) return true;
     return commandSegments(command).some((segment) => {
