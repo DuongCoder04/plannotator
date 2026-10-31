@@ -923,7 +923,8 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   // wrapping outgrows the padding and lands on the document's first heading.
   // Measure the cluster and insert exactly the clearance it needs (0 when it fits).
   // The cluster also stops where the action cluster starts on the same row, so
-  // a long file name truncates at the buttons instead of running under them.
+  // a long file name truncates at the buttons instead of running under them;
+  // with no buttons on its row (the phone layout) it stops inside the card.
   const docBadgesRef = useRef<HTMLDivElement | null>(null);
   const [badgeClearance, setBadgeClearance] = useState(0);
   const [badgeMaxWidth, setBadgeMaxWidth] = useState<number | null>(null);
@@ -944,7 +945,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
       const pad = parseFloat(getComputedStyle(article).paddingTop) || 0;
       const overflow = el.offsetTop + el.offsetHeight - pad;
       setBadgeClearance(overflow > 1 ? overflow + 4 : 0);
-      setBadgeMaxWidth(legacyBadgesMaxWidth(el.getBoundingClientRect(), actions?.getBoundingClientRect() ?? null));
+      setBadgeMaxWidth(legacyBadgesMaxWidth(el.getBoundingClientRect(), actions?.getBoundingClientRect() ?? null, article.getBoundingClientRect()));
     };
     measure();
     const ro = new ResizeObserver(measure);

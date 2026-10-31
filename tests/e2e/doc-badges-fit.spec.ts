@@ -15,7 +15,8 @@
  *
  * Annotate, a single file in a git repository with a remote (and a document it
  * links to) and a folder of files, at 1440 by 900 (room for everything) and
- * 1100 by 900 (not enough).
+ * 1100 by 900 (not enough), and a folder file on a 390px phone (the buttons
+ * on a row of their own; the badges still stop inside the card).
  * Run against the compiled binary under a temp HOME and PLANNOTATOR_DATA_DIR,
  * headless. Build the binary first (see inbox.spec.ts).
  */
@@ -56,6 +57,7 @@ const COOKIES: [string, string][] = [
 
 const WIDE = { width: 1440, height: 900 };
 const NARROW = { width: 1100, height: 900 };
+const PHONE = { width: 390, height: 844 };
 
 function git(cwd: string, args: string[]) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -155,6 +157,23 @@ async function fit(page: Page, titles: Record<string, string>): Promise<Fit> {
     const sharesRow = !!(a && c && a.top < c.bottom && a.bottom > c.top);
     return { chips, gapToActions: sharesRow ? a!.left - c!.right : null };
   }, titles);
+}
+
+/** The badge row on screen: its right edge, the card's, and each of its buttons' (the open-in button and its menu). */
+async function badgeRow(page: Page): Promise<{ right: number; cardRight: number; buttons: { label: string; right: number }[] }> {
+  return page.evaluate(() => {
+    const article = Array.from(document.querySelectorAll<HTMLElement>('article[data-print-region="article"]'))
+      .find((a) => a.getClientRects().length > 0)!;
+    const row = article.querySelector<HTMLElement>('[data-print-hide]')!;
+    return {
+      right: row.getBoundingClientRect().right,
+      cardRight: article.getBoundingClientRect().right,
+      buttons: Array.from(row.querySelectorAll<HTMLElement>('button')).map((b) => ({
+        label: b.getAttribute('aria-label') ?? b.textContent?.trim() ?? '',
+        right: b.getBoundingClientRect().right,
+      })),
+    };
+  });
 }
 
 test('annotate a file: the repository and branch show whole when there is room, and the branch gives way first', async ({ browser }) => {
@@ -261,6 +280,18 @@ test('annotate a folder: the open file\'s name shows whole when there is room, a
     f = await fit(page, { file: join(folder, FOLDER_FILE_LONG) });
     expect(f.chips.file!.cut, '1100: the file name is cut').toBe(true);
     expect(f.gapToActions, `1100: the badges end ${f.gapToActions}px before the buttons`).toBeGreaterThanOrEqual(0);
+
+    // A phone: the buttons drop to a row of their own, and the badges still
+    // stop inside the card, so the name is cut and the open-in button stays on screen.
+    await page.setViewportSize(PHONE);
+    f = await fit(page, { file: join(folder, FOLDER_FILE_LONG) });
+    expect(f.chips.file!.cut, '390: the file name is cut').toBe(true);
+    const row = await badgeRow(page);
+    expect(row.right, `390: the badge row ends at ${row.right}px, inside the card (${row.cardRight}px)`).toBeLessThanOrEqual(row.cardRight);
+    expect(row.buttons.length, '390: the badge row has its buttons').toBeGreaterThan(0);
+    for (const button of row.buttons) {
+      expect(button.right, `390: "${button.label}" ends at ${button.right}px, inside the card (${row.cardRight}px)`).toBeLessThanOrEqual(row.cardRight);
+    }
     await page.context().close();
   } finally {
     for (const session of sessions) await stop(session);

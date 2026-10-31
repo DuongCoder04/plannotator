@@ -14,13 +14,16 @@ const ACTIONS_GAP = 8;
  * it runs under the document's action cluster, so a long file name truncates
  * where the buttons start rather than at a fixed width.
  *
- * Null leaves the cluster unbounded by the actions: there are none, they have
- * not been measured yet, or they sit on a row of their own (the phone layout
- * drops them below the badges).
+ * When no actions share the row (there are none, they have not been measured
+ * yet, or the phone layout drops them below the badges), the cluster stops
+ * inside the card instead, keeping the same inset on the right as on the left,
+ * so the name truncates and the open-in button stays on screen. Null leaves
+ * it unbounded while the card has no measured width (hidden, not laid out).
  */
-export function legacyBadgesMaxWidth(badges: BoxEdges, actions: BoxEdges | null): number | null {
-  if (!actions || actions.right <= actions.left) return null;
+export function legacyBadgesMaxWidth(badges: BoxEdges, actions: BoxEdges | null, card: BoxEdges): number | null {
+  const inCard = card.right > card.left ? Math.max(0, card.right - badges.left - (badges.left - card.left)) : null;
+  if (!actions || actions.right <= actions.left) return inCard;
   const sharesRow = actions.top < badges.bottom && actions.bottom > badges.top;
-  if (!sharesRow) return null;
+  if (!sharesRow) return inCard;
   return Math.max(0, actions.left - badges.left - ACTIONS_GAP);
 }
