@@ -114,31 +114,6 @@ export function pluginVersionOf(text: string | null): string | null {
 export const INBOX_HOST = 'claude-code'
 /** How the person sees this agent in the Inbox. */
 export const INBOX_AGENT_NAME = 'Claude Code'
-/** The `prompt.context` block that carries the Inbox reminder. */
-export const INBOX_REMINDER_BLOCK = 'plannotatorInbox'
-
-/**
- * The first message's context blocks with the Inbox reminder last
- * (`inboxReminderFor(custom, toolName)`: the person's own text from
- * config.json, else the fixed line, naming the tool as the engine registered
- * it, so tool search finds the deferred tool). Never twice: a block of that
- * name already there (a hook above added it) is left as it is.
- */
-export function withInboxReminder<T extends { name: string; text: string }>(blocks: readonly T[], toolName: string, custom: string | null = null): Array<T | { name: string; text: string }> {
-  if (blocks.some((block) => block?.name === INBOX_REMINDER_BLOCK)) return [...blocks]
-  return [...blocks, { name: INBOX_REMINDER_BLOCK, text: inboxReminderFor(custom, toolName) }]
-}
-
-/**
- * `$.store` key: whether this machine's Claude Code runs the mod's
- * `prompt.context` hook. `true`: seen running (the block reaches the model);
- * `false`: a conversation's first turn completed without it (a guard plugin
- * seated above the mod, Claude Code's `cc-plugin-sec-default` on
- * Team/Enterprise accounts, sent the event past it, #2159); absent: not
- * learned yet. Read once per process.
- */
-export const STORE_INBOX_REMINDER_CONTEXT_WORKS = 'inboxReminderContextWorks'
-
 /**
  * The variable the mod sets to the reminder text (with the tool's full
  * registered name) at session start, for the plugin's `SessionStart` command
@@ -151,62 +126,29 @@ export const STORE_INBOX_REMINDER_CONTEXT_WORKS = 'inboxReminderContextWorks'
 export const INBOX_REMINDER_ENV = 'PLANNOTATOR_INBOX_REMINDER'
 
 /**
- * A session whose `$.session.usage().startedAt` is this much older than the
- * process's first `session.start` was started by an earlier process (a
- * `--resume` / `--continue`, an in-process `/resume`): its first turn here is
- * not the conversation's first, so it teaches nothing about `prompt.context`.
+ * Whether the conversation already had a model turn when this process first
+ * saw it (its first `prompt.submit` or main-loop `turn.start` here): an
+ * assistant row in `$.session.messages()`. True for `--resume`, `--continue`,
+ * an in-process `/resume` and a fork (they carry their history); false for a
+ * conversation that starts here (startup, `/clear`), whose first prompt is
+ * not in the list yet. Anything unreadable counts as not resumed.
  */
-export const INBOX_REMINDER_RESUMED_SLACK_MS = 60_000
-
-/** The stored `inboxReminderContextWorks`: a boolean, or undefined for anything else. */
-export function readReminderContextWorks(value: unknown): boolean | undefined {
-  return value === true || value === false ? value : undefined
+export function conversationResumed(messages: unknown): boolean {
+  return Array.isArray(messages) && messages.some((message) => !!message && typeof message === 'object' && (message as { role?: unknown }).role === 'assistant')
 }
 
 /**
- * Whether a `prompt.submit` carries the reminder as `context` (the learned
- * fallback for a machine where `prompt.context` is skipped). Only on a
- * conversation that has not had it by either path, only while this machine
- * has no evidence that `prompt.context` runs, and never on a meta prompt or a
- * slash command (a command may run no model turn, and the copy would be
- * marked delivered for nothing).
+ * What the conversation's first prompt carries as `prompt.submit` `context`
+ * (#2243): `reminder` for a conversation that started in this process,
+ * `threads` (the session's open Inbox threads) for a resumed one, which holds
+ * the reminder from its own first prompt (or a compaction's line) already.
+ * Null: nothing, because the conversation had its first prompt already, or
+ * this one is a meta prompt or a slash command (a command may run no model
+ * turn, and the copy would be counted for nothing).
  */
-export function inboxReminderSubmitCopy(input: {
-  delivered: boolean
-  contextWorks: boolean | undefined
-  isMeta: boolean
-  command: boolean
-}): boolean {
-  return !input.delivered && input.contextWorks !== true && !input.isMeta && !input.command
-}
-
-/**
- * What the first main-loop `turn.complete` of a conversation teaches.
- * `done: false`: not decided yet, look again at the next one (an aborted turn
- * may end before the first request was built, before `prompt.context` had its
- * chance). `write: false`: store `inboxReminderContextWorks = false` (the
- * conversation's first request went out without the mod's `prompt.context`).
- */
-export function inboxReminderFirstTurnLesson(input: {
-  contextRan: boolean
-  aborted: boolean
-  resumed: boolean
-  contextWorks: boolean | undefined
-}): { done: boolean; write: false | null } {
-  if (input.aborted) return { done: false, write: null }
-  if (input.contextRan || input.resumed || input.contextWorks === false) return { done: true, write: null }
-  return { done: true, write: false }
-}
-
-/**
- * Whether the session was started by an earlier process: `startedAt` is the
- * session's first launch (`$.session.usage()`), `processStartedAt` this
- * process's first `session.start`, both in `$.clock.now()` milliseconds. An
- * unreadable `startedAt` counts as not resumed.
- */
-export function reminderSessionResumed(startedAt: unknown, processStartedAt: number | null): boolean {
-  if (typeof startedAt !== 'number' || !Number.isFinite(startedAt) || processStartedAt === null) return false
-  return startedAt < processStartedAt - INBOX_REMINDER_RESUMED_SLACK_MS
+export function inboxFirstPromptContext(input: { delivered: boolean; resumed: boolean; isMeta: boolean; command: boolean }): 'reminder' | 'threads' | null {
+  if (input.delivered || input.isMeta || input.command) return null
+  return input.resumed ? 'threads' : 'reminder'
 }
 
 /**

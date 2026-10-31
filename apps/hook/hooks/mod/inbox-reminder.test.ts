@@ -1,21 +1,12 @@
-// The Inbox reminder where a guard plugin skips the mod's prompt.context hook
-// (#2159): the learned prompt.submit fallback (pure rules) and the plugin's
-// SessionStart `compact` command hook, run for real under sh and bash (and
-// PowerShell when it is installed) from the command hooks.json ships.
+// The Inbox reminder (#2243): what a conversation's first prompt carries
+// (pure rules), and the plugin's SessionStart `compact` command hook, run for
+// real under sh and bash (and PowerShell when it is installed) from the
+// command hooks.json ships.
 import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import {
-  INBOX_REMINDER_ENV,
-  INBOX_REMINDER_RESUMED_SLACK_MS,
-  inboxReminderEnvValue,
-  inboxReminderFirstTurnLesson,
-  inboxReminderSubmitCopy,
-  readReminderContextWorks,
-  reminderSessionResumed,
-  STORE_INBOX_REMINDER_CONTEXT_WORKS,
-} from './inbox'
+import { conversationResumed, INBOX_REMINDER_ENV, inboxFirstPromptContext, inboxReminderEnvValue } from './inbox'
 import { inboxReminderText } from './inbox-contract'
 
 const TOOL = 'mcp__plugin_plannotator_tools__plannotator_inbox'
@@ -27,84 +18,39 @@ const TOOL = 'mcp__plugin_plannotator_tools__plannotator_inbox'
 const MARKER = `/tmp/plannotator-reminder-pwned-${process.pid}`
 const HOSTILE = `-n Ask first. a\\b \\c\\n 100% %s %d "double" 'single' $(touch ${MARKER}-1) \`touch ${MARKER}-2\` \${HOME} $HOME\nsecond line\n\tthird \\ end\n`
 
-describe('the prompt.submit copy (rule 2)', () => {
-  // Every row of the decision: delivered × what the store says × meta × command.
-  const rows: Array<[delivered: boolean, works: boolean | undefined, isMeta: boolean, command: boolean, copy: boolean]> = [
-    // Not reached yet, no evidence prompt.context runs: the copy goes.
-    [false, undefined, false, false, true],
-    [false, false, false, false, true],
-    // prompt.context known to run here: today's path alone.
-    [false, true, false, false, false],
-    // Already reached in this conversation (by either path): never twice.
-    [true, undefined, false, false, false],
-    [true, false, false, false, false],
-    [true, true, false, false, false],
-    // A meta prompt or a slash command never carries it.
-    [false, undefined, true, false, false],
-    [false, false, true, false, false],
-    [false, undefined, false, true, false],
-    [false, false, false, true, false],
-    [false, true, true, true, false],
+describe("the first prompt's context", () => {
+  // Every row: delivered × resumed × meta × command.
+  const rows: Array<[delivered: boolean, resumed: boolean, isMeta: boolean, command: boolean, carries: 'reminder' | 'threads' | null]> = [
+    // A conversation that started in this process: the reminder.
+    [false, false, false, false, 'reminder'],
+    // A resumed one holds the reminder already: its open threads instead, never a second reminder.
+    [false, true, false, false, 'threads'],
+    // Its first prompt went in already: nothing more, resumed or not.
+    [true, false, false, false, null],
+    [true, true, false, false, null],
+    // A meta prompt or a slash command never carries either.
+    [false, false, true, false, null],
+    [false, true, true, false, null],
+    [false, false, false, true, null],
+    [false, true, false, true, null],
   ]
-  for (const [delivered, works, isMeta, command, copy] of rows) {
-    test(`delivered=${delivered} contextWorks=${works} isMeta=${isMeta} command=${command} → ${copy ? 'copy' : 'none'}`, () => {
-      expect(inboxReminderSubmitCopy({ delivered, contextWorks: works, isMeta, command })).toBe(copy)
+  for (const [delivered, resumed, isMeta, command, carries] of rows) {
+    test(`delivered=${delivered} resumed=${resumed} isMeta=${isMeta} command=${command} → ${carries}`, () => {
+      expect(inboxFirstPromptContext({ delivered, resumed, isMeta, command })).toBe(carries)
     })
   }
 })
 
-describe('the first turn of a conversation (rule 3)', () => {
-  test('prompt.context did not run in a fresh conversation: learn false', () => {
-    expect(inboxReminderFirstTurnLesson({ contextRan: false, aborted: false, resumed: false, contextWorks: undefined })).toEqual({ done: true, write: false })
-    expect(inboxReminderFirstTurnLesson({ contextRan: false, aborted: false, resumed: false, contextWorks: true })).toEqual({ done: true, write: false })
+describe('telling a resumed conversation from one that starts here', () => {
+  test('an assistant row already there: resumed (--resume, --continue, /resume, a fork)', () => {
+    expect(conversationResumed([{ role: 'user', text: 'Ship it.' }, { role: 'assistant', text: 'Shipped.' }])).toBe(true)
   })
-
-  test('already false: nothing to write', () => {
-    expect(inboxReminderFirstTurnLesson({ contextRan: false, aborted: false, resumed: false, contextWorks: false })).toEqual({ done: true, write: null })
+  test('nothing yet, or only rows of the person (a command they ran first): starts here', () => {
+    expect(conversationResumed([])).toBe(false)
+    expect(conversationResumed([{ role: 'user', text: '/plannotator-review' }])).toBe(false)
   })
-
-  test('prompt.context ran: rule 1 already wrote true, nothing here', () => {
-    for (const works of [undefined, true, false] as const) {
-      expect(inboxReminderFirstTurnLesson({ contextRan: true, aborted: false, resumed: false, contextWorks: works })).toEqual({ done: true, write: null })
-    }
-  })
-
-  test('a resumed conversation teaches nothing (its first turn here is not its first)', () => {
-    expect(inboxReminderFirstTurnLesson({ contextRan: false, aborted: false, resumed: true, contextWorks: true })).toEqual({ done: true, write: null })
-  })
-
-  test('an aborted turn decides nothing: the next one is looked at', () => {
-    expect(inboxReminderFirstTurnLesson({ contextRan: false, aborted: true, resumed: false, contextWorks: undefined })).toEqual({ done: false, write: null })
-    expect(inboxReminderFirstTurnLesson({ contextRan: true, aborted: true, resumed: false, contextWorks: true })).toEqual({ done: false, write: null })
-  })
-})
-
-describe('telling a resumed session from one started in this process', () => {
-  const start = 1_000_000_000
-  test('started at or after this process (minus the slack): not resumed', () => {
-    expect(reminderSessionResumed(start, start)).toBe(false)
-    expect(reminderSessionResumed(start - 5_000, start)).toBe(false)
-    expect(reminderSessionResumed(start - INBOX_REMINDER_RESUMED_SLACK_MS, start)).toBe(false)
-    expect(reminderSessionResumed(start + 60_000, start)).toBe(false)
-  })
-  test('started well before this process: resumed', () => {
-    expect(reminderSessionResumed(start - INBOX_REMINDER_RESUMED_SLACK_MS - 1, start)).toBe(true)
-    expect(reminderSessionResumed(start - 3_600_000, start)).toBe(true)
-  })
-  test('nothing readable: not resumed (learning proceeds as the spec has it)', () => {
-    expect(reminderSessionResumed(undefined, start)).toBe(false)
-    expect(reminderSessionResumed('x', start)).toBe(false)
-    expect(reminderSessionResumed(Number.NaN, start)).toBe(false)
-    expect(reminderSessionResumed(start - 3_600_000, null)).toBe(false)
-  })
-})
-
-describe('the stored value', () => {
-  test('only booleans count', () => {
-    expect(STORE_INBOX_REMINDER_CONTEXT_WORKS).toBe('inboxReminderContextWorks')
-    expect(readReminderContextWorks(true)).toBe(true)
-    expect(readReminderContextWorks(false)).toBe(false)
-    for (const other of [undefined, null, 'true', 1, 0, {}, []]) expect(readReminderContextWorks(other)).toBeUndefined()
+  test('nothing readable: starts here, so the reminder goes', () => {
+    for (const value of [undefined, null, 'x', {}, [null, 'assistant', { role: 'system' }]]) expect(conversationResumed(value)).toBe(false)
   })
 })
 

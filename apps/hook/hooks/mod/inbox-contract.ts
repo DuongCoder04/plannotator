@@ -423,7 +423,7 @@ export const INBOX_AGENT_FIELD_DESCRIPTIONS: Readonly<Record<string, Readonly<Re
 
 /**
  * The one-line reminder a session that has `plannotator_inbox` gets once, at
- * its start (the Claude Code mod's `prompt.context` block, Pi's hidden
+ * its start (the Claude Code mod's first-prompt context, Pi's hidden
  * before_agent_start message, OpenCode's fixed system line), when the
  * `inboxReminder` switch allows it. Fixed text: it sits in the cached prompt
  * prefix and must never change within a session. For hosts with the wake

@@ -55,15 +55,15 @@
  *   the Inbox reaches the session that asked as a turn once it is idle. With
  *   the tool, and once the Inbox has run here (`inbox/inbox.json` at session
  *   start), a one-line reminder naming the tool's full name rides the
- *   conversation's first message as a `prompt.context` block, unless
- *   `{ "inboxReminder": false }` turns it off. Where a guard plugin skips
- *   that hook (#2159), the line goes as the first prompt's `prompt.submit`
- *   context, only while this machine has not seen `prompt.context` run
- *   (`$.store` `inboxReminderContextWorks`). After a compaction the plugin's
- *   `SessionStart` `compact` command hook (hooks.json) prints it again from
- *   `PLANNOTATOR_INBOX_REMINDER`, which session.start sets and each
- *   `session.compact` sets again with the session's open Inbox threads; a
- *   resume (`classic.SessionStart`) gets those threads as context.
+ *   conversation's first prompt as `prompt.submit` context, unless
+ *   `{ "inboxReminder": false }` turns it off; a resumed conversation's first
+ *   prompt carries the session's open Inbox threads instead. No
+ *   `prompt.context` or `classic.SessionStart` hook (#2243): a guard plugin
+ *   seated above the mod skips both, and Claude Code then prints a "hook was
+ *   skipped" line every session. After a compaction the plugin's
+ *   `SessionStart` `compact` command hook (hooks.json) prints the reminder
+ *   again from `PLANNOTATOR_INBOX_REMINDER`, which session.start sets and each
+ *   `session.compact` sets again with the session's open Inbox threads.
  * - `PLANNOTATOR_SESSION_TAG=claude-code:<session id>` in the environment
  *   every process the session starts inherits, so a Plannotator server can be
  *   matched to the session that started it.
@@ -76,19 +76,15 @@ import { PlannotatorMod } from './controller'
 import { resolveAgentToolEnabled, resolveClaudeModEnabled, resolveInboxReminderCustom, resolveInboxReminderEnabled, resolveInboxToolEnabled } from './enabled'
 import type { Host, LoadedPluginInfo } from './host'
 import {
+  conversationResumed,
   discoverInboxTools,
   engineHasSessionAppend,
+  inboxFirstPromptContext,
   inboxRegistryPathOf,
   inboxReminderEnvValue,
-  inboxReminderFirstTurnLesson,
-  inboxReminderSubmitCopy,
   inboxReminderWithThreads,
   pluginVersionOf,
   readSessionThreads,
-  readReminderContextWorks,
-  reminderSessionResumed,
-  STORE_INBOX_REMINDER_CONTEXT_WORKS,
-  withInboxReminder,
 } from './inbox'
 import { inboxAgentTool, inboxReminderFor, type InboxToolInfo } from './inbox-contract'
 import { INBOX_DEFAULT_TOOLS } from './inbox-default-tools'
@@ -287,11 +283,11 @@ function reminderOn(): boolean {
 /**
  * Settles with `reminderOn()` once the first session.start has decided it
  * (the switch, inbox.json, plannotator_inbox registered), or with false on its
- * early returns (`-p`, the mod off). The engine runs prompt.context BEFORE
- * session.start finishes (seen live on 2.1.310: the Inbox tool was registered
- * about 230 ms after prompt.context returned), so prompt.context and the
- * prompt.submit fallback wait on this, bounded, instead of reading the
- * not-yet-set module state.
+ * early returns (`-p`, the mod off). The engine may raise a conversation's
+ * first events BEFORE session.start finishes (seen live on 2.1.310: the Inbox
+ * tool was registered about 230 ms after the first prompt.context returned),
+ * so the first prompt's context waits on this, bounded, instead of reading
+ * the not-yet-set module state.
  */
 let reminderGateValue: boolean | null = null
 let resolveReminderGate: (on: boolean) => void = () => undefined
@@ -303,7 +299,7 @@ function settleReminderGate(on: boolean): void {
   reminderGateValue = on
   resolveReminderGate(on)
 }
-/** The longest prompt.context / prompt.submit wait for session.start's decision. */
+/** The longest the first prompt's context waits for session.start's decision. */
 const REMINDER_GATE_WAIT_MS = 2_500
 /**
  * The decision, waiting at most REMINDER_GATE_WAIT_MS for session.start;
@@ -325,7 +321,7 @@ async function reminderGateDecided($: Engine): Promise<boolean | null> {
   }
 }
 
-/** The longest a resume waits for its thread list, session.start's decision included. */
+/** The longest a resumed conversation's first prompt waits for its thread list. */
 const SESSION_THREADS_RESUME_MS = 1_500
 
 /**
@@ -361,39 +357,33 @@ async function withinMs<T>($: Engine, ms: number, work: () => Promise<T>): Promi
   }
 }
 
-/** `$.clock.now()` at this process's first session.start: tells a resumed session from one started here. */
-let processStartedAt: number | null = null
-
 /**
- * Per conversation (session id), in this process: `contextRan`, the mod's
- * `prompt.context` hook ran for it; `delivered`, the reminder reached it by
- * either path; `firstTurnDone`, its first main turn has been looked at.
+ * Per conversation (session id), in this process: `delivered`, its first
+ * prompt went in with the reminder (or, resumed, with its thread list), so
+ * no later prompt carries either; `resumed`, whether it already had a model
+ * turn when this process first saw it (conversationResumed), read once at
+ * its first `prompt.submit` or main-loop `turn.start` here.
  */
 interface ReminderConversation {
-  contextRan: boolean
   delivered: boolean
-  firstTurnDone: boolean
+  resumed: Promise<boolean> | null
 }
 const reminderConversations = new Map<string, ReminderConversation>()
 function reminderConversation(sessionId: string): ReminderConversation {
   let state = reminderConversations.get(sessionId)
   if (!state) {
-    state = { contextRan: false, delivered: false, firstTurnDone: false }
+    state = { delivered: false, resumed: null }
     reminderConversations.set(sessionId, state)
   }
   return state
 }
 
-/** `inboxReminderContextWorks` as this process knows it: read from `$.store` once, then kept in step with its writes. */
-let reminderContextWorks: Promise<boolean | undefined> | null = null
-function readContextWorks($: Engine): Promise<boolean | undefined> {
-  reminderContextWorks ??= Promise.resolve($.store.get(STORE_INBOX_REMINDER_CONTEXT_WORKS)).then(readReminderContextWorks, () => undefined)
-  return reminderContextWorks
-}
-async function writeContextWorks($: Engine, value: boolean): Promise<void> {
-  if ((await readContextWorks($)) === value) return
-  reminderContextWorks = Promise.resolve(value)
-  await $.store.set(STORE_INBOX_REMINDER_CONTEXT_WORKS, value)
+/** Reads, once per conversation, whether it was resumed: before its first prompt here enters, so that prompt is not counted. */
+function noteConversationStart($: Engine, state: ReminderConversation): Promise<boolean> {
+  state.resumed ??= Promise.resolve()
+    .then(() => $.session.messages())
+    .then(conversationResumed, () => false)
+  return state.resumed
 }
 
 /**
@@ -565,18 +555,17 @@ export function register(on: On) {
     try {
       allowed = await resolveAllowed($, e)
       if (!allowed) return result
-      processStartedAt = await Promise.resolve($.clock.now()).catch(() => null)
       // Before the instance exists: it owns the Inbox link when the tool is registered.
       if (allowed.inboxTool) await registerInboxTool($, allowed)
       // The reminder for the plugin's SessionStart `compact` command hook
       // (hooks.json), which prints it after a compaction: the conversation then
-      // holds it again whether or not prompt.context reaches this mod. Unset
+      // holds it again after the summary replaced the first prompt's copy. Unset
       // when the reminder is off (a value inherited from a parent Claude Code
       // must not speak for this session).
       await Promise.resolve($.env.set('PLANNOTATOR_INBOX_REMINDER', inboxReminderEnvValue(reminderOn(), inboxToolName, allowed.inboxReminderCustom))).catch(() => undefined)
     } finally {
-      // Decided (or inert): prompt.context, which the engine may already be
-      // running, adds the block now, without waiting for the commands and tools below.
+      // Decided (or inert): a first prompt the engine may already be raising
+      // gets its context now, without waiting for the commands and tools below.
       settleReminderGate(reminderOn())
     }
     const instance = await currentMod($)
@@ -585,41 +574,6 @@ export function register(on: On) {
     // Decided once per process, here: the tool list is part of Claude's
     // prompt, so it never changes under a running session.
     if (allowed.agentTool) await registerTool($)
-    return result
-  })
-
-  // The Inbox reminder: one fixed line in the context of the conversation's
-  // first message, only in a process that registered plannotator_inbox, where
-  // the Inbox had run (inbox/inbox.json at the first session.start) and with
-  // the switch on, all decided once then. It names the tool by its registered
-  // full name, so tool search finds the deferred tool. The engine renders it
-  // once per conversation, after the system prompt and the tools, so it never
-  // moves a cached prefix; it is never invalidated.
-  //
-  // Where a guard plugin seated above the mod skips this hook (#2159), the
-  // same line goes as `prompt.submit` context instead (below). This hook
-  // running is the evidence that stops that copy: it records the conversation
-  // as reached and the machine as one where prompt.context works.
-  //
-  // The engine runs this hook while session.start may still be registering
-  // the tool, so it waits for session.start's decision (bounded). When that
-  // does not come in time the hook adds nothing, but it still records that it
-  // ran, so the machine is never taken for one where prompt.context is skipped.
-  on('prompt.context', async ($: Engine, e: any, next: Next) => {
-    const decided = await reminderGateDecided($)
-    if (decided === false) return next(e)
-    const toolName = decided ? inboxToolName : null
-    const result = toolName ? await next({ ...e, blocks: withInboxReminder(Array.isArray(e.blocks) ? e.blocks : [], toolName, allowed?.inboxReminderCustom ?? null) }) : await next(e)
-    try {
-      const state = reminderConversation(String(await $.session.id()))
-      state.contextRan = true
-      if (toolName) {
-        state.delivered = true
-        await writeContextWorks($, true)
-      }
-    } catch {
-      // Bookkeeping only: the block above is what matters.
-    }
     return result
   })
 
@@ -637,9 +591,11 @@ export function register(on: On) {
   // alone when there is none or the Inbox did not answer in time. The ids then
   // come from the Inbox, not from the summary the model wrote for itself. Not
   // for `precompute` (it installs nothing; the compaction that uses it comes
-  // through here again) nor a subagent's compaction. A guard plugin that skips
-  // prompt.context and classic.* leaves this event to the mod, so its users
-  // get the list too. Bounded (INBOX_SESSION_THREADS_TIMEOUT_MS); never
+  // through here again) nor a subagent's compaction. Claude Code 2.1.314's
+  // cc-plugin-sec-default sends this event past user plugins too, so guarded
+  // users get the plain reminder session.start set, without the list, and
+  // Claude Code prints "its session.compact hook was skipped" at the first
+  // compaction of a session (#2243, a known gap). Bounded (INBOX_SESSION_THREADS_TIMEOUT_MS); never
   // starts the Inbox; never fails the compaction. The list leaves the
   // environment at the next main-loop step or turn (plainReminderAgain): the
   // hook runs as the compaction installs, before either. Read before next(e),
@@ -665,38 +621,6 @@ export function register(on: On) {
       }
     }
     return next(e)
-  })
-
-  // A resumed session (`claude --resume`, `/resume`): its open Inbox threads
-  // as SessionStart context, so a conversation picked up later finds its
-  // thread ids in the Inbox, not in a summary. Not on `startup`, `clear` or
-  // `fork`: a new session id has no thread yet. Only where the reminder is on
-  // (the person's switch, an Inbox that has run here); nothing when there is
-  // no open thread or the Inbox is not running. Bounded by
-  // SESSION_THREADS_RESUME_MS in all (session.start's decision included), so a
-  // resume is never held up for long. Matched on `resume`, so the engine
-  // raises it for nothing else (under a guard that skips classic.*, an
-  // unmatched hook would log "skipped" at every startup, /clear and
-  // compaction, #2159). That guard skips this too (a known gap; its users get
-  // the list after a compaction).
-  on('classic.SessionStart', { source: 'resume' }, async ($: Engine, e: any, next: Next) => {
-    const result = await next(e)
-    if (e?.source !== 'resume') return result
-    try {
-      const threads = await withinMs($, SESSION_THREADS_RESUME_MS, async () => {
-        if ((await reminderGateDecided($)) !== true || !allowed || !inboxToolName) return null
-        const sessionId = typeof e.session_id === 'string' && e.session_id ? e.session_id : String(await $.session.id())
-        const folder = await inboxProjectFolderOf($, typeof e.cwd === 'string' && e.cwd ? e.cwd : undefined)
-        return readSessionThreads(hostOf($, allowed.debugPath), allowed.dataDir, sessionId, folder, inboxToolName)
-      })
-      if (!threads) return result
-      // Another handler's context stays, a list or one string.
-      const given = result?.additionalContext
-      const context = Array.isArray(given) ? given : typeof given === 'string' && given ? [given] : []
-      return { ...(result ?? {}), additionalContext: [...context, threads] }
-    } catch {
-      return result
-    }
   })
 
   // Matched by name: an unmatched hook makes the engine credit Plannotator on every plugin's command answer.
@@ -797,27 +721,35 @@ export function register(on: On) {
       ...(origin && typeof origin.kind === 'string' ? { originKind: origin.kind } : {}),
     }
     if (live) instance.onPromptSubmitting(ref)
-    // The learned fallback for the Inbox reminder (#2159): on a conversation
-    // the reminder has not reached, while this machine has no evidence that
-    // prompt.context runs, the prompt carries the same line as context.
+    // The Inbox reminder (#2243): the conversation's first prompt carries it
+    // as context, a resumed conversation's first prompt the session's open
+    // Inbox threads instead (it holds the reminder already). Only once per
+    // conversation in this process, counted once the prompt entered.
     let entering = e
     let reminderFor: ReminderConversation | null = null
-    // A prompt typed while session.start is still deciding waits for it (bounded), as prompt.context does.
-    if (!ref.fromUs && (await reminderGateDecided($)) === true && inboxToolName) {
+    // A prompt typed while session.start is still deciding waits for it (bounded).
+    if (!ref.fromUs && (await reminderGateDecided($)) === true && inboxToolName && allowed) {
       try {
-        const state = reminderConversation(String(await $.session.id()))
-        const copy = inboxReminderSubmitCopy({
-          delivered: state.delivered,
-          contextWorks: await readContextWorks($),
-          isMeta: e.isMeta === true,
-          command: !!e.command,
-        })
-        if (copy) {
-          entering = { ...e, context: [...(Array.isArray(e.context) ? e.context : []), inboxReminderFor(allowed?.inboxReminderCustom ?? null, inboxToolName)] }
-          reminderFor = state
-        }
+        const sessionId = String(await $.session.id())
+        const state = reminderConversation(sessionId)
+        // Read at this process's first sight of the conversation, a command or a meta prompt included.
+        const resumed = await noteConversationStart($, state)
+        const carries = inboxFirstPromptContext({ delivered: state.delivered, resumed, isMeta: e.isMeta === true, command: !!e.command })
+        const settings = allowed
+        const toolName = inboxToolName
+        const text =
+          carries === 'reminder'
+            ? inboxReminderFor(settings.inboxReminderCustom, toolName)
+            : carries === 'threads'
+              ? await withinMs($, SESSION_THREADS_RESUME_MS, async () =>
+                  readSessionThreads(hostOf($, settings.debugPath), settings.dataDir, sessionId, await inboxProjectFolderOf($), toolName),
+                )
+              : null
+        if (carries) reminderFor = state
+        if (text) entering = { ...e, context: [...(Array.isArray(e.context) ? e.context : []), text] }
       } catch {
         entering = e
+        reminderFor = null
       }
     }
     let result
@@ -827,7 +759,7 @@ export function register(on: On) {
       if (live) instance.onPromptDropped(ref)
       throw error
     }
-    // Entered: the conversation has the reminder now (a dropped prompt does not).
+    // Entered: the conversation has its first prompt's context now (a dropped prompt does not), or, resumed with no open thread, needs none.
     if (reminderFor && result && typeof result.text === 'string') reminderFor.delivered = true
     if (!live || instance.isDisposed) return result
     if (result && typeof result.text === 'string') {
@@ -842,6 +774,13 @@ export function register(on: On) {
 
   on('turn.start', async ($: Engine, e: any, next: Next) => {
     if (!e.agentId) await plainReminderAgain($)
+    // A main turn no prompt.submit of ours saw start (our own plugin turns):
+    // the conversation is classified here, before its first answer exists.
+    if (!e.agentId && reminderGateValue === true) {
+      await Promise.resolve($.session.id())
+        .then((id: unknown) => noteConversationStart($, reminderConversation(String(id))))
+        .catch(() => undefined)
+    }
     if (allowed && typeof e.turnId === 'string') {
       const instance = await currentMod($).catch(() => null)
       // A subagent's start carries its id: the controller counts only the main loop's turns.
@@ -876,31 +815,6 @@ export function register(on: On) {
   on('turn.complete', async ($: Engine, e: any, next: Next) => {
     if (allowed && mod && !mod.isDisposed && !e.agentId && typeof e.turnId === 'string') {
       mod.onTurnComplete(e.turnId, typeof e.answer === 'string' ? e.answer : '', e.isAborted === true)
-    }
-    // A conversation's first main turn: prompt.context resolves while the
-    // first request is built, so by now it ran unless something above the mod
-    // skipped it. Then this machine learns `false`, and the conversation's
-    // next prompt carries the reminder (prompt.submit above).
-    if (reminderOn() && !e.agentId) {
-      try {
-        const state = reminderConversation(String(await $.session.id()))
-        if (!state.firstTurnDone) {
-          const usage = state.contextRan ? null : await Promise.resolve($.session.usage()).catch(() => null)
-          const lesson = inboxReminderFirstTurnLesson({
-            contextRan: state.contextRan,
-            aborted: e.isAborted === true,
-            resumed: reminderSessionResumed(usage?.startedAt, processStartedAt),
-            contextWorks: await readContextWorks($),
-          })
-          state.firstTurnDone = lesson.done
-          if (lesson.write === false) {
-            await writeContextWorks($, false)
-            if (allowed) hostOf($, allowed.debugPath).debug('inbox reminder: prompt.context did not run in the first turn; the reminder goes as prompt.submit context on this machine')
-          }
-        }
-      } catch {
-        // Bookkeeping only.
-      }
     }
     return next(e)
   })
