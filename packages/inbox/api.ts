@@ -1322,17 +1322,17 @@ export interface AttachmentView {
   html: string | null;
 }
 
-/** A page an attached HTML page links to, as `/linked-page` answers it. */
-export interface LinkedPageView {
+/** A sibling document, as `/linked-page` answers it. */
+interface LinkedPageBase {
   serverSession: string;
   /** Its realpath. */
   path: string;
   name: string;
-  /** The page with a `<base href>` at its own folder's asset route. */
-  html: string;
   /** Its asset-route URL, for Open in new tab. */
   url: string | null;
 }
+
+export type LinkedPageView = LinkedPageBase & ({ html: string } | { html: null; text: string });
 
 /** What `subscribeInboxEvents` calls (the server's frames, read). */
 export interface InboxEventHandlers {
