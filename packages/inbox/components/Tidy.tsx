@@ -6,6 +6,7 @@ import { inboxApi } from '../api';
 import { formatCount } from '../format';
 import { HostMark, Icon } from '../icons';
 import { Tip } from './Tip';
+import { LIST_LOOK_OPTIONS, type ListLook, type ListLookKey } from '../listLook';
 
 /**
  * Tidy (owner-approved design, 2026-10-28, simplified the same day: "quiet,
@@ -88,7 +89,9 @@ const runLabel = (run: InboxTidyRun) => `Tidy · ${run.done}/${run.agents.length
 
 /**
  * The header's ⋮: Tidy (with its count, or the run's progress) and Refresh.
- * `className` places it in its header (the list's or the Board's).
+ * `className` places it in its header (the list's or the Board's). The list
+ * passes its look (`look`, `onLook`): three checkboxes follow Refresh
+ * (approval "inbox-list-options"); the Board passes none.
  */
 export function TidyMenu({
   tidy,
@@ -96,6 +99,8 @@ export function TidyMenu({
   onRefresh,
   className,
   hideAway,
+  look,
+  onLook,
 }: {
   tidy: TidyController;
   phone: boolean;
@@ -103,6 +108,8 @@ export function TidyMenu({
   className: string;
   /** Linked machines: "Hide offline machines", checked while their rows are hidden. Absent (nothing linked): no item. */
   hideAway?: { on: boolean; onChange: (hide: boolean) => void };
+  look?: ListLook;
+  onLook?: (key: ListLookKey, on: boolean) => void;
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -146,6 +153,27 @@ export function TidyMenu({
                 <Icon name="refresh" size={15} />
                 Refresh
               </Menu.Item>
+              {look && onLook && (
+                <>
+                  <Menu.Separator className="ib-pm-sep" />
+                  {/* A tick changes the list at once and leaves the menu open, so the next can be tried. */}
+                  {LIST_LOOK_OPTIONS.map((option) => (
+                    <Menu.CheckboxItem
+                      key={option.key}
+                      className="ib-pmi"
+                      label={option.label}
+                      checked={look[option.key]}
+                      onCheckedChange={(on) => onLook(option.key, on)}
+                      closeOnClick={false}
+                      data-list-look={option.key}
+                    >
+                      <Icon name={option.icon} size={15} />
+                      <span className="ib-pmi-l">{option.label}</span>
+                      {look[option.key] && <Icon name="check" size={15} className="ib-pmi-check" />}
+                    </Menu.CheckboxItem>
+                  ))}
+                </>
+              )}
               {hideAway && (
                 <>
                   <Menu.Separator className="ib-pm-sep" />
