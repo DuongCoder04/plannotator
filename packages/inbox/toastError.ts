@@ -5,7 +5,7 @@
  * browser's or a program's own words ("Failed to fetch", "Cannot read
  * properties of undefined"): those go to the console, not the toast.
  */
-import { InboxApiError } from './api';
+import { InboxApiError, InboxHeldError } from './api';
 import type { InboxToastModel } from './components/Toast';
 
 /** A fetch that never reached the Inbox (Chrome, Safari, Firefox each word it their own way). */
@@ -22,8 +22,10 @@ export function errorText(cause: unknown, fallback: string): string {
   return cause.message.trim();
 }
 
-/** The window's error toast for `cause`: its words whole (the toast keeps their last sentence, what to do, whole). */
+/** The window's error toast for `cause` (a held write's clock toast too): what to do, its last sentence, always shows whole. */
 export function errorToast(cause: unknown, fallback: string): Omit<InboxToastModel, 'id'> {
+  // A write held for another machine did not fail: it waits in the outbox and says so, without the warning.
+  if (cause instanceof InboxHeldError) return { icon: 'clock', lead: errorText(cause, fallback), wrap: true };
   const lead = errorText(cause, fallback);
   // What the toast does not say stays findable: the console has the cause itself.
   if (!(cause instanceof InboxApiError)) console.warn('[inbox] a write failed:', cause);

@@ -7,7 +7,7 @@ import { useTouchPhone } from '../phone';
 import { Tip } from './Tip';
 
 /** `thumb`: 👍 Looks good (the emoji itself, as plan review's button draws it). */
-export type InboxToastIcon = 'check' | 'warn' | 'archive' | 'mute' | 'thumb' | 'unpin';
+export type InboxToastIcon = 'check' | 'warn' | 'archive' | 'mute' | 'thumb' | 'unpin' | 'clock';
 
 export interface InboxToastModel {
   /** Bumped per toast, so a new one replays its entrance. */
@@ -35,7 +35,7 @@ export interface InboxToastModel {
   speech?: string;
 }
 
-const ICONS: Record<Exclude<InboxToastIcon, 'thumb'>, IconName> = { check: 'checkCircle', warn: 'warn', archive: 'archive', mute: 'mute', unpin: 'pinOff' };
+const ICONS: Record<Exclude<InboxToastIcon, 'thumb'>, IconName> = { check: 'checkCircle', warn: 'warn', archive: 'archive', mute: 'mute', unpin: 'pinOff', clock: 'clock' };
 
 /**
  * What the window's live region says for a toast, as sentences, and how to

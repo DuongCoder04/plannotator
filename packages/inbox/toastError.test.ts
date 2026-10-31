@@ -5,7 +5,7 @@
  * console, never the toast.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { InboxApiError } from './api';
+import { InboxApiError, InboxHeldError } from './api';
 import { errorText, errorToast, INBOX_UNREACHABLE } from './toastError';
 
 const FALLBACK = 'The thread did not change.';
@@ -53,6 +53,13 @@ describe('errorToast', () => {
     expect(errorToast(cause, FALLBACK)).toEqual({ icon: 'warn', lead: INBOX_UNREACHABLE, wrap: true });
     expect(warned).toHaveLength(1);
     expect(warned[0]![1]).toBe(cause);
+  });
+
+  test('a write held for another machine did not fail: the clock, its own words, nothing logged', () => {
+    captureWarn();
+    const held = new InboxHeldError({} as ConstructorParameters<typeof InboxHeldError>[0], { name: 'Studio Mac', state: 'offline' } as ConstructorParameters<typeof InboxHeldError>[1]);
+    expect(errorToast(held, FALLBACK)).toEqual({ icon: 'clock', lead: 'Waiting for Studio Mac: this applies when Studio Mac is back.', wrap: true });
+    expect(warned).toHaveLength(0);
   });
 
   test("the Inbox's own answer is the whole story: nothing logged", () => {

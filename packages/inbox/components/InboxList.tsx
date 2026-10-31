@@ -25,6 +25,7 @@ import { TimeWithTick } from './DeliveryTick';
 import { ActionBadge, RowBadge, WaitCard, badgeDescription, rowActionCount, rowHasBadge, shownCount } from './RowBadge';
 import { attachPullToRefresh } from '../pullRefresh';
 import { TidyMenu, type TidyController } from './Tidy';
+import { awayLine, type MachinesModel } from '../machines';
 import { listLookClasses, useListLook } from '../listLook';
 import { useShortcutScope } from '@plannotator/ui/shortcuts';
 import { isComposingKey, keyTarget, modalOpen } from '../shortcuts/guards';
@@ -104,6 +105,15 @@ export interface InboxListProps {
    * at the top of the list. Absent: no menu.
    */
   tidy?: TidyController;
+  /**
+   * Linked machines (machines.ts): rows of a machine that is away are greyed, a line says since when ("MacBook
+   * asleep since 10:42 AM"), and the ⋯ menu offers "Hide offline machines". No machine linked: none of it.
+   */
+  machines?: MachinesModel;
+  /** The machine the list shows (the sidebar's filter): only its own line, if it is away. */
+  machineScope?: string | null;
+  hideAway?: boolean;
+  onHideAway?: (hide: boolean) => void;
   /**
    * The person's look options (listLook.ts) from this browser. False (the onboarding tour): today's list, every
    * option off, whatever this browser chose, as the tour's sidebar ignores its closed sections.
@@ -480,7 +490,7 @@ export const FULL_WORDS_MIN_LIST_WIDTH = 1150;
  * `?N`) and the time, each in a column of its own so they line up down the
  * list. In one project's list (`filtered`) the first column holds the marks alone.
  */
-function WideRow({ row, project, selected, filtered, lit, pinned, keys, full, pill, onOpen }: { row: InboxListRow; project: string; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; full: boolean; pill: boolean; onOpen: () => void }) {
+function WideRow({ row, project, away, selected, filtered, lit, pinned, keys, full, pill, onOpen }: { row: InboxListRow; project: string; away: boolean; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; full: boolean; pill: boolean; onOpen: () => void }) {
   const [kbd, focus] = useKeyboardFocus(rowHasBadge(row));
   const wordsId = useId();
   const badgeEl = badgeOf(row, kbd, full);
@@ -496,6 +506,7 @@ function WideRow({ row, project, selected, filtered, lit, pinned, keys, full, pi
       // The row's menu (RowMenu.tsx); a click opens the thread, so no aria-haspopup.
       aria-keyshortcuts={keys}
       data-section={row.section}
+      data-away={away ? '' : undefined}
       data-lit={lit ? '' : undefined}
       aria-describedby={rowHasBadge(row) ? wordsId : undefined}
       {...focus}
@@ -609,7 +620,7 @@ function RowWithAction({
   );
 }
 
-function NarrowRow({ row, project, selected, filtered, lit, pinned, keys, pill, compact, onOpen }: { row: InboxListRow; project: string; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; pill: boolean; compact: boolean; onOpen: () => void }) {
+function NarrowRow({ row, project, away, selected, filtered, lit, pinned, keys, pill, compact, onOpen }: { row: InboxListRow; project: string; away: boolean; selected: boolean; filtered: boolean; lit: boolean; pinned: boolean; keys?: string; pill: boolean; compact: boolean; onOpen: () => void }) {
   const [kbd, focus] = useKeyboardFocus(rowHasBadge(row));
   const wordsId = useId();
   const badge = badgeOf(row, kbd);
@@ -624,6 +635,7 @@ function NarrowRow({ row, project, selected, filtered, lit, pinned, keys, pill, 
       // The row's menu (RowMenu.tsx); a click opens the thread, so no aria-haspopup.
       aria-keyshortcuts={keys}
       data-section={row.section}
+      data-away={away ? '' : undefined}
       data-lit={lit ? '' : undefined}
       aria-describedby={rowHasBadge(row) ? wordsId : undefined}
       {...focus}
@@ -667,7 +679,7 @@ function NarrowRow({ row, project, selected, filtered, lit, pinned, keys, pill, 
  * grey preview with the guided review book, the badge and the count at the
  * right end of line 3.
  */
-function PhoneRow({ row, project, filtered, lit, menu, pinned, keys, pill, compact, onOpen }: { row: InboxListRow; project: string; filtered: boolean; lit: boolean; menu: boolean; pinned: boolean; keys?: string; pill: boolean; compact: boolean; onOpen: () => void }) {
+function PhoneRow({ row, project, away, filtered, lit, menu, pinned, keys, pill, compact, onOpen }: { row: InboxListRow; project: string; away: boolean; filtered: boolean; lit: boolean; menu: boolean; pinned: boolean; keys?: string; pill: boolean; compact: boolean; onOpen: () => void }) {
   const wordsId = useId();
   // A phone: the icons only, no card (the thread shows the details).
   const badge = rowHasBadge(row) ? <RowBadge row={row} /> : null;
@@ -684,6 +696,7 @@ function PhoneRow({ row, project, filtered, lit, menu, pinned, keys, pill, compa
       aria-keyshortcuts={keys}
       data-menu={menu ? '' : undefined}
       data-section={row.section}
+      data-away={away ? '' : undefined}
       data-lit={lit ? '' : undefined}
       aria-describedby={rowHasBadge(row) ? wordsId : undefined}
     >
@@ -721,6 +734,11 @@ function PhoneRow({ row, project, filtered, lit, menu, pinned, keys, pill, compa
 
 export function InboxList(props: InboxListProps) {
   const [quietOpen, setQuietOpen] = useState(false);
+  // Each linked machine that is away, in the list it shows (every machine, or the one the filter shows).
+  const awayLines = (props.machines?.linked ?? []).flatMap((machine) => {
+    const text = props.machineScope && props.machineScope !== machine.id ? null : awayLine(machine);
+    return text ? [{ id: machine.id, text }] : [];
+  });
   // The list's look options in its ⋮ menu (listLook.ts), all off by default.
   const [look, setLook] = useListLook(props.rememberLook !== false);
   // Another project on a phone: the list starts at its top. The list itself stays mounted (its Quiet fold and,
@@ -900,6 +918,7 @@ export function InboxList(props: InboxListProps) {
             phone={isMobile}
             className="ib-lhead-more"
             onRefresh={() => props.onRefresh?.()}
+            hideAway={(props.machines?.linked.length ?? 0) > 0 && props.onHideAway ? { on: props.hideAway === true, onChange: props.onHideAway } : undefined}
             look={look}
             onLook={setLook}
           />
@@ -927,6 +946,13 @@ export function InboxList(props: InboxListProps) {
           held={props.selectedThreadId !== null}
         >
           {props.ask}
+          {awayLines.map((line) => (
+            // A linked machine that is away: one quiet line, as a thread's meta line reads (its rows are greyed below).
+            <p key={line.id} className="ib-away" data-machine-away={line.id}>
+              <Icon name="clock" size={14} />
+              {line.text}
+            </p>
+          ))}
           {props.notice && (
             <button type="button" className="ib-notice" onClick={props.onShowNew} data-inbox-notice="">
               <Icon name="inbox" size={15} />
@@ -956,6 +982,7 @@ export function InboxList(props: InboxListProps) {
                       key={row.thread_id}
                       row={row}
                       project={props.projectNames?.get(row.project.id) ?? row.project.name}
+                      away={!!row.machine && (props.machines?.away.has(row.machine) ?? false)}
                       drawn={section.id}
                       // A phone's row has no hover action (a hover on a touch screen is a first tap): Mark read is in the thread's header there.
                       shape={props.phone ? 'phone' : twoLine ? 'narrow' : 'wide'}
@@ -985,8 +1012,10 @@ export function InboxList(props: InboxListProps) {
 
 interface ListRowProps {
   row: InboxListRow;
-  /** The row's project as the window names it (`windowProjectNames`). */
+  /** The row's project as the window names it (`windowProjectNames`; another machine's carries that machine's name). */
   project: string;
+  /** Its machine is away (asleep, or needing an update): the row is greyed, its thread opens when the machine is back. */
+  away: boolean;
   /** The group the row sits in on screen. */
   drawn: InboxSectionId;
   shape: 'wide' | 'narrow' | 'phone';
@@ -1018,15 +1047,15 @@ interface ListRowProps {
  * list update renders only the rows that changed.
  */
 const ListRow = memo(
-  function ListRow({ row, project, drawn, shape, full, filtered, selected, lit, onOpen, onMarkRead, onSendNow, menu, pinned, keys, pill, compact }: ListRowProps) {
+  function ListRow({ row, project, away, drawn, shape, full, filtered, selected, lit, onOpen, onMarkRead, onSendNow, menu, pinned, keys, pill, compact }: ListRowProps) {
     const open = () => onOpen(row);
-    if (shape === 'phone') return <PhoneRow row={row} project={project} filtered={filtered} lit={lit} menu={menu} pinned={pinned} keys={keys} pill={pill} compact={compact} onOpen={open} />;
+    if (shape === 'phone') return <PhoneRow row={row} project={project} away={away} filtered={filtered} lit={lit} menu={menu} pinned={pinned} keys={keys} pill={pill} compact={compact} onOpen={open} />;
     return (
       <RowWithAction row={row} drawn={drawn} menu={menu} onMarkRead={onMarkRead} onSendNow={onSendNow}>
         {shape === 'narrow' ? (
-          <NarrowRow row={row} project={project} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} pill={pill} compact={compact} onOpen={open} />
+          <NarrowRow row={row} project={project} away={away} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} pill={pill} compact={compact} onOpen={open} />
         ) : (
-          <WideRow row={row} project={project} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} full={full} pill={pill} onOpen={open} />
+          <WideRow row={row} project={project} away={away} filtered={filtered} lit={lit} pinned={pinned} keys={keys} selected={selected} full={full} pill={pill} onOpen={open} />
         )}
       </RowWithAction>
     );
@@ -1034,6 +1063,7 @@ const ListRow = memo(
   (a, b) =>
     a.shape === b.shape &&
     a.project === b.project &&
+    a.away === b.away &&
     a.full === b.full &&
     a.drawn === b.drawn &&
     a.filtered === b.filtered &&

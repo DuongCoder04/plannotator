@@ -98,6 +98,7 @@ export function TidyMenu({
   phone,
   onRefresh,
   className,
+  hideAway,
   look,
   onLook,
 }: {
@@ -105,6 +106,8 @@ export function TidyMenu({
   phone: boolean;
   onRefresh: () => void;
   className: string;
+  /** Linked machines: "Hide offline machines", checked while their rows are hidden. Absent (nothing linked): no item. */
+  hideAway?: { on: boolean; onChange: (hide: boolean) => void };
   look?: ListLook;
   onLook?: (key: ListLookKey, on: boolean) => void;
 }) {
@@ -169,6 +172,23 @@ export function TidyMenu({
                       {look[option.key] && <Icon name="check" size={15} className="ib-pmi-check" />}
                     </Menu.CheckboxItem>
                   ))}
+                </>
+              )}
+              {hideAway && (
+                <>
+                  <Menu.Separator className="ib-pm-sep" />
+                  <Menu.CheckboxItem
+                    className="ib-pmi"
+                    label="Hide offline machines"
+                    checked={hideAway.on}
+                    onCheckedChange={(checked: boolean) => hideAway.onChange(checked)}
+                    closeOnClick
+                    data-hide-offline-machines=""
+                  >
+                    <Icon name="eyeOff" size={15} />
+                    <span className="ib-pmi-l">Hide offline machines</span>
+                    {hideAway.on && <Icon name="check" size={15} className="ib-pmi-check" />}
+                  </Menu.CheckboxItem>
                 </>
               )}
             </Menu.Popup>
