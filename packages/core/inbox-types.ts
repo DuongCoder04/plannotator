@@ -62,7 +62,7 @@ export function ulid(now: number = Date.now()): string {
 }
 
 /** `upl`: a file the person uploaded for a message; `drf`: a draft of one (compose); `crd`: a Board card. */
-export type InboxIdPrefix = "msg" | "prj" | "ses" | "dec" | "dev" | "upl" | "drf" | "crd" | "tdy";
+export type InboxIdPrefix = "msg" | "prj" | "ses" | "dec" | "dev" | "upl" | "drf" | "crd" | "tdy" | "ibx";
 
 export function inboxId(prefix: InboxIdPrefix, now?: number): string {
   return `${prefix}_${ulid(now)}`;
@@ -81,6 +81,8 @@ const ID_RE: Record<InboxIdPrefix, RegExp> = {
   crd: /^crd_[0-9A-HJKMNP-TV-Z]{26}$/,
   /** One press of Tidy (packages/core/inbox-tidy.ts). */
   tdy: /^tdy_[0-9A-HJKMNP-TV-Z]{26}$/,
+  /** An Inbox: the stable id other machines' links key on (packages/server/inbox-links.ts). */
+  ibx: /^ibx_[0-9A-HJKMNP-TV-Z]{26}$/,
 };
 
 export function isInboxId(prefix: InboxIdPrefix, value: unknown): value is string {
@@ -1219,6 +1221,12 @@ export const INBOX_SECTIONS: readonly { readonly id: InboxSectionId; readonly la
  */
 export interface InboxListRow extends InboxThreadSummary {
   project: { id: string; name: string };
+  /**
+   * The machine whose Inbox owns the thread (its stable `ibx_` id), on rows of
+   * the merged view only (`GET /api/inbox/threads?machines=1`; linked
+   * machines, packages/server/inbox-machines.ts). Absent on this Inbox's own list.
+   */
+  machine?: string;
   /** The thread's name (send_message's `thread`), or null for a session's default thread. */
   thread_name: string | null;
   section: InboxSectionId;
@@ -1470,6 +1478,10 @@ export interface InboxHealth {
    * project for every folder that compacts or resumes.
    */
   peek?: true;
+  /** This Inbox's stable id, which linked machines key on (additive; packages/server/inbox-links.ts). */
+  inbox_id?: string;
+  /** The machine-link protocol this Inbox speaks (additive; absent: it cannot link). */
+  machine_links?: number;
 }
 
 /** What an Inbox window reports about its browser's notification permission for its own origin. */
