@@ -33,7 +33,8 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import type { TailscaleRunner } from "@plannotator/shared/tailscale";
 import { InboxStore } from "@plannotator/shared/inbox/store";
 import { startInboxServer } from "./inbox";
-import { createInboxDevices, takeDownInboxTailnet } from "./inbox-devices";
+import { createInboxDevices, takeDownInboxTailnet, UNLINKED_REFUSAL_KEPT_MS } from "./inbox-devices";
+import { readTailnetDoorRecord, writeTailnetDoorRecord } from "./inbox-tailnet-door";
 import {
   createInboxWorld,
   destroyInboxWorld,
@@ -565,7 +566,7 @@ function scriptedTailscale() {
   };
   /** The calls that published or took down the door's port 8443, in order. */
   const doorCalls = () => calls.filter((args) => args.includes("--https=8443")).map((args) => (args.includes("off") ? "off" : "on"));
-  return { serve, run, doorCalls };
+  return { serve, run, doorCalls, calls };
 }
 
 describe("the tailnet door with Phones off, in process", () => {
@@ -729,6 +730,8 @@ describe("the tailnet door with Phones off, in process", () => {
       expect(self).toMatchObject({ self: true, address: null });
       expect(self.reason).toContain("port 8444, where linked machines reach this Inbox");
       expect(self.reason).toContain("does not move to another port on its own");
+      // A machine is linked here, so moving on purpose is unlinking it and linking again.
+      expect(self.reason).toContain("unlink each machine, then link it again");
       expect(self.reason).not.toContain("tailscale serve --https=");
       // Asking for a code says the same; the code carries no address.
       const { serverSession: again } = (await (await fetch(`${base}/api/inbox/health`)).json()) as Json;
@@ -966,6 +969,202 @@ describe("the tailnet door with Phones off, in process", () => {
       const elsewhere = await fetch(`${base}/api/inbox/machines/link`, { method: "POST", body: JSON.stringify({ serverSession, link: code, address: "https://evil.example:8443" }) });
       expect(elsewhere.status).toBe(422);
       expect(tailscale.doorCalls()).toEqual(["on", "off"]);
+    } finally {
+      inbox.stop();
+    }
+  }, 60_000);
+
+  // ── Unlink with the other machine away, Phones off, its last link (two-mac-test-2, Bug A) ──
+
+  const sessionOf = async (port: number) => ((await (await fetch(`http://127.0.0.1:${port}/api/inbox/health`)).json()) as Json).serverSession as string;
+  const postTo = async (port: number, path: string, body: Json) =>
+    fetch(`http://127.0.0.1:${port}${path}`, { method: "POST", body: JSON.stringify({ serverSession: await sessionOf(port), ...body }) });
+  const linksIn = (dataDir: string) => (JSON.parse(readFileSync(join(dataDir, "inbox", "machines.json"), "utf8")) as Json).links as Json[];
+  /** A device as the door keeps it now: the last line for its id in devices.jsonl. */
+  const deviceIn = (dataDir: string, id: string) =>
+    readFileSync(join(dataDir, "inbox", "devices.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Json)
+      .filter((line) => line.id === id)
+      .at(-1)!.record as Json;
+
+  /** A (its door published on 8443) and B, linked both ways with Phones off: B through A's door listener, as a tailnet peer would. */
+  const linkedPair = async (prefix: string, aOptions: { unlinkedRefusalKeptMs?: number } = {}) => {
+    const tsA = scriptedTailscale();
+    const dataA = scratch(`plannotator-machines-${prefix}-a-`);
+    const dataB = scratch(`plannotator-machines-${prefix}-b-`);
+    const startA = (extra: { now?: () => Date } = {}) => startInboxServer({ dataDir: dataA, binaryPath: null, phones: false, tailscale: tsA.run, ...aOptions, ...extra });
+    const startB = () => startInboxServer({ dataDir: dataB, binaryPath: null, phones: false, tailscale: scriptedTailscale().run });
+    const a = await startA();
+    const b = await startB();
+    const offered = (await (await postTo(a.port, "/api/inbox/machines/offer", { tailscale: true })).json()) as Json;
+    const doorA = tsA.serve.get(8443)!;
+    const linked = await postTo(b.port, "/api/inbox/machines/link", { link: offered.link, address: doorA, back: `http://127.0.0.1:${b.port}` });
+    expect(linked.status).toBe(201);
+    const bId = linksIn(dataA)[0]!.id as string;
+    // Both lines settled (no first dial still in flight), so "asleep" below means no request of B's reaches A.
+    const online = async (port: number) =>
+      (((await (await fetch(`http://127.0.0.1:${port}/api/inbox/machines`)).json()) as Json).machines as Json[]).every((m) => m.self || m.state === "online");
+    await waitFor("A and B online to each other", async () => (await online(a.port)) && (await online(b.port)), 10_000);
+    return { tsA, dataA, dataB, a, b, startA, startB, doorA, bId, tokenBA: linksIn(dataB)[0]!.token as string, deviceOfB: linksIn(dataA)[0]!.device_id as string };
+  };
+
+  test("an Unlink that could not reach the other machine keeps this door up, through a restart, until that machine is refused; then it comes down. Meanwhile the door serves nothing new", async () => {
+    const pair = await linkedPair("owed");
+    let { a, b } = pair;
+    try {
+      // B is asleep. A unlinks it: its last link, and B cannot be told.
+      b.stop();
+      const unlinked = await postTo(a.port, `/api/inbox/machines/${pair.bId}/unlink`, {});
+      expect(unlinked.status).toBe(200);
+      expect(((await unlinked.json()) as Json).told).toBe(false);
+      expect(linksIn(pair.dataA)).toHaveLength(0);
+      // The door stays published (B's next contact needs it), the switch stays on, and what is owed is on disk.
+      expect(pair.tsA.doorCalls()).toEqual(["on"]);
+      expect(pair.tsA.serve.get(8443)).toBe(pair.doorA);
+      expect(inboxJson(pair.dataA).tailnet).toMatchObject({ https_port: 8443 });
+      const owed = deviceIn(pair.dataA, pair.deviceOfB);
+      expect(owed.revoked_at).toBeString();
+      expect(Date.parse(owed.refusal_owed_until) - Date.now()).toBeGreaterThan(UNLINKED_REFUSAL_KEPT_MS - 60_000);
+
+      // Nothing new is served while it is kept: no token, pairing with no offer open and any non-door route are the unknown
+      // route; a token it does not know is told so, as while a machine is linked. B's own token is revoked (checked below).
+      expect((await fetch(`${pair.doorA}/api/inbox/device/health`)).status).toBe(404);
+      expect((await fetch(`${pair.doorA}/api/inbox/device/threads`)).status).toBe(404);
+      expect((await fetch(`${pair.doorA}/api/inbox/threads`, { headers: { Authorization: `Bearer ${pair.tokenBA}` } })).status).toBe(404);
+      expect((await fetch(`${pair.doorA}/api/inbox/health`)).status).toBe(404);
+      const pairing = await fetch(`${pair.doorA}/api/inbox/device/pair`, { method: "POST", body: JSON.stringify({ code: "123456", name: "Evil", platform: "machine" }) });
+      expect(pairing.status).toBe(404);
+      const stranger = await fetch(`${pair.doorA}/api/inbox/device/threads`, { headers: { Authorization: "Bearer tok_nobody_issued" } });
+      expect(stranger.status).toBe(401);
+      expect(((await stranger.json()) as Json).code).toBe("device_token_invalid");
+      expect(pair.tsA.serve.get(8443)).toBe(pair.doorA);
+
+      // A restarts in between: the stop takes the door down, and the start publishes it again for B alone.
+      a.stop();
+      expect(pair.tsA.serve.has(8443)).toBe(false);
+      a = await pair.startA();
+      expect(pair.tsA.doorCalls()).toEqual(["on", "off", "on"]);
+      expect(pair.tsA.serve.get(8443)).toBe(pair.doorA);
+
+      // B wakes: its next contact gets device_revoked, it removes its side, and A's door comes down after that answer.
+      b = await pair.startB();
+      await waitFor("B forgot A at its next contact", () => linksIn(pair.dataB).length === 0, 30_000);
+      await waitFor("A's door to come down", () => !pair.tsA.serve.has(8443), 10_000);
+      expect(pair.tsA.doorCalls()).toEqual(["on", "off", "on", "off"]);
+      expect(inboxJson(pair.dataA).tailnet).toBeUndefined();
+      expect(deviceIn(pair.dataA, pair.deviceOfB).refusal_owed_until).toBeUndefined();
+      expect(await fetch(`${pair.doorA}/api/inbox/device/health`).then(() => "open", () => "closed")).toBe("closed");
+      // Settled: the next start runs no tailscale at all.
+      a.stop();
+      const calls = pair.tsA.calls.length;
+      a = await pair.startA();
+      expect(pair.tsA.calls.length).toBe(calls);
+    } finally {
+      a.stop();
+      b.stop();
+    }
+  }, 90_000);
+
+  test("the door kept for an unlinked machine that never comes back comes down at the time limit, running or across a restart", async () => {
+    // Running: the limit passes while A is up (a short one here; a week by default).
+    const quick = await linkedPair("limit", { unlinkedRefusalKeptMs: 1_500 });
+    try {
+      quick.b.stop();
+      expect(((await (await postTo(quick.a.port, `/api/inbox/machines/${quick.bId}/unlink`, {})).json()) as Json).told).toBe(false);
+      expect(quick.tsA.serve.get(8443)).toBe(quick.doorA);
+      await waitFor("A's door to come down at the limit", () => !quick.tsA.serve.has(8443), 10_000);
+      expect(quick.tsA.doorCalls()).toEqual(["on", "off"]);
+      expect(inboxJson(quick.dataA).tailnet).toBeUndefined();
+    } finally {
+      quick.a.stop();
+      quick.b.stop();
+    }
+
+    // Stopped: A is down when the limit passes, with the switch still on and the refusal still recorded.
+    const away = await linkedPair("limit-restart");
+    let a = away.a;
+    try {
+      away.b.stop();
+      expect(((await (await postTo(a.port, `/api/inbox/machines/${away.bId}/unlink`, {})).json()) as Json).told).toBe(false);
+      a.stop();
+      expect(inboxJson(away.dataA).tailnet).toMatchObject({ https_port: 8443 });
+      const calls = away.tsA.calls.length;
+      // Started past the limit: nothing is owed any more, nothing is linked, so tailscale never runs.
+      a = await away.startA({ now: () => new Date(Date.now() + UNLINKED_REFUSAL_KEPT_MS + 60_000) });
+      expect(away.tsA.calls.length).toBe(calls);
+      expect(away.tsA.serve.has(8443)).toBe(false);
+      a.stop();
+      // Within the limit it would have been published: the limit is what decided.
+      a = await away.startA();
+      expect(away.tsA.serve.get(8443)).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    } finally {
+      a.stop();
+      away.b.stop();
+    }
+  }, 90_000);
+
+  test("a door a crash left published for an unlinked machine comes down at the first start past the limit, and only that runs", async () => {
+    const pair = await linkedPair("crash");
+    let a = pair.a;
+    try {
+      pair.b.stop();
+      expect(((await (await postTo(a.port, `/api/inbox/machines/${pair.bId}/unlink`, {})).json()) as Json).told).toBe(false);
+      // A is killed (kill -9, a dead battery) while the door is kept: no clean stop, so the mapping and its record stay.
+      const left = readTailnetDoorRecord(pair.dataA)!;
+      expect(left).toMatchObject({ https_port: 8443, target: pair.doorA, published: true });
+      a.stop();
+      writeTailnetDoorRecord(pair.dataA, left);
+      pair.tsA.serve.set(8443, pair.doorA);
+      const calls = pair.tsA.calls.length;
+      // Started past the limit: nothing is linked or owed, so only the take-down of that leftover runs.
+      a = await pair.startA({ now: () => new Date(Date.now() + UNLINKED_REFUSAL_KEPT_MS + 60_000) });
+      expect(pair.tsA.calls.slice(calls)).toEqual([
+        ["serve", "status", "--json"],
+        ["serve", "--https=8443", "off"],
+      ]);
+      expect(pair.tsA.serve.has(8443)).toBe(false);
+      expect(inboxJson(pair.dataA).tailnet).toBeUndefined();
+      expect(readTailnetDoorRecord(pair.dataA)).toBeNull();
+      expect(deviceIn(pair.dataA, pair.deviceOfB).refusal_owed_until).toBeUndefined();
+      // Settled: the next start runs no tailscale at all.
+      a.stop();
+      const settled = pair.tsA.calls.length;
+      a = await pair.startA();
+      expect(pair.tsA.calls.length).toBe(settled);
+    } finally {
+      a.stop();
+      pair.b.stop();
+    }
+  }, 90_000);
+
+  test("a held port with nothing linked says how it is let go of (there is no machine to unlink), and it is: the next code takes a free port", async () => {
+    // An older build's door in inbox.json, its port now someone else's, and nothing linked (two-mac-test-2, Nit B).
+    const dataDir = scratch("plannotator-machines-held-unlinked-");
+    (await startInboxServer({ dataDir, binaryPath: null, phones: false, tailscale: scriptedTailscale().run })).stop();
+    writeFileSync(join(dataDir, "inbox", "inbox.json"), JSON.stringify({ ...inboxJson(dataDir), version: "0.28.40", tailnet: { https_port: 8443, door_port: closedPort() } }));
+    const tailscale = scriptedTailscale();
+    const theirs = "http://127.0.0.1:62440";
+    tailscale.serve.set(8443, theirs);
+    const inbox = await startInboxServer({ dataDir, binaryPath: null, phones: false, tailscale: tailscale.run });
+    try {
+      expect(tailscale.calls).toEqual([]);
+      const code = `plannotator://link?v=1&id=${OTHER}&name=Mini&secret=s3cr3t&code=123456`;
+      // Linking from here needs a way back; the kept port is held, so the link is refused, in words that fit nothing linked.
+      const linked = await postTo(inbox.port, "/api/inbox/machines/link", { link: code, address: `http://127.0.0.1:${closedPort()}` });
+      expect(linked.status).toBe(409);
+      const refused = (await linked.json()) as Json;
+      expect(refused.code).toBe("no_way_back");
+      expect(refused.error).toContain("port 8443");
+      expect(refused.error).toContain("Nothing is linked here");
+      expect(refused.error).not.toContain("unlink each machine");
+      expect([...tailscale.serve]).toEqual([[8443, theirs]]);
+      // No code is open and nothing is linked, so the port was let go of: the next code takes a free one, theirs untouched.
+      expect(inboxJson(dataDir).tailnet).toBeUndefined();
+      const offered = (await (await postTo(inbox.port, "/api/inbox/machines/offer", { tailscale: true })).json()) as Json;
+      expect(offered.tailnet).toBe("laptop.tail0000.ts.net:8444");
+      expect(tailscale.serve.get(8443)).toBe(theirs);
     } finally {
       inbox.stop();
     }
