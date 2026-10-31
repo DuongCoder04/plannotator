@@ -2804,7 +2804,7 @@ describe("plannotator-inbox entries no record says Plannotator added", () => {
     const result = await runPlannotatorUninstall({ purge: false, dryRun }, fixture.environment);
     expect(result.ok).toBe(true);
     expect(result.warnings.filter((warning) => warning.includes("plannotator-inbox"))).toEqual([
-      `Skipped: Cursor's "plannotator-inbox" in ${join("~", ".cursor", "mcp.json")} runs Plannotator and will fail to start once it is gone, but no record says Plannotator added it, so it is left (to remove it, delete that entry by hand).`,
+      `Skipped: Cursor's "plannotator-inbox" in ${join("~", ".cursor", "mcp.json")} runs Plannotator and will fail to start once it is gone, but uninstall could not tell that Plannotator added it, so it is left (to remove it, delete that entry by hand).`,
     ]);
     expect(existsSync(binary)).toBe(dryRun);
     expect(readJson(file)).toEqual(config);
@@ -2905,7 +2905,7 @@ describe("configs uninstall cannot read keep the CLI", () => {
     const result = await runPlannotatorUninstall({ purge: false, dryRun: true }, fixture.environment);
     expect(result.ok).toBe(true);
     expect(result.warnings.filter((warning) => warning.includes("plannotator-inbox"))).toEqual([
-      `Skipped: Cursor's "plannotator-inbox" in ${join("~", ".cursor", "mcp.json")} runs Plannotator and will fail to start once it is gone, but no record says Plannotator added it, so it is left (to remove it, delete that entry by hand).`,
+      `Skipped: Cursor's "plannotator-inbox" in ${join("~", ".cursor", "mcp.json")} runs Plannotator and will fail to start once it is gone, but uninstall could not tell that Plannotator added it, so it is left (to remove it, delete that entry by hand).`,
     ]);
   });
 

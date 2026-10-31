@@ -54,7 +54,7 @@ export function remainingInboxReferences(
     const sourceCommand = argv?.length === 4 && isPlannotatorInboxCommand(argv);
     if (executable && (executables.has(normalize(executable)) || sourceCommand)) {
       scan.warnings.push(
-        `Skipped: ${owner}'s "${INBOX_MCP_SERVER_NAME}" in ${displayPath(path, environment)} runs Plannotator and will fail to start once it is gone, but no record says Plannotator added it, so it is left (to remove it, ${inboxEntryRemovalHint(spec.id)}).`,
+        `Skipped: ${owner}'s "${INBOX_MCP_SERVER_NAME}" in ${displayPath(path, environment)} runs Plannotator and will fail to start once it is gone, but uninstall could not tell that Plannotator added it, so it is left (to remove it, ${inboxEntryRemovalHint(spec.id)}).`,
       );
     }
   }
