@@ -64,8 +64,8 @@ import { isFaviconStyle, type FaviconStyle } from "../generated/favicon.ts";
 import { readImprovementHook, getImprovementHookExpectedPath } from "../generated/improvement-hooks.ts";
 import { composeImproveContext } from "../generated/pfm-reminder.ts";
 import { detectProjectName, getRepoInfo } from "./project.ts";
+import { isThisMachineRequest } from "./this-machine.ts";
 import {
-	readsAnyPath,
 	handleDocRequest,
 	handleDocExistsRequest,
 	handleFileBrowserRequest,
@@ -524,7 +524,7 @@ export async function startPlanReviewServer(options: {
 					json(res, crossOriginRefusalBody(), 403);
 					return;
 				}
-				const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"), readsAnyPath(req));
+				const result = planDocumentDrafts.loadDocument(url.searchParams.get("path"), isThisMachineRequest(req));
 				json(res, result.body, result.status);
 			} else if (req.method === "POST") {
 				let body: unknown;
@@ -534,7 +534,7 @@ export async function startPlanReviewServer(options: {
 					json(res, { ok: false, error: "Invalid JSON" }, 400);
 					return;
 				}
-				const result = planDocumentDrafts.saveDocuments(body, readsAnyPath(req));
+				const result = planDocumentDrafts.saveDocuments(body, isThisMachineRequest(req));
 				json(res, result.body, result.status);
 			} else {
 				json(res, { error: "Method not allowed" }, 405);
@@ -551,7 +551,7 @@ export async function startPlanReviewServer(options: {
 				json(res, crossOriginRefusalBody(), 403);
 				return;
 			}
-			await handleDocRequest(res, url, { anyPath: readsAnyPath(req) });
+			await handleDocRequest(res, url, { anyPath: isThisMachineRequest(req) });
 		} else if (url.pathname === "/api/doc/exists" && req.method === "POST") {
 			await handleDocExistsRequest(res, req);
 		} else if (url.pathname === "/api/obsidian/vaults") {

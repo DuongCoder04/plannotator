@@ -82,7 +82,7 @@ export interface HandleDocOptions {
 	sourceSaveBundlePaths?: ReadonlySet<string>;
 	onSourceDocumentServed?: (path: string) => void;
 	rootPaths?: string[];
-	/** A reader on this machine (`docReaderMayReadAnyPath`): documents are served from anywhere, code files keep the roots (`isDocServeAllowed`). */
+	/** A reader on this machine (`isThisMachineReader`, this-machine-reader.ts): documents are served from anywhere, code files keep the roots (`isDocServeAllowed`). */
 	anyPath?: boolean;
 	/** Plan review: the plan file on disk, whose directory serves the documents the plan links. */
 	planFile?: PlanFile | null;

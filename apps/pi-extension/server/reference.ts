@@ -15,7 +15,6 @@ import type { ServerResponse } from "node:http";
 import { join, resolve as resolvePath } from "node:path";
 
 import { json, parseBody } from "./helpers.ts";
-import { isRemoteSession } from "./network.ts";
 import type { IncomingMessage } from "node:http";
 
 import {
@@ -42,7 +41,6 @@ import { documentRenderKindForPath, isDocumentRenderKind } from "../generated/an
 import {
 	DOC_ACCESS_DENIED,
 	DOC_TOO_LARGE,
-	docReaderMayReadAnyPath,
 	docResolutionError,
 	getAllowedRootPaths,
 	getTrustedBaseDir,
@@ -96,7 +94,7 @@ export interface HandleDocOptions {
 	sourceSaveBundlePaths?: ReadonlySet<string>;
 	onSourceDocumentServed?: (path: string) => void;
 	rootPaths?: string[];
-	/** A reader on this machine (`docReaderMayReadAnyPath`): documents are served from anywhere, code files keep the roots (`isDocServeAllowed`). */
+	/** A reader on this machine (`isThisMachineReader`, this-machine-reader.ts): documents are served from anywhere, code files keep the roots (`isDocServeAllowed`). */
 	anyPath?: boolean;
 	/**
 	 * When set, /api/doc runs annotate's per-file version-history pipeline for
@@ -322,17 +320,6 @@ async function readCodeFile(res: Res, path: string, input: string, parsed: Parse
 	} catch {
 		json(res, { error: `File not found: ${input}` }, 404);
 	}
-}
-
-/** A tab on this machine may open a document anywhere (#2291); every other reader keeps the roots. */
-export function readsAnyPath(req: IncomingMessage): boolean {
-	const headers = new Headers();
-	for (const [key, value] of Object.entries(req.headers)) {
-		if (value === undefined) continue;
-		if (Array.isArray(value)) for (const item of value) headers.append(key, item);
-		else headers.set(key, value);
-	}
-	return docReaderMayReadAnyPath(isRemoteSession(), headers);
 }
 
 /** Uses the shared doc resolver for parity with the Bun server. */

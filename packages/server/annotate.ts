@@ -27,7 +27,8 @@ import { closeAllFileBrowserWatchers, handleFileBrowserFilesStream } from "./ref
 import { getExtraMarkdownExtensions, isAnnotatableTextPath, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
 import { contentHash } from "./draft";
 import { annotateDraftFilePath, annotateSessionHasRootlessDocuments, createAnnotateDraftSession } from "@plannotator/shared/annotate-draft";
-import { docReaderMayReadAnyPath, isDocServeAllowed } from "@plannotator/shared/doc-resolve";
+import { isDocServeAllowed } from "@plannotator/shared/doc-resolve";
+import { isThisMachineRequest } from "./this-machine";
 import { getPlanVersion, getVersionCount, listVersions } from "@plannotator/shared/storage";
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "@plannotator/shared/annotate-history";
 import { ANNOTATE_LIVE_VERSION_PATH, annotateLiveVersionFilePath, saveAnnotateLiveVersion } from "@plannotator/shared/annotate-live-version";
@@ -783,10 +784,6 @@ export async function startAnnotateServer(
     initialSingleFileSourcePath,
     bundlePaths,
   });
-  // A tab on this machine may open a document anywhere (#2291); every other
-  // reader, and every code file, keeps the reference roots.
-  const readsAnyPath = (req: Request) =>
-    docReaderMayReadAnyPath(isRemote, req.headers);
 
   // Detect repo info (cached for this session)
   const repoInfo = await getRepoInfo();
@@ -1070,7 +1067,7 @@ export async function startAnnotateServer(
             if (pathParam !== null) {
               const resolved = resolveAllowedDocPath(pathParam, url.searchParams.get("base"), {
                 rootPaths: getReferenceRootPaths(),
-                anyPath: readsAnyPath(req),
+                anyPath: isThisMachineRequest(req),
               });
               if (resolved.kind === "denied") {
                 return Response.json({ error: "Access denied: path is outside project root" }, { status: 403 });
@@ -1105,7 +1102,7 @@ export async function startAnnotateServer(
             if (pathParam !== null) {
               const resolved = resolveAllowedDocPath(pathParam, url.searchParams.get("base"), {
                 rootPaths: getReferenceRootPaths(),
-                anyPath: readsAnyPath(req),
+                anyPath: isThisMachineRequest(req),
               });
               if (resolved.kind === "denied") {
                 return Response.json({ error: "Access denied: path is outside project root" }, { status: 403 });
@@ -1270,7 +1267,7 @@ export async function startAnnotateServer(
               sourceSaveBundlePaths: bundleSourceSavePaths ?? undefined,
               onSourceDocumentServed: (path) => openedSourceFilePaths.add(path),
               rootPaths: getReferenceRootPaths(),
-              anyPath: readsAnyPath(req),
+              anyPath: isThisMachineRequest(req),
               annotateHistory:
                 (mode === "annotate-folder" || bundleFiles) && annotateHistoryEnabled
                   ? { compute: computeFolderAnnotateHistory }
@@ -1439,7 +1436,7 @@ export async function startAnnotateServer(
               if (!isSameOriginOrNoOrigin(req.headers.get("origin"), url.host, req.headers.get("sec-fetch-site"))) {
                 return Response.json(crossOriginRefusalBody(), { status: 403 });
               }
-              const result = annotateDrafts.loadDocument(url.searchParams.get("path"), readsAnyPath(req));
+              const result = annotateDrafts.loadDocument(url.searchParams.get("path"), isThisMachineRequest(req));
               return Response.json(result.body, { status: result.status });
             }
             if (req.method === "POST") {
@@ -1449,7 +1446,7 @@ export async function startAnnotateServer(
               } catch {
                 return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
               }
-              const result = annotateDrafts.saveDocuments(body, readsAnyPath(req));
+              const result = annotateDrafts.saveDocuments(body, isThisMachineRequest(req));
               return Response.json(result.body, { status: result.status });
             }
             return Response.json({ error: "Method not allowed" }, { status: 405 });

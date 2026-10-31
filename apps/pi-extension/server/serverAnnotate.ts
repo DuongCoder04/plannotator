@@ -73,8 +73,8 @@ import { isNotionAvailable } from "./integrations.ts";
 import { getAvailableOpenInApps, handleOpenInRequest } from "./open-in-apps.ts";
 
 import { getRepoInfo } from "./project.ts";
+import { isThisMachineRequest } from "./this-machine.ts";
 import {
-	readsAnyPath,
 	handleDocRequest,
 	handleDocExistsRequest,
 	handleFileBrowserRequest,
@@ -1066,7 +1066,7 @@ export async function startAnnotateServer(options: {
 			if (pathParam !== null) {
 				const resolved = resolveAllowedDocPath(pathParam, url.searchParams.get("base"), {
 					rootPaths: getReferenceRootPaths(),
-					anyPath: readsAnyPath(req),
+					anyPath: isThisMachineRequest(req),
 				});
 				if (resolved.kind === "denied") {
 					json(res, { error: "Access denied: path is outside project root" }, 403);
@@ -1107,7 +1107,7 @@ export async function startAnnotateServer(options: {
 			if (pathParam !== null) {
 				const resolved = resolveAllowedDocPath(pathParam, url.searchParams.get("base"), {
 					rootPaths: getReferenceRootPaths(),
-					anyPath: readsAnyPath(req),
+					anyPath: isThisMachineRequest(req),
 				});
 				if (resolved.kind === "denied") {
 					json(res, { error: "Access denied: path is outside project root" }, 403);
@@ -1228,7 +1228,7 @@ export async function startAnnotateServer(options: {
 					json(res, crossOriginRefusalBody(), 403);
 					return;
 				}
-				const result = annotateDrafts.loadDocument(url.searchParams.get("path"), readsAnyPath(req));
+				const result = annotateDrafts.loadDocument(url.searchParams.get("path"), isThisMachineRequest(req));
 				json(res, result.body, result.status);
 			} else if (req.method === "POST") {
 				let body: unknown;
@@ -1238,7 +1238,7 @@ export async function startAnnotateServer(options: {
 					json(res, { ok: false, error: "Invalid JSON" }, 400);
 					return;
 				}
-				const result = annotateDrafts.saveDocuments(body, readsAnyPath(req));
+				const result = annotateDrafts.saveDocuments(body, isThisMachineRequest(req));
 				json(res, result.body, result.status);
 			} else {
 				json(res, { error: "Method not allowed" }, 405);
@@ -1271,7 +1271,7 @@ export async function startAnnotateServer(options: {
 				sourceSaveBundlePaths: bundleSourceSavePaths ?? undefined,
 				onSourceDocumentServed: (path) => openedSourceFilePaths.add(path),
 				rootPaths: getReferenceRootPaths(),
-				anyPath: readsAnyPath(req),
+				anyPath: isThisMachineRequest(req),
 				annotateHistory:
 					(options.mode === "annotate-folder" || bundleFiles) && annotateHistoryEnabled
 						? { compute: computeFolderAnnotateHistory }

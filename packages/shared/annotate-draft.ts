@@ -140,7 +140,7 @@ export interface DocumentDraftStoreOptions {
   /**
    * Which absolute paths this session may read or write a copy for (the paths
    * its /api/doc may serve). `anyPath` is the requesting reader's /api/doc
-   * access (`docReaderMayReadAnyPath`); the index and the decision's cleanup
+   * access (`isThisMachineReader`, this-machine-reader.ts); the index and the decision's cleanup
    * pass false, so they stay on the session's own roots.
    */
   isAllowed: (absolutePath: string, anyPath: boolean) => boolean;

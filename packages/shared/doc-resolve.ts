@@ -15,7 +15,7 @@
  * an allowed root, and a named file there shadows a project document of the
  * same relative name. That base is not used for root resolution.
  *
- * A reader on this machine (`docReaderMayReadAnyPath`) may open a document
+ * A reader on this machine (`isThisMachineReader`, this-machine-reader.ts) may open a document
  * anywhere (`anyPath`, #2291): one in a folder added in Settings → Files, or
  * one the current document links outside the project. Only document types
  * (`isAnyPathDocument`); code files and data formats keep the roots, and so
@@ -37,9 +37,6 @@ import {
 	resolveMarkdownFile,
 	resolveUserPath,
 } from "./resolve-file";
-import { isLocalhostSubdomain, isLoopbackHostname } from "./loopback-host";
-import { ALLOWED_HOSTS_ENV } from "./request-host";
-import { cameThroughTailscaleServe } from "./tailnet-audience";
 
 /** How a resolved file is rendered: an annotatable document, or a code-file popout. */
 export type DocRender = "document" | "code";
@@ -59,7 +56,7 @@ export interface DocResolveOptions {
 	/** `?doc=1`. Renders annotatable plain text for extensions that overlap code files. */
 	forceDoc?: boolean;
 	roots: string[];
-	/** A reader on this machine (`docReaderMayReadAnyPath`): documents may be anywhere (`isAnyPathDocument`). */
+	/** A reader on this machine (`isThisMachineReader`, this-machine-reader.ts): documents may be anywhere (`isAnyPathDocument`). */
 	anyPath?: boolean;
 }
 
@@ -190,35 +187,6 @@ export function isDocServeAllowed(
 	return true;
 }
 
-/** The `X-Forwarded-Host` shape this machine sends: a loopback or `*.localhost` name. */
-function isLocalHostName(hostHeader: string | null): boolean {
-	const host = (hostHeader ?? "").trim().toLowerCase();
-	const name = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.replace(/:\d*$/, "");
-	return isLoopbackHostname(name) || isLocalhostSubdomain(name);
-}
-
-/**
- * Whether a `/api/doc` reader may open documents outside the session's roots
- * (#2291): a page on this machine. All of these must hold:
- *  - the session is not in remote mode (which binds every interface);
- *  - `PLANNOTATOR_ALLOWED_HOSTS` is unset (it exists to put a proxy in front);
- *  - the Host is a loopback or `*.localhost` name, and so is any
- *    `X-Forwarded-Host`;
- *  - no `Forwarded` or `X-Real-IP` header, no `tailscale serve` header, and
- *    any `X-Forwarded-For` lists only loopback (`cameThroughTailscaleServe`).
- * Every other reader keeps the roots. A raw TCP forwarder or a proxy that
- * rewrites Host to loopback and adds none of these headers looks local; the
- * guide says so and points remote setups at remote mode. The routes refuse a
- * cross-site page before this.
- */
-export function docReaderMayReadAnyPath(remote: boolean, headers: Headers): boolean {
-	if (remote) return false;
-	if (process.env[ALLOWED_HOSTS_ENV]?.trim()) return false;
-	if (!isLocalHostName(headers.get("host"))) return false;
-	if (headers.has("x-forwarded-host") && !isLocalHostName(headers.get("x-forwarded-host"))) return false;
-	if (headers.has("forwarded") || headers.has("x-real-ip")) return false;
-	return !cameThroughTailscaleServe(headers);
-}
 
 /**
  * A plan file on disk whose contents match the plan under review. Its

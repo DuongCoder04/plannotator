@@ -111,6 +111,7 @@
     "./port-range": "./port-range.ts",
     "./tailscale": "./tailscale.ts",
     "./tailnet-audience": "./tailnet-audience.ts",
+    "./this-machine-reader": "./this-machine-reader.ts",
     "./plan-review-lifecycle": "./plan-review-lifecycle.ts",
     "./review-profiles": "./review-profiles.ts",
     "./agent-program": "./agent-program.ts",
