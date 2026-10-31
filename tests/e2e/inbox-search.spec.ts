@@ -529,8 +529,10 @@ test('every result starts with its mark; the selected row stands apart from the 
   // The selected row against the panel, and the text against both, in each theme.
   for (const scheme of ['dark', 'light'] as const) {
     await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });
-    await page.waitForTimeout(150);
-    expect(await page.evaluate(() => document.documentElement.classList.contains('light'))).toBe(scheme === 'light');
+    await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains('light'))).toBe(scheme === 'light');
+    // Every element eases its colours over 150 ms on a theme switch (packages/ui/theme.css, `*`): measure once no
+    // colour transition runs, or a slow machine reads the panel and the row half-way between the themes.
+    await expect.poll(() => page.evaluate(() => document.getAnimations().filter((a) => a instanceof CSSTransition && a.playState === 'running').length)).toBe(0);
     const look = await palette(page).evaluate((dialog) => {
       const panel = getComputedStyle(dialog).backgroundColor;
       const selected = dialog.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')!;
