@@ -29,7 +29,7 @@ Before starting the analysis, determine which data source is available.
    ```
 
    It prints the folder's absolute path and creates nothing; use what it
-   prints. If it fails (an older Plannotator), use `$PLANNOTATOR_DATA_DIR` if
+   prints. If it prints nothing or fails (an older Plannotator), use `$PLANNOTATOR_DATA_DIR` if
    set, else whichever of `$XDG_DATA_HOME/plannotator` and the home folder's
    `.plannotator` holds `history/` or `sessions/` (the home one if both do),
    and ask the user if neither does.
