@@ -2816,6 +2816,15 @@ const App: React.FC = () => {
     return getEditedMarkdown();
   }, [editableDocuments, getEditedMarkdown]);
 
+  // This page load's id for the per-document copies (`?client=`): the
+  // decision sends it too, so the server clears only the copies this page
+  // read, wrote or restored, never ones an earlier page left (#1545).
+  const [draftClientId] = useState(() => `${Date.now()}-${generateId()}`);
+  const withDraftClient = useCallback((path: string): string => {
+    const separator = path.includes('?') ? '&' : '?';
+    return `${path}${separator}client=${encodeURIComponent(draftClientId)}`;
+  }, [draftClientId]);
+
   // Every other document's comments, saved under that document's own path.
   const {
     unbackedPaths: unbackedDraftDocuments,
@@ -2824,6 +2833,7 @@ const App: React.FC = () => {
     discardCopies: discardDocumentCopies,
   } = useDocumentDrafts({
     enabled: documentDraftsEnabled && isApiMode && !isSharedSession && !goalSetupMode && !documentReadOnly,
+    clientId: draftClientId,
     submitted: !!submitted || isSubmitting,
     activePath: linkedDocHook.filepath,
     rootPath: sourceFilePath ?? null,
@@ -4603,7 +4613,7 @@ const App: React.FC = () => {
       }
       sentFeedback = body.feedback;
 
-      const res = await fetch('/api/approve', {
+      const res = await fetch(withDraftClient('/api/approve'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withServerSession(body)),
@@ -4648,7 +4658,7 @@ const App: React.FC = () => {
       const planSaveSettings = getPlanSaveSettings();
       const payload = getCurrentFeedbackPayload(checkedSavedFileChanges);
       sentPayload = payload;
-      const res = await fetch('/api/deny', {
+      const res = await fetch(withDraftClient('/api/deny'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withServerSession({
@@ -4769,7 +4779,7 @@ const App: React.FC = () => {
         // host that must not start an agent turn for it can tell (#1701).
         ...(isEmptyFeedbackSentinel(feedback) ? { nothingToSend: true } : {}),
       };
-      const res = await fetch('/api/feedback', {
+      const res = await fetch(withDraftClient('/api/feedback'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withServerSession(body)),
@@ -4833,7 +4843,7 @@ const App: React.FC = () => {
         ? getCurrentFeedbackPayload(checkedSavedFileChanges)
         : '';
       sentFeedback = feedback;
-      const res = await fetch('/api/approve', {
+      const res = await fetch(withDraftClient('/api/approve'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withServerSession(buildAnnotateApprovalBody({
@@ -4873,7 +4883,7 @@ const App: React.FC = () => {
   const handleAnnotateExit = useCallback(async () => {
     setIsExiting(true);
     try {
-      const res = await fetch(withServerSessionQuery(withDraftGeneration('/api/exit')), { method: 'POST' });
+      const res = await fetch(withDraftClient(withServerSessionQuery(withDraftGeneration('/api/exit'))), { method: 'POST' });
       if (await noteServerSessionMismatch(res)) {
         setIsExiting(false);
         return;
@@ -4886,7 +4896,7 @@ const App: React.FC = () => {
     } catch {
       setIsExiting(false);
     }
-  }, [withDraftGeneration]);
+  }, [withDraftGeneration, withDraftClient]);
 
   const handleGoalSetupSubmit = useCallback(() => {
     goalSetupSurfaceRef.current?.submit();

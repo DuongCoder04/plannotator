@@ -441,7 +441,7 @@ export async function startAnnotateServer(options: {
 		filePath: options.filePath,
 	});
 	// A URL or the last message has no file of its own, but its linked
-	// documents do: per-document copies plus the index (#1545), as on Bun.
+	// documents do: per-document copies (with the index, #1545), as on Bun.
 	const rootlessDocuments = annotateSessionHasRootlessDocuments({
 		mode: options.mode || "annotate",
 		filePath: options.filePath,
@@ -453,7 +453,6 @@ export async function startAnnotateServer(options: {
 			draftFilePath !== null || (options.mode === "annotate-folder" && options.folderPath) || bundleFiles || rootlessDocuments
 				? {
 						isAllowed: (path) => isPathAllowed(path, getReferenceRootPaths()),
-						...(rootlessDocuments ? { indexed: true } : {}),
 					}
 				: null,
 	});
@@ -1216,7 +1215,7 @@ export async function startAnnotateServer(options: {
 					json(res, crossOriginRefusalBody(), 403);
 					return;
 				}
-				const result = annotateDrafts.loadDocument(url.searchParams.get("path"));
+				const result = annotateDrafts.loadDocument(url.searchParams.get("path"), url.searchParams.get("client"));
 				json(res, result.body, result.status);
 			} else if (req.method === "POST") {
 				let body: unknown;
@@ -1226,7 +1225,7 @@ export async function startAnnotateServer(options: {
 					json(res, { ok: false, error: "Invalid JSON" }, 400);
 					return;
 				}
-				const result = annotateDrafts.saveDocuments(body);
+				const result = annotateDrafts.saveDocuments(body, url.searchParams.get("client"));
 				json(res, result.body, result.status);
 			} else {
 				json(res, { error: "Method not allowed" }, 405);
@@ -1366,7 +1365,7 @@ export async function startAnnotateServer(options: {
 			// Decision-only line — a dismissal has no content, so a failed
 			// write must not change the legacy draft behavior.
 			archiveAnnotateDecision("", [], "dismissed");
-			annotateDrafts.settle(readDraftGenerationFromUrl(req));
+			annotateDrafts.settle(readDraftGenerationFromUrl(req), url.searchParams.get("client"));
 			clientLease.cancel();
 			json(res, { ok: true });
 		} else if (url.pathname === "/api/approve" && req.method === "POST") {
@@ -1408,7 +1407,7 @@ export async function startAnnotateServer(options: {
 					(body.annotations as unknown[] | undefined) || [],
 					true,
 				);
-				if (approvalDurable) annotateDrafts.settle(readDraftGenerationFromBody(body));
+				if (approvalDurable) annotateDrafts.settle(readDraftGenerationFromBody(body), url.searchParams.get("client"));
 				clientLease.cancel();
 				json(res, { ok: true });
 			} catch (err) {
@@ -1440,7 +1439,7 @@ export async function startAnnotateServer(options: {
 					(body.annotations as unknown[]) || [],
 					false,
 				);
-				if (feedbackDurable) annotateDrafts.settle(readDraftGenerationFromBody(body));
+				if (feedbackDurable) annotateDrafts.settle(readDraftGenerationFromBody(body), url.searchParams.get("client"));
 				clientLease.cancel();
 				json(res, { ok: true });
 			} catch (err) {
