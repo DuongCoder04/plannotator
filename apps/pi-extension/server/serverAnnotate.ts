@@ -26,7 +26,7 @@ import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody
 import { handleHostControl, resolveHostControlToken, type HostControl } from "./host-control.ts";
 import { createPiRefCards, handleRefCards, type RefRunner } from "./ref-cards.ts";
 import { createRequestHostGuard } from "./request-host-guard.ts";
-import { refuseCrossOriginWrite } from "./request-origin-guard.ts";
+import { isSameOriginRequest, refuseCrossOriginWrite } from "./request-origin-guard.ts";
 import { getPlanVersion, getVersionCount, listVersions } from "../generated/storage.ts";
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "../generated/annotate-history.ts";
 import { ANNOTATE_LIVE_VERSION_PATH, annotateLiveVersionFilePath, saveAnnotateLiveVersion } from "../generated/annotate-live-version.ts";
@@ -74,6 +74,7 @@ import { getAvailableOpenInApps, handleOpenInRequest } from "./open-in-apps.ts";
 
 import { getRepoInfo } from "./project.ts";
 import {
+	readsAnyPath,
 	handleDocRequest,
 	handleDocExistsRequest,
 	handleFileBrowserRequest,
@@ -1060,6 +1061,7 @@ export async function startAnnotateServer(options: {
 			if (pathParam !== null) {
 				const resolved = resolveAllowedDocPath(pathParam, url.searchParams.get("base"), {
 					rootPaths: getReferenceRootPaths(),
+					anyPath: readsAnyPath(req),
 				});
 				if (resolved.kind === "denied") {
 					json(res, { error: "Access denied: path is outside project root" }, 403);
@@ -1096,6 +1098,7 @@ export async function startAnnotateServer(options: {
 			if (pathParam !== null) {
 				const resolved = resolveAllowedDocPath(pathParam, url.searchParams.get("base"), {
 					rootPaths: getReferenceRootPaths(),
+					anyPath: readsAnyPath(req),
 				});
 				if (resolved.kind === "denied") {
 					json(res, { error: "Access denied: path is outside project root" }, 403);
@@ -1232,6 +1235,11 @@ export async function startAnnotateServer(options: {
 				json(res, { error: "Method not allowed" }, 405);
 			}
 		} else if (url.pathname === "/api/doc" && req.method === "GET") {
+			// A tab on this machine reads any path (#2291), so no other site may.
+			if (!isSameOriginRequest(req)) {
+				json(res, crossOriginRefusalBody(), 403);
+				return;
+			}
 			// Inject source file's directory as base for relative path resolution.
 			// Skip for URL annotations — there's no local directory to resolve against.
 			if (!url.searchParams.has("base") && options.filePath && !/^https?:\/\//i.test(options.filePath)) {
@@ -1254,6 +1262,7 @@ export async function startAnnotateServer(options: {
 				sourceSaveBundlePaths: bundleSourceSavePaths ?? undefined,
 				onSourceDocumentServed: (path) => openedSourceFilePaths.add(path),
 				rootPaths: getReferenceRootPaths(),
+				anyPath: readsAnyPath(req),
 				annotateHistory:
 					(options.mode === "annotate-folder" || bundleFiles) && annotateHistoryEnabled
 						? { compute: computeFolderAnnotateHistory }

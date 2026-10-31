@@ -31,6 +31,7 @@ import {
 	docResolutionError,
 	getAllowedRootPaths,
 	getTrustedBaseDir,
+	isDocPathAllowed,
 	isPathAllowed,
 	isPlanDirBase,
 	relativizeToAllowedRoots,
@@ -81,6 +82,8 @@ export interface HandleDocOptions {
 	sourceSaveBundlePaths?: ReadonlySet<string>;
 	onSourceDocumentServed?: (path: string) => void;
 	rootPaths?: string[];
+	/** A reader on this machine (`docReaderMayReadAnyPath`): any path is served, not only the roots. */
+	anyPath?: boolean;
 	/** Plan review: the plan file on disk, whose directory serves the documents the plan links. */
 	planFile?: PlanFile | null;
 	/**
@@ -292,7 +295,8 @@ export async function handleDoc(req: Request, options: HandleDocOptions = {}): P
 	// directory base is for the plan's own links (below): root resolution runs
 	// without it, so a plan stored inside the project keeps the project-root
 	// fallback, HTML links included.
-	const resolvedBase = isPlanDirBase(base, options.planFile) ? null : getTrustedBaseDir(base, allowedRoots);
+	const anyPath = options.anyPath === true;
+	const resolvedBase = isPlanDirBase(base, options.planFile) ? null : getTrustedBaseDir(base, allowedRoots, anyPath);
 	// HTML renders raw by default; `?convert=1` (set by the frontend when the session's
 	// --markdown preference is on) forces Turndown conversion instead.
 	const convert = url.searchParams.get("convert") === "1";
@@ -312,11 +316,12 @@ export async function handleDoc(req: Request, options: HandleDocOptions = {}): P
 		base: resolvedBase,
 		forceDoc,
 		roots: allowedRoots,
+		anyPath,
 	});
 	// The one authorization site. A named path is gated whether or not it
 	// exists, so an escaping name is denied rather than reported absent.
 	const named = resolution.kind === "file" || resolution.kind === "not_found" ? resolution.path : undefined;
-	if (named !== undefined && !isPathAllowed(named, allowedRoots)) {
+	if (named !== undefined && !isDocPathAllowed(named, allowedRoots, anyPath)) {
 		return errorResponse(DOC_ACCESS_DENIED);
 	}
 	if (resolution.kind !== "file") {

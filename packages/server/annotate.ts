@@ -17,7 +17,7 @@ import { openPackedApp, packedAppResponse } from "@plannotator/shared/packed-app
 import { isRemoteSession, getServerHostname, startBunServerOnAvailablePort, buildAdvertisedUrl, getLocalUrlHostname } from "./remote";
 import { createRequestHostGuard } from "./request-host-guard";
 import { withPlannotatorServerHeader } from "./plannotator-server-marker";
-import { refuseCrossOriginWrite } from "./request-origin-guard";
+import { isSameOriginRequest, refuseCrossOriginWrite } from "./request-origin-guard";
 import { getRepoInfo } from "./repo";
 import { createRefCards, refCardRouteResponse, refCardsTailnetAllowed, type RefRunner } from "./ref-cards";
 import type { Origin } from "@plannotator/shared/agents";
@@ -27,7 +27,7 @@ import { closeAllFileBrowserWatchers, handleFileBrowserFilesStream } from "./ref
 import { getExtraMarkdownExtensions, isAnnotatableTextPath, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
 import { contentHash } from "./draft";
 import { annotateDraftFilePath, annotateSessionHasRootlessDocuments, createAnnotateDraftSession } from "@plannotator/shared/annotate-draft";
-import { isPathAllowed } from "@plannotator/shared/doc-resolve";
+import { docReaderMayReadAnyPath, isPathAllowed } from "@plannotator/shared/doc-resolve";
 import { getPlanVersion, getVersionCount, listVersions } from "@plannotator/shared/storage";
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "@plannotator/shared/annotate-history";
 import { ANNOTATE_LIVE_VERSION_PATH, annotateLiveVersionFilePath, saveAnnotateLiveVersion } from "@plannotator/shared/annotate-live-version";
@@ -783,6 +783,10 @@ export async function startAnnotateServer(
     initialSingleFileSourcePath,
     bundlePaths,
   });
+  // A tab on this machine may open any document (#2291); a remote-mode or
+  // tailnet reader keeps the reference roots.
+  const readsAnyPath = (req: Request) =>
+    docReaderMayReadAnyPath(isRemote, req.headers.get("host"), req.headers.get("x-forwarded-for"));
 
   // Detect repo info (cached for this session)
   const repoInfo = await getRepoInfo();
@@ -1064,6 +1068,7 @@ export async function startAnnotateServer(
             if (pathParam !== null) {
               const resolved = resolveAllowedDocPath(pathParam, url.searchParams.get("base"), {
                 rootPaths: getReferenceRootPaths(),
+                anyPath: readsAnyPath(req),
               });
               if (resolved.kind === "denied") {
                 return Response.json({ error: "Access denied: path is outside project root" }, { status: 403 });
@@ -1097,6 +1102,7 @@ export async function startAnnotateServer(
             if (pathParam !== null) {
               const resolved = resolveAllowedDocPath(pathParam, url.searchParams.get("base"), {
                 rootPaths: getReferenceRootPaths(),
+                anyPath: readsAnyPath(req),
               });
               if (resolved.kind === "denied") {
                 return Response.json({ error: "Access denied: path is outside project root" }, { status: 403 });
@@ -1236,6 +1242,8 @@ export async function startAnnotateServer(
           // API: Serve a linked markdown document. The annotate session owns the
           // source-file base and --markdown preference, so enforce both here.
           if (url.pathname === "/api/doc" && req.method === "GET") {
+            // A tab on this machine reads any path (#2291), so no other site may.
+            if (!isSameOriginRequest(req)) return Response.json(crossOriginRefusalBody(), { status: 403 });
             const docUrl = new URL(req.url);
             let changed = false;
             if (!docUrl.searchParams.has("base") && !/^https?:\/\//i.test(filePath)) {
@@ -1259,6 +1267,7 @@ export async function startAnnotateServer(
               sourceSaveBundlePaths: bundleSourceSavePaths ?? undefined,
               onSourceDocumentServed: (path) => openedSourceFilePaths.add(path),
               rootPaths: getReferenceRootPaths(),
+              anyPath: readsAnyPath(req),
               annotateHistory:
                 (mode === "annotate-folder" || bundleFiles) && annotateHistoryEnabled
                   ? { compute: computeFolderAnnotateHistory }

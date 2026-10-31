@@ -4,7 +4,7 @@
  *
  * Resolving which file a path names is separated from reading it so
  * authorization sits on one seam: every reachable path comes from
- * `resolveDocTarget`, and `isPathAllowed` alone decides whether it is served.
+ * `resolveDocTarget`, and `isDocPathAllowed` alone decides whether it is served.
  * Resolution may `stat`; it never reads contents (`readPlanFile` reads the
  * plan file once, at server start).
  *
@@ -14,6 +14,12 @@
  * directory. Only exact link targets are served, the directory never becomes
  * an allowed root, and a named file there shadows a project document of the
  * same relative name. That base is not used for root resolution.
+ *
+ * A reader on this machine may read any path (`anyPath`, #2291): a folder
+ * added in Settings → Files, or a file the current document links outside
+ * the project. The roots then only seed the bare-filename search. A reader
+ * that may be on another machine keeps the roots as the gate
+ * (`docReaderMayReadAnyPath`).
  */
 
 import { readFileSync, realpathSync, statSync } from "fs";
@@ -31,6 +37,7 @@ import {
 	resolveMarkdownFile,
 	resolveUserPath,
 } from "./resolve-file";
+import { isLocalhostSubdomain, isLoopbackForwardedFor, isLoopbackHostname } from "./loopback-host";
 
 /** How a resolved file is rendered: an annotatable document, or a code-file popout. */
 export type DocRender = "document" | "code";
@@ -50,6 +57,8 @@ export interface DocResolveOptions {
 	/** `?doc=1`. Renders annotatable plain text for extensions that overlap code files. */
 	forceDoc?: boolean;
 	roots: string[];
+	/** The reader may read any path (`docReaderMayReadAnyPath`): no root containment. */
+	anyPath?: boolean;
 }
 
 export interface DocErrorPayload {
@@ -128,10 +137,36 @@ export function isPathAllowed(candidate: string, roots: string[]): boolean {
 	return roots.some((root) => isWithinProjectRoot(real, root));
 }
 
-export function getTrustedBaseDir(base: string | null | undefined, roots: string[]): string | null {
+export function getTrustedBaseDir(base: string | null | undefined, roots: string[], anyPath = false): string | null {
 	if (!base) return null;
 	const resolvedBase = resolveUserPath(base);
-	return isPathAllowed(resolvedBase, roots) ? resolvedBase : null;
+	return isDocPathAllowed(resolvedBase, roots, anyPath) ? resolvedBase : null;
+}
+
+/** The `/api/doc` gate: `isPathAllowed`, or any path for a reader that may read any. */
+export function isDocPathAllowed(candidate: string, roots: string[], anyPath = false): boolean {
+	return anyPath ? !!candidate : isPathAllowed(candidate, roots);
+}
+
+/**
+ * Whether a `/api/doc` reader may read any path on this machine rather than
+ * only the session's roots (#2291). True for a page on this machine: the
+ * session is not in remote mode (which binds every interface), the Host is a
+ * loopback name (`localhost`, `127.x.y.z`, `[::1]`, a `*.localhost` name),
+ * and any `X-Forwarded-For` names only loopback. A `--tailscale` peer (served
+ * Host, tailnet address) and a reverse proxy forwarding another machine keep
+ * the roots. The routes refuse a cross-site page before this.
+ */
+export function docReaderMayReadAnyPath(
+	remote: boolean,
+	hostHeader: string | null | undefined,
+	forwardedFor: string | null | undefined,
+): boolean {
+	if (remote) return false;
+	const host = (hostHeader ?? "").trim().toLowerCase();
+	const name = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.replace(/:\d*$/, "");
+	if (!isLoopbackHostname(name) && !isLocalhostSubdomain(name)) return false;
+	return forwardedFor == null || isLoopbackForwardedFor(forwardedFor);
 }
 
 /**
@@ -294,12 +329,13 @@ export type ResolveAllowedDocPathResult =
 export function resolveAllowedDocPath(
 	requestedPath: string,
 	base: string | null,
-	options?: { rootPaths?: string[] },
+	options?: { rootPaths?: string[]; anyPath?: boolean },
 ): ResolveAllowedDocPathResult {
 	const allowedRoots = getAllowedRootPaths(options);
-	const resolvedBase = getTrustedBaseDir(base, allowedRoots);
+	const anyPath = options?.anyPath === true;
+	const resolvedBase = getTrustedBaseDir(base, allowedRoots, anyPath);
 	const candidate = resolveUserPath(requestedPath, resolvedBase ?? undefined);
-	return isPathAllowed(candidate, allowedRoots)
+	return isDocPathAllowed(candidate, allowedRoots, anyPath)
 		? { kind: "resolved", path: candidate }
 		: { kind: "denied" };
 }
@@ -410,7 +446,7 @@ export async function resolveDocTarget(
 	if (base && !isAbsoluteUserPath(requestedPath) && wantsDocRender(requestedPath)) {
 		const fromBase = resolveUserPath(requestedPath, base);
 		// An escaping name means only itself, so it never falls through.
-		if (!roots.some((root) => isWithinProjectRoot(fromBase, root))) {
+		if (!options.anyPath && !roots.some((root) => isWithinProjectRoot(fromBase, root))) {
 			return { kind: "not_found", input: requestedPath, path: fromBase };
 		}
 		if (isReadableFile(fromBase)) {
@@ -432,7 +468,7 @@ export async function resolveDocTarget(
 		const parsed = parseCodePath(requestedPath);
 		const cleanPath = parsed.filePath;
 		const literalPath = resolveUserPath(cleanPath, base || projectRoot);
-		if (roots.some((root) => isWithinProjectRoot(literalPath, root)) && isReadableFile(literalPath)) {
+		if ((options.anyPath || roots.some((root) => isWithinProjectRoot(literalPath, root))) && isReadableFile(literalPath)) {
 			return { kind: "file", path: literalPath, render: "code", code: parsed };
 		}
 		if (isAbsoluteUserPath(cleanPath)) {

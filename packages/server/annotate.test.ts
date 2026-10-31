@@ -1289,11 +1289,16 @@ describe("annotate server: folder annotate history", () => {
       expect(versionAfter.status).toBe(200);
       expect(await versionAfter.json()).toEqual({ plan: "V1\n", version: 1 });
 
-      // A path outside the folder root is rejected the same way /api/doc rejects it.
+      // A path outside the folder root resolves the way /api/doc resolves it:
+      // a tab on this machine reaches it (#2291), a forwarded reader does not.
       const outsidePath = join(realpathSync(tmpdir()), "outside.md");
-      const deniedVersions = await fetch(`${server.url}/api/plan/versions?path=${encodeURIComponent(outsidePath)}`);
+      const outsideVersions = await fetch(`${server.url}/api/plan/versions?path=${encodeURIComponent(outsidePath)}`);
+      expect(outsideVersions.status).toBe(200);
+      expect((await outsideVersions.json()).versions).toEqual([]);
+      const forwarded = { headers: { "x-forwarded-for": "100.101.102.103" } };
+      const deniedVersions = await fetch(`${server.url}/api/plan/versions?path=${encodeURIComponent(outsidePath)}`, forwarded);
       expect(deniedVersions.status).toBe(403);
-      const deniedVersion = await fetch(`${server.url}/api/plan/version?path=${encodeURIComponent(outsidePath)}&v=1`);
+      const deniedVersion = await fetch(`${server.url}/api/plan/version?path=${encodeURIComponent(outsidePath)}&v=1`, forwarded);
       expect(deniedVersion.status).toBe(403);
 
       // Without a path param at all, behavior is exactly today's: this

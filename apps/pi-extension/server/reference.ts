@@ -15,6 +15,7 @@ import type { ServerResponse } from "node:http";
 import { join, resolve as resolvePath } from "node:path";
 
 import { json, parseBody } from "./helpers.ts";
+import { isRemoteSession } from "./network.ts";
 import type { IncomingMessage } from "node:http";
 
 import {
@@ -41,9 +42,11 @@ import { documentRenderKindForPath, isDocumentRenderKind } from "../generated/an
 import {
 	DOC_ACCESS_DENIED,
 	DOC_TOO_LARGE,
+	docReaderMayReadAnyPath,
 	docResolutionError,
 	getAllowedRootPaths,
 	getTrustedBaseDir,
+	isDocPathAllowed,
 	isPathAllowed,
 	relativizeToAllowedRoots,
 	resolveAllowedDocPath,
@@ -93,6 +96,8 @@ export interface HandleDocOptions {
 	sourceSaveBundlePaths?: ReadonlySet<string>;
 	onSourceDocumentServed?: (path: string) => void;
 	rootPaths?: string[];
+	/** A reader on this machine (`docReaderMayReadAnyPath`): any path is served, not only the roots. */
+	anyPath?: boolean;
 	/**
 	 * When set, /api/doc runs annotate's per-file version-history pipeline for
 	 * eligible markdown-branch documents (local file under an allowed root,
@@ -319,6 +324,16 @@ async function readCodeFile(res: Res, path: string, input: string, parsed: Parse
 	}
 }
 
+/** A tab on this machine may open any document (#2291); a remote-mode reader keeps the roots. */
+export function readsAnyPath(req: IncomingMessage): boolean {
+	const forwarded = req.headers["x-forwarded-for"];
+	return docReaderMayReadAnyPath(
+		isRemoteSession(),
+		req.headers.host,
+		Array.isArray(forwarded) ? forwarded.join(",") : forwarded,
+	);
+}
+
 /** Uses the shared doc resolver for parity with the Bun server. */
 export async function handleDocRequest(res: Res, url: URL, options: HandleDocOptions = {}): Promise<void> {
 	const requestedPath = url.searchParams.get("path");
@@ -334,7 +349,8 @@ export async function handleDocRequest(res: Res, url: URL, options: HandleDocOpt
 	}
 
 	// A base is only honored when it is itself inside an allowed root.
-	const resolvedBase = getTrustedBaseDir(url.searchParams.get("base"), allowedRoots);
+	const anyPath = options.anyPath === true;
+	const resolvedBase = getTrustedBaseDir(url.searchParams.get("base"), allowedRoots, anyPath);
 	const convert = url.searchParams.get("convert") === "1";
 	// `?doc=1` (set by the file browser) forces annotatable plain-text rendering
 	// for extensions that overlap CODE_FILE_REGEX (.yaml, .json, .toml, .ini,
@@ -346,11 +362,12 @@ export async function handleDocRequest(res: Res, url: URL, options: HandleDocOpt
 		base: resolvedBase,
 		forceDoc,
 		roots: allowedRoots,
+		anyPath,
 	});
 	// The one authorization site. A named path is gated whether or not it
 	// exists, so an escaping name is denied rather than reported absent.
 	const named = resolution.kind === "file" || resolution.kind === "not_found" ? resolution.path : undefined;
-	if (named !== undefined && !isPathAllowed(named, allowedRoots)) {
+	if (named !== undefined && !isDocPathAllowed(named, allowedRoots, anyPath)) {
 		sendDocError(res, DOC_ACCESS_DENIED);
 		return;
 	}

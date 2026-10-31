@@ -74,7 +74,7 @@ import { handleHostControl, resolveHostControlToken, type HostControl } from "./
 import { countUnsentDraftComments } from "@plannotator/shared/host-control";
 import { isAIEndpointPath, isLongLivedAIEndpointPath, type AIEndpoints, type SessionBridge } from "@plannotator/ai";
 import { isArchiveDocumentMutation } from "@plannotator/shared/archive-mode";
-import { getAllowedRootPaths, isPathAllowed, isPlanLinkedDocPath, readPlanFile } from "@plannotator/shared/doc-resolve";
+import { docReaderMayReadAnyPath, getAllowedRootPaths, isPathAllowed, isPlanLinkedDocPath, readPlanFile } from "@plannotator/shared/doc-resolve";
 import { createDocumentDraftStore, documentDraftIndexKey, loadSessionDraftWithDocuments } from "@plannotator/shared/annotate-draft";
 import { checkServerSession, createServerSessionNonce, serverSessionMismatchBody } from "@plannotator/shared/server-session";
 
@@ -547,7 +547,12 @@ export async function startPlannotatorServer(
 
           // API: Serve a linked markdown document
           if (url.pathname === "/api/doc" && req.method === "GET") {
-            return handleDoc(req, { planFile });
+            // A tab on this machine reads any path (#2291), so no other site may.
+            if (!isSameOriginRequest(req)) return Response.json(crossOriginRefusalBody(), { status: 403 });
+            return handleDoc(req, {
+              planFile,
+              anyPath: docReaderMayReadAnyPath(isRemote, req.headers.get("host"), req.headers.get("x-forwarded-for")),
+            });
           }
 
           // API: Batch existence check for code-file paths the renderer detected

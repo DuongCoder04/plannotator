@@ -65,6 +65,7 @@ import { readImprovementHook, getImprovementHookExpectedPath } from "../generate
 import { composeImproveContext } from "../generated/pfm-reminder.ts";
 import { detectProjectName, getRepoInfo } from "./project.ts";
 import {
+	readsAnyPath,
 	handleDocRequest,
 	handleDocExistsRequest,
 	handleFileBrowserRequest,
@@ -545,7 +546,12 @@ export async function startPlanReviewServer(options: {
 		} else if (url.pathname.startsWith("/api/ai/") && await handlePiAIRequest(req, res, url, aiRuntime)) {
 			return;
 		} else if (url.pathname === "/api/doc" && req.method === "GET") {
-			await handleDocRequest(res, url);
+			// A tab on this machine reads any path (#2291), so no other site may.
+			if (!isSameOriginRequest(req)) {
+				json(res, crossOriginRefusalBody(), 403);
+				return;
+			}
+			await handleDocRequest(res, url, { anyPath: readsAnyPath(req) });
 		} else if (url.pathname === "/api/doc/exists" && req.method === "POST") {
 			await handleDocExistsRequest(res, req);
 		} else if (url.pathname === "/api/obsidian/vaults") {
