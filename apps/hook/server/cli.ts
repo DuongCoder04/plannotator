@@ -3,6 +3,7 @@ import { T3_CLI_USAGE } from "@plannotator/t3-code/usage";
 import { INBOX_CARD_COLUMNS } from "@plannotator/core/inbox-types";
 import { INBOX_REF_LINK_RULE } from "@plannotator/shared/inbox/connection";
 import { FEEDBACK_HEREDOC_END } from "@plannotator/core/product-feedback";
+import { INBOX_LINK_USAGE } from "./inbox-link-command";
 
 const HELP_FLAGS = new Set(["--help", "-h"]);
 
@@ -287,6 +288,8 @@ export const INBOX_COMMAND_USAGE = [
   "  plannotator inbox status [--json]",
   "  plannotator inbox stop",
   "  plannotator inbox restart [--tailscale]",
+  "  plannotator inbox link --offer [--tailscale] | link <code> | link --list",
+  "  plannotator inbox unlink <machine>",
   "  plannotator inbox --notes <ids>",
   "",
   "  plannotator inbox               Start the Inbox and open it in the browser,",
@@ -315,6 +318,7 @@ export const INBOX_COMMAND_USAGE = [
   "  plannotator inbox restart       Stop it, then start it in the background (no",
   "                                  browser tab) and print its URL. A run published by",
   "                                  --tailscale is published again.",
+  ...INBOX_LINK_USAGE,
   "  plannotator inbox --notes <ids> Add the Inbox note to these agents' instructions",
   "                                  files (claude-code, codex, gemini, qwen, pi,",
   "                                  opencode, comma-separated). Only with the",
